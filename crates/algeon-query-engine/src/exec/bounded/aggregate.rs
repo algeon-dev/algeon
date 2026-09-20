@@ -21,26 +21,28 @@ pub mod sizing;
 mod source_adjacent;
 mod stream;
 
+use final_merge::{
+    CompiledIncrementalPartitionedMerge, execute_incremental_source_adjacent_final_aggregate_merge,
+    should_execute_incremental_partitioned_final_aggregate_merge,
+};
 pub(super) use final_merge::{
-    AlignedGroupKeyPartitionPartial, execute_aligned_group_key_partitioned_final_aggregate_merge,
     execute_compiled_bounded_final_aggregate_merge, execute_final_aggregate_merge, reduce_merge_fan_in,
 };
-use final_merge::{CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge};
 use partitioned::{
     execute_compiled_bounded_partitioned_aggregate_from_frame, partitioned_aggregate_partition_count,
     should_partition_compiled_grouped_aggregate,
 };
-pub(super) use plan::{BoundedPlan, BoundedUnaryStage};
+pub(super) use plan::{BoundedPlan, BoundedUnaryStage, SourceAggregateTopK};
 use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection};
 pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
 use sizing::{
     partial_aggregate_work_reservation_upper_bound_bytes,
     statistical_partial_aggregate_work_reservation_upper_bound_bytes,
 };
-pub(in crate::exec::bounded) use source_adjacent::execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks;
+pub(in crate::exec::bounded) use source_adjacent::execute_source_aggregate_with_dispatch;
 pub(in crate::exec::bounded) use stream::{
     execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_source_stream,
-    execute_compiled_bounded_aggregate_from_stream,
+    execute_compiled_bounded_aggregate_from_stream, execute_compiled_source_aggregate_chunk,
 };
 
 use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
@@ -132,22 +134,18 @@ pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
     if aggregate_spec_requires_whole_input(&bounded.aggregate.0.spec) {
         return execute_bounded_whole_input_aggregate_from_raw_chunks(execution, bounded, &chunk_plan.chunks);
     }
-    if should_execute_partitioned_source_adjacent_grouped_aggregate(execution.context(), bounded, &chunk_plan) {
-        return execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks(
-            execution,
-            bounded,
-            &chunk_plan.chunks,
-        );
-    }
-
-    let partials = execute_bounded_chunks_with_source_scheduler(execution, bounded, &chunk_plan.chunks)?;
-    execute_final_aggregate_merge(execution, bounded, partials)
+    let partitioned =
+        should_execute_partitioned_source_adjacent_grouped_aggregate(execution.context(), bounded, &chunk_plan.chunks);
+    compiled::lanes::AggregateLaneDispatch::with_available_lanes(execution, |dispatch, execution| {
+        execute_source_aggregate_with_dispatch(execution, bounded, &chunk_plan.chunks, Some(dispatch), partitioned)?
+            .into_resident_frame()
+    })
 }
 
-fn should_execute_partitioned_source_adjacent_grouped_aggregate(
+pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_grouped_aggregate(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
-    chunk_plan: &SourceChunkPlan,
+    chunks: &[SourceChunk],
 ) -> bool {
     // Admission uses the max live incremental working set, not whole-input retention
     // or a fixed chunk/row-group count. Source-adjacent group-key partition is the
@@ -157,8 +155,8 @@ fn should_execute_partitioned_source_adjacent_grouped_aggregate(
         && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
         && !aggregate_spec_has_median(&bounded.aggregate.0.spec)
         && bounded.aggregate.0.spec.grouping_sets.is_none()
-        && chunk_plan.chunks.len() > 1
-        && source_adjacent_partitioned_live_working_set_fits_budget(context, bounded, &chunk_plan.chunks)
+        && chunks.len() > 1
+        && source_adjacent_partitioned_live_working_set_fits_budget(context, bounded, chunks)
 }
 
 fn source_adjacent_partitioned_live_working_set_fits_budget(
@@ -458,6 +456,45 @@ pub(in crate::exec::bounded::aggregate) fn release_nested_partials_reverse(mut p
     while let Some(partition) = partitions.pop() {
         release_partials_reverse(partition);
     }
+}
+
+/// Correlates source-owned partial kernels with the chunk attempt and lane
+/// whose stream executes them, without adding a second observation schema.
+pub(in crate::exec::bounded) fn start_aggregate_chunk_stage(
+    execution: &BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    chunk_index: usize,
+    attempt: usize,
+    input_rows: u64,
+) -> crate::observability::RuntimeOperatorStageGuard {
+    let (observation, plan_execution_id, parent_span_id) =
+        crate::observability::stage_context_from_execution(execution.context());
+    let fork =
+        execution.context().attempt_claimed_fork_index().map_or_else(|| "root".to_string(), |fork| fork.to_string());
+    let task_id =
+        crate::observability::RuntimeTaskId::new(format!("aggregate.{node_id}.chunk{chunk_index}.fork{fork}",));
+    if let Some(plan_execution_id) = &plan_execution_id {
+        observation.record_topology(crate::observability::RuntimeObservationRecordClass::TaskDefinition, || {
+            crate::observability::RuntimeTopologyRecord::TaskDefinition(crate::observability::TaskDefinitionRow {
+                plan_execution_id: plan_execution_id.clone(),
+                task_id: task_id.clone(),
+                plan_node_id: Some(crate::observability::RuntimePlanNodeId::new(node_id.to_string())),
+                task_kind: "aggregate_chunk".to_string(),
+            })
+        });
+    }
+    crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::PartialAggregate,
+        crate::observability::RuntimeOperatorStageIdentity::new()
+            .with_node_id(node_id.to_string())
+            .with_task_id(task_id)
+            .with_chunk_index(chunk_index)
+            .with_attempt(attempt as u32)
+            .with_input_rows(input_rows),
+    )
 }
 
 #[cfg(test)]

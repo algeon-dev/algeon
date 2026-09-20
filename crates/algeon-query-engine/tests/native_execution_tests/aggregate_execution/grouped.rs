@@ -1611,6 +1611,18 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
     let raw_batches =
         metrics.task_runtime_metrics.keys().filter(|task_id| task_id.contains("source_adjacent_raw_batch")).count();
     assert!(raw_batches >= 2, "decoded-byte sizing must split the source into several raw batches: {raw_batches}");
+    let final_strategy = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge"))
+        .expect("multi-batch grouped aggregate final merge");
+    assert_eq!(final_strategy.facts.get("partitioned_merge_incremental").map(String::as_str), Some("true"));
+    let max_pending_partials = final_strategy
+        .facts
+        .get("partitioned_merge_incremental_max_pending_partials")
+        .and_then(|value| value.parse::<usize>().ok())
+        .expect("incremental merge reports retained partial bound");
+    assert!((1..=16).contains(&max_pending_partials));
 
     let partial_strategies = metrics
         .aggregate_strategy_decisions
@@ -1638,6 +1650,17 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
 
 #[test]
 fn bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing() {
+    assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing(1);
+}
+
+#[test]
+fn bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing_on_two_lanes() {
+    assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing(2);
+}
+
+fn assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing(
+    source_work_per_attempt: usize,
+) {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-cardinality-shift");
     let path = dir.join("input.parquet");
     let row_groups = 64;
@@ -1673,7 +1696,8 @@ fn bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 4,
         min_retry_chunk_row_groups: 1,
-    });
+    })
+    .with_source_work_per_attempt(source_work_per_attempt);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.row_groups_committed, row_groups as u64);

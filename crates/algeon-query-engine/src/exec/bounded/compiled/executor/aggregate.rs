@@ -40,6 +40,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
+        let topk = compiled_aggregate_topk(self.plan, self.pipeline, task);
         let input_is_stream =
             matches!(state.resource_payload(input)?.payload, CompiledGpuResourcePayload::ResidentFrameStream(_));
         let can_consume_join_leaf_source = state.can_consume_task_input_resource(task, input)
@@ -98,6 +99,8 @@ impl CompiledGpuTaskExecutor<'_> {
                 node.output_schema(),
                 stream,
                 preserve_output_stream,
+                self.aggregate_dispatch,
+                topk.as_ref(),
             )
         } else if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
@@ -147,6 +150,8 @@ impl CompiledGpuTaskExecutor<'_> {
                     node.output_schema(),
                     stream,
                     preserve_output_stream,
+                    self.aggregate_dispatch,
+                    topk.as_ref(),
                 )
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
             {
@@ -295,5 +300,57 @@ impl CompiledGpuTaskExecutor<'_> {
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+    }
+}
+
+/// Propagates the compiled sort's existing pruning contract through an
+/// exclusively consumed projection chain. Shared aggregate facts must remain
+/// complete for every consumer, including dynamic-filter producers.
+fn compiled_aggregate_topk<'a>(
+    plan: &'a crate::plan::QueryPlan,
+    pipeline: &crate::pipeline::CompiledPipeline,
+    task: &PipelineTask,
+) -> Option<crate::exec::bounded::SourceAggregateTopK<'a>> {
+    let node_id = task.plan_node()?;
+    if plan.dynamic_filter_routes().iter().any(|route| matches!(
+        route.producer,
+        crate::dynamic_filter::DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } if aggregate_node_id == node_id
+    )) {
+        return None;
+    }
+    let mut current = task;
+    let mut stages = Vec::new();
+    loop {
+        let [output] = current.output_resources() else {
+            return None;
+        };
+        let resource = pipeline.resources().iter().find(|resource| resource.id() == *output)?;
+        let [consumer] = resource.consumers() else {
+            return None;
+        };
+        current = pipeline.tasks().iter().find(|task| task.id() == *consumer)?;
+        let node_id = current.plan_node()?;
+        let node = plan.node(node_id)?;
+        match &node.kind {
+            PlanNode::Projection(projection) => stages.push(crate::exec::bounded::BoundedUnaryStage::Projection {
+                node_id,
+                node: projection,
+                output_schema: node.output_schema(),
+            }),
+            PlanNode::Sort(sort) => {
+                let SortStrategy::FusedTopK { limit_node, .. } = current.sort_strategy()? else {
+                    return None;
+                };
+                let PlanNode::Limit(limit) = &plan.node(limit_node)?.kind else {
+                    return None;
+                };
+                return Some(crate::exec::bounded::SourceAggregateTopK {
+                    post_aggregate_stages: stages,
+                    sort,
+                    limit: (limit_node, limit),
+                });
+            },
+            _ => return None,
+        }
     }
 }

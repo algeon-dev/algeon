@@ -10,8 +10,8 @@ use super::{
     execute_compiled_bounded_aggregate_consuming_frame, execute_compiled_bounded_aggregate_from_empty_input,
     execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
     execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
-    materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
-    partial_aggregate_work_reservation_upper_bound_bytes,
+    final_merge::{execute_compiled_final_merge_group_attempt, normalize_compiled_aggregate_partial},
+    observe_device_memory_bytes, partial_aggregate_work_reservation_upper_bound_bytes,
     partitioned::{
         execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks, partitioned_aggregate_partition_count,
         should_partition_whole_input_grouped_aggregate,
@@ -21,10 +21,10 @@ use super::{
     stream_bounded_join_leaf_local_parquet_source_chunks, unsupported_bounded_shape,
 };
 use crate::exec::{
-    bounded::compiled::CompiledGpuResource,
+    bounded::{compiled::CompiledGpuResource, join::bounded_join_leaf_local_parquet_source_frame_stream},
     operators::{
-        execute_gpu_native_statistical_final_merge_with_budget,
-        execute_gpu_native_statistical_partial_aggregate_with_budget,
+        PartialAggregateInputEvidence, execute_gpu_native_statistical_final_merge_with_budget,
+        execute_gpu_native_statistical_partial_aggregate_with_budget, partial_aggregate_source_chunk_fingerprint,
         should_execute_gpu_native_statistical_partial_aggregate,
     },
 };
@@ -132,6 +132,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 input_schema,
                 output_schema,
                 input,
+                None,
             ) {
                 Ok(chunk_partials) => chunk_partials,
                 Err(error) => {
@@ -151,6 +152,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     result
 }
 
+#[expect(clippy::too_many_arguments, reason = "compiled aggregate carries its source and borrowed run lanes")]
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -159,9 +161,26 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
     output_schema: &ArrowSchemaRef,
     stream: BoundedJoinLeafLocalParquetSourceStream,
     preserve_output_stream: bool,
+    dispatch: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch<'_>>,
+    topk: Option<&super::SourceAggregateTopK<'_>>,
 ) -> Result<CompiledGpuResource> {
     if aggregate_spec_requires_whole_input(&aggregate.spec) {
-        let input = materialize_bounded_join_leaf_local_parquet_source_stream(execution, stream)?;
+        // Whole-input consumers use the same source-owned pull cursor. They
+        // must not start nested prefetch workers while the compiled run owns
+        // the attempt's lane leases.
+        let inputs = bounded_join_leaf_local_parquet_source_frame_stream(execution, stream)
+            .into_remaining_frames_owned(execution)?;
+        if inputs.is_empty() {
+            return execute_compiled_bounded_aggregate_from_empty_input(
+                execution,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+            )
+            .map(CompiledGpuResource::new);
+        }
+        let input = execute_bounded_generic_union(execution, node_id, inputs)?;
         return execute_compiled_bounded_aggregate_consuming_frame(
             execution,
             node_id,
@@ -184,6 +203,34 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         .map(CompiledGpuResource::new);
     }
 
+    if let Some(mut bounded) = stream.aggregate_plan(node_id, aggregate, input_schema, output_schema) {
+        if let Some(topk) = topk {
+            bounded.post_aggregate_stages = topk.post_aggregate_stages.clone();
+            bounded.sort = Some(topk.sort);
+            bounded.limit = Some(topk.limit);
+        }
+        let partitioned = super::should_execute_partitioned_source_adjacent_grouped_aggregate(
+            execution.context(),
+            &bounded,
+            stream.chunks(),
+        );
+        if partitioned
+            || crate::exec::bounded::chunks::bounded_source_adjacent_chunk_batching_enabled(
+                execution.context(),
+                &bounded,
+                stream.chunks(),
+            )
+        {
+            return super::execute_source_aggregate_with_dispatch(
+                execution,
+                &bounded,
+                stream.chunks(),
+                dispatch,
+                partitioned,
+            );
+        }
+    }
+
     let mut partials = CompiledStreamPartials::new(
         execution,
         node_id,
@@ -193,26 +240,107 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         stream.chunk_count(),
         None,
     )?;
-    stream_bounded_join_leaf_local_parquet_source_chunks(execution, stream, |input, execution| {
-        let chunk_partials = execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
+    if let Some(dispatch) = dispatch.filter(|_| aggregate.spec.grouping_sets.is_none()) {
+        dispatch.execute_chunks(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            stream,
+            |execution, chunk_partials| partials.extend(execution, chunk_partials),
+        )?;
+    } else {
+        for chunk in stream.chunks().iter().cloned() {
+            let chunk_partials = execute_compiled_source_aggregate_chunk(
+                execution,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                &stream,
+                chunk,
+            )?;
+            // Merge failure cannot replay source work after earlier partials committed.
+            partials.extend(execution, chunk_partials.partials)?;
+            execution.metrics().record_source_chunk_commit(chunk_partials.source_row_groups);
+        }
+    }
+    partials.finish(execution, preserve_output_stream)
+}
+
+/// A chunk's outputs stay private through decode/operator retries. Only the
+/// coordinator may insert the returned partials into final-merge state.
+pub(in crate::exec::bounded) struct AggregateChunkOutput {
+    pub(in crate::exec::bounded) partials: Vec<CommittedPartial>,
+    pub(in crate::exec::bounded) source_row_groups: u64,
+}
+
+pub(in crate::exec::bounded) fn execute_compiled_source_aggregate_chunk(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunk: SourceChunk,
+) -> Result<AggregateChunkOutput> {
+    let mut partials = Vec::new();
+    let source_row_groups = stream.execute_chunk(execution, chunk, &mut |chunk, attempt, input, execution| {
+        let evidence = PartialAggregateInputEvidence {
+            source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(std::slice::from_ref(chunk)),
+            source_adjacent_partial: stream.has_stages(),
+            source_chunk_row_group_count: crate::exec::source::observed_chunk_row_group_count(chunk)
+                .unwrap_or_else(|| chunk.row_group_count()) as u64,
+            source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,
+            source_chunk_known_row_count: chunk.known_row_count,
+            source_chunk_estimated_source_read_bytes: chunk.estimated_source_read_bytes,
+            source_chunk_size_estimate_based: chunk.size_estimate_based,
+            source_adjacent_partition_strategy: "none",
+            source_adjacent_partition_count: None,
+            source_adjacent_non_empty_partition_count: None,
+            source_adjacent_partition_key_count: None,
+            source_adjacent_max_partition_fan_in: None,
+        };
+        let stage = super::start_aggregate_chunk_stage(
+            execution,
+            node_id,
+            chunk.chunk_index,
+            attempt,
+            input.frame.num_rows() as u64,
+        );
+        match execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
             execution,
             node_id,
             aggregate,
             input_schema,
             output_schema,
             input,
-        )?;
-        partials.extend(execution, chunk_partials)
+            Some(evidence),
+        ) {
+            Ok(outputs) => {
+                stage.finish(
+                    Some(outputs.iter().map(|partial| partial.frame.num_rows() as u64).sum()),
+                    Some(outputs.iter().map(CommittedPartial::device_bytes).sum()),
+                );
+                partials.extend(outputs);
+            },
+            Err(error) => {
+                stage.fail(&error);
+                return Err(error);
+            },
+        }
+        Ok(())
     })?;
-    partials.finish(execution, preserve_output_stream)
+    Ok(AggregateChunkOutput { partials, source_row_groups })
 }
 
 /// Partial-aggregate accumulator for one compiled aggregate stream.
 ///
-/// Partitioned-merge shapes fold partials incrementally so retained state
-/// stays near the merged result; every other shape retains its partials for
-/// the whole-set final merge.
-enum CompiledStreamPartials<'a> {
+/// Partitioned shapes retain their existing incremental owner. Other
+/// mergeable aggregates use a stable binary reduction, retaining at most one
+/// normalized state per level; grouping sets keep their existing final merge.
+pub(in crate::exec::bounded::aggregate) enum CompiledStreamPartials<'a> {
     Retained {
         node_id: NodeId,
         aggregate: &'a AggregateNode,
@@ -220,11 +348,18 @@ enum CompiledStreamPartials<'a> {
         output_schema: &'a ArrowSchemaRef,
         partials: Vec<CommittedPartial>,
     },
+    Folded {
+        node_id: NodeId,
+        aggregate: &'a AggregateNode,
+        input_schema: &'a ArrowSchemaRef,
+        output_schema: &'a ArrowSchemaRef,
+        levels: Vec<Option<CommittedPartial>>,
+    },
     Incremental(Box<CompiledIncrementalPartitionedMerge<'a>>),
 }
 
 impl<'a> CompiledStreamPartials<'a> {
-    fn new(
+    pub(in crate::exec::bounded::aggregate) fn new(
         execution: &BoundedExecutionAttempt<'_>,
         node_id: NodeId,
         aggregate: &'a AggregateNode,
@@ -245,6 +380,11 @@ impl<'a> CompiledStreamPartials<'a> {
             )
             .map(|merge| Self::Incremental(Box::new(merge)));
         }
+        // A few global states fit in a single bounded final merge. Keeping
+        // their original partials also preserves its one-attempt observation.
+        if aggregate.spec.grouping_sets.is_none() && (!aggregate.spec.group_exprs.is_empty() || expected_partials > 8) {
+            return Ok(Self::Folded { node_id, aggregate, input_schema, output_schema, levels: Vec::new() });
+        }
         Ok(Self::Retained {
             node_id,
             aggregate,
@@ -254,12 +394,47 @@ impl<'a> CompiledStreamPartials<'a> {
         })
     }
 
-    fn extend(
+    pub(in crate::exec::bounded::aggregate) fn extend(
         &mut self,
         execution: &mut BoundedExecutionAttempt<'_>,
         chunk_partials: Vec<CommittedPartial>,
     ) -> Result<()> {
         match self {
+            Self::Folded { node_id, aggregate, input_schema, output_schema, levels } => {
+                for partial in chunk_partials {
+                    let mut state = normalize_compiled_aggregate_partial(
+                        execution,
+                        *node_id,
+                        aggregate,
+                        input_schema,
+                        output_schema,
+                        partial,
+                    )?;
+                    let mut level = 0;
+                    loop {
+                        if level == levels.len() {
+                            levels.push(Some(state));
+                            break;
+                        }
+                        let Some(earlier) = levels[level].take() else {
+                            levels[level] = Some(state);
+                            break;
+                        };
+                        execution.metrics().record_final_merge_attempt(2);
+                        state = execute_compiled_final_merge_group_attempt(
+                            execution,
+                            *node_id,
+                            aggregate,
+                            input_schema,
+                            output_schema,
+                            &[earlier, state],
+                        )?;
+                        execution.metrics().record_final_merge_level();
+                        level += 1;
+                    }
+                }
+                Ok(())
+            },
             Self::Retained { partials, .. } => {
                 partials.extend(chunk_partials);
                 Ok(())
@@ -277,12 +452,27 @@ impl<'a> CompiledStreamPartials<'a> {
         }
     }
 
-    fn finish(
+    pub(in crate::exec::bounded::aggregate) fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
         preserve_output_stream: bool,
     ) -> Result<CompiledGpuResource> {
         match self {
+            Self::Folded { node_id, aggregate, input_schema, output_schema, levels } => {
+                // Larger occupied levels contain the earliest input interval.
+                // The binary carry bounds retained state to one per usize bit
+                // and makes merge order independent of lane completion order.
+                let partials = levels.into_iter().rev().flatten().collect();
+                execute_compiled_bounded_final_aggregate_merge(
+                    execution,
+                    node_id,
+                    aggregate,
+                    input_schema,
+                    output_schema,
+                    partials,
+                )
+                .map(CompiledGpuResource::new)
+            },
             Self::Retained { node_id, aggregate, input_schema, output_schema, partials } => {
                 if partials.is_empty() {
                     return execute_compiled_bounded_aggregate_from_empty_input(
@@ -604,6 +794,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggr
         output_schema,
         input,
         upper_bound_bytes,
+        None,
     )
 }
 
@@ -614,6 +805,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
+    input_evidence: Option<PartialAggregateInputEvidence>,
 ) -> Result<Vec<CommittedPartial>> {
     execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
         execution,
@@ -623,9 +815,11 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
         output_schema,
         input,
         compiled_aggregate_frame_retry_budget(execution.context()),
+        input_evidence,
     )
 }
 
+#[expect(clippy::too_many_arguments, reason = "partial work preserves its source evidence through split retries")]
 fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -634,6 +828,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
     retry_budget: usize,
+    input_evidence: Option<PartialAggregateInputEvidence>,
 ) -> Result<Vec<CommittedPartial>> {
     let upper_bound_bytes = match partial_aggregate_work_reservation_upper_bound_bytes(
         execution,
@@ -662,6 +857,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
             output_schema,
             left,
             retry_budget.saturating_sub(1),
+            input_evidence,
         ) {
             Ok(partials) => partials,
             Err(error) => {
@@ -676,6 +872,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
             output_schema,
             right,
             retry_budget.saturating_sub(1),
+            input_evidence,
         ) {
             Ok(right_partials) => {
                 partials.extend(right_partials);
@@ -695,10 +892,12 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
         output_schema,
         input,
         upper_bound_bytes,
+        input_evidence,
     )
     .map(|partial| vec![partial])
 }
 
+#[expect(clippy::too_many_arguments, reason = "partial work preserves its source evidence through split retries")]
 fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -707,13 +906,14 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
     output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
     upper_bound_bytes: u64,
+    input_evidence: Option<PartialAggregateInputEvidence>,
 ) -> Result<CommittedPartial> {
     let input_rows = input.frame.num_rows() as u64;
     let _ = upper_bound_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
-        "compiled_aggregate_partial_state_work",
+        if input_evidence.is_some() { "chunk_operator" } else { "compiled_aggregate_partial_state_work" },
         "query_engine.bounded.aggregate.compiled_stream_partial.budget_token",
         "failed to create bounded native compiled stream aggregate budget token",
     ) {
@@ -730,7 +930,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
         output_schema,
         input.frame,
         &token,
-        None,
+        input_evidence,
         execution.metrics(),
     );
     let frame = match output {

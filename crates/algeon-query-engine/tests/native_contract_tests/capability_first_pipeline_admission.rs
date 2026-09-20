@@ -17,7 +17,7 @@ use query_engine::{
         DynamicFilterProducer, DynamicFilterRoute,
     },
     mode::StatisticalAggregateExecutionMode,
-    pipeline::{PipelineTaskKind, SinkBoundaryKind},
+    pipeline::{AcceptedInputForm, PipelineTaskKind, ResidentDataForm, SinkBoundaryKind},
     plan::QueryPlan,
     rapids_backend::rapids_analysis_context,
 };
@@ -156,6 +156,155 @@ fn capability_admission_accepts_source_unary_without_requiring_a_union() {
     assert!(
         decision.into_execution_admission().expect("admitted shape must not hard-error").is_some(),
         "admitted source/unary pipelines reach the compiled executor"
+    );
+}
+
+#[test]
+fn capability_admission_accepts_non_join_scan_filter_grouped_aggregate_topk() {
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("group_key", DataType::Int32, false),
+        Field::new("measure", DataType::Int32, false),
+    ]));
+    let batches = vec![
+        RecordBatch::try_new(
+            Arc::clone(&input_schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1, 2])) as ArrayRef,
+                Arc::new(Int32Array::from(vec![4, 7, 9])) as ArrayRef,
+            ],
+        )
+        .expect("literal aggregate batch"),
+    ];
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("group_key", DataType::Int32, false),
+        Field::new("row_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), batches)));
+    let filtered = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("measure"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
+        Arc::clone(&input_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        filtered,
+        AggregateSpec::new(
+            vec![Expr::column("group_key")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "row_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("group_key"), false, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(10), Arc::clone(&aggregate_schema));
+    let plan = builder.finish_with_host_sink(limit);
+
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("non-join grouped aggregate admission should not error");
+    {
+        let admission =
+            decision.admission().expect("supported scan/filter/grouped aggregate should use compiled admission");
+        assert_eq!(admission.envelope(), CapabilityEnvelope::ComposedPipeline);
+        let pipeline = admission.pipeline();
+        assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::Aggregate).count(), 1);
+        assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::FinalSort).count(), 1);
+        assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::Limit).count(), 1);
+        assert!(pipeline.tasks().iter().all(|task| {
+            !matches!(
+                task.kind(),
+                PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe | PipelineTaskKind::JoinMaterialize
+            )
+        }));
+    }
+    assert!(
+        decision.into_execution_admission().expect("admitted grouped aggregate must not hard-error").is_some(),
+        "grouped aggregate reaches the compiled executor"
+    );
+}
+
+#[test]
+fn capability_admission_accepts_non_join_distinct_aggregate_with_source_stream_contract() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/capability-first-distinct.parquet",
+        Arc::clone(&input_schema),
+        vec!["value".to_string()],
+    )));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![
+                AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values")
+                    .with_distinct(true),
+            ],
+        ),
+        Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int64, false)])),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("whole-input aggregate admission should not error");
+    {
+        let admission = decision.admission().expect("supported whole-input aggregate should be admitted");
+        let pipeline = admission.pipeline();
+        let aggregate_task = pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.kind() == PipelineTaskKind::Aggregate)
+            .expect("compiled pipeline has an aggregate task");
+        assert_eq!(aggregate_task.accepted_input_form(), AcceptedInputForm::FrameStreamOrSourceStream);
+        let source_task = pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.kind() == PipelineTaskKind::SourceRead)
+            .expect("compiled pipeline has a source task");
+        let source_resource = pipeline
+            .resources()
+            .iter()
+            .find(|resource| resource.producer() == source_task.id())
+            .expect("source output resource");
+        assert_eq!(source_resource.data_form(), ResidentDataForm::SourceStream);
+    }
+    assert!(
+        decision.into_execution_admission().expect("whole-input aggregate must not hard-error").is_some(),
+        "whole-input aggregate reaches the compiled executor while retaining its source-stream contract"
+    );
+}
+
+#[test]
+fn capability_admission_keeps_window_composition_on_existing_path() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("literal window batch");
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![batch])));
+    let window = builder.add_window(
+        source,
+        WindowSpec::new(Vec::new(), Vec::new(), vec![WindowFunction::row_number("row_number")]),
+        Arc::new(Schema::new(vec![
+            Field::new("value", DataType::Int32, false),
+            Field::new("row_number", DataType::UInt64, false),
+        ])),
+    );
+    let plan = builder.finish_with_host_sink(window);
+
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("unsupported window composition should classify without an error");
+    assert!(decision.admission().is_none(), "window composition remains outside the migrated contract");
+    assert!(
+        decision.into_execution_admission().expect("unsupported window composition must remain a fallback").is_none(),
+        "unsupported non-join composition keeps the existing executor path"
     );
 }
 

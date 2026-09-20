@@ -136,12 +136,13 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
     };
     let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
     // One backend owns the suite; each exact-plan context acquires its own handle.
-    // The suite runs one query at a time, so it pins the explicit serial
-    // admission the installation bounds were sized for.
+    // The suite runs one query at a time while allowing four source work
+    // lanes within that attempt.
     let device = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(0)
             .with_max_active_attempts(1)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1)),
+            .with_source_work_per_attempt(4)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(5, 1, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()

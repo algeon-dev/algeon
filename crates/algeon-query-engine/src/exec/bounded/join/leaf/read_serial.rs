@@ -282,6 +282,31 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<(GpuDataFrame, u64)> {
+    let output = read_join_leaf_source_chunk_attempt_uncommitted(
+        execution,
+        source,
+        node_id,
+        chunk,
+        reader_dynamic_filters,
+        attempt,
+        max_attempts,
+        "join_source_read",
+    )?;
+    execution.metrics().record_source_chunk_commit(committed_join_source_chunk_row_groups(chunk));
+    Ok(output)
+}
+
+#[expect(clippy::too_many_arguments, reason = "source retry preserves caller-owned commitment and budget boundary")]
+pub(super) fn read_join_leaf_source_chunk_attempt_uncommitted(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    chunk: &SourceChunk,
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
+    attempt: usize,
+    max_attempts: usize,
+    budget_boundary: &'static str,
+) -> Result<(GpuDataFrame, u64)> {
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_chunk")?;
     execution.metrics().record_source_chunk_attempt();
     let source_token_budget = execution.device_budget_bytes();
@@ -290,7 +315,7 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
         source,
         chunk,
         source_token_budget,
-        "join_source_read",
+        budget_boundary,
         reader_dynamic_filters.len(),
         execution.metrics(),
     ) {
@@ -323,12 +348,10 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
     };
     let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &frame, execution.metrics());
-    let committed_row_groups = committed_join_source_chunk_row_groups(chunk);
-    execution.metrics().record_source_chunk_commit(committed_row_groups);
     Ok((frame, observed_bytes))
 }
 
-fn committed_join_source_chunk_row_groups(chunk: &SourceChunk) -> u64 {
+pub(super) fn committed_join_source_chunk_row_groups(chunk: &SourceChunk) -> u64 {
     crate::exec::source::observed_chunk_row_group_count(chunk).unwrap_or_else(|| chunk.row_group_count()) as u64
 }
 

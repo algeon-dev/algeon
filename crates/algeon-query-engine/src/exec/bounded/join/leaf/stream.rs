@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
 use super::{
-    BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, QueryError, ResidentGpuFrame, Result,
-    SourceChunk, SourceChunkBatch, abandon_join_leaf_reads, apply_join_leaf_source_stream_stages,
+    BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame, Result, SourceChunk,
+    SourceChunkBatch, abandon_join_leaf_reads, apply_join_leaf_source_stream_stages,
     attach_join_source_read_resource_facts, chunk_retry_facts, fill_optional_join_leaf_reads, is_retryable_chunk_error,
     join_leaf_source_chunk_batches_for_execution, observe_device_memory_bytes, read_join_leaf_source_batch_attempt,
     read_join_leaf_source_chunk_attempt, record_chunk_retry_error, record_dynamic_filter_reader_predicate_rows,
@@ -205,6 +205,89 @@ fn read_join_leaf_source_batch_with_stages(
     apply_join_leaf_source_stream_stages(execution, stream, input)
 }
 
+/// Retry stays inside this private work boundary. A successful decode does
+/// not publish source commitment before its consumer has produced output.
+pub(super) fn execute_uncommitted_source_chunk<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunk: SourceChunk,
+    attempt: usize,
+    consume: &mut F,
+) -> Result<u64>
+where
+    F: FnMut(&SourceChunk, usize, ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
+{
+    execute_source_chunk_with_consumer_retry(execution, stream, chunk, attempt, consume, false)
+}
+
+fn execute_source_chunk_with_consumer_retry<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    stream: &BoundedJoinLeafLocalParquetSourceStream,
+    chunk: SourceChunk,
+    attempt: usize,
+    consume: &mut F,
+    commit_decode: bool,
+) -> Result<u64>
+where
+    F: FnMut(&SourceChunk, usize, ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
+{
+    let result = super::read_serial::read_join_leaf_source_chunk_attempt_uncommitted(
+        execution,
+        &stream.source,
+        stream.node_id,
+        &chunk,
+        &stream.reader_dynamic_filters,
+        attempt,
+        stream.max_attempts,
+        if commit_decode { "join_source_read" } else { "source_chunk_read" },
+    )
+    .and_then(|(frame, bytes)| {
+        // Materialized/pull join callers commit each decoded retry piece;
+        // aggregate work defers this fact until its private partials commit.
+        if commit_decode {
+            execution
+                .metrics()
+                .record_source_chunk_commit(super::read_serial::committed_join_source_chunk_row_groups(&chunk));
+        }
+        apply_join_leaf_source_stream_stages(execution, stream, ResidentGpuFrame::with_device_bytes(frame, bytes))
+    })
+    .and_then(|frame| consume(&chunk, attempt, frame, execution));
+    match result {
+        Ok(()) => Ok(super::read_serial::committed_join_source_chunk_row_groups(&chunk)),
+        Err(error) if is_retryable_chunk_error(&error) => {
+            record_chunk_retry_error(&error, execution.metrics());
+            if attempt < stream.max_attempts
+                && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
+            {
+                execution.metrics().record_source_chunk_retry();
+                crate::exec::retry::backoff_before_retry(
+                    execution.context(),
+                    "query_engine.exec.bounded.join_leaf_stream_split_retry",
+                )?;
+                let left = execute_source_chunk_with_consumer_retry(
+                    execution,
+                    stream,
+                    left,
+                    attempt + 1,
+                    consume,
+                    commit_decode,
+                )?;
+                let right = execute_source_chunk_with_consumer_retry(
+                    execution,
+                    stream,
+                    right,
+                    attempt + 1,
+                    consume,
+                    commit_decode,
+                )?;
+                return Ok(left.saturating_add(right));
+            }
+            Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
+        },
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) fn stream_join_leaf_source_chunk_with_consumer_retry<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
@@ -215,20 +298,15 @@ pub(super) fn stream_join_leaf_source_chunk_with_consumer_retry<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    let output = match read_join_leaf_source_chunk_with_stages(execution, stream, &chunk, attempt) {
-        Ok(output) => output,
-        Err(error) if is_retryable_chunk_error(&error) => {
-            return retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume);
-        },
-        Err(error) => return Err(error),
-    };
-    match consume(output, execution) {
-        Ok(()) => Ok(()),
-        Err(error) if is_retryable_chunk_error(&error) => {
-            retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume)
-        },
-        Err(error) => Err(error),
-    }
+    execute_source_chunk_with_consumer_retry(
+        execution,
+        stream,
+        chunk,
+        attempt,
+        &mut |_, _, frame, execution| consume(frame, execution),
+        true,
+    )?;
+    Ok(())
 }
 
 fn read_join_leaf_source_chunk_with_stages(
@@ -248,34 +326,6 @@ fn read_join_leaf_source_chunk_with_stages(
         stream.max_attempts,
     )?;
     apply_join_leaf_source_stream_stages(execution, stream, ResidentGpuFrame::with_device_bytes(frame, reservation))
-}
-
-pub(super) fn retry_join_leaf_source_stream_chunk_after_error<F>(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    stream: &BoundedJoinLeafLocalParquetSourceStream,
-    chunk: SourceChunk,
-    error: QueryError,
-    attempt: usize,
-    consume: &mut F,
-) -> Result<()>
-where
-    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
-{
-    record_chunk_retry_error(&error, execution.metrics());
-    if attempt < stream.max_attempts
-        && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
-    {
-        execution.metrics().record_source_chunk_retry();
-        crate::exec::retry::backoff_before_retry(
-            execution.context(),
-            "query_engine.exec.bounded.join_leaf_stream_source_split_retry",
-        )?;
-        stream_join_leaf_source_chunk_with_consumer_retry(execution, stream, left, attempt + 1, consume)?;
-        stream_join_leaf_source_chunk_with_consumer_retry(execution, stream, right, attempt + 1, consume)?;
-        return Ok(());
-    }
-
-    Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
 }
 
 pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(

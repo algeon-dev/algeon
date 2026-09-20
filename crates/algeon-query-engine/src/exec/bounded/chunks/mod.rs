@@ -1,7 +1,7 @@
 use super::{
     super::source::{
-        ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, apply_source_scan_limit_to_frame,
-        read_local_parquet_chunk, read_local_parquet_chunk_batch,
+        ScheduledLocalParquetReadOutput, apply_source_scan_limit_to_frame, read_local_parquet_chunk,
+        read_local_parquet_chunk_batch,
     },
     *,
 };
@@ -9,7 +9,6 @@ use crate::source::{LocalParquetFile, ParquetReadStrategy};
 
 mod execution;
 mod retry;
-mod scheduling;
 mod source_adjacent;
 mod source_budget;
 mod source_budget_policy;
@@ -18,15 +17,15 @@ mod source_read;
 pub(in crate::exec::bounded) use execution::{
     RawSourceInput, execute_bounded_raw_source_chunk, execute_bounded_raw_source_chunk_batch,
 };
-use retry::is_prefetch_chunk_error;
 pub(in crate::exec) use retry::record_chunk_retry_error;
 pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};
-pub(super) use scheduling::execute_bounded_chunks_with_source_scheduler;
 pub(in crate::exec::bounded) use source_adjacent::{
-    execute_source_adjacent_chunk_projection, execute_source_adjacent_chunk_unary,
+    bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
+    execute_source_adjacent_batch_uncommitted, execute_source_adjacent_chunk_projection,
+    execute_source_adjacent_chunk_unary,
 };
 pub(in crate::exec) use source_budget::source_read_budget_correction_from_error;
-pub(super) use source_budget::{join_leaf_prefetch_budget_bytes, prefetch_budget_bytes, source_read_budget_bytes};
+pub(super) use source_budget::{join_leaf_prefetch_budget_bytes, source_read_budget_bytes};
 use source_budget_policy::SourceReadBudgetPolicy;
 pub(super) use source_read::{
     concatenate_source_read_outputs, read_local_parquet_chunk_batch_required_only_no_commit,

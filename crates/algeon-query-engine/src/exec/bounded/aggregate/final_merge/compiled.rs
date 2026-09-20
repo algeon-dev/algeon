@@ -49,7 +49,14 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     }
     if partials.len() == 1 {
         let partial = partials.pop().expect("single partial checked");
-        return execute_compiled_final_aggregate_projection(execution, aggregate, input_schema, output_schema, partial);
+        return execute_compiled_final_aggregate_projection(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partial,
+        );
     }
 
     let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
@@ -71,7 +78,14 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
             output_schema,
             partials,
         )?;
-        return execute_compiled_final_aggregate_projection(execution, aggregate, input_schema, output_schema, partial);
+        return execute_compiled_final_aggregate_projection(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partial,
+        );
     }
 
     while partials.len() > 1 {
@@ -81,6 +95,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
         loop {
             match execute_compiled_final_merge_level_attempt(
                 execution,
+                node_id,
                 aggregate,
                 input_schema,
                 output_schema,
@@ -118,7 +133,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     }
 
     let partial = partials.pop().expect("compiled final merge leaves exactly one partial");
-    execute_compiled_final_aggregate_projection(execution, aggregate, input_schema, output_schema, partial)
+    execute_compiled_final_aggregate_projection(execution, node_id, aggregate, input_schema, output_schema, partial)
 }
 
 fn should_execute_compiled_partitioned_final_aggregate_merge(
@@ -328,8 +343,9 @@ pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
     };
     let concatenated = GpuDataFrame::new(concatenated);
     observe_device_memory_bytes(&concatenated, execution.metrics())?;
-    execute_compiled_final_aggregate(
+    execute_compiled_final_aggregate_state(
         execution.context(),
+        node_id,
         aggregate,
         input_schema,
         output_schema,
@@ -393,6 +409,7 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     release_partials_reverse(partials);
     execute_compiled_final_aggregate(
         execution.context(),
+        node_id,
         aggregate,
         input_schema,
         output_schema,
@@ -490,6 +507,7 @@ fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
 
 fn execute_compiled_final_merge_level_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
@@ -505,7 +523,14 @@ fn execute_compiled_final_merge_level_attempt(
             continue;
         }
 
-        match execute_compiled_final_merge_group_attempt(execution, aggregate, input_schema, output_schema, group) {
+        match execute_compiled_final_merge_group_attempt(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            group,
+        ) {
             Ok(partial) => output.push(CompiledMergeLevelItem::Merged(Box::new(partial))),
             Err(error) => {
                 release_compiled_merge_level_items(output);
@@ -517,8 +542,9 @@ fn execute_compiled_final_merge_level_attempt(
     Ok(output)
 }
 
-fn execute_compiled_final_merge_group_attempt(
+pub(in crate::exec::bounded::aggregate) fn execute_compiled_final_merge_group_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
@@ -528,7 +554,7 @@ fn execute_compiled_final_merge_group_attempt(
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
-        "compiled_aggregate_final_merge",
+        "final_aggregate_merge",
         "query_engine.bounded.aggregate.compiled_stream_final_merge.budget_token",
         "failed to create bounded native compiled stream final-aggregate budget token",
     ) {
@@ -539,8 +565,15 @@ fn execute_compiled_final_merge_group_attempt(
     };
 
     let timer = Instant::now();
-    let result =
-        merge_compiled_final_aggregate_partials(execution, aggregate, input_schema, output_schema, partials, &token);
+    let result = merge_compiled_final_aggregate_partials(
+        execution,
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        partials,
+        &token,
+    );
     let merge_elapsed = timer.elapsed();
     let frame = match result {
         Ok(frame) => frame,
@@ -557,6 +590,7 @@ fn execute_compiled_final_merge_group_attempt(
 
 fn merge_compiled_final_aggregate_partials(
     execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
@@ -578,6 +612,7 @@ fn merge_compiled_final_aggregate_partials(
 
     execute_compiled_final_aggregate(
         execution.context(),
+        node_id,
         aggregate,
         input_schema,
         output_schema,
@@ -626,8 +661,41 @@ fn record_compiled_final_merge_retry_error(error: &QueryError, metrics: &Executi
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
+/// Normalizes a raw partial into merge state without finalizing AVG. Raw
+/// partials and merged states must not share a concatenation when COUNT/AVG
+/// have different intermediate column names or types.
+pub(in crate::exec::bounded::aggregate) fn normalize_compiled_aggregate_partial(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    input: CommittedPartial,
+) -> Result<CommittedPartial> {
+    let token = execution_budget_token_for_boundary(
+        execution.context(),
+        execution.device_budget_bytes(),
+        "final_aggregate_merge",
+        "query_engine.bounded.aggregate.partial_normalize",
+        "failed to create aggregate normalization token",
+    )?;
+    let frame = execute_compiled_final_aggregate(
+        execution.context(),
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        input.frame,
+        &token,
+        execution.metrics(),
+    )?;
+    let bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
+    Ok(ResidentGpuFrame::with_device_bytes(frame, bytes))
+}
+
 pub(super) fn execute_compiled_final_aggregate_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
@@ -636,7 +704,7 @@ pub(super) fn execute_compiled_final_aggregate_projection(
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
-        "compiled_aggregate_final_projection",
+        "final_aggregate_merge",
         "query_engine.bounded.aggregate.compiled_stream_final_projection.budget_token",
         "failed to create bounded native compiled stream final-projection budget token",
     ) {
@@ -648,7 +716,8 @@ pub(super) fn execute_compiled_final_aggregate_projection(
     // Empty grouping-set finalization is a full single-stage shrink (including
     // AVG finalize). Skip the usual partial-state final-projection path so we
     // do not look for missing AVG state aliases on an already-final frame.
-    let frame = if aggregate.spec.grouping_sets.is_some() && input.frame.num_rows() == 0 {
+    let empty_grouping_sets = aggregate.spec.grouping_sets.is_some() && input.frame.num_rows() == 0;
+    let frame = if empty_grouping_sets {
         execute_aggregate_with_budget(
             execution.context(),
             aggregate,
@@ -661,6 +730,7 @@ pub(super) fn execute_compiled_final_aggregate_projection(
     } else {
         execute_compiled_final_aggregate(
             execution.context(),
+            node_id,
             aggregate,
             input_schema,
             output_schema,
@@ -668,18 +738,27 @@ pub(super) fn execute_compiled_final_aggregate_projection(
             &token,
             execution.metrics(),
         )
-        .and_then(|frame| {
-            finalize_compiled_final_aggregate_output(
-                execution.context(),
-                aggregate,
-                output_schema,
-                frame,
-                &token,
-                execution.metrics(),
-            )
-        })
     };
     let frame = frame?;
+    let frame = if empty_grouping_sets {
+        frame
+    } else {
+        let projection_token = execution_budget_token_for_boundary(
+            execution.context(),
+            execution.device_budget_bytes(),
+            "final_aggregate_projection",
+            "query_engine.bounded.aggregate.compiled_stream_final_projection.budget_token",
+            "failed to create bounded native compiled stream final-projection budget token",
+        )?;
+        finalize_compiled_final_aggregate_output(
+            execution.context(),
+            aggregate,
+            output_schema,
+            frame,
+            &projection_token,
+            execution.metrics(),
+        )?
+    };
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }
@@ -718,8 +797,13 @@ fn finalize_compiled_final_aggregate_output(
         .map(GpuDataFrame::new)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate state merge preserves its operator occurrence and schema contract"
+)]
 fn execute_compiled_final_aggregate(
     context: &ExecutionContext,
+    node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
@@ -727,11 +811,30 @@ fn execute_compiled_final_aggregate(
     token: &ExecutionBudgetToken,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    let bounded = CompiledAggregatePlan { aggregate, input_schema, output_schema };
-    execute_final_aggregate_for_plan(context, &bounded, input, token, metrics)
+    let bounded = CompiledAggregatePlan { node_id, aggregate, input_schema, output_schema };
+    execute_final_aggregate_for_plan(context, &bounded, input, token, metrics, true)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate state merge preserves its operator occurrence and schema contract"
+)]
+fn execute_compiled_final_aggregate_state(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
+    metrics: &ExecutionMetrics,
+) -> Result<GpuDataFrame> {
+    let bounded = CompiledAggregatePlan { node_id, aggregate, input_schema, output_schema };
+    execute_final_aggregate_for_plan(context, &bounded, input, token, metrics, false)
 }
 
 struct CompiledAggregatePlan<'a> {
+    node_id: NodeId,
     aggregate: &'a AggregateNode,
     input_schema: &'a ArrowSchemaRef,
     output_schema: &'a ArrowSchemaRef,
@@ -743,6 +846,7 @@ fn execute_final_aggregate_for_plan(
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     metrics: &ExecutionMetrics,
+    record_strategy: bool,
 ) -> Result<GpuDataFrame> {
     if bounded.aggregate.spec.group_exprs.is_empty() {
         let final_spec = final_global_aggregate_spec(&bounded.aggregate.spec);
@@ -814,17 +918,19 @@ fn execute_final_aggregate_for_plan(
     })?;
     let elapsed = timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    record_default_grouped_aggregate_strategy_decision(
-        metrics,
-        None,
-        AggregateExecutionStage::FinalMerge,
-        context.memory_control_policy().as_str(),
-        context.aggregate_strategy_execution_options(),
-        &bounded.aggregate.spec,
-        bounded.input_schema,
-        input_rows,
-        output_rows,
-        elapsed,
-    );
+    if record_strategy {
+        record_default_grouped_aggregate_strategy_decision(
+            metrics,
+            Some(bounded.node_id.to_string()),
+            AggregateExecutionStage::FinalMerge,
+            context.memory_control_policy().as_str(),
+            context.aggregate_strategy_execution_options(),
+            &bounded.aggregate.spec,
+            bounded.input_schema,
+            input_rows,
+            output_rows,
+            elapsed,
+        );
+    }
     Ok(GpuDataFrame::new(output))
 }

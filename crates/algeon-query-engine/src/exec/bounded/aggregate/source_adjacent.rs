@@ -1,11 +1,144 @@
 use std::time::Instant;
 
 use super::{final_merge::partition_final_merge_partial, partitioned::partitioned_aggregate_partition_count, *};
+use crate::exec::bounded::{
+    chunks::{
+        bounded_source_adjacent_chunk_batches_for_work_width, bounded_source_adjacent_chunk_batching_enabled,
+        execute_source_adjacent_batch_uncommitted,
+    },
+    compiled::{CompiledGpuResource, lanes::AggregateLaneDispatch},
+};
+
+/// Source and aggregate ownership needed by a batch worker; downstream plan
+/// stages remain with the compiled coordinator.
+struct OwnedSourceAdjacentAggregate {
+    source_id: NodeId,
+    source: LocalParquetSource,
+    pre_filter_projections: Vec<(ProjectionNode, ArrowSchemaRef)>,
+    filter: Option<FilterNode>,
+    post_filter_projections: Vec<(ProjectionNode, ArrowSchemaRef)>,
+    aggregate_id: NodeId,
+    input_schema: ArrowSchemaRef,
+    aggregate: AggregateNode,
+    output_schema: ArrowSchemaRef,
+}
+
+impl OwnedSourceAdjacentAggregate {
+    fn new(bounded: &BoundedPlan<'_>) -> Self {
+        Self {
+            source_id: bounded.source_id,
+            source: bounded.source.clone(),
+            pre_filter_projections: bounded
+                .pre_filter_projections
+                .iter()
+                .map(|(projection, schema)| ((*projection).clone(), Arc::clone(schema)))
+                .collect(),
+            filter: bounded.filter.cloned(),
+            post_filter_projections: bounded
+                .post_filter_projections
+                .iter()
+                .map(|(projection, schema)| ((*projection).clone(), Arc::clone(schema)))
+                .collect(),
+            aggregate_id: bounded.aggregate_id,
+            input_schema: Arc::clone(bounded.aggregate_input_schema),
+            aggregate: bounded.aggregate.0.clone(),
+            output_schema: Arc::clone(bounded.aggregate.1),
+        }
+    }
+
+    fn plan(&self) -> BoundedPlan<'_> {
+        BoundedPlan {
+            source_id: self.source_id,
+            source: &self.source,
+            pre_filter_projections: self.pre_filter_projections.iter().map(|(node, schema)| (node, schema)).collect(),
+            filter: self.filter.as_ref(),
+            post_filter_projections: self.post_filter_projections.iter().map(|(node, schema)| (node, schema)).collect(),
+            aggregate_id: self.aggregate_id,
+            aggregate_input_schema: &self.input_schema,
+            aggregate: (&self.aggregate, &self.output_schema),
+            post_aggregate_stages: Vec::new(),
+            sort: None,
+            post_sort_projections: Vec::new(),
+            limit: None,
+        }
+    }
+}
+
+pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    partitioned: bool,
+) -> Result<CompiledGpuResource> {
+    if partitioned {
+        return execute_partitioned_source_adjacent_aggregate(execution, bounded, chunks, dispatch);
+    }
+    let batches = if bounded_source_adjacent_chunk_batching_enabled(execution.context(), bounded, chunks) {
+        bounded_source_adjacent_chunk_batches_for_work_width(
+            execution.context(),
+            bounded,
+            chunks,
+            dispatch.map_or(1, AggregateLaneDispatch::width),
+        )
+    } else {
+        singleton_source_chunk_batches(chunks)
+    };
+    let partials = super::stream::CompiledStreamPartials::new(
+        execution,
+        bounded.aggregate_id,
+        bounded.aggregate.0,
+        bounded.aggregate_input_schema,
+        bounded.aggregate.1,
+        batches.len(),
+        sum_optional_u64(chunks.iter().map(|chunk| chunk.known_row_count)),
+    )?;
+    let mut state = (batches.into_iter(), partials);
+    if let Some(dispatch) = dispatch {
+        let owned = Arc::new(OwnedSourceAdjacentAggregate::new(bounded));
+        dispatch.execute_work(
+            execution,
+            &mut state,
+            |state, _| Ok(state.0.next()),
+            move |execution, batch| execute_source_adjacent_batch_uncommitted(execution, &owned.plan(), batch),
+            |state, execution, output| {
+                state.1.extend(execution, output.partials)?;
+                execution.metrics().record_source_chunk_commit_count(output.chunk_count, output.row_groups);
+                Ok(())
+            },
+        )?;
+    } else {
+        for batch in state.0 {
+            let output = execute_source_adjacent_batch_uncommitted(execution, bounded, batch)?;
+            execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_batch_commit")?;
+            state.1.extend(execution, output.partials)?;
+            execution.metrics().record_source_chunk_commit_count(output.chunk_count, output.row_groups);
+        }
+    }
+    state.1.finish(execution, false)
+}
 
 struct SourceAdjacentPartitionInput {
     chunks: Vec<SourceChunk>,
     partial: CommittedPartial,
     source_row_group_count: u64,
+}
+
+struct PartitionedSourceBatchWork {
+    batch: SourceChunkBatch,
+    pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
+    partition_count: Option<usize>,
+    local_reduction: bool,
+    estimated_input_bytes: u64,
+    min_partition_count: usize,
+}
+
+struct PartitionedSourceBatchOutput {
+    pending: Option<Vec<Vec<SourceAdjacentPartitionInput>>>,
+    partition_count: Option<usize>,
+    outputs: Vec<SourceAdjacentAlignedPartial>,
+    samples: Vec<SourceAdjacentRawBatchSample>,
+    commits: Vec<(u64, u64)>,
 }
 
 /// Partial aggregate output that remains hash-aligned to a group-key partition.
@@ -14,6 +147,111 @@ struct SourceAdjacentAlignedPartial {
     partition_count: usize,
     key_columns: Vec<String>,
     partial: CommittedPartial,
+}
+
+enum SourceAdjacentPartitionedFinal<'a> {
+    Incremental { merge: Box<CompiledIncrementalPartitionedMerge<'a>>, aligned_key_columns: Option<Vec<String>> },
+    Stream(super::stream::CompiledStreamPartials<'a>),
+}
+
+impl<'a> SourceAdjacentPartitionedFinal<'a> {
+    fn new(
+        execution: &BoundedExecutionAttempt<'_>,
+        bounded: &'a BoundedPlan<'_>,
+        partitioner: &SourceAdjacentAggregatePartitioner,
+        chunk_count: usize,
+        expected_input_rows: Option<u64>,
+    ) -> Result<Self> {
+        if let Some(key_columns) = partitioner.group_key_columns() {
+            return CompiledIncrementalPartitionedMerge::new_aligned(
+                execution.context(),
+                bounded.aggregate_id,
+                bounded.aggregate.0,
+                bounded.aggregate_input_schema,
+                bounded.aggregate.1,
+                key_columns,
+            )
+            .map(|merge| Self::Incremental {
+                merge: Box::new(merge),
+                aligned_key_columns: Some(key_columns.to_vec()),
+            });
+        }
+        if should_execute_incremental_partitioned_final_aggregate_merge(
+            execution.context(),
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+        ) {
+            return CompiledIncrementalPartitionedMerge::new(
+                execution.context(),
+                bounded.aggregate_id,
+                bounded.aggregate.0,
+                bounded.aggregate_input_schema,
+                bounded.aggregate.1,
+                chunk_count,
+                expected_input_rows,
+            )
+            .map(|merge| Self::Incremental { merge: Box::new(merge), aligned_key_columns: None });
+        }
+        super::stream::CompiledStreamPartials::new(
+            execution,
+            bounded.aggregate_id,
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+            bounded.aggregate.1,
+            chunk_count,
+            expected_input_rows,
+        )
+        .map(Self::Stream)
+    }
+
+    fn accept(
+        &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        outputs: Vec<SourceAdjacentAlignedPartial>,
+    ) -> Result<()> {
+        match self {
+            Self::Incremental { merge, aligned_key_columns: Some(_) } => {
+                for output in outputs {
+                    merge.push_aligned(
+                        execution,
+                        output.partition_index,
+                        output.partition_count,
+                        &output.key_columns,
+                        output.partial,
+                    )?;
+                }
+                Ok(())
+            },
+            Self::Incremental { merge, aligned_key_columns: None } => {
+                for output in outputs {
+                    merge.push(execution, output.partial)?;
+                }
+                Ok(())
+            },
+            Self::Stream(partials) => {
+                partials.extend(execution, outputs.into_iter().map(|output| output.partial).collect())
+            },
+        }
+    }
+
+    fn finish(
+        self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        bounded: &BoundedPlan<'_>,
+    ) -> Result<CompiledGpuResource> {
+        match self {
+            Self::Incremental { merge, aligned_key_columns } => {
+                execute_incremental_source_adjacent_final_aggregate_merge(
+                    execution,
+                    bounded,
+                    *merge,
+                    aligned_key_columns.as_deref(),
+                )
+                .map(CompiledGpuResource::new)
+            },
+            Self::Stream(partials) => partials.finish(execution, false),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -166,11 +404,13 @@ impl SourceAdjacentRawBatchFeedback {
     }
 }
 
-pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks(
+fn execute_partitioned_source_adjacent_aggregate(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
-) -> Result<CommittedPartial> {
+    dispatch: Option<&AggregateLaneDispatch<'_>>,
+) -> Result<CompiledGpuResource> {
+    let owned = dispatch.map(|_| Arc::new(OwnedSourceAdjacentAggregate::new(bounded)));
     let partitioner = source_adjacent_aggregate_partitioner(bounded);
     let estimated_input_bytes = chunks
         .iter()
@@ -181,10 +421,17 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
     let device_budget_bytes = execution.device_budget_bytes();
     let mut partition_count = None;
     let mut partition_inputs: Option<Vec<Vec<SourceAdjacentPartitionInput>>> = None;
-    let mut aggregate_outputs = Vec::new();
+    let mut final_merge = SourceAdjacentPartitionedFinal::new(
+        execution,
+        bounded,
+        &partitioner,
+        chunks.len(),
+        sum_optional_u64(chunks.iter().map(|chunk| chunk.known_row_count)),
+    )?;
     let mut feedback = SourceAdjacentRawBatchFeedback::default();
 
-    let mut committed_source_batches = Vec::new();
+    let mut committed_source_chunks = 0u64;
+    let mut committed_row_groups = 0u64;
     let mut remaining_chunks = chunks;
     let mut batch_ordinal = 0usize;
     while !remaining_chunks.is_empty() {
@@ -202,23 +449,210 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             source_adjacent_aggregate_task_id(bounded.aggregate_id, "source_adjacent_raw_batch", batch_ordinal);
         batch_ordinal += 1;
         let budget_window = execution.metrics().open_budget_window();
-        let raw_inputs = match execute_source_adjacent_raw_source_batch(execution, bounded, batch) {
-            Ok(raw_inputs) => raw_inputs,
+        let lane_batches =
+            split_partitioned_raw_batch_for_lanes(batch, dispatch.map_or(1, AggregateLaneDispatch::width));
+        if lane_batches.len() > 1 {
+            let dispatch = dispatch.expect("multiple raw batches require aggregate lanes");
+            let owned = Arc::clone(owned.as_ref().expect("lane dispatch owns its source descriptor"));
+            let partitioner = partitioner.clone();
+            let min_partition_count = source_adjacent_partitioned_aggregate_min_partition_count(chunks.len());
+            let mut batches = lane_batches.into_iter();
+            let mut samples = Vec::new();
+            let result = dispatch.execute_work(
+                execution,
+                &mut batches,
+                |batches, _| Ok(batches.next()),
+                move |execution, batch| {
+                    process_partitioned_source_adjacent_independent_batch(
+                        execution,
+                        &owned.plan(),
+                        PartitionedSourceBatchWork {
+                            batch,
+                            pending: None,
+                            partition_count,
+                            local_reduction,
+                            estimated_input_bytes,
+                            min_partition_count,
+                        },
+                        &partitioner,
+                    )
+                },
+                |_, execution, output| {
+                    if let Some(count) = output.partition_count {
+                        debug_assert!(partition_count.is_none_or(|previous| previous == count));
+                        partition_count = Some(count);
+                    }
+                    final_merge.accept(execution, output.outputs)?;
+                    for (chunk_count, row_group_count) in output.commits {
+                        committed_source_chunks = committed_source_chunks.saturating_add(chunk_count);
+                        committed_row_groups = committed_row_groups.saturating_add(row_group_count);
+                    }
+                    samples.extend(output.samples);
+                    Ok(())
+                },
+            );
+            result?;
+            for sample in samples {
+                feedback.observe(sample);
+            }
+            execution.metrics().close_budget_window(&batch_task_id, budget_window);
+            continue;
+        }
+        let work = PartitionedSourceBatchWork {
+            batch: lane_batches.into_iter().next().expect("one unsplit raw batch remains"),
+            pending: partition_inputs.take(),
+            partition_count,
+            local_reduction,
+            estimated_input_bytes,
+            min_partition_count: source_adjacent_partitioned_aggregate_min_partition_count(chunks.len()),
+        };
+        let result = execute_partitioned_source_adjacent_batch_work(
+            execution,
+            bounded,
+            work,
+            &partitioner,
+            dispatch,
+            owned.as_ref(),
+        );
+        let output = match result {
+            Ok(output) => output,
             Err(error) => {
-                release_nested_partition_inputs_reverse(partition_inputs.take().unwrap_or_default());
-                release_aligned_partials_reverse(aggregate_outputs);
                 return Err(error);
             },
         };
+        partition_count = output.partition_count;
+        partition_inputs = output.pending;
+        final_merge.accept(execution, output.outputs)?;
+        for (chunk_count, row_group_count) in output.commits {
+            committed_source_chunks = committed_source_chunks.saturating_add(chunk_count);
+            committed_row_groups = committed_row_groups.saturating_add(row_group_count);
+        }
+        for sample in output.samples {
+            feedback.observe(sample);
+        }
+        execution.metrics().close_budget_window(&batch_task_id, budget_window);
+    }
+
+    let partition_count = partition_count.unwrap_or(1);
+    let final_outputs = execute_partitioned_source_adjacent_final_work(
+        execution,
+        bounded,
+        partition_inputs.take().unwrap_or_default(),
+        partition_count,
+        &partitioner,
+        dispatch,
+        owned.as_ref(),
+    );
+    match final_outputs {
+        Ok(outputs) => final_merge.accept(execution, outputs)?,
+        Err(error) => {
+            return Err(error);
+        },
+    }
+    execution.metrics().record_source_chunk_commit_count(committed_source_chunks, committed_row_groups);
+    final_merge.finish(execution, bounded)
+}
+
+fn split_partitioned_raw_batch_for_lanes(batch: SourceChunkBatch, width: usize) -> Vec<SourceChunkBatch> {
+    if width < 2 || batch.chunk_count() < width {
+        return vec![batch];
+    }
+    let chunks_per_batch = batch.chunk_count().div_ceil(width);
+    let mut remaining = batch.chunks.into_iter();
+    (0..width)
+        .filter_map(|index| {
+            let chunks = remaining.by_ref().take(chunks_per_batch).collect::<Vec<_>>();
+            if chunks.is_empty() {
+                return None;
+            }
+            let estimated_source_read_bytes =
+                sum_optional_u64(chunks.iter().map(|chunk| chunk.estimated_source_read_bytes));
+            Some(SourceChunkBatch {
+                batch_index: batch.batch_index + index,
+                chunks,
+                estimated_source_read_bytes,
+                source_batching_reason: "aggregate_lane_split".to_string(),
+            })
+        })
+        .collect()
+}
+
+fn process_partitioned_source_adjacent_independent_batch(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    work: PartitionedSourceBatchWork,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+) -> Result<PartitionedSourceBatchOutput> {
+    let mut output = process_partitioned_source_adjacent_batch(execution, bounded, work, partitioner)?;
+    let pending = output.pending.take().unwrap_or_default();
+    let final_outputs = process_partitioned_source_adjacent_final_batches(
+        execution,
+        bounded,
+        pending,
+        output.partition_count.unwrap_or(1),
+        partitioner,
+    );
+    match final_outputs {
+        Ok(final_outputs) => output.outputs.extend(final_outputs),
+        Err(error) => {
+            release_aligned_partials_reverse(output.outputs);
+            return Err(error);
+        },
+    }
+    Ok(output)
+}
+
+fn execute_partitioned_source_adjacent_batch_work(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    work: PartitionedSourceBatchWork,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    owned: Option<&Arc<OwnedSourceAdjacentAggregate>>,
+) -> Result<PartitionedSourceBatchOutput> {
+    let Some(dispatch) = dispatch else {
+        return process_partitioned_source_adjacent_batch(execution, bounded, work, partitioner);
+    };
+    let owned = Arc::clone(owned.expect("lane dispatch owns its source descriptor"));
+    let partitioner = partitioner.clone();
+    let mut state = (Some(work), None);
+    dispatch.execute_work(
+        execution,
+        &mut state,
+        |state, _| Ok(state.0.take()),
+        move |execution, work| process_partitioned_source_adjacent_batch(execution, &owned.plan(), work, &partitioner),
+        |state, _, output| {
+            state.1 = Some(output);
+            Ok(())
+        },
+    )?;
+    Ok(state.1.expect("one partitioned batch completes before feedback is updated"))
+}
+
+fn process_partitioned_source_adjacent_batch(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    work: PartitionedSourceBatchWork,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+) -> Result<PartitionedSourceBatchOutput> {
+    let PartitionedSourceBatchWork {
+        batch,
+        mut pending,
+        mut partition_count,
+        local_reduction,
+        estimated_input_bytes,
+        min_partition_count,
+    } = work;
+    let mut outputs = Vec::new();
+    let mut samples = Vec::new();
+    let mut commits = Vec::new();
+    let result = (|| -> Result<()> {
+        let raw_inputs = execute_source_adjacent_raw_source_batch(execution, bounded, batch)?;
         for (batch_chunks, raw) in raw_inputs {
             let chunk_index = batch_chunks.first().expect("raw source batch has at least one chunk").chunk_index;
             let current_partition_count = *partition_count.get_or_insert_with(|| {
-                let count = partitioned_aggregate_partition_count(execution.context(), estimated_input_bytes)
-                    .max(source_adjacent_partitioned_aggregate_min_partition_count(chunks.len()));
-                partition_inputs =
-                    Some((0..count).map(|_| Vec::new()).collect::<Vec<Vec<SourceAdjacentPartitionInput>>>());
-                aggregate_outputs.reserve(count);
-                count
+                partitioned_aggregate_partition_count(execution.context(), estimated_input_bytes)
+                    .max(min_partition_count)
             });
             let mut sample = SourceAdjacentRawBatchSample {
                 rows: raw.source_rows,
@@ -231,39 +665,25 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             };
             let source_row_group_count = raw.source_row_group_count;
             if local_reduction {
-                let outputs = match execute_source_adjacent_batch_local_reduction(
+                let reduced = execute_source_adjacent_batch_local_reduction(
                     execution,
                     bounded,
                     &batch_chunks,
                     raw,
                     current_partition_count,
-                    &partitioner,
-                ) {
-                    Ok(outputs) => outputs,
-                    Err(error) => {
-                        release_nested_partition_inputs_reverse(partition_inputs.take().unwrap_or_default());
-                        release_aligned_partials_reverse(aggregate_outputs);
-                        return Err(error);
-                    },
-                };
-                observe_aligned_partial_outputs(&mut sample, &outputs);
-                aggregate_outputs.extend(outputs);
+                    partitioner,
+                )?;
+                observe_aligned_partial_outputs(&mut sample, &reduced);
+                outputs.extend(reduced);
             } else {
-                let partitions = match partition_source_adjacent_raw_chunk(
+                let partitions = partition_source_adjacent_raw_chunk(
                     execution,
                     bounded.aggregate_id,
                     chunk_index,
                     raw.partial,
                     current_partition_count,
-                    &partitioner,
-                ) {
-                    Ok(partitions) => partitions,
-                    Err(error) => {
-                        release_nested_partition_inputs_reverse(partition_inputs.take().unwrap_or_default());
-                        release_aligned_partials_reverse(aggregate_outputs);
-                        return Err(error);
-                    },
-                };
+                    partitioner,
+                )?;
                 sample.non_empty_partitions = Some(
                     partitions
                         .iter()
@@ -271,55 +691,97 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
                         .count(),
                 );
                 sample.partition_count = Some(current_partition_count);
-                let partition_inputs = partition_inputs.as_mut().expect("partition count initializes partition inputs");
+                let inputs = pending.get_or_insert_with(|| (0..current_partition_count).map(|_| Vec::new()).collect());
                 for (partition_index, partition) in partitions.into_iter().enumerate() {
                     if let Some(partition) = partition {
-                        // Oversized patches still go through the budgeted partial
-                        // aggregate (structured OOM/retry), never silent whole-set retain.
-                        partition_inputs[partition_index].push(SourceAdjacentPartitionInput {
+                        // Oversized partitions still enter the budgeted partial retry.
+                        inputs[partition_index].push(SourceAdjacentPartitionInput {
                             chunks: batch_chunks.clone(),
                             partial: partition,
                             source_row_group_count,
                         });
                     }
                 }
-                let mut partition_error = None;
-                for (partition_index, inputs) in partition_inputs.iter_mut().enumerate() {
-                    if !source_adjacent_partition_batch_ready(execution.context(), inputs) {
+                for (partition_index, partition_inputs) in inputs.iter_mut().enumerate() {
+                    if !source_adjacent_partition_batch_ready(execution.context(), partition_inputs) {
                         continue;
                     }
-                    match execute_source_adjacent_partition_aggregate_batch(
+                    let reduced = execute_source_adjacent_partition_aggregate_batch(
                         execution,
                         bounded,
                         partition_index,
                         current_partition_count,
-                        &partitioner,
-                        inputs,
-                    ) {
-                        Ok(outputs) => {
-                            observe_aligned_partial_outputs(&mut sample, &outputs);
-                            aggregate_outputs.extend(outputs);
-                        },
-                        Err(error) => {
-                            partition_error = Some(error);
-                            break;
-                        },
-                    }
-                }
-                if let Some(error) = partition_error {
-                    release_nested_partition_inputs_reverse(std::mem::take(partition_inputs));
-                    release_aligned_partials_reverse(aggregate_outputs);
-                    return Err(error);
+                        partitioner,
+                        partition_inputs,
+                    )?;
+                    observe_aligned_partial_outputs(&mut sample, &reduced);
+                    outputs.extend(reduced);
                 }
             }
-            committed_source_batches.push((batch_chunks.len() as u64, source_row_group_count));
-            feedback.observe(sample);
+            commits.push((batch_chunks.len() as u64, source_row_group_count));
+            samples.push(sample);
         }
-        execution.metrics().close_budget_window(&batch_task_id, budget_window);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        release_nested_partition_inputs_reverse(pending.take().unwrap_or_default());
+        release_aligned_partials_reverse(outputs);
+        return Err(error);
     }
+    Ok(PartitionedSourceBatchOutput { pending, partition_count, outputs, samples, commits })
+}
 
-    let partition_count = partition_count.unwrap_or(1);
-    for (partition_index, mut inputs) in partition_inputs.take().unwrap_or_default().into_iter().enumerate() {
+fn execute_partitioned_source_adjacent_final_work(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    pending: Vec<Vec<SourceAdjacentPartitionInput>>,
+    partition_count: usize,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    owned: Option<&Arc<OwnedSourceAdjacentAggregate>>,
+) -> Result<Vec<SourceAdjacentAlignedPartial>> {
+    let Some(dispatch) = dispatch else {
+        return process_partitioned_source_adjacent_final_batches(
+            execution,
+            bounded,
+            pending,
+            partition_count,
+            partitioner,
+        );
+    };
+    let owned = Arc::clone(owned.expect("lane dispatch owns its source descriptor"));
+    let partitioner = partitioner.clone();
+    let mut state = (Some(pending), None);
+    dispatch.execute_work(
+        execution,
+        &mut state,
+        |state, _| Ok(state.0.take()),
+        move |execution, pending| {
+            process_partitioned_source_adjacent_final_batches(
+                execution,
+                &owned.plan(),
+                pending,
+                partition_count,
+                &partitioner,
+            )
+        },
+        |state, _, output| {
+            state.1 = Some(output);
+            Ok(())
+        },
+    )?;
+    Ok(state.1.expect("final partition batches complete before final merge"))
+}
+
+fn process_partitioned_source_adjacent_final_batches(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    pending: Vec<Vec<SourceAdjacentPartitionInput>>,
+    partition_count: usize,
+    partitioner: &SourceAdjacentAggregatePartitioner,
+) -> Result<Vec<SourceAdjacentAlignedPartial>> {
+    let mut outputs = Vec::new();
+    for (partition_index, mut inputs) in pending.into_iter().enumerate() {
         if inputs.is_empty() {
             continue;
         }
@@ -328,43 +790,18 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             bounded,
             partition_index,
             partition_count,
-            &partitioner,
+            partitioner,
             &mut inputs,
         ) {
-            Ok(mut outputs) => aggregate_outputs.append(&mut outputs),
+            Ok(mut partials) => outputs.append(&mut partials),
             Err(error) => {
                 release_partition_inputs_reverse(inputs);
-                release_aligned_partials_reverse(aggregate_outputs);
+                release_aligned_partials_reverse(outputs);
                 return Err(error);
             },
         }
     }
-    for (chunk_count, row_group_count) in committed_source_batches {
-        execution.metrics().record_source_chunk_commit_count(chunk_count, row_group_count);
-    }
-
-    if let Some(key_columns) = partitioner.group_key_columns() {
-        let key_columns = key_columns.to_vec();
-        let aligned = aggregate_outputs
-            .into_iter()
-            .map(|output| AlignedGroupKeyPartitionPartial {
-                partition_index: output.partition_index,
-                partition_count: output.partition_count,
-                key_columns: output.key_columns,
-                partial: output.partial,
-            })
-            .collect::<Vec<_>>();
-        return execute_aligned_group_key_partitioned_final_aggregate_merge(
-            execution,
-            bounded,
-            partition_count,
-            &key_columns,
-            aligned,
-        );
-    }
-
-    let unaligned = aggregate_outputs.into_iter().map(|output| output.partial).collect::<Vec<_>>();
-    execute_final_aggregate_merge(execution, bounded, unaligned)
+    Ok(outputs)
 }
 
 fn observe_aligned_partial_outputs(

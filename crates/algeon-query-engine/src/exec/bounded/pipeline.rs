@@ -8,7 +8,7 @@ use super::compiled::execute_compiled_pipeline;
 pub use super::compiled::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, LaneDispatchSupport, ReleasedCompiledResource,
-    is_lane_family_pipeline, run_lane_dispatched,
+    is_lane_family_pipeline, is_resident_aggregate_lane_pipeline, run_lane_dispatched,
 };
 use crate::{
     admission::{BoundedPipelineAdmission, artifact_binding_error, bounded_pipeline_decision},

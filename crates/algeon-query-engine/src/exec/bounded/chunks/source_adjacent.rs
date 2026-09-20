@@ -6,7 +6,7 @@ use super::{
     PartialAggregateInputEvidence, ProjectionNode, Result, ScheduledLocalParquetReadOutput, SourceChunk,
     SourceChunkBatch, attach_chunk_resource_facts, execute_filter_with_budget, execute_partial_aggregate_with_budget,
     execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    execution::{execute_bounded_chunk_with_retry, release_committed_partials_reverse, sum_optional_u64},
+    execution::{release_committed_partials_reverse, sum_optional_u64},
     execution_budget_token_for_boundary, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
     observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, plan_source_chunk_batches,
     projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
@@ -14,7 +14,7 @@ use super::{
 };
 use crate::observability::SourceReadFact;
 
-pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_enabled(
+pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
@@ -29,10 +29,19 @@ pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_e
         && bounded_source_adjacent_chunk_batches(context, bounded, chunks).iter().any(|batch| batch.chunk_count() > 1)
 }
 
-pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batches(
+pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batches(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
+) -> Vec<SourceChunkBatch> {
+    bounded_source_adjacent_chunk_batches_for_work_width(context, bounded, chunks, 1)
+}
+
+pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batches_for_work_width(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+    work_width: usize,
 ) -> Vec<SourceChunkBatch> {
     if bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files) {
         return singleton_source_chunk_batches(chunks);
@@ -43,7 +52,21 @@ pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batches(
         source_adjacent_source_requires_remote_direct_read(bounded.source, chunks),
         is_source_adjacent_grouped_aggregate(bounded),
     );
-    plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
+    let batches = plan_source_chunk_batches(chunks, max_batch_source_read_bytes);
+    if work_width <= 1 || batches.len() >= work_width {
+        return batches;
+    }
+    let Some(total_bytes) = batches
+        .iter()
+        .map(|batch| batch.estimated_source_read_bytes)
+        .try_fold(0u64, |total, bytes| bytes.and_then(|bytes| total.checked_add(bytes)))
+    else {
+        return batches;
+    };
+    // One large read cannot fill the run's independently leased work lanes.
+    // Cap batch size by the same source-byte evidence used by the planner.
+    let lane_target_bytes = total_bytes.div_ceil(work_width as u64).max(1);
+    plan_source_chunk_batches(chunks, Some(max_batch_source_read_bytes.unwrap_or(u64::MAX).min(lane_target_bytes)))
 }
 
 #[cfg(test)]
@@ -90,87 +113,120 @@ pub(in crate::exec::bounded::chunks) fn singleton_source_chunk_batches(
         .collect()
 }
 
-pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_batches_serial(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    chunks: &[SourceChunk],
-) -> Result<Vec<CommittedPartial>> {
-    let batches = bounded_source_adjacent_chunk_batches(execution.context(), bounded, chunks);
-    let mut partials = Vec::with_capacity(batches.len());
-    for batch in batches {
-        execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_chunk_batch")?;
-        match execute_bounded_source_adjacent_chunk_batch_or_split(execution, bounded, batch) {
-            Ok(mut batch_partials) => {
-                partials.append(&mut batch_partials);
-            },
-            Err(error) => {
-                release_committed_partials_reverse(partials);
-                return Err(error);
-            },
-        }
-    }
-    Ok(partials)
+pub(in crate::exec::bounded) struct SourceAdjacentBatchOutput {
+    pub(in crate::exec::bounded) partials: Vec<CommittedPartial>,
+    pub(in crate::exec::bounded) chunk_count: u64,
+    pub(in crate::exec::bounded) row_groups: u64,
 }
 
-pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_batch_or_split(
+/// Keeps all retry outputs private until the coordinator commits the batch.
+pub(in crate::exec::bounded) fn execute_source_adjacent_batch_uncommitted(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     batch: SourceChunkBatch,
-) -> Result<Vec<CommittedPartial>> {
+) -> Result<SourceAdjacentBatchOutput> {
+    execute_source_adjacent_batch_retry(execution, bounded, batch, 1)
+}
+
+fn execute_source_adjacent_batch_retry(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    bounded: &BoundedPlan<'_>,
+    batch: SourceChunkBatch,
+    attempt: usize,
+) -> Result<SourceAdjacentBatchOutput> {
+    use super::execution::read_bounded_chunk_source;
     execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_chunk_batch_retry")?;
-    if batch.is_singleton() {
-        let chunk = batch.chunks.first().expect("singleton source chunk batch has one child");
-        return execute_bounded_chunk_with_retry(execution, bounded, chunk);
-    }
-    match execute_bounded_source_adjacent_chunk_batch_attempt(execution, bounded, &batch) {
-        Ok(partial) => Ok(vec![partial]),
+    let super::MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } =
+        execution.context().memory_control_policy()
+    else {
+        unreachable!("source-adjacent batches require bounded execution");
+    };
+    let max_attempts = max_retry_attempts.max(1);
+    let source = if batch.is_singleton() {
+        read_bounded_chunk_source(execution, bounded.source, &batch.chunks[0], attempt, max_attempts).map_err(|error| {
+            attach_chunk_resource_facts(
+                error,
+                &batch.chunks[0],
+                "source_chunk_read",
+                attempt,
+                max_attempts,
+                execution.metrics(),
+            )
+        })
+    } else {
+        read_local_parquet_chunk_batch_required_only_no_commit(execution, bounded.source, &batch, "source_chunk_read")
+    };
+    let result = source.and_then(|source| {
+        execute_source_adjacent_batch_operator_uncommitted(execution, bounded, &batch, source, attempt, max_attempts)
+    });
+    match result {
+        Ok(output) => Ok(output),
         Err(error) if is_retryable_chunk_error(&error) => {
             record_chunk_retry_error(&error, execution.metrics());
-            execution.record_source_read(SourceReadFact::ChunkRetried);
-            let Some((left, right)) = batch.split_for_retry() else {
+            let chunk_count = batch.chunk_count() as u64;
+            let error = if batch.is_singleton() {
+                super::chunk_retry_facts(&batch.chunks[0], execution).attach_to_error(error)
+            } else {
+                error
+            };
+            let children = if batch.is_singleton() {
+                if attempt < max_attempts {
+                    super::split_retryable_chunk(&batch.chunks[0], min_retry_chunk_row_groups.max(1)).map(
+                        |(left, right)| {
+                            let child = |chunk| SourceChunkBatch {
+                                batch_index: batch.batch_index,
+                                chunks: vec![chunk],
+                                estimated_source_read_bytes: None,
+                                source_batching_reason: "retry_split".to_string(),
+                            };
+                            (child(left), child(right), attempt + 1)
+                        },
+                    )
+                } else {
+                    None
+                }
+            } else {
+                batch.split_for_retry().map(|(left, right)| (left, right, 1))
+            };
+            let Some((left, right, next_attempt)) = children else {
                 return Err(error);
             };
+            execution.record_source_read(SourceReadFact::ChunkRetried);
             crate::exec::retry::backoff_before_retry(
                 execution.context(),
                 "query_engine.exec.bounded.source_adjacent_chunk_batch_split_retry",
             )?;
-            let mut partials = execute_bounded_source_adjacent_chunk_batch_or_split(execution, bounded, left)?;
-            match execute_bounded_source_adjacent_chunk_batch_or_split(execution, bounded, right) {
-                Ok(mut right_partials) => {
-                    partials.append(&mut right_partials);
-                    Ok(partials)
-                },
+            let mut output = execute_source_adjacent_batch_retry(execution, bounded, left, next_attempt)?;
+            let right = match execute_source_adjacent_batch_retry(execution, bounded, right, next_attempt) {
+                Ok(right) => right,
                 Err(error) => {
-                    release_committed_partials_reverse(partials);
-                    Err(error)
+                    release_committed_partials_reverse(output.partials);
+                    return Err(error);
                 },
-            }
+            };
+            output.partials.extend(right.partials);
+            output.chunk_count = chunk_count;
+            output.row_groups = output.row_groups.saturating_add(right.row_groups);
+            Ok(output)
         },
         Err(error) => Err(error),
     }
 }
 
-pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_batch_attempt(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    batch: &SourceChunkBatch,
-) -> Result<CommittedPartial> {
-    let output =
-        read_local_parquet_chunk_batch_required_only_no_commit(execution, bounded.source, batch, "source_chunk_read")?;
-    execute_bounded_chunk_batch_operator_from_source(execution, bounded, batch, output)
-}
-
-pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_from_source(
+fn execute_source_adjacent_batch_operator_uncommitted(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     batch: &SourceChunkBatch,
     source: ScheduledLocalParquetReadOutput,
-) -> Result<CommittedPartial> {
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<SourceAdjacentBatchOutput> {
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
-    let ScheduledLocalParquetReadOutput { frame, observed_bytes, .. } = source;
+    let ScheduledLocalParquetReadOutput { frame, observed_bytes, observed_row_group_count, .. } = source;
+    let row_groups = super::execution::reported_source_chunk_batch_read_row_groups(batch, observed_row_group_count);
     execution.context().check_cancellation("query_engine.exec.bounded.chunk_batch_operator")?;
     let mut input = CommittedPartial::with_device_bytes(frame, observed_bytes);
-    input = execute_source_adjacent_chunk_stages(execution, bounded, first_chunk, input, 1, 1)?;
+    input = execute_source_adjacent_chunk_stages(execution, bounded, first_chunk, input, attempt, max_attempts)?;
     let CommittedPartial { frame, .. } = input;
 
     let operator_token_budget = execution.device_budget_bytes();
@@ -183,26 +239,37 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     ) {
         Ok(token) => token,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(error, first_chunk, "chunk_operator", 1, 1, execution.metrics()));
+            return Err(attach_chunk_resource_facts(
+                error,
+                first_chunk,
+                "chunk_operator",
+                attempt,
+                max_attempts,
+                execution.metrics(),
+            ));
         },
     };
 
     let partial_input_rows = frame.num_rows() as u64;
     let input_evidence = PartialAggregateInputEvidence {
         source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(&batch.chunks),
-        source_adjacent_partial: true,
-        source_chunk_row_group_count: batch.row_group_count() as u64,
+        source_adjacent_partial: !batch.is_singleton() || bounded.has_source_adjacent_stages(),
+        source_chunk_row_group_count: row_groups,
         source_chunk_reads_all_row_groups: batch.chunks.iter().all(|chunk| chunk.reads_all_row_groups),
         source_chunk_known_row_count: sum_optional_u64(batch.chunks.iter().map(|chunk| chunk.known_row_count)),
-        source_chunk_estimated_source_read_bytes: batch
-            .estimated_source_read_bytes
-            .or_else(|| sum_optional_u64(batch.chunks.iter().map(|chunk| chunk.estimated_source_read_bytes))),
+        source_chunk_estimated_source_read_bytes: if batch.is_singleton() {
+            first_chunk.estimated_source_read_bytes
+        } else {
+            batch
+                .estimated_source_read_bytes
+                .or_else(|| sum_optional_u64(batch.chunks.iter().map(|chunk| chunk.estimated_source_read_bytes)))
+        },
         source_chunk_size_estimate_based: batch.chunks.iter().any(|chunk| chunk.size_estimate_based),
         source_adjacent_partition_strategy: "none",
         source_adjacent_partition_count: None,
         source_adjacent_non_empty_partition_count: None,
         source_adjacent_partition_key_count: None,
-        source_adjacent_max_partition_fan_in: Some(batch.chunk_count() as u64),
+        source_adjacent_max_partition_fan_in: (!batch.is_singleton()).then_some(batch.chunk_count() as u64),
     };
     let chunk_operator_timer = Instant::now();
     let chunk_output = execute_partial_aggregate_with_budget(
@@ -220,19 +287,27 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     let frame = match chunk_output {
         Ok(frame) => frame,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(error, first_chunk, "chunk_operator", 1, 1, execution.metrics()));
+            return Err(attach_chunk_resource_facts(
+                error,
+                first_chunk,
+                "chunk_operator",
+                attempt,
+                max_attempts,
+                execution.metrics(),
+            ));
         },
     };
 
-    let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics())
-        .map_err(|error| attach_chunk_resource_facts(error, first_chunk, "partial_state", 1, 1, execution.metrics()))?;
-    execution.record_source_read(SourceReadFact::ChunkCommitted {
-        chunk_count: batch.chunk_count() as u64,
-        row_groups: batch.row_group_count() as u64,
-    });
+    let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics()).map_err(|error| {
+        attach_chunk_resource_facts(error, first_chunk, "partial_state", attempt, max_attempts, execution.metrics())
+    })?;
     execution.metrics().record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_bytes);
 
-    Ok(CommittedPartial::with_device_bytes(frame, partial_bytes))
+    Ok(SourceAdjacentBatchOutput {
+        partials: vec![CommittedPartial::with_device_bytes(frame, partial_bytes)],
+        chunk_count: batch.chunk_count() as u64,
+        row_groups,
+    })
 }
 
 pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(

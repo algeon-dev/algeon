@@ -6,8 +6,8 @@ use std::{
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, ArrowSchemaRef, BoundedExecutionAttempt,
-    BoundedFinalMergePolicy, CommittedPartial, ExecutionContext, MemoryControlPolicy, NodeId, QueryError, Result,
-    aggregate_strategy_capability_decision,
+    BoundedFinalMergePolicy, CommittedPartial, ExecutionContext, MemoryControlPolicy, NodeId, QueryError,
+    QueryErrorCode, Result, aggregate_strategy_capability_decision,
     compiled::{
         execute_compiled_final_aggregate_projection, merge_compiled_partitioned_final_aggregate_partial_refs,
         record_compiled_partitioned_final_merge_strategy,
@@ -24,6 +24,8 @@ use crate::{
     },
     runtime::resident::GpuDataFrame,
 };
+
+const MAX_PENDING_PARTIALS: usize = 16;
 
 /// Whether a compiled aggregate over a partial stream should merge its partials
 /// incrementally into group-key-aligned partition states instead of retaining
@@ -61,6 +63,7 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     input_schema: &'a ArrowSchemaRef,
     output_schema: &'a ArrowSchemaRef,
     key_columns: Vec<String>,
+    aligned_key_columns: Option<Vec<String>>,
     expected_partials: usize,
     expected_input_rows: Option<u64>,
     partition_count: Option<usize>,
@@ -79,7 +82,19 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
     partial_count: usize,
     flush_count: usize,
     max_partition_fan_in: usize,
+    max_pending_partials: usize,
     merge_time: Duration,
+}
+
+pub(in crate::exec::bounded::aggregate) struct IncrementalPartitionStates {
+    pub partitions: Vec<(usize, CommittedPartial)>,
+    pub partition_count: usize,
+    pub input_rows: u64,
+    pub partial_count: usize,
+    pub flush_count: usize,
+    pub max_partition_fan_in: usize,
+    pub max_pending_partials: usize,
+    pub merge_time: Duration,
 }
 
 impl<'a> CompiledIncrementalPartitionedMerge<'a> {
@@ -110,6 +125,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             input_schema,
             output_schema,
             key_columns,
+            aligned_key_columns: None,
             expected_partials: expected_partials.max(1),
             expected_input_rows: expected_input_rows.filter(|rows| *rows > 0),
             partition_count: None,
@@ -125,7 +141,94 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             partial_count: 0,
             flush_count: 0,
             max_partition_fan_in: 0,
+            max_pending_partials: 0,
             merge_time: Duration::ZERO,
+        })
+    }
+
+    pub(in crate::exec::bounded::aggregate) fn new_aligned(
+        context: &ExecutionContext,
+        node_id: NodeId,
+        aggregate: &'a AggregateNode,
+        input_schema: &'a ArrowSchemaRef,
+        output_schema: &'a ArrowSchemaRef,
+        key_columns: &[String],
+    ) -> Result<Self> {
+        let mut merge = Self::new(context, node_id, aggregate, input_schema, output_schema, 1, None)?;
+        merge.aligned_key_columns = Some(key_columns.to_vec());
+        Ok(merge)
+    }
+
+    pub(in crate::exec::bounded::aggregate) fn push_aligned(
+        &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        partition_index: usize,
+        partition_count: usize,
+        key_columns: &[String],
+        partial: CommittedPartial,
+    ) -> Result<()> {
+        if self.partition_count.is_none() {
+            self.partition_count = Some(partition_count);
+            self.pending = (0..partition_count).map(|_| Vec::new()).collect();
+            self.pending_bytes = vec![0; partition_count];
+            self.merged = (0..partition_count).map(|_| Vec::new()).collect();
+        }
+        let expected_count = self.partition_count.expect("aligned merge has a fixed partition count");
+        let expected_keys = self.aligned_key_columns.as_ref().expect("aligned merge has fixed keys");
+        if partition_count != expected_count || partition_index >= expected_count || key_columns != expected_keys {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                "query_engine.final_merge.aligned_partition_metadata",
+                "aligned group-key final merge received incompatible partition metadata",
+            )
+            .with_fact("expected_partition_count", expected_count)
+            .with_fact("actual_partition_count", partition_count)
+            .with_fact("partition_index", partition_index)
+            .with_fact("expected_keys", expected_keys.join(","))
+            .with_fact("actual_keys", key_columns.join(",")));
+        }
+        if partial.frame.num_rows() == 0 {
+            return Ok(());
+        }
+        let bytes = partial.device_bytes();
+        if !self.pending[partition_index].is_empty()
+            && (self.pending[partition_index].len() >= MAX_PENDING_PARTIALS
+                || self.pending_bytes[partition_index].saturating_add(bytes) > self.partition_batch_bytes)
+        {
+            self.flush_partition(execution, partition_index)?;
+        }
+        self.input_rows = self.input_rows.saturating_add(partial.frame.num_rows() as u64);
+        self.partial_count += 1;
+        self.pending_bytes[partition_index] = self.pending_bytes[partition_index].saturating_add(bytes);
+        self.pending[partition_index].push(partial);
+        self.max_pending_partials = self.max_pending_partials.max(self.pending[partition_index].len());
+        self.flush_ready_partitions(execution)
+    }
+
+    pub(in crate::exec::bounded::aggregate) fn finish_partition_states(
+        mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+    ) -> Result<IncrementalPartitionStates> {
+        if !self.pending_raw.is_empty() {
+            self.partition_pending_raw(execution)?;
+        }
+        let partition_count = self.partition_count.unwrap_or(1);
+        let mut partitions = Vec::new();
+        for partition_index in 0..partition_count {
+            self.flush_partition(execution, partition_index)?;
+            if let Some(state) = self.merged[partition_index].pop() {
+                partitions.push((partition_index, state));
+            }
+        }
+        Ok(IncrementalPartitionStates {
+            partitions,
+            partition_count,
+            input_rows: self.input_rows,
+            partial_count: self.partial_count,
+            flush_count: self.flush_count,
+            max_partition_fan_in: self.max_partition_fan_in,
+            max_pending_partials: self.max_pending_partials,
+            merge_time: self.merge_time,
         })
     }
 
@@ -142,7 +245,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
     ) -> Result<()> {
         let partial_bytes = partial.device_bytes();
         if !self.pending_raw.is_empty()
-            && self.pending_raw_bytes.saturating_add(partial_bytes) > self.partition_batch_bytes
+            && (self.pending_raw.len() >= MAX_PENDING_PARTIALS
+                || self.pending_raw_bytes.saturating_add(partial_bytes) > self.partition_batch_bytes)
         {
             self.partition_pending_raw(execution)?;
             self.flush_ready_partitions(execution)?;
@@ -151,6 +255,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.partial_count += 1;
         self.pending_raw_bytes = self.pending_raw_bytes.saturating_add(partial_bytes);
         self.pending_raw.push(partial);
+        self.max_pending_partials = self.max_pending_partials.max(self.pending_raw.len());
         Ok(())
     }
 
@@ -192,6 +297,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             let partial = self.pending_raw.pop().expect("single partial is pending");
             return execute_compiled_final_aggregate_projection(
                 execution,
+                self.node_id,
                 self.aggregate,
                 self.input_schema,
                 self.output_schema,
@@ -244,6 +350,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
                 ("partitioned_merge_incremental", "true".to_string()),
                 ("partitioned_merge_incremental_partials", self.partial_count.to_string()),
                 ("partitioned_merge_incremental_flushes", self.flush_count.to_string()),
+                ("partitioned_merge_incremental_max_pending_partials", self.max_pending_partials.to_string()),
                 ("partitioned_merge_streamed_finalization", streamed_output.to_string()),
             ],
             execution.metrics(),
@@ -330,9 +437,13 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             if partition.frame.num_rows() == 0 {
                 continue;
             }
+            if self.pending[partition_index].len() >= MAX_PENDING_PARTIALS {
+                self.flush_partition(execution, partition_index)?;
+            }
             self.pending_bytes[partition_index] =
                 self.pending_bytes[partition_index].saturating_add(partition.device_bytes());
             self.pending[partition_index].push(partition);
+            self.max_pending_partials = self.max_pending_partials.max(self.pending[partition_index].len());
         }
         Ok(())
     }
@@ -340,7 +451,9 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
     fn flush_ready_partitions(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<()> {
         for partition_index in 0..self.pending.len() {
             let merged_bytes = self.merged[partition_index].iter().map(CommittedPartial::device_bytes).sum::<u64>();
-            if self.pending_bytes[partition_index] >= merged_bytes.max(self.min_flush_bytes) {
+            if self.pending[partition_index].len() >= MAX_PENDING_PARTIALS
+                || self.pending_bytes[partition_index] >= merged_bytes.max(self.min_flush_bytes)
+            {
                 self.flush_partition(execution, partition_index)?;
             }
         }
@@ -484,6 +597,7 @@ impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
                 .and_then(|()| {
                     execute_compiled_final_aggregate_projection(
                         execution,
+                        self.node_id,
                         &self.aggregate,
                         &self.input_schema,
                         &self.output_schema,

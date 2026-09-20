@@ -553,6 +553,68 @@ fn blocking_join_resolves_only_after_the_class_slot_is_released() {
     .expect("the resubmitted worker completes");
 }
 
+#[test]
+fn blocking_completion_notifies_in_finish_order_after_releasing_capacity() {
+    let pool =
+        GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 12, 2, 1, 2, GpuExecutionQueryTracker::new())
+            .unwrap();
+    let gate = Arc::new(BlockingGate::default());
+    let (entered_sender, entered_receiver) = mpsc::channel();
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let first_gate = Arc::clone(&gate);
+    let first_completion = completed_sender.clone();
+    let first = pool
+        .submit_blocking_with_completion(
+            GpuExecutionJobKind::AttemptWork,
+            RuntimeObservationHandle::disabled(),
+            move || {
+                entered_sender.send(()).unwrap();
+                first_gate.wait();
+                1_u8
+            },
+            move || {
+                first_completion.send(1_u8).unwrap();
+            },
+        )
+        .unwrap();
+    entered_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let second_completion = completed_sender.clone();
+    let second = pool
+        .submit_blocking_with_completion(
+            GpuExecutionJobKind::AttemptWork,
+            RuntimeObservationHandle::disabled(),
+            || 2_u8,
+            move || {
+                second_completion.send(2_u8).unwrap();
+            },
+        )
+        .unwrap();
+    assert_eq!(completed_receiver.recv_timeout(Duration::from_secs(5)).unwrap(), 2);
+    assert_eq!(pool.snapshot().aux_jobs_available, 1);
+    assert_eq!(second.join().unwrap(), 2);
+
+    gate.release();
+    assert_eq!(completed_receiver.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+    assert_eq!(pool.snapshot().aux_jobs_available, 2);
+    assert_eq!(first.join().unwrap(), 1);
+
+    let panic_completion = completed_sender.clone();
+    let panicked = pool
+        .submit_blocking_with_completion(
+            GpuExecutionJobKind::AttemptWork,
+            RuntimeObservationHandle::disabled(),
+            || -> u8 { panic!("worker panic") },
+            move || {
+                panic_completion.send(3_u8).unwrap();
+            },
+        )
+        .unwrap();
+    assert_eq!(completed_receiver.recv_timeout(Duration::from_secs(5)).unwrap(), 3);
+    assert_eq!(pool.snapshot().aux_jobs_available, 2);
+    assert!(panicked.join().is_err());
+}
+
 /// `submit_blocking` must hold the pool's resource epoch clone inside the
 /// worker closure, not only across submission: the closure runs on a
 /// `spawn_blocking` thread outside the async paths that already move their

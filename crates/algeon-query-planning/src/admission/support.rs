@@ -128,11 +128,11 @@ pub fn compiled_bounded_query_plan_support(
 ///
 /// Admission is capability-driven, not shape-driven: any pipeline composed
 /// only of these task kinds is judged by the same task/resource contracts as
-/// join plans, whether or not it contains a union. A union of independent
+/// join plans, whether it contains a union. A union of independent
 /// branches is the first acceptance case, not an admission switch.
-/// Aggregates, sorts, windows, and graph/vector work stay outside this set
-/// until later phases migrate them, and their plans keep the existing
-/// aggregate/generic paths.
+/// Aggregate and final-sort tasks use the same compiled contracts; windows,
+/// graph, and vector work stay outside this set until their contracts migrate,
+/// and those plans keep their existing paths.
 #[doc(hidden)]
 pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> bool {
     !pipeline.tasks().is_empty()
@@ -143,6 +143,8 @@ pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> b
                     | PipelineTaskKind::GpuResidentSource
                     | PipelineTaskKind::LiteralBatchSource
                     | PipelineTaskKind::Unary
+                    | PipelineTaskKind::Aggregate
+                    | PipelineTaskKind::FinalSort
                     | PipelineTaskKind::Limit
                     | PipelineTaskKind::Union
                     | PipelineTaskKind::SinkMaterialize
