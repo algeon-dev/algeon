@@ -41,7 +41,6 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 cudf = { workspace = true }
 cugraph = { workspace = true, optional = true }
-fnv = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 query-planning = { workspace = true }
@@ -52,7 +51,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
-async-trait = { workspace = true }
 cudf = { workspace = true, features = ["test-hooks"] }
 cudf-sys = { workspace = true, features = ["test-hooks"] }
 query-planning = { workspace = true, features = ["test-hooks"] }

@@ -87,12 +87,10 @@ rapids-build-support = { package = "algeon-build-support", path = "components/al
 rapids-interop = { package = "algeon-interop", path = "components/algeon-interop", version = "=0.1.0" }
 ahash = "0.8"
 anyhow = "1"
-arrow = { version = "59.2", default-features = false, features = ["ipc"] }
-arrow-flight = { version = "59.2", features = ["flight-sql-experimental"] }
-arrow-json = "59.2"
+arrow = { version = "59.3", default-features = false, features = ["ipc"] }
+arrow-flight = { version = "59.3", features = ["flight-sql-experimental"] }
+arrow-json = "59.3"
 async-trait = "0.1"
-aws-config = "1.10"
-aws-credential-types = "1.3"
 axum = "0.8"
 blake3 = "1.8"
 bitflags = "2"
@@ -100,14 +98,13 @@ bytes = "1"
 cc = "1.2"
 cmake = "0.1"
 cmake-package = "0.2.0"
-datafusion = "55.0"
+datafusion = "55.1"
 fnv = "1"
 futures = "0.3"
 getrandom = "0.4"
 indexmap = "2"
 libc = "0.2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
-opendal = "0.58"
 opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
 opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "gen-tonic"] }
 parquet = { version = "59.3", default-features = false, features = ["async", "object_store"] }

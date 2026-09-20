@@ -31,7 +31,6 @@ workloads = { workspace = true }
 query-engine = { workspace = true }
 datafusion = { workspace = true }
 arrow = { workspace = true }
-async-trait = { workspace = true }
 parquet = { workspace = true }
 cudf = { workspace = true }
 # Direct (non-transitive) dep on cudf-sys so THIS crate's build.rs receives
