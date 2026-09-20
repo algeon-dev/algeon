@@ -142,32 +142,19 @@ impl AggregateExecutionStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AggregateStrategyExecutionOptions {
-    #[doc(hidden)]
-    pub encoded_key_partial_low_cardinality_threshold_ppm: u64,
-    #[doc(hidden)]
-    pub encoded_key_partial_min_input_rows: u64,
-    #[doc(hidden)]
-    pub exact_grouped_key_cardinality_probe_max_key_columns: usize,
-    #[doc(hidden)]
-    pub exact_single_string_avg_cardinality_probe_min_input_rows: u64,
-    #[doc(hidden)]
-    pub exact_single_key_cardinality_probe_min_input_rows: u64,
-    #[doc(hidden)]
-    pub exact_grouped_key_cardinality_probe_min_input_rows: u64,
-    #[doc(hidden)]
-    pub exact_single_string_key_prepared_max_groups: u64,
-    #[doc(hidden)]
-    pub exact_three_key_cardinality_probe_max_input_rows: u64,
-    #[doc(hidden)]
-    pub exact_five_key_cardinality_probe_max_input_rows: u64,
-    #[doc(hidden)]
-    pub prepared_sort_groupby_low_cardinality_threshold_ppm: u64,
-    #[doc(hidden)]
-    pub source_adjacent_prepared_sort_groupby_max_row_groups: u64,
-    #[doc(hidden)]
-    pub source_adjacent_prepared_sort_groupby_max_source_read_bytes: u64,
-    #[doc(hidden)]
-    pub source_adjacent_prepared_sort_groupby_max_fan_in: u64,
+    encoded_key_partial_low_cardinality_threshold_ppm: u64,
+    encoded_key_partial_min_input_rows: u64,
+    exact_grouped_key_cardinality_probe_max_key_columns: usize,
+    exact_single_string_avg_cardinality_probe_min_input_rows: u64,
+    exact_single_key_cardinality_probe_min_input_rows: u64,
+    exact_grouped_key_cardinality_probe_min_input_rows: u64,
+    exact_single_string_key_prepared_max_groups: u64,
+    exact_three_key_cardinality_probe_max_input_rows: u64,
+    exact_five_key_cardinality_probe_max_input_rows: u64,
+    prepared_sort_groupby_low_cardinality_threshold_ppm: u64,
+    source_adjacent_prepared_sort_groupby_max_row_groups: u64,
+    source_adjacent_prepared_sort_groupby_max_source_read_bytes: u64,
+    source_adjacent_prepared_sort_groupby_max_fan_in: u64,
 }
 
 impl AggregateStrategyExecutionOptions {

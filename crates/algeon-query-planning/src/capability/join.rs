@@ -23,22 +23,14 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KeyedHashJoinStrategyOptions {
-    #[doc(hidden)]
-    pub large_keyed_hash_build_row_threshold: u64,
-    #[doc(hidden)]
-    pub large_keyed_hash_build_bytes_threshold: u64,
-    #[doc(hidden)]
-    pub large_keyed_hash_probe_bytes_threshold: u64,
-    #[doc(hidden)]
-    pub small_reusable_hash_build_row_threshold: u64,
-    #[doc(hidden)]
-    pub small_reusable_hash_build_bytes_threshold: u64,
-    #[doc(hidden)]
-    pub small_one_shot_probe_bytes_threshold: u64,
-    #[doc(hidden)]
-    pub max_small_probe_left_one_shot_build_row_threshold: u64,
-    #[doc(hidden)]
-    pub max_small_probe_left_one_shot_build_bytes_threshold: u64,
+    large_keyed_hash_build_row_threshold: u64,
+    large_keyed_hash_build_bytes_threshold: u64,
+    large_keyed_hash_probe_bytes_threshold: u64,
+    small_reusable_hash_build_row_threshold: u64,
+    small_reusable_hash_build_bytes_threshold: u64,
+    small_one_shot_probe_bytes_threshold: u64,
+    max_small_probe_left_one_shot_build_row_threshold: u64,
+    max_small_probe_left_one_shot_build_bytes_threshold: u64,
 }
 
 impl KeyedHashJoinStrategyOptions {

@@ -726,16 +726,6 @@ impl Error {
         Self::from_native(operation, message, source)
     }
 
-    #[cfg(feature = "server")]
-    #[doc(hidden)]
-    pub fn from_native_for_internal_consumer(
-        operation: &'static str,
-        message: impl Into<String>,
-        source: query_engine::error::QueryError,
-    ) -> Self {
-        Self::from_native(operation, message, source)
-    }
-
     /// Returns the stable machine-readable adapter error code.
     pub fn code(&self) -> ErrorCode {
         self.code

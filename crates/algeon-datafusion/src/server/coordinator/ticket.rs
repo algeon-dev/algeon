@@ -19,7 +19,7 @@ use super::{
         QueryKey, QueryPhase, QueryTerminal, RetainedUnavailableReason,
     },
 };
-use crate::server::native_exec::ServerInternalNativeObservationActivityFactory as NativeObservationActivityFactory;
+use crate::server::native_exec::ServerNativeObservationActivityFactory as NativeObservationActivityFactory;
 
 impl QueryCoordinator {
     pub(crate) fn consume_ticket(

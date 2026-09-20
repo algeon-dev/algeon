@@ -44,11 +44,7 @@ pub(crate) use self::composed::composed_admission_capability_evidence;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::metrics::GraphClaimCalibrationCapture;
 #[cfg(feature = "server")]
-#[doc(hidden)]
-pub use self::metrics::{
-    NativeMetricsCapture as ServerInternalNativeMetricsCapture,
-    ServerNativeObservationActivityFactory as ServerInternalNativeObservationActivityFactory,
-};
+pub(crate) use self::metrics::{NativeMetricsCapture, ServerNativeObservationActivityFactory};
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
     metrics::{
