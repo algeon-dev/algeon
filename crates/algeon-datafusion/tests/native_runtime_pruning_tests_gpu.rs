@@ -39,7 +39,6 @@ use datafusion::{
         aggregate::AggregateExprBuilder,
         expressions::{CastExpr, NotExpr, binary, col, lit},
     },
-    physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},

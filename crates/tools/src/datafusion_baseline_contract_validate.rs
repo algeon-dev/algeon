@@ -11,7 +11,6 @@
 //! This is an explicit developer tool (`cargo run`), not a Cargo test target.
 
 use std::{
-    any::Any,
     collections::BTreeMap,
     env,
     error::Error as StdError,
@@ -28,9 +27,9 @@ use algeon_datafusion::{
     },
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::AlgeonNativeExecutionConfig,
-    native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
-    planner::{AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy},
-    report::CandidateOutcome,
+    native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
+    planner::{DataFusionCpuExecutionPolicy, NativePlanningDiagnostics, plan_with_native_diagnostics},
+    report::{CandidateOutcome, PlanningReport},
     session::{ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, AlgeonSessionStateBuilderExt},
 };
 use arrow::{
@@ -40,11 +39,11 @@ use arrow::{
     util::pretty::pretty_format_batches,
 };
 use datafusion::{
-    error::DataFusionError,
+    error::{DataFusionError, Result as DataFusionResult},
     execution::{SessionStateBuilder, session_state::SessionState},
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_plan::{ExecutionPlan, displayable},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{DataFrame, ParquetReadOptions, SessionConfig, SessionContext},
 };
 use serde::Serialize;
 use tokio::task::spawn_blocking;
@@ -486,9 +485,7 @@ async fn run_parquet_case_inner(
     let gpu_ctx = relational_ctx(selection, backend)?;
     register_pair(&gpu_ctx, bench, bench2).await?;
 
-    let plan_result = gpu_ctx.sql(sql).await?.create_physical_plan().await;
-    let session_state = gpu_ctx.state();
-    let native_rule = installed_final_native_rule(&session_state);
+    let plan_result = plan_query(gpu_ctx.sql(sql).await?).await;
 
     if let Err(error) = plan_result {
         let facts = algeon_facts_from_df_error(&error);
@@ -518,11 +515,12 @@ async fn run_parquet_case_inner(
         });
     }
 
-    let plan = plan_result?;
-    let report =
-        native_rule.map(|rule| NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule));
+    let (plan, diagnostics) = plan_result?;
+    let native_rule_installed = diagnostics.is_some();
+    let (rewritten, rejected_reasons) =
+        diagnostics.as_ref().map_or((0, Vec::new()), |diagnostics| outcome_stats(&diagnostics.report));
+    let report = diagnostics.map(|diagnostics| planning_report(id, &plan, diagnostics));
     let row = report.as_ref().and_then(|r| r.rows.first());
-    let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, Vec::new()));
 
     let path = row.and_then(|r| r.final_disposition);
     let fragments = row.and_then(|r| r.native_plan_fragment_count);
@@ -537,7 +535,7 @@ async fn run_parquet_case_inner(
     );
     let mut ok = true;
 
-    if selection.installs_native_rule() != native_rule.is_some() {
+    if selection.installs_native_rule() != native_rule_installed {
         ok = false;
         detail.push_str("; native rule installation did not match the selected execution mode");
     }
@@ -641,13 +639,11 @@ async fn run_single_table_case(
     let result = async {
         let gpu_ctx = relational_ctx(selection, backend)?;
         gpu_ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()).await?;
-        let plan = gpu_ctx.sql(sql).await?.create_physical_plan().await?;
-        let session_state = gpu_ctx.state();
-        let native_rule = installed_final_native_rule(&session_state);
-        let report =
-            native_rule.map(|rule| NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule));
+        let (plan, diagnostics) = plan_query(gpu_ctx.sql(sql).await?).await?;
+        let (rewritten, rejected_reasons) =
+            diagnostics.as_ref().map_or((0, Vec::new()), |diagnostics| outcome_stats(&diagnostics.report));
+        let report = diagnostics.map(|diagnostics| planning_report(id, &plan, diagnostics));
         let row = report.as_ref().and_then(|r| r.rows.first());
-        let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, Vec::new()));
         let mut detail = format!(
             "path={:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
             row.and_then(|r| r.final_disposition),
@@ -722,12 +718,11 @@ async fn run_tpch_case(tpch: &Path, backend: &AlgeonGpuBackend) -> CaseResult {
             let p = tpch.join(format!("{t}.parquet"));
             gpu_ctx.register_parquet(t, p.to_str().unwrap(), ParquetReadOptions::default()).await?;
         }
-        let plan = gpu_ctx.sql(sql).await?.create_physical_plan().await?;
-        let session_state = gpu_ctx.state();
-        let native_rule = installed_final_native_rule(&session_state).ok_or("missing native rule")?;
-        let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), native_rule);
+        let (state, logical) = gpu_ctx.sql(sql).await?.into_parts();
+        let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
+        let (rewritten, rejected_reasons) = outcome_stats(&diagnostics.report);
+        let report = planning_report(id, &plan, diagnostics);
         let row = report.rows.first().ok_or("no planning row")?;
-        let (rewritten, rejected_reasons) = outcome_stats(native_rule);
         let dump_dir = PathBuf::from("/tmp/datafusion_baseline_contract_validation/plans");
         fs::create_dir_all(&dump_dir)?;
         fs::write(dump_dir.join(format!("{id}.plan.txt")), displayable(plan.as_ref()).indent(false).to_string())?;
@@ -840,10 +835,9 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", bench.to_str().unwrap(), ParquetReadOptions::default()).await?;
     let sql = "SELECT key, SUM(m00) AS s, SUM(payload) AS p FROM bench GROUP BY key";
-    let plan = ctx.sql(sql).await?.create_physical_plan().await?;
-    let session_state = ctx.state();
-    let native_rule = installed_final_native_rule(&session_state).ok_or("missing native rule")?;
-    let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), native_rule);
+    let (state, logical) = ctx.sql(sql).await?.into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
+    let report = planning_report(id, &plan, diagnostics);
     let row = report.rows.first();
     if !plan_contains_native(plan.as_ref()) {
         return Ok(CaseResult {
@@ -926,13 +920,11 @@ async fn run_empty_parquet_corner(path: &Path, backend: &AlgeonGpuBackend) -> Ca
     let result = async {
         let gpu_ctx = relational_ctx(RelationalExecution::NativeDefault, backend)?;
         gpu_ctx.register_parquet("empty", path.to_str().unwrap(), ParquetReadOptions::default()).await?;
-        let plan = gpu_ctx.sql(sql).await?.create_physical_plan().await?;
-        let session_state = gpu_ctx.state();
-        let native_rule = installed_final_native_rule(&session_state);
-        let report =
-            native_rule.map(|rule| NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule));
+        let (plan, diagnostics) = plan_query(gpu_ctx.sql(sql).await?).await?;
+        let (rewritten, rejected_reasons) =
+            diagnostics.as_ref().map_or((0, vec![]), |diagnostics| outcome_stats(&diagnostics.report));
+        let report = diagnostics.map(|diagnostics| planning_report(id, &plan, diagnostics));
         let row = report.as_ref().and_then(|r| r.rows.first());
-        let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, vec![]));
         let mut detail = format!(
             "path={:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
             row.and_then(|r| r.final_disposition),
@@ -1086,19 +1078,33 @@ async fn register_pair(ctx: &SessionContext, bench: &Path, bench2: &Path) -> Too
     Ok(())
 }
 
-fn installed_final_native_rule(state: &SessionState) -> Option<&AlgeonNativePhysicalOptimizerRule> {
-    state.physical_optimizers().iter().find_map(|rule| {
-        if rule.name() != ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME {
-            return None;
-        }
-        (rule.as_ref() as &dyn Any).downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-    })
+fn has_final_native_rule(state: &SessionState) -> bool {
+    state.physical_optimizers().iter().any(|rule| rule.name() == ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME)
 }
 
-fn outcome_stats(rule: &AlgeonNativePhysicalOptimizerRule) -> (usize, Vec<String>) {
-    let Some(report) = rule.last_report() else {
-        return (0, Vec::new());
-    };
+/// Plans `df`; the diagnostics are `None` for a session without the native rule.
+async fn plan_query(df: DataFrame) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<NativePlanningDiagnostics>)> {
+    let (state, logical) = df.into_parts();
+    if !has_final_native_rule(&state) {
+        return Ok((state.create_physical_plan(&logical).await?, None));
+    }
+    let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await?;
+    Ok((plan, Some(diagnostics)))
+}
+
+fn planning_report(
+    id: &str,
+    plan: &Arc<dyn ExecutionPlan>,
+    diagnostics: NativePlanningDiagnostics,
+) -> NativeDataFusionPlanningReport {
+    NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        id,
+        Arc::clone(plan),
+        diagnostics,
+    )])
+}
+
+fn outcome_stats(report: &PlanningReport) -> (usize, Vec<String>) {
     let mut selected = 0;
     let mut not_selected = Vec::new();
     for outcome in report.outcomes() {

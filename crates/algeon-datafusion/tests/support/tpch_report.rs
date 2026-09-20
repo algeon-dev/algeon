@@ -5,7 +5,7 @@ use algeon_datafusion::{
     native_report::{
         NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem, WorkloadDatasetMetadata,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use datafusion::{
@@ -167,10 +167,9 @@ pub(crate) async fn datafusion_planning_workload_items<'a>(
     optimizer_config: AlgeonNativeOptimizerConfig,
     queries: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_algeon_native_rule(Arc::clone(&native_rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;
@@ -178,22 +177,17 @@ pub(crate) async fn datafusion_planning_workload_items<'a>(
     let mut items = Vec::new();
     for (query_id, sql) in queries {
         let item = match ctx.sql(sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => match native_rule.last_planning_diagnostics() {
-                    Some(diagnostics) => NativeDataFusionPlanningWorkloadItem::new(query_id, plan, diagnostics),
-                    None => NativeDataFusionPlanningWorkloadItem::planning_failure(
+            Ok(df) => {
+                let (state, logical) = df.into_parts();
+                match plan_with_native_diagnostics(&state, &logical).await {
+                    Ok((plan, diagnostics)) => NativeDataFusionPlanningWorkloadItem::new(query_id, plan, diagnostics),
+                    Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
                         query_id,
-                        "native_diagnostics",
-                        "missing_native_diagnostics",
-                        format!("missing retained native planning diagnostics for {query_id}"),
+                        "physical_planning",
+                        "physical_planning_failed",
+                        error.to_string(),
                     ),
-                },
-                Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                    query_id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
+                }
             },
             Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
                 query_id,

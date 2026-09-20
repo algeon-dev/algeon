@@ -20,10 +20,7 @@ use super::{
     planning::{literal_bfs_source_plan, validate_edge_source_schema},
 };
 #[cfg(feature = "cugraph")]
-use crate::{
-    native_exec::AlgeonNativeExecutionConfig,
-    session::{installed_algeon_native_optimizer_config, session_state_with_native_execution_config},
-};
+use crate::session::{planning_native_execution_config, session_state_with_native_execution_config};
 
 #[derive(Debug)]
 pub struct CugraphExtensionPlanner;
@@ -55,9 +52,7 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
             let session_state = session.as_any().downcast_ref::<SessionState>().ok_or_else(|| {
                 DataFusionError::Plan("cuGraph extension planning requires a DataFusion SessionState".to_string())
             })?;
-            let native_execution_config = installed_algeon_native_optimizer_config(session)
-                .map(|config| config.native_execution_config().clone())
-                .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
+            let native_execution_config = planning_native_execution_config(session);
             let planning_state =
                 session_state_with_native_execution_config(session_state, native_execution_config.clone())
                     .unwrap_or_else(|| session_state.clone());

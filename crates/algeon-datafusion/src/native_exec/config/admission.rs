@@ -7,9 +7,9 @@ use query_engine::{
 use super::{
     AlgeonNativeExecutionConfig, NativeExecutionMetricsCapture, NativeMetricsCapture, QueryAdmissionSource,
     QueryAdmissionTicket, QueryId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId, TaskContext,
-    query_admission_ticket_from_task_context,
+    invocation_admission_ticket,
 };
-use crate::{attempt::AlgeonAttemptExtension, native_exec::NativeRuntimeObservation};
+use crate::native_exec::NativeRuntimeObservation;
 
 impl AlgeonNativeExecutionConfig {
     pub(crate) fn with_query_admission_source(mut self, source: QueryAdmissionSource) -> Self {
@@ -104,16 +104,7 @@ impl AlgeonNativeExecutionConfig {
         &self,
         task_context: &TaskContext,
     ) -> Option<Arc<QueryAdmissionTicket>> {
-        query_admission_ticket_from_task_context(task_context)
-            .or_else(|| {
-                task_context
-                    .session_config()
-                    .options()
-                    .extensions
-                    .get::<AlgeonAttemptExtension>()
-                    .and_then(AlgeonAttemptExtension::bound_ticket)
-            })
-            .or_else(|| self.query_admission_ticket.as_ref().map(Arc::clone))
+        invocation_admission_ticket(task_context).or_else(|| self.query_admission_ticket.as_ref().map(Arc::clone))
     }
 
     #[cfg(test)]

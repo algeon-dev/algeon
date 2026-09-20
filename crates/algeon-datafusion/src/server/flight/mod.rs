@@ -66,16 +66,13 @@ use crate::{
         adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
         adapter_session::{
             ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
-            AlgeonSessionStateBuilderExt,
         },
         cuml_sql::forest_model_digests,
         gpu_coverage::{ExplainGpuOutputMode, coverage_batch, coverage_schema, parse_explain_gpu, validate_query},
         native_exec::{
             NativeMetricsCapture, ServerNativeObservationActivityFactory as NativeObservationActivityFactory,
         },
-        planner::{
-            ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
-        },
+        planner::native::{Invocation, InvocationExecution},
     },
 };
 

@@ -417,12 +417,7 @@ mod get_tables_prefilter_tests {
     fn service_with_schema(schema: Arc<CountingSchemaProvider>) -> DatafusionAlgeonFlightSqlService {
         let ctx = Arc::new(SessionContext::new());
         ctx.register_catalog("counting", Arc::new(CountingCatalog { schema }));
-        DatafusionAlgeonFlightSqlService::new(
-            ctx,
-            AlgeonNativeOptimizerConfig::default(),
-            Arc::new(QueryAdmission::new_for_tests()),
-            Duration::from_secs(30),
-        )
+        DatafusionAlgeonFlightSqlService::new(ctx, Arc::new(QueryAdmission::new_for_tests()), Duration::from_secs(30))
     }
 
     fn get_tables_query(

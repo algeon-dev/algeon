@@ -13,7 +13,10 @@ use algeon_datafusion::{
         NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport, NativeFallbackPressureRow,
         NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, NativePlanningDiagnostics},
+    planner::{
+        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, NativePlanningDiagnostics,
+        plan_with_native_diagnostics,
+    },
     report::{GpuCandidate, PlanningReport},
     session::AlgeonSessionStateBuilderExt,
 };
@@ -34,7 +37,6 @@ use datafusion::{
         aggregate::AggregateExprBuilder,
         expressions::{TryCastExpr, binary, col, lit},
     },
-    physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
@@ -422,8 +424,14 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
         AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
     );
     let native_rule = AlgeonNativePhysicalOptimizerRule::new(optimizer_config);
-    let rejected_plan = native_rule.optimize(rejected_plan, &ConfigOptions::default()).unwrap();
-    let rejected = NativeDataFusionPlanningReport::from_retained_rule("try_cast_session", rejected_plan, &native_rule);
+    let (rejected_plan, rejected_diagnostics) =
+        native_rule.optimize_with_diagnostics(rejected_plan, &ConfigOptions::default()).unwrap();
+    let rejected_diagnostics = rejected_diagnostics.expect("native optimizer should retain diagnostics");
+    let rejected = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "try_cast_session",
+        rejected_plan,
+        rejected_diagnostics,
+    )]);
     assert_eq!(rejected.rows.len(), 1);
     assert_eq!(rejected.selected_count(), 0);
     assert_eq!(rejected.not_selected_count(), 1);

@@ -52,6 +52,7 @@ enum LifecyclePlanBehavior {
     StreamError,
     CancelledStream,
     PanickingStream,
+    PanickingExecute,
 }
 
 #[derive(Debug)]
@@ -87,7 +88,9 @@ impl LifecycleExec {
                 "algeon_datafusion.test.composed_consumer_cancelled",
                 "synthetic composed consumer was cancelled",
             ),
-            LifecyclePlanBehavior::Success | LifecyclePlanBehavior::PanickingStream => {
+            LifecyclePlanBehavior::Success
+            | LifecyclePlanBehavior::PanickingStream
+            | LifecyclePlanBehavior::PanickingExecute => {
                 unreachable!("this behavior does not produce a typed error")
             },
         };
@@ -146,6 +149,7 @@ impl ExecutionPlan for LifecycleExec {
                 Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
             },
             LifecyclePlanBehavior::ExecuteError => Err(Self::typed_error(self.behavior)),
+            LifecyclePlanBehavior::PanickingExecute => panic!("injected input execute panic"),
             LifecyclePlanBehavior::PanickingStream => {
                 let stream = poll_fn(|_cx| -> Poll<Option<DataFusionResult<RecordBatch>>> {
                     panic!("injected inner stream panic")
@@ -522,8 +526,9 @@ fn standalone_ticket_drop_seals_local_observation() {
 
 #[test]
 fn ticket_dropped_during_an_unrelated_unwind_records_dropped() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("ticket-unrelated-unwind");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
 
     let unwind = catch_unwind(AssertUnwindSafe(move || {
         let _last_ticket_reference = ticket;
@@ -536,8 +541,9 @@ fn ticket_dropped_during_an_unrelated_unwind_records_dropped() {
 
 #[test]
 fn stream_dropped_during_an_unrelated_unwind_records_dropped() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("stream-unrelated-unwind");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let exec =
         NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))), ticket);
     let stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
@@ -553,8 +559,9 @@ fn stream_dropped_during_an_unrelated_unwind_records_dropped() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn panic_in_the_inner_stream_poll_records_panicked_once() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("stream-poll-panic");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::PanickingStream, Arc::new(Mutex::new(None))),
         ticket,
@@ -568,10 +575,93 @@ async fn panic_in_the_inner_stream_poll_records_panicked_once() {
     assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
 }
 
+#[test]
+fn panic_in_the_input_execute_records_panicked_once() {
+    let backend = InstalledTestGpuBackend::new();
+    let owner = lifecycle_owner("input-execute-panic");
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
+    let exec = NativeAdmissionExec::new(
+        lifecycle_exec(LifecyclePlanBehavior::PanickingExecute, Arc::new(Mutex::new(None))),
+        ticket,
+    );
+
+    let unwind = catch_unwind(AssertUnwindSafe(|| exec.execute(0, Arc::new(TaskContext::default()))));
+
+    assert!(unwind.is_err(), "the input panic must keep unwinding");
+    drop(exec);
+    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
+}
+
+/// A panic raised inside a round's admission records `Panicked`: the
+/// admission guards, which record `Cancelled`, drop only after the panic has
+/// left the admission future.
+#[tokio::test(flavor = "current_thread")]
+async fn panic_inside_admission_records_panicked_once() {
+    let backend = InstalledTestGpuBackend::new();
+    let owner = lifecycle_owner("admission-panic");
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
+    PANIC_IN_NEXT_ADMISSION.set(true);
+
+    let admission =
+        AssertUnwindSafe(ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()))
+            .catch_unwind()
+            .await;
+
+    assert!(admission.is_err(), "the admission panic must keep unwinding");
+    drop(ticket);
+    assert_terminal_boundary_once(&owner, RuntimeTerminalOutcome::Panicked);
+}
+
+/// An attempt mints its one admission ticket while planning; executing the
+/// plan admits under that ticket without minting another.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_attempt_invocation_mints_one_admission_ticket() {
+    use arrow::array::{Int64Array, StringArray};
+    use datafusion::{
+        execution::SessionStateBuilder,
+        prelude::{ParquetReadOptions, SessionContext},
+    };
+    use parquet::arrow::ArrowWriter;
+
+    use crate::attempt::AttemptOptions;
+
+    let backend = InstalledTestGpuBackend::new();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rows.parquet");
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Utf8, false), Field::new("v", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["a", "b", "a"])), Arc::new(Int64Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let ctx = SessionContext::new_with_state(
+        backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build(),
+    );
+    ctx.register_parquet("rows", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let next_ticket_id = || QueryAdmissionTicket::new(admission_source(&backend), None).id();
+
+    let before = next_ticket_id();
+    let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = attempt.sql(&ctx, "SELECT k, SUM(v) FROM rows GROUP BY k").await.unwrap();
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    let report = attempt.completion().await;
+    let after = next_ticket_id();
+
+    assert!(report.admission.is_some(), "the aggregate executes natively under the attempt");
+    assert_eq!(after - before - 1, 1, "the attempt minted exactly one admission ticket");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn composed_producer_consumer_success_seals_after_consumer_eof() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("composed-success");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
@@ -591,10 +681,13 @@ async fn composed_producer_consumer_success_seals_after_consumer_eof() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ambient_task_ticket_owns_the_wrapper_round_without_a_second_admission() {
+    let backend = InstalledTestGpuBackend::new();
     let wrapper_owner = lifecycle_owner("wrapper-ticket-unused");
     let active_owner = lifecycle_owner("ambient-ticket-active");
-    let wrapper_ticket = QueryAdmissionTicket::new_for_lifecycle_test(wrapper_owner.clone());
-    let active_ticket = QueryAdmissionTicket::new_for_lifecycle_test(active_owner.clone());
+    let wrapper_ticket =
+        QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, wrapper_owner.clone());
+    let active_ticket =
+        QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, active_owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
@@ -622,8 +715,9 @@ async fn ambient_task_ticket_owns_the_wrapper_round_without_a_second_admission()
 
 #[test]
 fn composed_producer_execute_error_releases_round_and_seals_failure() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("composed-producer-error");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::ExecuteError, Arc::clone(&observed_ticket)),
@@ -643,8 +737,9 @@ fn composed_producer_execute_error_releases_round_and_seals_failure() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn composed_consumer_error_seals_one_failed_terminal_boundary() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("composed-consumer-error");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::StreamError, Arc::clone(&observed_ticket)),
@@ -664,8 +759,9 @@ async fn composed_consumer_error_seals_one_failed_terminal_boundary() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn composed_consumer_cancellation_is_terminalized_as_cancelled() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("composed-cancelled");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::CancelledStream, Arc::clone(&observed_ticket)),
@@ -683,8 +779,9 @@ async fn composed_consumer_cancellation_is_terminalized_as_cancelled() {
 
 #[test]
 fn dropping_task_context_before_stream_does_not_drop_the_admission_round() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("task-drop");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, observed_ticket), ticket);
     let task_context = Arc::new(TaskContext::default());
@@ -698,8 +795,9 @@ fn dropping_task_context_before_stream_does_not_drop_the_admission_round() {
 
 #[test]
 fn admission_wrapper_forwards_delegate_expression_visitation() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("expression-visitation");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner);
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner);
     let schema = Arc::new(Schema::new(vec![Field::new("flag", DataType::Boolean, false)]));
     let memory = MemorySourceConfig::try_new_exec(&[vec![]], Arc::clone(&schema), None).expect("empty memory source");
     let predicate: Arc<dyn PhysicalExpr> = Arc::new(Column::new("flag", 0));
@@ -720,8 +818,9 @@ fn admission_wrapper_forwards_delegate_expression_visitation() {
 
 #[test]
 fn dropping_stream_without_polling_records_dropped_once() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("stream-drop");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let exec =
         NativeAdmissionExec::new(lifecycle_exec(LifecyclePlanBehavior::Success, Arc::new(Mutex::new(None))), ticket);
 
@@ -732,8 +831,9 @@ fn dropping_stream_without_polling_records_dropped_once() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn one_context_ticket_keeps_composed_round_alive_until_all_streams_drop() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("context-ticket");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let observed_ticket = Arc::new(Mutex::new(None));
     let exec = NativeAdmissionExec::new(
         lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)),
@@ -756,8 +856,9 @@ async fn one_context_ticket_keeps_composed_round_alive_until_all_streams_drop() 
 
 #[test]
 fn context_ticket_guard_release_waits_for_the_execution_round() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("context-guard");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let task_context = Arc::new(TaskContext::default());
     let round = ticket.begin_execution_round(Arc::clone(&task_context)).expect("execution round starts");
 
@@ -788,8 +889,9 @@ fn context_ticket_guard_release_waits_for_the_execution_round() {
 
 #[test]
 fn pre_cancelled_pending_context_seals_cancelled_and_releases_its_round() {
+    let backend = InstalledTestGpuBackend::new();
     let owner = lifecycle_owner("pending-context-cancelled");
-    let ticket = QueryAdmissionTicket::new_for_lifecycle_test(owner.clone());
+    let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner.clone());
     let task_context = Arc::new(TaskContext::default());
     let round = ticket.begin_execution_round(Arc::clone(&task_context)).expect("execution round starts");
     let observation = ticket

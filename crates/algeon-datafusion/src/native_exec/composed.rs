@@ -32,7 +32,6 @@ use query_engine::{
 
 use super::{
     GpuResidentProducer,
-    admission::query_admission_ticket_from_task_context,
     common::{
         NATIVE_ALGEON_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
         gpu_resident_source_names, mark_native_runtime_error, native_host_output_stream, native_plan_one_line,
@@ -48,9 +47,9 @@ use super::{
     register_gpu_resident_producer_discovery,
 };
 use crate::{
-    attempt::AlgeonAttemptExtension,
     error::{Error, ErrorCode, Result},
     native_exec::graph::graph_execution_plan,
+    planner::native::Invocation,
 };
 
 /// DataFusion wrapper for composed native execution with GPU-resident producer fragments.
@@ -439,8 +438,7 @@ fn complete_composed_admission_evidence(
         }
     }
 
-    let canonical_ticket =
-        query_admission_ticket_from_task_context(task_context).or_else(|| execution_config.query_admission_ticket());
+    let canonical_ticket = execution_config.query_admission_ticket_for_task_context(task_context);
     let source = execution_config
         .query_admission_source()
         .or_else(|| producer_tickets.first().map(|ticket| ticket.source()))
@@ -517,10 +515,23 @@ fn complete_composed_admission_evidence(
     let Some(first_ticket) = producer_tickets.first() else {
         return Ok(CompletedComposedAdmissionEvidence { execution_config });
     };
-    let ticket = first_ticket.rebind_with_source_and_capability_evidence(source, complete_evidence);
-    if let Some(attempt) = task_context.session_config().options().extensions.get::<AlgeonAttemptExtension>() {
-        attempt.bind_ticket(Arc::clone(&ticket)).map_err(DataFusionError::from)?;
-    }
+    let attempt_ticket = Invocation::of_task(task_context)
+        .and_then(|invocation| invocation.attempt_admission_ticket(source.clone(), Some(complete_evidence.clone())));
+    let ticket = match attempt_ticket {
+        Some((ticket, true)) => ticket,
+        // Another fragment of this invocation minted the ticket first.
+        Some((ticket, false)) => {
+            ticket.extend_capability_evidence_before_admission([complete_evidence]).map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "algeon_datafusion.native_composed.admission_evidence",
+                    "failed to extend the invocation admission ticket before query-service admission",
+                    error,
+                ))
+            })?;
+            ticket
+        },
+        None => first_ticket.rebind_with_source_and_capability_evidence(source, complete_evidence),
+    };
     Ok(CompletedComposedAdmissionEvidence {
         execution_config: execution_config.with_existing_query_admission_ticket(ticket),
     })
@@ -700,8 +711,8 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                     })?;
                 let ordered_runtime_occurrence_ids =
                     admitted_composed_projection.as_ref().map(|_| runtime_occurrence_ids.clone());
-                let attempt_ticket = super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
-                    .or_else(|| execution_config.query_admission_ticket())
+                let attempt_ticket = execution_config
+                    .query_admission_ticket_for_task_context(task_context.as_ref())
                     .filter(|ticket| ticket.is_attempt_bound());
                 if let Some(projection) = admitted_composed_projection
                     && let Some(ticket) = &attempt_ticket

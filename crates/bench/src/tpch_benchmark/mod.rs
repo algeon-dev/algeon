@@ -9,11 +9,12 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{
         CandidateOutcomeKind, FinalPlanDisposition, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
-        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome,
-        NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
-        NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
+        NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow,
+        NativeJoinStrategyMetricRow, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
+        NativeTaskRuntimeMetricRow,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{record_batch::RecordBatch, util::display::array_value_to_string};

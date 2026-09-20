@@ -6,8 +6,8 @@ use std::{
 
 use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
-    native_report::NativeDataFusionPlanningReport,
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    native_report::{NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
+    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -182,16 +182,16 @@ async fn native_datafusion_planning_report_with_session(
     let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
         AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
     );
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_algeon_native_rule(Arc::clone(&native_rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
-    let plan = df.create_physical_plan().await.unwrap();
-    NativeDataFusionPlanningReport::from_retained_rule(query_id, plan, native_rule.as_ref())
+    let (state, logical) = df.into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await.unwrap();
+    NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(query_id, plan, diagnostics)])
 }
 
 fn optional_env_bool(name: &'static str) -> Option<bool> {

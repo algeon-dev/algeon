@@ -49,10 +49,7 @@ use crate::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
         AlgeonNativeGpuProducerExec,
     },
-    planner::{
-        AlgeonNativePhysicalOptimizerRule, NativeCapabilityCompiledGraphDiagnostics,
-        NativeCapabilityContractDiagnostics,
-    },
+    planner::{NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics},
     report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE, GpuCandidate},
 };
 

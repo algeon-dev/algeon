@@ -1,4 +1,4 @@
-use std::{error::Error, path::Path, sync::Arc};
+use std::{error::Error, path::Path};
 
 use super::*;
 use crate::report_workload::tpcds::{build_tpcds_gpu_backend, close_tpcds_gpu_backend};
@@ -83,8 +83,8 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
             Ok(BenchRuntime {
                 execution_ctx: ctx,
-                optimizer: None,
-                native_planning: None,
+                native_rule_installed: false,
+                native_planning_ctx: None,
                 skip_cost_declined: false,
                 backend: None,
             })
@@ -98,17 +98,15 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
                 .expect("native GPU benchmark installs the native rule");
             let backend = build_tpcds_gpu_backend(optimizer_config, cfg.native_device_memory_limit)?;
             let native = async {
-                let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
                 let builder =
                     SessionStateBuilder::new_with_default_features().with_config(tpcds_native_report_session_config());
-                let builder = backend.install_on(builder)?;
-                let state = builder.with_algeon_native_rule(Arc::clone(&rule)).build();
+                let state = backend.install_on(builder)?.build();
                 let ctx = SessionContext::new_with_state(state);
                 register_tpcds_tables_with_native_metadata(&ctx, &cfg.root).await?;
-                Ok((ctx, rule))
+                Ok(ctx)
             }
             .await;
-            let (ctx, rule) = match native {
+            let ctx = match native {
                 Ok(native) => native,
                 Err(error) => {
                     let _ = close_tpcds_gpu_backend(backend);
@@ -117,8 +115,8 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             };
             Ok(BenchRuntime {
                 execution_ctx: ctx,
-                optimizer: Some(rule),
-                native_planning: None,
+                native_rule_installed: true,
+                native_planning_ctx: None,
                 skip_cost_declined: true,
                 backend: Some(backend),
             })
@@ -126,12 +124,12 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
         Engine::CostDeclinedDataFusion => {
             let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
             register_tpcds_tables_with_native_metadata(&cpu_ctx, &cfg.root).await?;
-            let (native_ctx, optimizer) =
+            let native_ctx =
                 build_native_planning_context(&cfg.root, &cfg.native_profile, cfg.relational_execution).await?;
             Ok(BenchRuntime {
                 execution_ctx: cpu_ctx,
-                optimizer: None,
-                native_planning: Some(NativePlanningRuntime { ctx: native_ctx, optimizer }),
+                native_rule_installed: false,
+                native_planning_ctx: Some(native_ctx),
                 skip_cost_declined: false,
                 backend: None,
             })
@@ -143,20 +141,19 @@ async fn build_native_planning_context(
     root: &Path,
     native_profile: &TpcdsNativeProfileSettings,
     relational_execution: RelationalExecutionSelection,
-) -> Result<(SessionContext, Arc<AlgeonNativePhysicalOptimizerRule>), Box<dyn Error>> {
+) -> Result<SessionContext, Box<dyn Error>> {
     let optimizer_config = relational_execution
         .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(
             native_profile,
         ))
         .expect("cost-decision planning session installs the native rule");
-    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())
-        .with_algeon_native_rule(Arc::clone(&rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables_with_native_metadata(&ctx, root).await?;
-    Ok((ctx, rule))
+    Ok(ctx)
 }
 
 fn tuned_cpu_session_config() -> SessionConfig {

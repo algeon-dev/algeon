@@ -64,10 +64,9 @@ use crate::{
     },
     native_exec::{
         GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget,
-        admission::QueryAdmissionTicket,
+        admission::{QueryAdmissionTicket, query_admission_ticket_from_task_context},
         composed_admission_capability_evidence, gpu_resident_producer, gpu_resident_producer_unique_output_key,
         graph::{GraphExecutionPlan, graph_execution_plan},
-        query_admission_ticket_from_task_context,
     },
     native_report::NativeDataFusionExecutionMetrics,
     session::AlgeonSessionStateBuilderExt,

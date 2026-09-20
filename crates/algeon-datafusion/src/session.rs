@@ -10,10 +10,13 @@
 //! | [`AlgeonSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph planner, metadata, function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no |
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
-//! precedes DataFusion aggregate statistics, and the final native rewrite
-//! precedes DataFusion's final sanity check so rewritten plans remain
-//! validated. Embedded applications should use a backend entry point; the raw
-//! extension methods are for planning, coverage, and controlled composition.
+//! precedes DataFusion aggregate statistics, and the final native rewrite runs
+//! after every other rule already in the pipeline and immediately before
+//! DataFusion's final sanity check, so the DataFusion CPU policy it enforces
+//! and the sanity check both see the completed plan. Rules added to a builder
+//! after installation run after that check. Embedded applications should use a
+//! backend entry point; the raw extension methods are for planning, coverage,
+//! and controlled composition.
 
 use std::sync::Arc;
 
@@ -28,8 +31,6 @@ use datafusion::{
     physical_planner::ExtensionPlanner,
 };
 
-#[cfg(feature = "cugraph")]
-use crate::native_exec::AlgeonNativeExecutionConfig;
 #[cfg(all(test, feature = "cugraph"))]
 use crate::planner::AlgeonGpuExecutionMode;
 #[cfg(feature = "cugraph")]
@@ -44,10 +45,8 @@ use crate::{
     error::{Error, ErrorCode},
     gpu_coverage::gpu_coverage_table_function,
     gpu_functions::{GpuFunctionCatalog, GpuFunctionFamily, install_gpu_function_family},
-    planner::{
-        ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonFinalPlanRequirementRule, AlgeonNativeOptimizerConfig,
-        AlgeonNativePhysicalOptimizerRule,
-    },
+    native_exec::AlgeonNativeExecutionConfig,
+    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::Invocation},
 };
 
 /// Public name and deduplication key for the final native rewrite rule.
@@ -106,18 +105,14 @@ pub trait AlgeonSessionStateBuilderExt {
     /// changed graph defaults, is rejected with a structured setup error.
     fn try_with_cugraph_sql(self, config: CugraphSqlConfig) -> DataFusionResult<Self>
     where Self: Sized;
-
-    /// Advanced planning path: register a caller-retained algeon native rule
-    /// before DataFusion's final physical-plan validation rule. Use it when
-    /// the caller keeps the rule to read its structured planning reports
-    /// (`last_report`, `last_planning_diagnostics`) after planning; ordinary
-    /// installation uses [`Self::with_algeon_native`].
-    fn with_algeon_native_rule(self, rule: Arc<AlgeonNativePhysicalOptimizerRule>) -> Self;
 }
 
 impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
-    fn with_algeon_native(self, config: AlgeonNativeOptimizerConfig) -> Self {
-        self.with_algeon_native_rule(Arc::new(AlgeonNativePhysicalOptimizerRule::new(config)))
+    fn with_algeon_native(mut self, config: AlgeonNativeOptimizerConfig) -> Self {
+        install_gpu_coverage_table_function(&mut self);
+        let mut rules = take_physical_optimizer_rules(&mut self);
+        install_algeon_native_rules(&mut rules, Arc::new(AlgeonNativePhysicalOptimizerRule::new(config)));
+        self.with_physical_optimizer_rules(rules)
     }
 
     fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
@@ -167,13 +162,6 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 gpu_family: Arc::new(CugraphGpuFunctionFamily::new(config)),
             },
         )
-    }
-
-    fn with_algeon_native_rule(mut self, rule: Arc<AlgeonNativePhysicalOptimizerRule>) -> Self {
-        install_gpu_coverage_table_function(&mut self);
-        let mut rules = take_physical_optimizer_rules(&mut self);
-        insert_algeon_native_rules_before_final_validation(&mut rules, rule);
-        self.with_physical_optimizer_rules(rules)
     }
 }
 
@@ -251,7 +239,12 @@ pub(crate) fn session_state_with_native_execution_config(
         optimizer_config.relational_native_rewrite_policy() == RelationalNativeRewritePolicy::Enabled;
     let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
-    insert_algeon_native_rules_for_cugraph_subplan(&mut rules, rule);
+    // The outer optimizer run revisits this subtree through `CugraphAlgoExec`'s
+    // children. DataFusion forbids `JoinSelection` from swapping a hash join
+    // after `FilterPushdown(Post)` attached its dynamic filter, so only the
+    // outer run may construct dynamic filters.
+    rules.retain(|existing| existing.name() != DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME);
+    install_algeon_native_rules(&mut rules, rule);
     Some(build_cugraph_subplan_state(state, rules, relational_rewrite_enabled))
 }
 
@@ -279,6 +272,20 @@ fn build_cugraph_subplan_state(
         .with_config(subplan_config)
         .with_physical_optimizer_rules(rules)
         .build()
+}
+
+/// The execution config that an extension planner copies into the GPU node it
+/// builds for `session`: the installed native rule's config, or the bounded
+/// planning defaults without one, with the session invocation's execution
+/// inputs applied.
+pub(crate) fn planning_native_execution_config(session: &dyn Session) -> AlgeonNativeExecutionConfig {
+    let config = installed_algeon_native_optimizer_config(session)
+        .map(|config| config.native_execution_config().clone())
+        .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
+    match Invocation::of_options(session.config_options()) {
+        Some(invocation) => invocation.execution_config(config),
+        None => config,
+    }
 }
 
 pub(crate) fn installed_algeon_native_optimizer_config(session: &dyn Session) -> Option<AlgeonNativeOptimizerConfig> {
@@ -317,76 +324,59 @@ fn take_physical_optimizer_rules(builder: &mut SessionStateBuilder) -> PhysicalO
     rules
 }
 
-fn insert_algeon_native_rules_before_final_validation(
+/// The one place that orders Algeon's rules in an optimizer pipeline. The
+/// count-only probe runs before DataFusion's aggregate statistics; the final
+/// rewrite, whose last step enforces the DataFusion CPU policy, runs after every
+/// other rule in `rules` and immediately before DataFusion's sanity check.
+fn install_algeon_native_rules(
     rules: &mut PhysicalOptimizerRules,
     native_rule: Arc<AlgeonNativePhysicalOptimizerRule>,
 ) {
-    remove_algeon_native_rules(rules);
-    let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
-    let insertion_position =
-        rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
-    rules.insert(insertion_position, count_only_rule);
-    let final_validation = rules
-        .iter()
-        .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
-        .map(|position| rules.remove(position));
-    let final_plan_requirement = Arc::new(AlgeonFinalPlanRequirementRule::with_native_rule(
-        native_rule.config().clone(),
-        Arc::clone(&native_rule),
-    ));
-    rules.push(native_rule);
-    rules.push(final_plan_requirement);
-    if let Some(final_validation) = final_validation {
-        rules.push(final_validation);
-    }
-}
-
-#[cfg(feature = "cugraph")]
-fn insert_algeon_native_rules_for_cugraph_subplan(
-    rules: &mut PhysicalOptimizerRules,
-    native_rule: Arc<AlgeonNativePhysicalOptimizerRule>,
-) {
-    remove_algeon_native_rules(rules);
-    // The outer optimizer run revisits this subtree through `CugraphAlgoExec`'s
-    // children. DataFusion forbids `JoinSelection` from swapping a hash join
-    // after `FilterPushdown(Post)` attached its dynamic filter, so only the
-    // outer run may construct dynamic filters.
-    rules.retain(|existing| existing.name() != DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME);
-    let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
-    let insertion_position =
-        rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
-    rules.insert(insertion_position, count_only_rule);
-    let final_validation = rules
-        .iter()
-        .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
-        .map(|position| rules.remove(position));
-    rules.push(native_rule);
-    if let Some(final_validation) = final_validation {
-        rules.push(final_validation);
-    }
-}
-
-fn remove_algeon_native_rules(rules: &mut PhysicalOptimizerRules) {
     rules.retain(|existing| {
         existing.name() != ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
             && existing.name() != ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME
     });
+    let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
+    let insertion_position =
+        rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
+    rules.insert(insertion_position, count_only_rule);
+    let final_validation = rules
+        .iter()
+        .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
+        .map(|position| rules.remove(position));
+    rules.push(native_rule);
+    if let Some(final_validation) = final_validation {
+        rules.push(final_validation);
+    }
 }
 
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use datafusion::{
+        common::config::ConfigOptions,
         datasource::MemTable,
+        physical_plan::{ExecutionPlan, empty::EmptyExec, union::UnionExec},
         prelude::{SessionConfig, SessionContext},
     };
     use futures::executor::block_on;
 
     use super::*;
     use crate::{
-        backend::InstalledTestGpuBackend, native_exec::QueryAdmissionSource, planner::DataFusionCpuExecutionPolicy,
+        backend::InstalledTestGpuBackend, error::DataFusionErrorExt, native_exec::QueryAdmissionSource,
+        planner::DataFusionCpuExecutionPolicy,
     };
+
+    /// Native lowering rejects struct columns, so this plan stays on DataFusion.
+    fn cpu_only_plan(schema: SchemaRef) -> Arc<dyn ExecutionPlan> {
+        UnionExec::try_new(vec![Arc::new(EmptyExec::new(Arc::clone(&schema))), Arc::new(EmptyExec::new(schema))])
+            .expect("union over empty inputs")
+    }
+
+    fn struct_schema() -> SchemaRef {
+        let fields = Fields::from(vec![Field::new("x", DataType::Int64, true)]);
+        Arc::new(Schema::new(vec![Field::new("s", DataType::Struct(fields), true)]))
+    }
 
     fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
         backend
@@ -422,18 +412,85 @@ mod tests {
         assert!(first_source.same_backend(&backend_source));
     }
 
+    /// A cuGraph input subplan is a child of the query root, so its final
+    /// rewrite leaves the DataFusion CPU policy to the outer run.
     #[test]
-    fn cugraph_subplanning_omits_final_plan_requirement_rule() {
+    fn cugraph_subplanning_leaves_the_cpu_policy_to_the_outer_run() {
         let optimizer_config = AlgeonNativeOptimizerConfig::default()
             .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state = SessionStateBuilder::new().with_algeon_native(optimizer_config.clone()).build();
         let nested =
             session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
                 .expect("nested cuGraph planning requires installed native selection");
-        let rules = nested.physical_optimizers();
+        let final_rewrite = |state: &SessionState| {
+            Arc::clone(
+                state
+                    .physical_optimizers()
+                    .iter()
+                    .find(|rule| rule.name() == ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME)
+                    .expect("installed final native rewrite"),
+            )
+        };
+        let cpu_plan = || cpu_only_plan(struct_schema());
+        let options = ConfigOptions::default();
 
-        assert!(rules.iter().any(|rule| rule.name() == ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
-        assert!(!rules.iter().any(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME));
+        assert!(final_rewrite(&state).optimize(cpu_plan(), &options).is_err());
+        assert!(final_rewrite(&nested).optimize(cpu_plan(), &options).is_ok());
+    }
+
+    /// A rule the builder holds when the native rules are installed runs
+    /// before the final rewrite, so the rewrite's DataFusion CPU check sees
+    /// that rule's output.
+    #[tokio::test]
+    async fn final_rewrite_checks_the_output_of_rules_installed_before_it() {
+        #[derive(Debug)]
+        struct ReplaceWithCpuUnion;
+
+        impl PhysicalOptimizerRule for ReplaceWithCpuUnion {
+            fn optimize(
+                &self,
+                plan: Arc<dyn ExecutionPlan>,
+                _config: &ConfigOptions,
+            ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+                Ok(cpu_only_plan(plan.schema()))
+            }
+
+            fn name(&self) -> &str {
+                "replace_with_cpu_union"
+            }
+
+            fn schema_check(&self) -> bool {
+                true
+            }
+        }
+
+        let state = SessionStateBuilder::new_with_default_features()
+            .with_physical_optimizer_rule(Arc::new(ReplaceWithCpuUnion))
+            .with_algeon_native(
+                AlgeonNativeOptimizerConfig::default()
+                    .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            )
+            .build();
+        let rule_names = state.physical_optimizers().iter().map(|rule| rule.name()).collect::<Vec<_>>();
+        assert_eq!(
+            rule_names[rule_names.len() - 3..],
+            [
+                "replace_with_cpu_union",
+                ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+                DATAFUSION_FINAL_VALIDATION_RULE_NAME
+            ]
+        );
+
+        let failure = SessionContext::new_with_state(state)
+            .sql("SELECT named_struct('x', 1) AS s")
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .expect_err("the final rewrite rejects the CPU plan the earlier rule produced");
+        let error = failure.find_algeon_error().expect("typed adapter error");
+        assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+        assert_eq!(error.fact_value("physical_plan_root"), Some("UnionExec"));
     }
 
     #[test]

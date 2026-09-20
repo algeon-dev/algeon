@@ -420,7 +420,7 @@ async fn validate_query_session_fingerprint_ignores_invocation_local_extensions(
 }
 
 #[tokio::test]
-async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
+async fn validate_query_concurrent_calls_report_their_own_planning_diagnostics() {
     let ctx = validation_context(bounded_optimizer_config());
 
     let (native, cpu) =
@@ -542,7 +542,7 @@ mod cugraph {
             result_schema_for_params,
         },
         error::DataFusionErrorExt,
-        planner::{AlgeonFinalPlanRequirementRule, FinalPlanDisposition, classify_final_plan},
+        planner::{AlgeonNativePhysicalOptimizerRule, FinalPlanDisposition, classify_final_plan},
     };
 
     fn edge_schema() -> Arc<Schema> {
@@ -613,7 +613,7 @@ mod cugraph {
 
     fn assert_reject_cpu_policy_rejects_mixed_plan(plan: Arc<dyn ExecutionPlan>) {
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
-        let rule = AlgeonFinalPlanRequirementRule::new(
+        let rule = AlgeonNativePhysicalOptimizerRule::new(
             AlgeonNativeOptimizerConfig::default()
                 .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
         );
@@ -648,7 +648,7 @@ mod cugraph {
         let nested: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner));
         let plan = composed_cugraph_plan(nested);
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
-        let rule = AlgeonFinalPlanRequirementRule::new(
+        let rule = AlgeonNativePhysicalOptimizerRule::new(
             AlgeonNativeOptimizerConfig::default()
                 .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
         );

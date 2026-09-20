@@ -10,7 +10,7 @@
 
 use std::fs::File;
 
-use algeon_datafusion::{report::CandidateOutcome, session::ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME};
+use algeon_datafusion::{planner::plan_with_native_diagnostics, report::CandidateOutcome};
 use arrow::{
     array::{Float64Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
@@ -18,7 +18,7 @@ use arrow::{
     util::pretty::pretty_format_batches,
 };
 use datafusion::{
-    execution::{SessionState, SessionStateBuilder},
+    execution::SessionStateBuilder,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
@@ -108,16 +108,16 @@ async fn run_datafusion_baseline_case(
     register_datafusion_baseline_tables(&gpu_ctx, bench, bench2).await;
 
     let df = gpu_ctx.sql(case.sql).await.expect(case.id);
-    let plan = df.create_physical_plan().await.expect(case.id);
-    // state() clones SessionState; Arc optimizer rules still share retained diagnostics.
-    let session_state = gpu_ctx.state();
-    let native_rule = installed_final_native_rule(&session_state)
-        .unwrap_or_else(|| panic!("{}: installed final native rule missing", case.id));
-    let report = NativeDataFusionPlanningReport::from_retained_rule(case.id, Arc::clone(&plan), native_rule);
+    let (session_state, logical) = df.into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&session_state, &logical).await.expect(case.id);
+    let planning_report = diagnostics.report.clone();
+    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        case.id,
+        Arc::clone(&plan),
+        diagnostics,
+    )]);
     let row = report.rows.first().unwrap_or_else(|| panic!("{}: planning report produced no rows", case.id));
 
-    let planning_report =
-        native_rule.last_report().unwrap_or_else(|| panic!("{}: rule retained no PlanningReport", case.id));
     let mut rewritten = 0usize;
     let mut rejected_reasons = Vec::new();
     for outcome in planning_report.outcomes() {
@@ -200,15 +200,6 @@ async fn run_datafusion_baseline_case(
         },
         unexpected => panic!("{}: DataFusion-baseline coverage does not admit {unexpected:?}", case.id),
     }
-}
-
-fn installed_final_native_rule(state: &SessionState) -> Option<&AlgeonNativePhysicalOptimizerRule> {
-    state.physical_optimizers().iter().find_map(|rule| {
-        if rule.name() != ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME {
-            return None;
-        }
-        (rule.as_ref() as &dyn std::any::Any).downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-    })
 }
 
 async fn register_datafusion_baseline_tables(ctx: &SessionContext, bench: &std::path::Path, bench2: &std::path::Path) {

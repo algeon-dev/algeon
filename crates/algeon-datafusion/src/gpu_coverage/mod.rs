@@ -25,8 +25,6 @@ pub(crate) use sql::{coverage_batch, coverage_schema};
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
-
 use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 use futures::future::BoxFuture;
 
@@ -45,10 +43,7 @@ use self::{
         optimizer_config_for_validation, planning_did_io_for_physical_error, preflight_single_query, validated_under,
     },
 };
-use crate::{
-    error::Result, final_plan_observation::observe_final_plan, planner::AlgeonNativePhysicalOptimizerRule,
-    session::AlgeonSessionStateBuilderExt,
-};
+use crate::{error::Result, final_plan_observation::observe_final_plan, planner::native::Invocation};
 pub use crate::{planner::FinalPlanCoverage, report::CandidateOutcomeKind};
 
 /// Metadata UDTF that exposes query GPU coverage validation.
@@ -65,10 +60,11 @@ pub(crate) use self::{
 
 /// Validate a single SQL query against the native GPU planning path.
 ///
-/// The validation clones the caller's planning state. When the caller has an
-/// installed native optimizer rule, validation uses an isolated retained copy
-/// of that exact configuration, including completed-plan requirements. A
-/// caller with no native rule remains on its DataFusion CPU baseline.
+/// The validation clones the caller's planning state and plans under its own
+/// invocation, detached from any attempt the caller's state belongs to, so it
+/// never binds that attempt's admission or disposition. The caller must have
+/// an installed native optimizer rule; validation plans with that rule and its
+/// completed-plan requirements.
 ///
 /// Candidate outcomes are retained as optimizer diagnostics, not an alternative
 /// verdict. One report can hold several decision kinds at once; they never
@@ -84,14 +80,12 @@ pub fn validate_query<'a>(
 ) -> BoxFuture<'a, Result<QueryGpuCoverage>> {
     Box::pin(async move {
         let sql = sql.as_ref();
+        let invocation = Invocation::detached();
         let mut planning_state_builder = SessionStateBuilder::new_from_existing(ctx.state());
         mark_coverage_validation_in_progress(&mut planning_state_builder);
+        invocation.install(planning_state_builder.config().get_or_insert_with(Default::default));
         let planning_state = planning_state_builder.build();
         let config = optimizer_config_for_validation(&planning_state)?;
-        let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(config.optimizer_config.clone()));
-        let planning_state = SessionStateBuilder::new_from_existing(planning_state)
-            .with_algeon_native_rule(Arc::clone(&native_rule))
-            .build();
         let validated_under = validated_under(&planning_state, &config);
         if let Some(rejection) = preflight_single_query(&planning_state, sql) {
             return Ok(QueryGpuCoverage::rejected(validated_under, rejection));
@@ -110,7 +104,7 @@ pub fn validate_query<'a>(
         let plan = match df.create_physical_plan().await {
             Ok(plan) => plan,
             Err(error) => {
-                let diagnostics = native_rule.last_planning_diagnostics();
+                let diagnostics = invocation.planning_diagnostics();
                 let phase = classify_physical_planning_error(&error);
                 let planning_did_io = planning_did_io_for_physical_error(phase);
                 return Ok(QueryGpuCoverage::rejected_with_diagnostics(
@@ -122,7 +116,7 @@ pub fn validate_query<'a>(
             },
         };
 
-        let diagnostics = native_rule.last_planning_diagnostics();
+        let diagnostics = invocation.planning_diagnostics();
         let observation = observe_final_plan(plan.as_ref());
         let candidate_outcomes = diagnostics
             .as_ref()

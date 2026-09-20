@@ -6,7 +6,7 @@ use algeon_datafusion::{
         NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
         NativeFallbackPressureWorkloadItem,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{AlgeonNativeOptimizerConfig, plan_with_native_diagnostics},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::record_batch::RecordBatch;
@@ -226,10 +226,9 @@ pub async fn tpch_datafusion_planning_workload_items_with_optimizer_config(
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
 ) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_algeon_native_rule(Arc::clone(&native_rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;
@@ -237,22 +236,17 @@ pub async fn tpch_datafusion_planning_workload_items_with_optimizer_config(
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
         let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => match native_rule.last_planning_diagnostics() {
-                    Some(diagnostics) => NativeDataFusionPlanningWorkloadItem::new(query.id, plan, diagnostics),
-                    None => NativeDataFusionPlanningWorkloadItem::planning_failure(
+            Ok(df) => {
+                let (state, logical) = df.into_parts();
+                match plan_with_native_diagnostics(&state, &logical).await {
+                    Ok((plan, diagnostics)) => NativeDataFusionPlanningWorkloadItem::new(query.id, plan, diagnostics),
+                    Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
                         query.id,
-                        "native_diagnostics",
-                        "missing_native_diagnostics",
-                        format!("missing retained native planning diagnostics for {}", query.id),
+                        "physical_planning",
+                        "physical_planning_failed",
+                        error.to_string(),
                     ),
-                },
-                Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
-                    query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
+                }
             },
             Err(error) => NativeDataFusionPlanningWorkloadItem::planning_failure(
                 query.id,
@@ -279,10 +273,9 @@ pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
 ) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_algeon_native_rule(Arc::clone(&native_rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;
@@ -290,9 +283,10 @@ pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
     let mut items = Vec::with_capacity(TPCH_QUERIES.len());
     for query in TPCH_QUERIES {
         let item = match ctx.sql(query.sql).await {
-            Ok(df) => match df.create_physical_plan().await {
-                Ok(plan) => match native_rule.last_planning_diagnostics() {
-                    Some(diagnostics) => {
+            Ok(df) => {
+                let (state, logical) = df.into_parts();
+                match plan_with_native_diagnostics(&state, &logical).await {
+                    Ok((plan, diagnostics)) => {
                         let runtime = if diagnostics.report.selected_count() > 0 {
                             execute_tpch_native_plan(Arc::clone(&plan)).await
                         } else {
@@ -300,19 +294,13 @@ pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
                         };
                         NativeDataFusionExecutionWorkloadItem::new(query.id, plan, diagnostics, runtime)
                     },
-                    None => NativeDataFusionExecutionWorkloadItem::planning_failure(
+                    Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
                         query.id,
-                        "native_diagnostics",
-                        "missing_native_diagnostics",
-                        format!("missing retained native planning diagnostics for {}", query.id),
+                        "physical_planning",
+                        "physical_planning_failed",
+                        error.to_string(),
                     ),
-                },
-                Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
-                    query.id,
-                    "physical_planning",
-                    "physical_planning_failed",
-                    error.to_string(),
-                ),
+                }
             },
             Err(error) => NativeDataFusionExecutionWorkloadItem::planning_failure(
                 query.id,

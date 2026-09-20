@@ -11,7 +11,7 @@ use algeon_datafusion::{
     error::DataFusionErrorExt,
     native_exec::AlgeonNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
-    planner::FinalPlanDisposition,
+    planner::{FinalPlanDisposition, plan_with_native_diagnostics},
 };
 use datafusion::{
     common::{Result as DataFusionResult, tree_node::TreeNodeRecursion},
@@ -706,4 +706,59 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     assert!(report.timestamps.physical_execution_started_ns.is_none());
     assert!(report.timestamps.cleanup_complete_ns.is_none());
     drop(_held);
+}
+
+/// DataFusion `EXPLAIN` runs the explained query through the native stages,
+/// so the attempt records that query's diagnostics, and executing the
+/// explanation requests no admission.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explain_inside_an_attempt_records_the_query_diagnostics_without_admission() {
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let query = "SELECT k, SUM(v) FROM native_rows GROUP BY k";
+    let logical = ctx.state().create_logical_plan(query).await.unwrap();
+    let (_, expected) = plan_with_native_diagnostics(&ctx.state(), &logical).await.unwrap();
+    assert!(expected.report.selected_count() > 0, "the explained query plans natively");
+
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = attempt.sql(&ctx, &format!("EXPLAIN {query}")).await.unwrap();
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    let diagnostics = attempt.planning_diagnostics().expect("EXPLAIN planning records diagnostics");
+    assert_eq!(diagnostics.input_plan_root, expected.input_plan_root);
+    assert_eq!(diagnostics.report.outcomes(), expected.report.outcomes());
+
+    let report = attempt.completion().await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert!(report.admission.is_none());
+}
+
+/// `algeon_explain_coverage` plans its query without the calling attempt: a
+/// CPU-only query over coverage rows stays `cpu_fallback` even when the
+/// validated query would run natively.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_planned_inside_an_attempt_keeps_the_outer_disposition() {
+    use arrow::array::AsArray;
+    let backend = backend();
+    let ctx = native_context(&backend).await;
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let mut stream = attempt
+        .sql(
+            &ctx,
+            "SELECT gpu_path FROM algeon_explain_coverage('SELECT k, SUM(v) FROM native_rows GROUP BY k') \
+             WHERE row_kind = 'summary'",
+        )
+        .await
+        .unwrap();
+    let mut gpu_paths = Vec::new();
+    while let Some(batch) = stream.next().await {
+        let batch = batch.unwrap();
+        gpu_paths.extend(batch.column(0).as_string::<i32>().iter().map(|path| path.unwrap().to_string()));
+    }
+    assert_eq!(gpu_paths, ["native"], "the validated query plans natively");
+
+    let report = attempt.completion().await;
+    assert_eq!(report.disposition, AttemptDisposition::CpuFallback);
+    assert!(report.admission.is_none());
 }

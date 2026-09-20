@@ -337,20 +337,17 @@ impl DatafusionAlgeonFlightSqlService {
             // per-query context, coordinator lease, and cancellation wiring as
             // ordinary statements, but deliberately never executes a physical
             // plan or acquires GPU admission.
-            let planning = self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone());
-            let query_ctx = match attempt.as_ref() {
-                Some(attempt) => match attempt.planning_context(&planning.ctx) {
-                    Ok(context) => context,
-                    Err(error) => {
-                        let (status, captured) =
-                            datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
-                        let status =
-                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                        coordinator_terminal.finish_captured("planning", &status, captured);
-                        return Err(status);
-                    },
+            let query_ctx = match self.data_query_context(
+                attempt.as_ref(),
+                self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
+            ) {
+                Ok(context) => context,
+                Err(error) => {
+                    let (status, captured) = datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    coordinator_terminal.finish_captured("planning", &status, captured);
+                    return Err(status);
                 },
-                None => planning.ctx.clone(),
             };
             let coverage = tokio::select! {
                 result = validate_query(&query_ctx, &sql)
@@ -454,14 +451,12 @@ impl DatafusionAlgeonFlightSqlService {
             return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
 
-        let planning = match execution_domain {
-            StatementExecutionDomain::Metadata => self.metadata_query_planning(),
-            StatementExecutionDomain::Data => {
-                self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone())
-            },
-        };
-        let query_ctx = match attempt.as_ref() {
-            Some(attempt) => match attempt.planning_context(&planning.ctx) {
+        let query_ctx = match (execution_domain, attempt.as_ref()) {
+            (StatementExecutionDomain::Metadata, _) => self.metadata_query_context(),
+            (StatementExecutionDomain::Data, attempt) => match self.data_query_context(
+                attempt,
+                self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
+            ) {
                 Ok(context) => context,
                 Err(error) => {
                     let (status, captured) = datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
@@ -470,7 +465,6 @@ impl DatafusionAlgeonFlightSqlService {
                     return Err(status);
                 },
             },
-            None => planning.ctx.clone(),
         };
         let query_state = query_ctx.state();
         let parsed_statement = self.parse_flight_statement(&sql);
@@ -561,9 +555,6 @@ impl DatafusionAlgeonFlightSqlService {
                     if let Some(attempt) = attempt.as_ref() {
                         attempt.planning_failed(&error);
                     }
-                    // DDL execution and logical-plan wrapping happen before
-                    // the physical optimizer runs, so `last_report` is empty
-                    // here. The leaf-guard helper no-ops on non-leaf-guard
                     let (status, captured) =
                         datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
                     let status = status_with_query_id(status, &query_id);
@@ -611,9 +602,10 @@ impl DatafusionAlgeonFlightSqlService {
             return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
         let logical_plan_tables = referenced_table_names(df.logical_plan());
-        // Physical planning runs the retained native optimizer rule. Capture
-        // the post-optimizer plan and retained diagnostics before execution so
-        // query_stats can report both native rewrites and retained DataFusion baselines.
+        // Physical planning records the native diagnostics on the attempt's
+        // invocation. Capture the post-optimizer plan and those diagnostics
+        // before execution so query_stats can report both native rewrites and
+        // retained DataFusion baselines.
         let (schema, plan) = tokio::select! {
             result = async {
                 let schema = flight_result_schema(&query_state, df.logical_plan())?;
@@ -630,10 +622,7 @@ impl DatafusionAlgeonFlightSqlService {
                     if let Some(attempt) = attempt.as_ref() {
                         attempt.planning_failed(&error);
                     }
-                    let diagnostics = planning
-                        .native_rule
-                        .as_ref()
-                        .and_then(|native_rule| native_rule.last_planning_diagnostics());
+                    let diagnostics = attempt.as_ref().and_then(AlgeonAttempt::planning_diagnostics);
                     if execution_domain == StatementExecutionDomain::Data {
                         log_native_planning_report_for_tables(
                             &query_id,
@@ -671,7 +660,7 @@ impl DatafusionAlgeonFlightSqlService {
                 return Err(status);
             },
         };
-        let diagnostics = planning.native_rule.as_ref().and_then(|native_rule| native_rule.last_planning_diagnostics());
+        let diagnostics = attempt.as_ref().and_then(AlgeonAttempt::planning_diagnostics);
         if let Some(attempt) = attempt.as_ref() {
             attempt.physical_planning_finished(plan.as_ref());
         }

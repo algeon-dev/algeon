@@ -1,7 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
+    execution::SessionState,
+    logical_expr::LogicalPlan,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
@@ -17,7 +19,7 @@ use super::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy, FinalPlan
 #[cfg(feature = "cugraph")]
 use crate::native_exec::composed_admission_capability_evidence;
 use crate::{
-    attempt::AlgeonAttemptExtension,
+    attempt::InvocationAttempt,
     capability::CapabilityReason,
     cugraph_sql::is_feature_disabled_execution_plan,
     error::{Error, ErrorCode},
@@ -51,76 +53,24 @@ pub use capability_envelope::{
     NativeCapabilityDeferredCandidateDiagnostics, NativeCapabilityRejectedCandidateDiagnostics,
 };
 pub(crate) use invocation::Invocation;
+#[cfg(feature = "server")]
+pub(crate) use invocation::InvocationExecution;
 use mixed::is_certified_mixed_execution_plan;
 
-/// Internal optimizer-rule identity for the completed-plan DataFusion CPU policy.
-pub const ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str = "algeon_datafusion_final_plan_requirement";
-
-/// Enforces the configured DataFusion CPU policy against the exact physical
-/// plan produced by the preceding native rewrite and leaf-guard rules.
-#[derive(Debug, Clone)]
-pub struct AlgeonFinalPlanRequirementRule {
-    config: AlgeonNativeOptimizerConfig,
-    native_rule: Option<Arc<AlgeonNativePhysicalOptimizerRule>>,
-}
-
-impl AlgeonFinalPlanRequirementRule {
-    /// Create a requirement gate without native-planning diagnostics.
-    pub fn new(config: AlgeonNativeOptimizerConfig) -> Self {
-        Self { config, native_rule: None }
+/// Rejects a completed plan that executes DataFusion CPU operators.
+///
+/// `report` is the planning report of the rewrite that produced `plan`, used
+/// only to name the first unsupported candidate in the error.
+fn enforce_no_datafusion_cpu(plan: &dyn ExecutionPlan, report: Option<&PlanningReport>) -> DataFusionResult<()> {
+    let disposition = classify_final_plan(plan);
+    // A feature-disabled cuGraph plan is a zero-child terminal capability
+    // rejection. It executes neither a CPU fallback nor a GPU operator, so it
+    // satisfies the no-CPU-execution contract without being misclassified as
+    // a native workload.
+    if disposition != FinalPlanDisposition::Native && !is_feature_disabled_execution_plan(plan) {
+        return Err(final_plan_requirement_error(plan, disposition, report).into());
     }
-
-    pub(crate) fn with_native_rule(
-        config: AlgeonNativeOptimizerConfig,
-        native_rule: Arc<AlgeonNativePhysicalOptimizerRule>,
-    ) -> Self {
-        Self { config, native_rule: Some(native_rule) }
-    }
-
-    fn planning_report(&self, config: &ConfigOptions) -> Option<PlanningReport> {
-        // The invocation's own record first: the shared rule state may already
-        // hold another query's report. Only invocations without a record store
-        // (plain planning outside an attempt) read the shared last report.
-        if let Some(invocation) = Invocation::of_options(config) {
-            return invocation.planning_diagnostics().map(|diagnostics| diagnostics.report);
-        }
-        self.native_rule.as_ref().and_then(|rule| rule.last_report())
-    }
-}
-
-impl PhysicalOptimizerRule for AlgeonFinalPlanRequirementRule {
-    fn optimize(
-        &self,
-        plan: Arc<dyn ExecutionPlan>,
-        config: &ConfigOptions,
-    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if self.config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Allow {
-            return Ok(plan);
-        }
-        let disposition = classify_final_plan(plan.as_ref());
-        // A feature-disabled cuGraph plan is a zero-child terminal capability
-        // rejection. It executes neither a CPU fallback nor a GPU operator,
-        // so it satisfies the no-CPU-execution contract without being
-        // misclassified as a native workload.
-        let feature_disabled_terminal = is_feature_disabled_execution_plan(plan.as_ref());
-        if disposition != FinalPlanDisposition::Native && !feature_disabled_terminal {
-            return Err(final_plan_requirement_error(
-                plan.as_ref(),
-                disposition,
-                self.planning_report(config).as_ref(),
-            )
-            .into());
-        }
-        Ok(plan)
-    }
-
-    fn name(&self) -> &str {
-        ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
+    Ok(())
 }
 
 pub(crate) fn final_plan_requirement_error(
@@ -179,7 +129,7 @@ fn first_native_not_supported(
     })
 }
 
-/// Last-observed native planning diagnostics from a retained optimizer rule.
+/// Native planning diagnostics of one optimizer stage run.
 ///
 /// Capability-contract evidence is retained from the planner. The optimizer
 /// retains no alternate planning-history projection.
@@ -202,31 +152,51 @@ pub struct NativePlanningDiagnostics {
     pub capability_contract: NativeCapabilityContractDiagnostics,
 }
 
+/// Plans `logical` once on `state` and returns the native diagnostics of this
+/// call only.
+///
+/// The call plans under its own invocation, detached from any attempt that
+/// `state` belongs to, so it binds no attempt admission. The diagnostics
+/// describe the latest native optimizer stage of this planning pass. A session
+/// without the native optimizer rule records none and fails with
+/// `reason = "native_optimizer_rule_not_installed"`.
+pub async fn plan_with_native_diagnostics(
+    state: &SessionState,
+    logical: &LogicalPlan,
+) -> DataFusionResult<(Arc<dyn ExecutionPlan>, NativePlanningDiagnostics)> {
+    let invocation = Invocation::detached();
+    let mut state = state.clone();
+    invocation.install(state.config_mut());
+    let plan = state.create_physical_plan(logical).await?;
+    let diagnostics = invocation.planning_diagnostics().ok_or_else(|| {
+        DataFusionError::from(
+            Error::new(
+                ErrorCode::InvalidRequest,
+                "algeon_datafusion.planner.native_diagnostics",
+                "the session has no native optimizer rule to record planning diagnostics",
+            )
+            .with_log_safe_fact("reason", "native_optimizer_rule_not_installed"),
+        )
+    })?;
+    Ok((plan, diagnostics))
+}
+
 /// DataFusion physical optimizer rule that rewrites supported plans to native cuDF execution.
 ///
-/// The rule is reusable across sessions when callers want to inspect
-/// [`last_planning_diagnostics`](Self::last_planning_diagnostics). Session
-/// insertion deduplicates by the public rule names in [`crate::session`].
-/// Candidate misses leave the original DataFusion plan intact. A reject
-/// DataFusion CPU policy runs in a later rule after native planning has
-/// completed.
+/// The rule keeps no per-query state. Planning diagnostics belong to the
+/// invocation that planned and are read through
+/// [`AlgeonAttempt::planning_diagnostics`](crate::attempt::AlgeonAttempt::planning_diagnostics),
+/// [`plan_with_native_diagnostics`], or [`Self::optimize_with_diagnostics`].
+/// Session insertion deduplicates by the public rule names in [`crate::session`].
+/// Candidate misses leave the original DataFusion plan intact. Under a reject
+/// DataFusion CPU policy, the final stage rejects the plan it completed.
 #[derive(Debug)]
 pub struct AlgeonNativePhysicalOptimizerRule {
     config: AlgeonNativeOptimizerConfig,
     stage: NativeOptimizerStage,
-    state: Arc<AlgeonNativePhysicalOptimizerRuleState>,
-    mints_plan_ticket: bool,
-}
-
-#[derive(Debug)]
-struct AlgeonNativePhysicalOptimizerRuleState {
-    last_input_plan_root: Mutex<String>,
-    last_input_plan_shape: Mutex<String>,
-    last_input_join_diagnostics: Mutex<Vec<NativeJoinDiagnosticSummary>>,
-    last_report: Mutex<Option<PlanningReport>>,
-    last_native_optimizer: Mutex<NativeOptimizerDiagnostics>,
-    last_source_diagnostics: Mutex<Vec<SourceDiagnostics>>,
-    last_capability_contract: Mutex<NativeCapabilityContractDiagnostics>,
+    // False for a cuGraph input subplan: that plan is a child of the query
+    // root, so the outer run binds admission and checks the CPU policy.
+    plans_query_root: bool,
 }
 
 // Distinct rule identities let the count-only probe run before the final rewrite pass.
@@ -241,38 +211,12 @@ enum NativeOptimizerStage {
 impl AlgeonNativePhysicalOptimizerRule {
     /// Create the final native rewrite rule.
     pub fn new(config: AlgeonNativeOptimizerConfig) -> Self {
-        Self {
-            config,
-            stage: NativeOptimizerStage::Final,
-            state: Arc::new(AlgeonNativePhysicalOptimizerRuleState {
-                last_input_plan_root: Mutex::new(String::new()),
-                last_input_plan_shape: Mutex::new(String::new()),
-                last_input_join_diagnostics: Mutex::new(Vec::new()),
-                last_report: Mutex::new(None),
-                last_native_optimizer: Mutex::new(NativeOptimizerDiagnostics::default()),
-                last_source_diagnostics: Mutex::new(Vec::new()),
-                last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
-            }),
-            mints_plan_ticket: true,
-        }
+        Self { config, stage: NativeOptimizerStage::Final, plans_query_root: true }
     }
 
     #[cfg(feature = "cugraph")]
     pub(crate) fn new_cugraph_subplan(config: AlgeonNativeOptimizerConfig) -> Self {
-        Self {
-            config,
-            stage: NativeOptimizerStage::Final,
-            state: Arc::new(AlgeonNativePhysicalOptimizerRuleState {
-                last_input_plan_root: Mutex::new(String::new()),
-                last_input_plan_shape: Mutex::new(String::new()),
-                last_input_join_diagnostics: Mutex::new(Vec::new()),
-                last_report: Mutex::new(None),
-                last_native_optimizer: Mutex::new(NativeOptimizerDiagnostics::default()),
-                last_source_diagnostics: Mutex::new(Vec::new()),
-                last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
-            }),
-            mints_plan_ticket: false,
-        }
+        Self { config, stage: NativeOptimizerStage::Final, plans_query_root: false }
     }
 
     /// Return the immutable config copied into rewritten native exec nodes.
@@ -284,60 +228,30 @@ impl AlgeonNativePhysicalOptimizerRule {
         Self {
             config: self.config.clone(),
             stage: NativeOptimizerStage::CountOnlyProbe,
-            state: Arc::clone(&self.state),
-            mints_plan_ticket: self.mints_plan_ticket,
+            plans_query_root: self.plans_query_root,
         }
     }
 
-    /// Most recent planning report produced by this retained rule, if it has run.
-    pub fn last_report(&self) -> Option<PlanningReport> {
-        self.state.last_report.lock().expect("native planning report mutex poisoned").clone()
-    }
-
-    /// Source diagnostics captured during the most recent native planning attempt.
-    pub fn last_source_diagnostics(&self) -> Vec<SourceDiagnostics> {
-        self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
-    }
-
-    /// Structured diagnostics from the most recent run of this retained rule.
+    /// Runs this rule once over `plan` and returns the result with this
+    /// call's planning diagnostics.
     ///
-    /// The result is overwritten on each optimizer invocation and is intended
-    /// for report harnesses and tests, not as a historical log.
-    pub fn last_planning_diagnostics(&self) -> Option<NativePlanningDiagnostics> {
-        self.last_report().map(|report| NativePlanningDiagnostics {
-            input_plan_root: self
-                .state
-                .last_input_plan_root
-                .lock()
-                .expect("native input plan root mutex poisoned")
-                .clone(),
-            input_plan_shape: self
-                .state
-                .last_input_plan_shape
-                .lock()
-                .expect("native input plan shape mutex poisoned")
-                .clone(),
-            input_join_diagnostics: self
-                .state
-                .last_input_join_diagnostics
-                .lock()
-                .expect("native input join diagnostics mutex poisoned")
-                .clone(),
-            report,
-            native_optimizer: self
-                .state
-                .last_native_optimizer
-                .lock()
-                .expect("native optimizer diagnostics mutex poisoned")
-                .clone(),
-            source_diagnostics: self.last_source_diagnostics(),
-            capability_contract: self
-                .state
-                .last_capability_contract
-                .lock()
-                .expect("native capability contract diagnostics mutex poisoned")
-                .clone(),
-        })
+    /// The call plans under its own invocation, detached from any attempt
+    /// carried by `options`. The diagnostics are `None` when `plan` already
+    /// holds this rule's native selection, which the rule keeps unchanged.
+    pub fn optimize_with_diagnostics(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        options: &ConfigOptions,
+    ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<NativePlanningDiagnostics>)> {
+        let invocation = Invocation::detached();
+        let mut options = options.clone();
+        options.extensions.insert(invocation.clone());
+        let plan = self.optimize(plan, &options)?;
+        Ok((plan, invocation.planning_diagnostics()))
+    }
+
+    fn ends_planning_pass(&self) -> bool {
+        self.stage == NativeOptimizerStage::Final && self.plans_query_root
     }
 }
 
@@ -347,9 +261,55 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let invocation = Invocation::of_options(config);
+        let rewritten = {
+            let _footers = invocation.map(Invocation::footer_scope);
+            self.rewrite(plan, invocation)
+        };
+        if self.ends_planning_pass()
+            && let Some(invocation) = invocation
+        {
+            invocation.end_planning_pass();
+        }
+        let (plan, report) = rewritten?;
+        // The last step of the final stage, on the plan and report of this
+        // rewrite. `crate::session` installs this stage after every other rule
+        // already in the pipeline and immediately before DataFusion's sanity
+        // check.
+        if self.ends_planning_pass()
+            && self.config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Reject
+        {
+            // A plan this rule already selected recorded its report in the
+            // earlier stage that selected it.
+            let prior = || invocation.and_then(Invocation::planning_diagnostics).map(|diagnostics| diagnostics.report);
+            enforce_no_datafusion_cpu(plan.as_ref(), report.or_else(prior).as_ref())?;
+        }
+        Ok(plan)
+    }
+
+    fn name(&self) -> &str {
+        match self.stage {
+            NativeOptimizerStage::CountOnlyProbe => ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
+            NativeOptimizerStage::Final => ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        }
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+impl AlgeonNativePhysicalOptimizerRule {
+    /// Rewrites `plan` and returns it with this rewrite's planning report, or
+    /// `None` when `plan` already held a native selection.
+    fn rewrite(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        invocation: Option<&Invocation>,
+    ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<PlanningReport>)> {
         self.config.validate().map_err(DataFusionError::from)?;
         if plan_is_query_admission_wrapped(plan.as_ref()) {
-            return Ok(plan);
+            return Ok((plan, None));
         }
         let already_selected = if plan.downcast_ref::<AlgeonNativeExec>().is_some()
             || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
@@ -360,33 +320,26 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
             peel_cooperative_native_exec(&plan)
         };
         let retains_prior_selection_report = already_selected.is_some();
+        // The DataFusion input as this rewrite saw it; native replacement can
+        // remove the join nodes these diagnostics describe.
+        let input = invocation.filter(|_| !retains_prior_selection_report).map(|_| {
+            (plan.name().to_string(), physical_plan_shape(plan.as_ref()), physical_join_diagnostics(plan.as_ref()))
+        });
 
-        // Captured once into locals: the invocation record below must carry this
-        // call's input even if another query overwrites the shared rule state
-        // before this call finishes planning.
-        let input_plan_root = plan.name().to_string();
-        let input_plan_shape = physical_plan_shape(plan.as_ref());
-        let input_join_diagnostics = physical_join_diagnostics(plan.as_ref());
-        *self.state.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
-            input_plan_root.clone();
-        *self.state.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
-            input_plan_shape.clone();
-        *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
-            input_join_diagnostics.clone();
-
-        let attempt_extension = config.extensions.get::<AlgeonAttemptExtension>().cloned();
-        let effective_config = self.config.clone().with_query_id_if_absent(
-            attempt_extension
-                .as_ref()
-                .and_then(AlgeonAttemptExtension::query_id)
+        let attempt = invocation.and_then(Invocation::attempt);
+        let native_execution_config = self.config.native_execution_config().clone();
+        let native_execution_config = match invocation {
+            Some(invocation) => invocation.execution_config(native_execution_config),
+            None => native_execution_config,
+        }
+        .with_query_id_if_absent(
+            attempt
+                .and_then(InvocationAttempt::query_id)
                 .map(|query_id| QueryId::new(query_id.as_str()))
                 .unwrap_or_else(QueryId::mint),
-        );
-        let native_execution_config = effective_config
-            .native_execution_config()
-            .clone()
-            .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env()?);
-        let effective_config = effective_config.with_native_execution_config(native_execution_config);
+        )
+        .with_lakehouse_footer_pruning(lakehouse_pruning::enabled_from_env()?);
+        let effective_config = self.config.clone().with_native_execution_config(native_execution_config);
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
         let native_plan_cost_options = effective_config.native_plan_cost_options();
@@ -414,79 +367,46 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
             },
         };
         let mut optimized = optimized;
-        let binds_final_plan = self.stage == NativeOptimizerStage::Final && self.mints_plan_ticket;
+        let binds_final_plan = self.ends_planning_pass();
         if binds_final_plan {
             let mut next_occurrence = 0_u64;
             optimized.plan = bind_gpu_function_host_occurrences(optimized.plan, true, &mut next_occurrence)?;
         }
         if binds_final_plan
             && plan_contains_gpu_execution(optimized.plan.as_ref())
-            && let Some(extension) = &attempt_extension
+            && let Some(attempt) = attempt
         {
-            extension.native_admission_planned(optimized.plan.as_ref());
+            attempt.native_admission_planned(optimized.plan.as_ref());
         }
         let query_admission_ticket = if binds_final_plan {
             plan_query_admission_ticket_for_optimized_plan(
                 optimized.plan.as_ref(),
                 native_execution_config,
-                attempt_extension.as_ref(),
+                invocation,
             )?
         } else {
             None
         };
-        if self.mints_plan_ticket
-            && let (Some(extension), Some(ticket)) = (&attempt_extension, &query_admission_ticket)
-        {
-            extension.bind_ticket(Arc::clone(ticket)).map_err(DataFusionError::from)?;
-        }
-        if self.mints_plan_ticket {
+        if self.plans_query_root {
             apply_execution_admission_wrappers(&mut optimized, query_admission_ticket);
         }
-        if !retains_prior_selection_report {
-            self.store_optimization_attempt(&optimized)?;
-            if let Some(invocation) = Invocation::of_options(config) {
-                invocation.record_planning(NativePlanningDiagnostics {
-                    input_plan_root,
-                    input_plan_shape,
-                    input_join_diagnostics,
-                    report: optimized.report.clone(),
-                    native_optimizer: optimized.native_optimizer.clone(),
-                    source_diagnostics: optimized.source_diagnostics.clone(),
-                    capability_contract: optimized.capability_contract.clone(),
-                });
-            }
+        if retains_prior_selection_report {
+            return Ok((optimized.plan, None));
         }
-        Ok(optimized.plan)
-    }
-
-    fn name(&self) -> &str {
-        match self.stage {
-            NativeOptimizerStage::CountOnlyProbe => ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
-            NativeOptimizerStage::Final => ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        if let (Some(invocation), Some((input_plan_root, input_plan_shape, input_join_diagnostics))) =
+            (invocation, input)
+        {
+            invocation.record_planning(NativePlanningDiagnostics {
+                input_plan_root,
+                input_plan_shape,
+                input_join_diagnostics,
+                report: optimized.report.clone(),
+                native_optimizer: optimized.native_optimizer,
+                source_diagnostics: optimized.source_diagnostics,
+                capability_contract: optimized.capability_contract,
+            });
         }
-    }
-
-    fn schema_check(&self) -> bool {
-        true
-    }
-}
-
-impl AlgeonNativePhysicalOptimizerRule {
-    fn store_optimization_attempt(&self, optimized: &NativeOptimizationAttempt) -> DataFusionResult<()> {
-        *self.state.last_report.lock().map_err(|_| {
-            DataFusionError::from(Error::new(
-                ErrorCode::Internal,
-                "algeon_datafusion.native_optimizer.report",
-                "native planning report mutex was poisoned",
-            ))
-        })? = Some(optimized.report.clone());
-        *self.state.last_native_optimizer.lock().expect("native optimizer diagnostics mutex poisoned") =
-            optimized.native_optimizer.clone();
-        *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
-            optimized.source_diagnostics.clone();
-        *self.state.last_capability_contract.lock().expect("native capability contract diagnostics mutex poisoned") =
-            optimized.capability_contract.clone();
-        Ok(())
+        Ok((optimized.plan, Some(optimized.report)))
     }
 }
 
@@ -514,34 +434,40 @@ pub(crate) fn wrap_direct_native_plan_with_admission_ticket(
     })
 }
 
+/// The admission ticket for a final plan. An attempt invocation mints its one
+/// ticket from the plan's evidence, or extends a ticket it already minted;
+/// every other plan gets its own plan ticket.
 fn plan_query_admission_ticket_for_optimized_plan(
     plan: &dyn ExecutionPlan,
     native_execution_config: &AlgeonNativeExecutionConfig,
-    attempt: Option<&AlgeonAttemptExtension>,
+    invocation: Option<&Invocation>,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
+    let ticket_ask_error = |error| {
+        DataFusionError::from(Error::from_native(
+            "algeon_datafusion.native_optimizer.graph_ticket_ask",
+            "failed to compute query admission ticket requirements",
+            error,
+        ))
+    };
     let fragment_evidence_items = native_fragment_capability_evidences(plan)?;
-    let ticket = native_execution_config
-        .new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)
-        .map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "algeon_datafusion.native_optimizer.graph_ticket_ask",
-                "failed to compute query admission ticket requirements",
-                error,
-            ))
-        })?;
-    let Some(ticket) = ticket else {
-        return Ok(None);
+    let attempt_ticket = match (invocation, native_execution_config.query_admission_source()) {
+        (Some(invocation), Some(source)) if invocation.attempt().is_some() && !fragment_evidence_items.is_empty() => {
+            let evidence =
+                AttemptCapabilityEvidence::aggregate(fragment_evidence_items.clone()).map_err(ticket_ask_error)?;
+            invocation.attempt_admission_ticket(source, Some(evidence))
+        },
+        _ => None,
     };
-    let ticket = match attempt {
-        Some(extension) => QueryAdmissionTicket::new_attempt_bound(
-            ticket.source(),
-            ticket.attempt_capability_evidence_for_rebind(),
-            extension.ticket_binding(),
-            ticket.metrics_capture(),
-        ),
-        None => ticket,
-    };
-    Ok(Some(ticket))
+    match attempt_ticket {
+        Some((ticket, true)) => Ok(Some(ticket)),
+        Some((ticket, false)) => {
+            ticket.extend_capability_evidence_before_admission(fragment_evidence_items).map_err(ticket_ask_error)?;
+            Ok(Some(ticket))
+        },
+        None => native_execution_config
+            .new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)
+            .map_err(ticket_ask_error),
+    }
 }
 
 fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<AttemptCapabilityEvidence>> {
@@ -864,8 +790,8 @@ mod tests {
 
     #[test]
     fn reject_datafusion_cpu_policy_rejects_the_exact_datafusion_final_plan() {
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-        let rule = AlgeonFinalPlanRequirementRule::new(
+        let plan = union_over_empty_with_unsupported_field("unsupported");
+        let rule = AlgeonNativePhysicalOptimizerRule::new(
             AlgeonNativeOptimizerConfig::default()
                 .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
         );
@@ -913,16 +839,6 @@ mod tests {
                 .contains(&("unsupported_column".to_string(), "訂單明細".to_string())),
             "query-caller capture must retain the strict-rejection detail"
         );
-    }
-
-    #[test]
-    fn allow_datafusion_cpu_policy_returns_the_original_plan_without_replanning() {
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
-        let rule = AlgeonFinalPlanRequirementRule::new(AlgeonNativeOptimizerConfig::default());
-
-        let returned = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-        assert!(Arc::ptr_eq(&plan, &returned));
     }
 
     fn backend_admission_config(min_bytes: u64) -> (InstalledTestGpuBackend, AlgeonNativeExecutionConfig) {
@@ -1082,41 +998,88 @@ mod tests {
             .as_str()
     }
 
-    /// Two invocations sharing one rule instance keep their own planning
-    /// records and NativeRequired errors: neither sees the other's field
-    /// names, Arrow types, or candidate shapes.
+    /// Plans sharing one rule instance, two under their own invocations and
+    /// one without any, each get a NativeRequired error and planning record
+    /// that name only their own plan's column.
     #[test]
-    fn native_required_error_and_records_stay_with_their_own_invocation() {
-        let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(AlgeonNativeOptimizerConfig::default()));
-        let requirement_rule = AlgeonFinalPlanRequirementRule::with_native_rule(
+    fn native_required_errors_and_records_name_only_their_own_plan() {
+        let rule = AlgeonNativePhysicalOptimizerRule::new(
             AlgeonNativeOptimizerConfig::default()
                 .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
-            Arc::clone(&native_rule),
         );
-        let mut config_a = ConfigOptions::default();
-        let invocation_a = Invocation::new();
-        config_a.extensions.insert(invocation_a.clone());
-        let mut config_b = ConfigOptions::default();
-        let invocation_b = Invocation::new();
-        config_b.extensions.insert(invocation_b.clone());
+        let rejected_column = |plan, options: &ConfigOptions| {
+            let failure = rule.optimize(plan, options).expect_err("NativeRequired rejects the CPU plan");
+            failure
+                .find_algeon_error()
+                .expect("typed adapter error")
+                .fact_value("unsupported_column")
+                .map(str::to_string)
+        };
+        let invocation_a = Invocation::detached();
+        let mut options_a = ConfigOptions::default();
+        options_a.extensions.insert(invocation_a.clone());
+        let invocation_b = Invocation::detached();
+        let mut options_b = ConfigOptions::default();
+        options_b.extensions.insert(invocation_b.clone());
 
-        let out_a = native_rule
-            .optimize(union_over_empty_with_unsupported_field("a_col"), &config_a)
-            .expect("unsupported plan stays a DataFusion plan");
-        let out_b = native_rule
-            .optimize(union_over_empty_with_unsupported_field("b_col"), &config_b)
-            .expect("unsupported plan stays a DataFusion plan");
+        assert_eq!(
+            rejected_column(union_over_empty_with_unsupported_field("a_col"), &options_a).as_deref(),
+            Some("a_col")
+        );
+        assert_eq!(
+            rejected_column(union_over_empty_with_unsupported_field("b_col"), &options_b).as_deref(),
+            Some("b_col")
+        );
+        assert_eq!(
+            rejected_column(union_over_empty_with_unsupported_field("plain_col"), &ConfigOptions::default()).as_deref(),
+            Some("plain_col")
+        );
 
-        let diagnostics_a = invocation_a.planning_diagnostics().expect("invocation A record");
-        let diagnostics_b = invocation_b.planning_diagnostics().expect("invocation B record");
-        assert_eq!(unsupported_column_name(&diagnostics_a), "a_col");
-        assert_eq!(unsupported_column_name(&diagnostics_b), "b_col");
+        assert_eq!(
+            unsupported_column_name(&invocation_a.planning_diagnostics().expect("invocation A record")),
+            "a_col"
+        );
+        assert_eq!(
+            unsupported_column_name(&invocation_b.planning_diagnostics().expect("invocation B record")),
+            "b_col"
+        );
+    }
 
-        let failure_a = requirement_rule.optimize(out_a, &config_a).expect_err("NativeRequired rejects the CPU plan");
-        let error_a = failure_a.find_algeon_error().expect("typed adapter error");
-        assert_eq!(error_a.fact_value("unsupported_column"), Some("a_col"));
-        let failure_b = requirement_rule.optimize(out_b, &config_b).expect_err("NativeRequired rejects the CPU plan");
-        let error_b = failure_b.find_algeon_error().expect("typed adapter error");
-        assert_eq!(error_b.fact_value("unsupported_column"), Some("b_col"));
+    /// The count-only probe and the final rewrite of one planning pass share
+    /// the invocation's footers, so a query that both stages lower parses each
+    /// file's footer once.
+    #[tokio::test]
+    async fn one_planning_pass_parses_each_footer_once_across_optimizer_stages() {
+        use arrow::{array::Int64Array, record_batch::RecordBatch};
+        use datafusion::{
+            execution::SessionStateBuilder,
+            prelude::{ParquetReadOptions, SessionContext},
+        };
+        use parquet::arrow::ArrowWriter;
+
+        use crate::{native::footer_parses_on_this_thread, session::AlgeonSessionStateBuilderExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("values.parquet");
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from_iter_values(0..8))]).unwrap();
+        let mut writer = ArrowWriter::try_new(std::fs::File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let state = SessionStateBuilder::new_with_default_features()
+            .with_algeon_native(AlgeonNativeOptimizerConfig::default())
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_parquet("vals", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+        // The probe lowers the source before it declines a non-count aggregate,
+        // and the final rewrite lowers it again.
+        let logical = ctx.state().create_logical_plan("SELECT SUM(value) FROM vals").await.unwrap();
+
+        let parses_before = footer_parses_on_this_thread();
+        let (plan, _) = plan_with_native_diagnostics(&ctx.state(), &logical).await.unwrap();
+
+        assert!(plan_contains_gpu_execution(plan.as_ref()), "the final rewrite lowers the aggregate");
+        assert_eq!(footer_parses_on_this_thread() - parses_before, 1);
     }
 }

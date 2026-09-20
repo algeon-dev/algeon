@@ -137,16 +137,16 @@ pub(super) async fn native_datafusion_planning_report_with_optimizer_config(
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
 ) -> NativeDataFusionPlanningReport {
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_algeon_native_rule(Arc::clone(&native_rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
-    let plan = df.create_physical_plan().await.unwrap();
-    NativeDataFusionPlanningReport::from_retained_rule(query_id, plan, native_rule.as_ref())
+    let (state, logical) = df.into_parts();
+    let (plan, diagnostics) = plan_with_native_diagnostics(&state, &logical).await.unwrap();
+    NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(query_id, plan, diagnostics)])
 }
 
 pub(super) fn direct_friendly_sql_session_config() -> SessionConfig {

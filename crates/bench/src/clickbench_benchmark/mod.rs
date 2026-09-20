@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use algeon_datafusion::{planner::AlgeonNativePhysicalOptimizerRule, session::AlgeonSessionStateBuilderExt};
+use algeon_datafusion::{planner::plan_with_native_diagnostics, session::AlgeonSessionStateBuilderExt};
 use arrow::{array::RecordBatch, error::ArrowError, util::display::array_value_to_string};
 use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
@@ -258,20 +258,18 @@ async fn run_benchmark(
     }
     let queries = config.selected_queries();
     let cpu_ctx = if config.skip_cpu { None } else { Some(build_cpu_ctx(config, layout).await?) };
-    let native_setup = if config.skip_native { None } else { Some(build_native_ctx(config, layout).await?) };
+    let native_ctx = if config.skip_native { None } else { Some(build_native_ctx(config, layout).await?) };
     let total = queries.len();
     let mut stderr = io::stderr().lock();
     let mut rows = Vec::with_capacity(total);
     for (idx, query) in queries.iter().enumerate() {
         let qpos = idx + 1;
         let cpu = match &cpu_ctx {
-            Some(ctx) => Some(measure_query(ctx, query, "cpu", qpos, total, config, None, &mut stderr).await),
+            Some(ctx) => Some(measure_query(ctx, query, "cpu", qpos, total, config, false, &mut stderr).await),
             None => None,
         };
-        let native = match &native_setup {
-            Some((ctx, rule)) => {
-                Some(measure_query(ctx, query, "native", qpos, total, config, Some(rule.as_ref()), &mut stderr).await)
-            },
+        let native = match &native_ctx {
+            Some(ctx) => Some(measure_query(ctx, query, "native", qpos, total, config, true, &mut stderr).await),
             None => None,
         };
         rows.push(BenchmarkRow::build(query.id, cpu, native));
@@ -285,22 +283,18 @@ async fn build_cpu_ctx(config: &BenchmarkConfig, layout: &ClickbenchLayout) -> W
     Ok(ctx)
 }
 
-async fn build_native_ctx(
-    config: &BenchmarkConfig,
-    layout: &ClickbenchLayout,
-) -> WorkloadResult<(SessionContext, Arc<AlgeonNativePhysicalOptimizerRule>)> {
+async fn build_native_ctx(config: &BenchmarkConfig, layout: &ClickbenchLayout) -> WorkloadResult<SessionContext> {
     let optimizer_config = config
         .native_execution
         .configure_native_optimizer(clickbench_native_optimizer_config_with_profile_settings(&config.native_profile))
         .expect("native ClickBench session installs the native rule");
-    let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(clickbench_report_session_config())
-        .with_algeon_native_rule(Arc::clone(&native_rule))
+        .with_algeon_native(optimizer_config)
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_clickbench_table(&ctx, layout).await?;
-    Ok((ctx, native_rule))
+    Ok(ctx)
 }
 
 #[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
@@ -311,11 +305,11 @@ async fn measure_query(
     qpos: usize,
     total: usize,
     config: &BenchmarkConfig,
-    native_rule: Option<&AlgeonNativePhysicalOptimizerRule>,
+    native_rule_installed: bool,
     stderr: &mut io::StderrLock<'_>,
 ) -> EngineMeasurement {
     for w in 0..config.warmup_iterations {
-        let res = run_once(ctx, query, native_rule, None).await;
+        let res = run_once(ctx, query, native_rule_installed, None).await;
         if config.progress {
             let _ = writeln!(
                 stderr,
@@ -338,7 +332,7 @@ async fn measure_query(
             query_id: query.id,
             iteration: it + 1,
         });
-        let res = run_once(ctx, query, native_rule, dump).await;
+        let res = run_once(ctx, query, native_rule_installed, dump).await;
         if config.progress {
             let _ = writeln!(
                 stderr,
@@ -475,18 +469,24 @@ impl RunOutcome {
 async fn run_once(
     ctx: &SessionContext,
     query: &ClickbenchQuery,
-    native_rule: Option<&AlgeonNativePhysicalOptimizerRule>,
+    native_rule_installed: bool,
     dump: Option<DumpRowsSpec<'_>>,
 ) -> RunResult {
     let started = Instant::now();
     let (result, native_rewritten) = match ctx.sql(query.sql).await {
-        Ok(df) => match df.create_physical_plan().await {
-            Ok(plan) => {
-                let rewritten = native_rule
-                    .map(|rule| rule.last_planning_diagnostics().is_some_and(|diag| diag.report.selected_count() > 0));
-                (execute_plan(plan, ctx, dump).await, rewritten)
-            },
-            Err(error) => (Err(format!("physical_plan: {error}")), None),
+        Ok(df) => {
+            let planned = if native_rule_installed {
+                let (state, logical) = df.into_parts();
+                plan_with_native_diagnostics(&state, &logical)
+                    .await
+                    .map(|(plan, diagnostics)| (plan, Some(diagnostics.report.selected_count() > 0)))
+            } else {
+                df.create_physical_plan().await.map(|plan| (plan, None))
+            };
+            match planned {
+                Ok((plan, rewritten)) => (execute_plan(plan, ctx, dump).await, rewritten),
+                Err(error) => (Err(format!("physical_plan: {error}")), None),
+            }
         },
         Err(error) => (Err(format!("sql: {error}")), None),
     };

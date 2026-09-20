@@ -18,7 +18,6 @@ use crate::server::{
 
 pub struct DatafusionAlgeonFlightSqlService {
     pub(super) ctx: Arc<SessionContext>,
-    pub(super) native_optimizer_config: AlgeonNativeOptimizerConfig,
     pub(super) admission: Arc<QueryAdmission>,
     pub(super) io_lifecycle: Arc<ServerIoLifecycle>,
     pub(super) cancellations: Arc<QueryCancellation>,
@@ -46,9 +45,6 @@ pub struct DatafusionAlgeonFlightSqlService {
     pub(super) auth: AuthInterceptor,
 }
 
-/// Per-statement session context paired with the retained native rule that
-/// will plan it. The native rule reference is kept alive for the lifetime of
-/// planning so [`AlgeonNativePhysicalOptimizerRule::last_report`] can be read
 impl DatafusionAlgeonFlightSqlService {
     pub(super) fn register_new_query(
         &self,
@@ -132,16 +128,10 @@ impl DatafusionAlgeonFlightSqlService {
     }
 
     #[cfg(test)]
-    pub fn new(
-        ctx: Arc<SessionContext>,
-        native_optimizer_config: AlgeonNativeOptimizerConfig,
-        admission: Arc<QueryAdmission>,
-        statement_ticket_ttl: Duration,
-    ) -> Self {
+    pub fn new(ctx: Arc<SessionContext>, admission: Arc<QueryAdmission>, statement_ticket_ttl: Duration) -> Self {
         let io_lifecycle = Arc::new(ServerIoLifecycle::new());
         Self::new_with_io_lifecycle(
             ctx,
-            native_optimizer_config,
             admission,
             statement_ticket_ttl,
             AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -151,22 +141,14 @@ impl DatafusionAlgeonFlightSqlService {
 
     pub(crate) fn new_with_io_lifecycle(
         ctx: Arc<SessionContext>,
-        native_optimizer_config: AlgeonNativeOptimizerConfig,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
         auth: AuthInterceptor,
         io_lifecycle: Arc<ServerIoLifecycle>,
     ) -> Self {
-        let native_execution_config = native_optimizer_config
-            .native_execution_config()
-            .clone()
-            .with_io_lifecycle(io_lifecycle.handle())
-            .with_host_output_memory_pool_accounting(true);
-        let native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
         let observability_config = ServerObservabilityConfig::default();
         Self {
             ctx,
-            native_optimizer_config,
             admission,
             io_lifecycle,
             cancellations: Arc::default(),
@@ -423,8 +405,7 @@ pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTes
         .expect("bounded Flight SQL test backend should install")
         .build();
     let ctx = Arc::new(SessionContext::new_with_state(state));
-    let native_optimizer_config = backend.optimizer_config().clone();
     let admission = Arc::new(QueryAdmission::from_backend(&backend));
-    let service = DatafusionAlgeonFlightSqlService::new(ctx, native_optimizer_config, admission, statement_ticket_ttl);
+    let service = DatafusionAlgeonFlightSqlService::new(ctx, admission, statement_ticket_ttl);
     BoundedTestFlightSqlService { service, _backend: backend }
 }

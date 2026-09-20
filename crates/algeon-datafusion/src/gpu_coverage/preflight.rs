@@ -30,10 +30,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(super) struct ValidationOptimizerConfig {
     pub(super) optimizer_config_source: &'static str,
-    /// The exact caller-installed rule configuration copied into validation.
-    pub(super) optimizer_config: AlgeonNativeOptimizerConfig,
-    /// The copied rule configuration after the cloned session's DataFusion
-    /// options have been applied.
+    /// The caller-installed rule configuration that validation plans with.
     pub(super) effective_optimizer_config: AlgeonNativeOptimizerConfig,
 }
 
@@ -96,7 +93,6 @@ pub(super) fn optimizer_config_for_validation(state: &SessionState) -> Result<Va
     };
     Ok(ValidationOptimizerConfig {
         optimizer_config_source: "installed_session_rule",
-        optimizer_config: config.clone(),
         effective_optimizer_config: config,
     })
 }

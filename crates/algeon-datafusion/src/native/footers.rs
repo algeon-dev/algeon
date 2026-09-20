@@ -33,10 +33,21 @@ thread_local! {
     static ACTIVE_CACHE: RefCell<Option<Arc<FooterCache>>> = const { RefCell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    static THREAD_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of footers parsed on this thread, cached or not.
+#[cfg(test)]
+pub(crate) fn footer_parses_on_this_thread() -> usize {
+    THREAD_PARSES.get()
+}
+
 /// Footers keyed by path, size, and modification time, so a file rewritten
 /// during the scope is parsed again instead of served stale.
 #[derive(Debug)]
-struct FooterCache {
+pub(crate) struct FooterCache {
     state: Mutex<CacheState>,
     budget_bytes: usize,
     #[cfg(test)]
@@ -57,6 +68,11 @@ struct FooterKey {
 }
 
 impl FooterCache {
+    /// A cache with the budget every planning scope retains.
+    pub(crate) fn for_scope() -> Self {
+        Self::new(FOOTER_CACHE_BUDGET_BYTES)
+    }
+
     fn new(budget_bytes: usize) -> Self {
         Self {
             state: Mutex::new(CacheState::default()),
@@ -92,6 +108,8 @@ impl FooterCache {
 }
 
 fn parse_footer(path: &Path) -> ParquetResult<ParquetMetaData> {
+    #[cfg(test)]
+    THREAD_PARSES.set(THREAD_PARSES.get() + 1);
     ParquetMetaDataReader::new().parse_and_finish(&File::open(path)?)
 }
 
@@ -107,10 +125,20 @@ pub(crate) struct FooterScope {
 
 impl FooterScope {
     pub(crate) fn enter() -> Self {
+        Self::install_with(|| Arc::new(FooterCache::for_scope()))
+    }
+
+    /// Installs `cache` unless a scope is already active on this thread, so a
+    /// caller that outlives one scope can share its footers with a later one.
+    pub(crate) fn join(cache: Arc<FooterCache>) -> Self {
+        Self::install_with(|| cache)
+    }
+
+    fn install_with(cache: impl FnOnce() -> Arc<FooterCache>) -> Self {
         let installed = ACTIVE_CACHE.with_borrow_mut(|active| {
             let installed = active.is_none();
             if installed {
-                *active = Some(Arc::new(FooterCache::new(FOOTER_CACHE_BUDGET_BYTES)));
+                *active = Some(cache());
             }
             installed
         });

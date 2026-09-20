@@ -19,7 +19,9 @@ mod validate;
 pub(crate) use expression_contract::{
     ExpressionCapability, ExpressionRejection, ExpressionRejectionKind, ExpressionRejectionSubject,
 };
-pub(crate) use footers::FooterScope;
+#[cfg(test)]
+pub(crate) use footers::footer_parses_on_this_thread;
+pub(crate) use footers::{FooterCache, FooterScope};
 
 /// Rejection raised while lowering a normalized candidate.
 ///

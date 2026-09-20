@@ -92,12 +92,14 @@ pub(super) struct TemplatedNativeOptimization {
 
 pub(super) fn optimize_with_pruning_template(plan: Arc<dyn ExecutionPlan>) -> TemplatedNativeOptimization {
     let rule = AlgeonNativePhysicalOptimizerRule::new(pruning_template_optimizer_config());
-    let optimized =
-        rule.optimize(plan, &ConfigOptions::default()).expect("pruning template rule must optimize the plan");
+    let (optimized, diagnostics) = rule
+        .optimize_with_diagnostics(plan, &ConfigOptions::default())
+        .expect("pruning template rule must optimize the plan");
+    let diagnostics = diagnostics.expect("pruning template rule must retain a planning report");
     TemplatedNativeOptimization {
         plan: optimized,
-        report: rule.last_report().expect("pruning template rule must retain a planning report"),
-        source_diagnostics: rule.last_source_diagnostics(),
+        report: diagnostics.report,
+        source_diagnostics: diagnostics.source_diagnostics,
     }
 }
 

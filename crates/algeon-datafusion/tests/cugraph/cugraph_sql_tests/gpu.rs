@@ -5,8 +5,8 @@ use algeon_datafusion::{
     backend::{AlgeonGpuDeviceInstallationBounds, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit},
     gpu_coverage::validate_query,
     planner::{
-        AlgeonFinalPlanRequirementRule, AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig,
-        DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan,
+        AlgeonGpuExecutionMode, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
+        classify_final_plan,
     },
 };
 use arrow::{array::ListArray, buffer::OffsetBuffer};
@@ -167,7 +167,7 @@ fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_t
 
 #[tokio::test]
 async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type() {
-    let (_backend, ctx) = backend_cugraph_sql_context_with_mode(
+    let (backend, ctx) = backend_cugraph_sql_context_with_mode(
         SessionStateBuilder::new_with_default_features(),
         AlgeonGpuExecutionMode::FunctionsOnly,
     );
@@ -214,11 +214,10 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     );
     assert!(!plan_contains_native_exec(edge_input.as_ref()), "the upstream view must execute through DataFusion CPU");
 
-    let requirement = AlgeonFinalPlanRequirementRule::new(
-        AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
+        backend.optimizer_config().clone().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired),
     );
-    let error = requirement
+    let error = reject_rule
         .optimize(Arc::clone(&plan), &ConfigOptions::default())
         .expect_err("NoDataFusionCpu must reject this exact already-planned mixed island");
     let algeon = typed_algeon_error(&error);
@@ -1664,7 +1663,7 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
 async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_exec() {
     let dir = unique_temp_dir("algeon-datafusion-cugraph-bfs-path-metadata");
     let metadata_path = dir.join("metadata.parquet");
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     let vertices = [
         "bd2f79216e59522ab2ce48a860bcbfdf",
         "9c369bda5e2752df7dda44ad8bffd4209afa2324",
@@ -1723,11 +1722,10 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
 
     assert!(find_cugraph_algo_exec(plan.as_ref()).is_some());
     assert!(!plan_contains_named_node(plan.as_ref(), "SortExec"));
-    let requirement = AlgeonFinalPlanRequirementRule::new(
-        AlgeonNativeOptimizerConfig::default()
-            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
+        backend.optimizer_config().clone().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
     );
-    requirement
+    reject_rule
         .optimize(Arc::clone(&plan), &ConfigOptions::default())
         .expect("path_index ordering must satisfy NoDataFusionCpu without a DataFusion sort");
     let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();

@@ -11,10 +11,9 @@ use algeon_datafusion::{
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
-    native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport},
+    native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{
-        ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME, AlgeonFinalPlanRequirementRule, AlgeonGpuExecutionMode,
-        AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
+        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
         CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
         classify_final_plan,
     },
@@ -105,6 +104,19 @@ fn installed_physical_optimizer_rules(
     SessionStateBuilder::new().with_algeon_native(config).build().physical_optimizers().to_vec()
 }
 
+fn installed_native_stage<'a>(
+    rules: &'a [Arc<dyn PhysicalOptimizerRule + Send + Sync>],
+    name: &str,
+) -> &'a AlgeonNativePhysicalOptimizerRule {
+    let rule = rules
+        .iter()
+        .find(|rule| rule.name() == name)
+        .unwrap_or_else(|| panic!("native optimizer rules should contain {name}"));
+    (rule.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
+        .unwrap_or_else(|| panic!("{name} should be an AlgeonNativePhysicalOptimizerRule"))
+}
+
 #[test]
 fn native_optimizer_rule_rewrites_supported_physical_plan() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-optimizer");
@@ -113,10 +125,11 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
     assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
     match &report.outcomes()[0] {
@@ -125,8 +138,7 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
         },
         other => panic!("expected rewritten candidate, got {other:?}"),
     }
-    assert_eq!(rule.last_source_diagnostics().len(), 1);
-    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    assert_eq!(diagnostics.source_diagnostics.len(), 1);
     assert!(diagnostics.capability_contract.accepted_candidates.is_empty());
     assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
     assert_eq!(diagnostics.capability_contract.non_join_bounded_plan_count, 1);
@@ -146,8 +158,13 @@ fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
     let plan = ilike_filter_plan(&path);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
-    let report = NativeDataFusionPlanningReport::from_retained_rule("ilike_boundary", Arc::clone(&optimized), &rule);
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
+    let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
+    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "ilike_boundary",
+        Arc::clone(&optimized),
+        diagnostics,
+    )]);
 
     assert_eq!(report.rows.len(), 1);
     let row = &report.rows[0];
@@ -165,10 +182,13 @@ fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
         .expect("mixed boundary must replace only the local-Parquet leaf");
     assert_mixed_boundary_properties(filter, native);
 
-    let report_before_repeat = rule.last_report().expect("selected mixed boundary must retain a report");
-    let repeated = rule.optimize(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
+    let (repeated, repeat_diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&optimized), &ConfigOptions::default()).unwrap();
     assert!(Arc::ptr_eq(&optimized, &repeated), "mixed boundary must be an optimizer fixed point");
-    assert_eq!(rule.last_report(), Some(report_before_repeat), "idempotence must preserve the selected-leaf report");
+    assert!(
+        repeat_diagnostics.is_none(),
+        "the rule records nothing for a plan it already selected, so idempotence keeps the selected-leaf report"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -208,13 +228,15 @@ fn native_optimizer_property_checked_ilike_boundary_rejects_nonlocal_parquet() {
     ));
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(
         Arc::ptr_eq(&optimized, &plan),
         "the mixed certificate must not replace a remote Parquet source through its local-only boundary"
     );
-    let report = rule.last_report().expect("native optimizer should record the whole-plan rejection");
+    let diagnostics = diagnostics.expect("native optimizer should record the whole-plan rejection");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 0);
 
     fs::remove_dir_all(dir).unwrap();
@@ -234,13 +256,15 @@ fn native_optimizer_property_checked_ilike_boundary_rejects_partition_grouped_sc
     let plan = ilike_filter_over_scan(scan);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(
         Arc::ptr_eq(&optimized, &plan),
         "the mixed certificate must not replace a partition-grouped scan whose partition state is observable DataFusion 55 state"
     );
-    let report = rule.last_report().expect("native optimizer should record the whole-plan rejection");
+    let diagnostics = diagnostics.expect("native optimizer should record the whole-plan rejection");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 0);
 
     fs::remove_dir_all(dir).unwrap();
@@ -251,20 +275,26 @@ fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion
     let dir = unique_temp_dir("algeon-datafusion-native-exec-property-checked-ilike-no-datafusion-cpu");
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
-    let config = AlgeonNativeOptimizerConfig::default()
-        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
-        .with_native_execution_config(bounded_config());
+    let config = native_optimizer_config();
     let native_rule = AlgeonNativePhysicalOptimizerRule::new(config.clone());
-    let requirement_rule = AlgeonFinalPlanRequirementRule::new(config);
+    let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
+        config.with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    );
 
-    let planned = native_rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
-    let report = NativeDataFusionPlanningReport::from_retained_rule("ilike_no_cpu", Arc::clone(&planned), &native_rule);
+    let (planned, diagnostics) =
+        native_rule.optimize_with_diagnostics(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let diagnostics = diagnostics.expect("native optimizer should retain diagnostics");
+    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "ilike_no_cpu",
+        planned,
+        diagnostics,
+    )]);
     assert_eq!(report.rows[0].final_disposition, Some(FinalPlanDisposition::Mixed));
     assert_eq!(report.rows[0].native_plan_fragment_count, Some(1));
     assert_eq!(report.rows[0].host_datafusion_boundary_count, Some(1));
 
-    let error = requirement_rule
-        .optimize(planned, &ConfigOptions::default())
+    let error = reject_rule
+        .optimize(ilike_filter_plan(&path), &ConfigOptions::default())
         .expect_err("NoDataFusionCpu must reject the exact selected mixed plan");
     let adapter_error = adapter_error(&error);
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -390,16 +420,17 @@ proptest! {
             Arc::new(TaskContext::default()),
         ))
         .unwrap();
-        let config = native_optimizer_config().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
+        let config = native_optimizer_config();
         let native_rule = AlgeonNativePhysicalOptimizerRule::new(config.clone());
-        let planned = native_rule
-            .optimize(ilike_filter_plan_with_pattern(&path, pattern), &ConfigOptions::default())
+        let (planned, diagnostics) = native_rule
+            .optimize_with_diagnostics(ilike_filter_plan_with_pattern(&path, pattern.clone()), &ConfigOptions::default())
             .unwrap();
-        let report = NativeDataFusionPlanningReport::from_retained_rule(
+        let diagnostics = diagnostics.expect("mixed-boundary selected report should be retained");
+        let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
             "generated_ilike_boundary",
             Arc::clone(&planned),
-            &native_rule,
-        );
+            diagnostics,
+        )]);
 
         prop_assert_eq!(report.rows.len(), 1);
         let row = &report.rows[0];
@@ -415,14 +446,19 @@ proptest! {
         let mixed = runtime.block_on(collect(Arc::clone(&planned), Arc::new(TaskContext::default()))).unwrap();
         prop_assert_eq!(ilike_rows(&mixed), ilike_rows(&cpu));
 
-        let retained_report = native_rule.last_report().expect("mixed-boundary selected report should be retained");
-        let repeated = native_rule.optimize(Arc::clone(&planned), &ConfigOptions::default()).unwrap();
+        let (repeated, repeat_diagnostics) =
+            native_rule.optimize_with_diagnostics(Arc::clone(&planned), &ConfigOptions::default()).unwrap();
         prop_assert!(Arc::ptr_eq(&planned, &repeated));
-        prop_assert_eq!(native_rule.last_report(), Some(retained_report));
+        prop_assert!(
+            repeat_diagnostics.is_none(),
+            "the rule records nothing for a plan it already selected, so idempotence keeps the selected report"
+        );
 
-        let requirement_rule = AlgeonFinalPlanRequirementRule::new(config);
-        let error = requirement_rule
-            .optimize(planned, &ConfigOptions::default())
+        let reject_rule = AlgeonNativePhysicalOptimizerRule::new(
+            config.with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+        );
+        let error = reject_rule
+            .optimize(ilike_filter_plan_with_pattern(&path, pattern), &ConfigOptions::default())
             .expect_err("NoDataFusionCpu must reject the exact generated mixed plan");
         let error = adapter_error(&error);
         prop_assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -486,11 +522,12 @@ fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_pro
     assert!(expected_ordering.is_some());
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
 
     fs::remove_dir_all(dir).unwrap();
@@ -507,11 +544,12 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     assert!(expected_ordering.is_some());
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
     let CandidateOutcome::Selected { candidate } = &report.outcomes()[0] else {
         panic!("ordered aggregate should be reported as rewritten");
@@ -589,13 +627,14 @@ fn native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time() {
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
     let options = ConfigOptions::default();
 
-    let optimized = rule.optimize(plan, &options).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &options).unwrap();
 
     let native =
         optimized.downcast_ref::<AlgeonNativeExec>().expect("supported plan should optimize to AlgeonNativeExec");
     let display = displayable(native).one_line().to_string();
     assert!(display.contains("memory_control_policy=bounded"), "{display}");
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
 
     fs::remove_dir_all(dir).unwrap();
@@ -609,10 +648,11 @@ fn native_optimizer_rule_preserves_rejected_plan_as_datafusion_baseline() {
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<LocalLimitExec>().is_some());
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 0);
     assert_eq!(report.not_selected_count(), 1);
     assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
@@ -648,14 +688,16 @@ fn native_optimizer_rule_does_not_select_small_selective_topk_join_by_cost_when_
     let config = native_optimizer_config().with_native_plan_cost_options(NativePlanCostOptions::default());
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
 
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(
         optimized.downcast_ref::<AlgeonNativeExec>().is_none(),
         "cost-declined plan should not be replaced by a native execution boundary"
     );
     assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],
@@ -676,14 +718,16 @@ fn native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_
     let config = native_optimizer_config().with_native_plan_cost_options(NativePlanCostOptions::default());
     let rule = AlgeonNativePhysicalOptimizerRule::new(config);
 
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(
         optimized.downcast_ref::<AlgeonNativeExec>().is_none(),
         "cost-declined plan should not be replaced by a native execution boundary"
     );
     assert!(Arc::ptr_eq(&optimized, &plan), "a cost-rejected candidate must preserve the exact baseline plan");
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 0);
     assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
@@ -711,14 +755,9 @@ fn native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy() 
         .iter()
         .find(|rule| rule.name() == "algeon_datafusion_native")
         .expect("native optimizer rules should contain the final native rule");
-    let final_requirement = rules
-        .iter()
-        .find(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-        .expect("native optimizer rules should contain the final-plan requirement rule");
-    let planned = final_native.optimize(plan, &ConfigOptions::default()).unwrap();
-    let error = final_requirement
-        .optimize(planned, &ConfigOptions::default())
-        .expect_err("the final-plan requirement must reject a cost-declined completed plan");
+    let error = final_native
+        .optimize(plan, &ConfigOptions::default())
+        .expect_err("the final native rule must reject a cost-declined completed plan");
     let adapter_error = adapter_error(&error);
 
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -741,14 +780,9 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
         .iter()
         .find(|rule| rule.name() == "algeon_datafusion_native")
         .expect("native optimizer rules should contain the final native rule");
-    let final_requirement = rules
-        .iter()
-        .find(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-        .expect("native optimizer rules should contain the final-plan requirement rule");
-    let planned = final_native.optimize(plan, &ConfigOptions::default()).unwrap();
-    let error = final_requirement
-        .optimize(planned, &ConfigOptions::default())
-        .expect_err("the final-plan requirement must reject a rejected native candidate's CPU plan");
+    let error = final_native
+        .optimize(plan, &ConfigOptions::default())
+        .expect_err("the final native rule must reject a rejected native candidate's CPU plan");
     let adapter_error = error.find_algeon_error().expect("final-plan rejection must preserve the typed Algeon error");
 
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -791,13 +825,8 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
         .iter()
         .find(|rule| rule.name() == "algeon_datafusion_native")
         .expect("native optimizer rules should contain the final native rule");
-    let requirement_rule = rules
-        .iter()
-        .find(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-        .expect("native optimizer rules should contain the final-plan requirement rule");
-    let planned = native_rule.optimize(parquet_scan(&path), &ConfigOptions::default()).unwrap();
-    let error = requirement_rule
-        .optimize(planned, &ConfigOptions::default())
+    let error = native_rule
+        .optimize(parquet_scan(&path), &ConfigOptions::default())
         .expect_err("unsupported List<Decimal128> must fail the strict GPU requirement");
     let error = adapter_error(&error);
 
@@ -821,42 +850,29 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
         .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
-    let count_only_probe = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native_count_only")
-        .expect("native optimizer rules should contain the count-only probe");
-    let final_native = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native")
-        .expect("native optimizer rules should contain the final native rule");
+    let count_only_probe = installed_native_stage(&rules, "algeon_datafusion_native_count_only");
+    let final_native = installed_native_stage(&rules, "algeon_datafusion_native");
 
-    let after_probe = count_only_probe
-        .optimize(plan, &ConfigOptions::default())
+    let (after_probe, probe_diagnostics) = count_only_probe
+        .optimize_with_diagnostics(plan, &ConfigOptions::default())
         .expect("a non-count plan must not be rejected by the NoDataFusionCpu count-only probe");
     assert!(
         after_probe.downcast_ref::<AlgeonNativeExec>().is_none(),
         "the count-only probe should decline an analytical SUM plan"
     );
-    let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
-        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-        .expect("count-only optimizer rule should be native")
-        .last_report()
-        .expect("count-only probe should record its own rejection evidence");
+    let probe_report = probe_diagnostics.expect("count-only probe should record its own rejection evidence").report;
     assert_eq!(probe_report.selected_count(), 0);
     assert_eq!(probe_report.not_selected_count(), 1);
 
-    let optimized = final_native
-        .optimize(after_probe, &ConfigOptions::default())
+    let (optimized, final_diagnostics) = final_native
+        .optimize_with_diagnostics(after_probe, &ConfigOptions::default())
         .expect("the final native optimizer must run after a count-only probe miss");
     assert!(
         optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
         "the final native optimizer should rewrite the supported analytical plan"
     );
-    let final_report = (final_native.as_ref() as &dyn std::any::Any)
-        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-        .expect("final optimizer rule should be native")
-        .last_report()
-        .expect("final optimizer should record separate native rewrite evidence");
+    let final_report =
+        final_diagnostics.expect("final optimizer should record separate native rewrite evidence").report;
     assert_eq!(final_report.selected_count(), 1);
     assert_eq!(final_report.not_selected_count(), 0);
 
@@ -864,7 +880,7 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
 }
 
 #[test]
-fn no_datafusion_cpu_final_rejection_replaces_count_only_probe_diagnostics_before_error() {
+fn no_datafusion_cpu_final_rejection_names_final_stage_reason_not_count_only_probe_reason() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-no-datafusion-cpu-final-rejection-evidence");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
@@ -874,48 +890,29 @@ fn no_datafusion_cpu_final_rejection_replaces_count_only_probe_diagnostics_befor
             .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
             .with_native_execution_config(bounded_config()),
     );
-    let count_only_probe = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native_count_only")
-        .expect("native optimizer rules should contain the count-only probe");
-    let final_native = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native")
-        .expect("native optimizer rules should contain the final native rule");
+    let count_only_probe = installed_native_stage(&rules, "algeon_datafusion_native_count_only");
+    let final_native = installed_native_stage(&rules, "algeon_datafusion_native");
 
-    let after_probe = count_only_probe.optimize(plan, &ConfigOptions::default()).expect(
-        "a normal count-only probe miss must remain non-terminal before NoDataFusionCpu final-plan enforcement",
-    );
-    let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
-        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-        .expect("count-only optimizer rule should be native")
-        .last_report()
-        .expect("count-only probe should retain its own evidence");
+    let (after_probe, probe_diagnostics) =
+        count_only_probe.optimize_with_diagnostics(plan, &ConfigOptions::default()).expect(
+            "a normal count-only probe miss must remain non-terminal before NoDataFusionCpu final-plan enforcement",
+        );
+    let probe_report = probe_diagnostics.expect("count-only probe should retain its own evidence").report;
     assert!(matches!(
         probe_report.outcomes()[0],
         CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedOperator, .. }
     ));
 
-    let planned = final_native
-        .optimize(after_probe, &ConfigOptions::default())
-        .expect("the final native optimizer must retain its rejected-candidate diagnostics");
-    let final_report = (final_native.as_ref() as &dyn std::any::Any)
-        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-        .expect("final optimizer rule should be native")
-        .last_report()
-        .expect("final rejection should replace the probe's retained evidence before returning an error");
-    assert!(matches!(
-        final_report.outcomes()[0],
-        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
-    ));
-    let final_requirement = rules
-        .iter()
-        .find(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-        .expect("native optimizer rules should contain the final-plan requirement rule");
-    let error = final_requirement
-        .optimize(planned, &ConfigOptions::default())
-        .expect_err("the final-plan requirement must reject the completed DataFusion plan");
-    assert_eq!(adapter_error(&error).code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    let error = final_native
+        .optimize_with_diagnostics(after_probe, &ConfigOptions::default())
+        .expect_err("the final native optimizer must reject the completed DataFusion plan");
+    let error = adapter_error(&error);
+    assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    assert_eq!(
+        error.fact_value("capability_reason"),
+        Some(CapabilityReason::UnsupportedExpression.code()),
+        "the rejection must carry the final stage's reason, not the count-only probe's"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -930,24 +927,14 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
         .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
-    let count_only_probe = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native_count_only")
-        .expect("native optimizer rules should contain the count-only probe");
-    let final_native = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native")
-        .expect("native optimizer rules should contain the final native rule");
+    let count_only_probe = installed_native_stage(&rules, "algeon_datafusion_native_count_only");
+    let final_native = installed_native_stage(&rules, "algeon_datafusion_native");
 
-    let after_probe = count_only_probe
-        .optimize(plan, &ConfigOptions::default())
+    let (after_probe, probe_diagnostics) = count_only_probe
+        .optimize_with_diagnostics(plan, &ConfigOptions::default())
         .expect("NoDataFusionCpu count-only probe should retain supported native count rewrites");
     assert!(after_probe.downcast_ref::<AlgeonNativeExec>().is_some());
-    let probe_report = (count_only_probe.as_ref() as &dyn std::any::Any)
-        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-        .expect("count-only optimizer rule should be native")
-        .last_report()
-        .expect("count-only probe should record its rewrite evidence");
+    let probe_report = probe_diagnostics.expect("count-only probe should record its rewrite evidence").report;
     assert_eq!(probe_report.selected_count(), 1);
     assert_eq!(probe_report.not_selected_count(), 0);
     let after_final = final_native
@@ -1013,7 +1000,8 @@ fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
     );
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     assert!(Arc::ptr_eq(&optimized, &plan), "a relational lowering miss must retain the baseline DataFusion plan");
     assert_eq!(classify_final_plan(optimized.as_ref()), FinalPlanDisposition::DataFusion);
@@ -1026,14 +1014,15 @@ fn native_optimizer_rule_retains_unsupported_relational_parent_as_datafusion() {
         !optimized_tree.contains("AlgeonNativeGpuProducerExec"),
         "ordinary relational DataFusion baseline must not producerize a native child"
     );
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 0);
     assert_eq!(report.not_selected_count(), 1);
     assert!(matches!(
         report.outcomes()[0],
         CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedOperator, .. }
     ));
-    assert!(rule.last_source_diagnostics().is_empty());
+    assert!(diagnostics.source_diagnostics.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1056,36 +1045,20 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
         .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
-    let final_native = rules
-        .iter()
-        .find(|rule| rule.name() == "algeon_datafusion_native")
-        .expect("native optimizer rules should contain the final native rule");
-    let final_requirement = rules
-        .iter()
-        .find(|rule| rule.name() == ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-        .expect("native optimizer rules should contain the final-plan requirement rule");
+    let final_native = installed_native_stage(&rules, "algeon_datafusion_native");
 
-    let planned = final_native.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
-
-    assert!(Arc::ptr_eq(&planned, &plan), "a relational lowering miss must remain the original DataFusion plan");
-    assert_eq!(classify_final_plan(planned.as_ref()), FinalPlanDisposition::DataFusion);
-    let planned_tree = displayable(planned.as_ref()).indent(false).to_string();
-    assert!(!planned_tree.contains("AlgeonNativeGpuProducerExec"));
-    let report = (final_native.as_ref() as &dyn std::any::Any)
-        .downcast_ref::<AlgeonNativePhysicalOptimizerRule>()
-        .expect("final optimizer rule should be native")
-        .last_report()
-        .expect("final native rule should record its rejection");
-    assert_eq!(report.selected_count(), 0);
-    assert_eq!(report.not_selected_count(), 1);
-
-    let error = final_requirement
-        .optimize(planned, &ConfigOptions::default())
-        .expect_err("the final-plan requirement must reject the completed DataFusion plan");
+    let error = final_native
+        .optimize_with_diagnostics(plan, &ConfigOptions::default())
+        .expect_err("the final native rule must reject the completed DataFusion plan");
     let adapter_error = adapter_error(&error);
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(adapter_error.fact_value("observed_final_plan_disposition"), Some("datafusion"));
     assert_eq!(adapter_error.fact_value("terminal_plan_disposition"), Some("rejected"));
+    assert_eq!(
+        adapter_error.fact_value("capability_reason"),
+        Some(CapabilityReason::UnsupportedOperator.code()),
+        "the rejection must name the relational lowering miss that left the plan on DataFusion"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1105,7 +1078,8 @@ fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
     );
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) =
+        rule.optimize_with_diagnostics(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
 
     // S3 admits scalar distinct aggregation over a keyed anti join through the
     // composed pipeline: the anti join executes with null-aware semantics and
@@ -1115,7 +1089,8 @@ fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
         optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
         "distinct aggregate over anti join should execute natively:\n{optimized_tree}"
     );
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
 
@@ -1152,9 +1127,10 @@ fn native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contra
     );
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert!(
         optimized.downcast_ref::<AlgeonNativeExec>().is_some(),
         "outcomes={:?}; plan={}",
@@ -1175,7 +1151,7 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
     let plan = stddev_sort_sql_plan(&path);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+    let (optimized, diagnostics) = rule.optimize_with_diagnostics(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
@@ -1183,7 +1159,8 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
         optimized_tree.contains("AlgeonNativeExec"),
         "stddev subtree should be rewritten once native order tracking is available:\n{optimized_tree}"
     );
-    let report = rule.last_report().expect("native optimizer should record a planning report");
+    let diagnostics = diagnostics.expect("native optimizer should record a planning report");
+    let report = &diagnostics.report;
     assert_eq!(report.selected_count(), 1);
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));

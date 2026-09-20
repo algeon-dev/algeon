@@ -19,7 +19,7 @@ use algeon_datafusion::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec, NATIVE_ALGEON_DATAFUSION_METRIC_NAMES,
     },
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
-    planner::AlgeonNativePhysicalOptimizerRule,
+    planner::{NativePlanningDiagnostics, plan_with_native_diagnostics},
     report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE},
     session::AlgeonSessionStateBuilderExt,
 };
@@ -111,17 +111,17 @@ impl Engine {
 
 struct BenchRuntime {
     execution_ctx: SessionContext,
-    optimizer: Option<Arc<AlgeonNativePhysicalOptimizerRule>>,
-    native_planning: Option<NativePlanningRuntime>,
+    native_rule_installed: bool,
+    native_planning_ctx: Option<SessionContext>,
     skip_cost_declined: bool,
     backend: Option<AlgeonGpuBackend>,
 }
 
 impl BenchRuntime {
     fn close(self) -> Result<(), Box<dyn Error>> {
-        let Self { execution_ctx, optimizer, native_planning, skip_cost_declined, backend } = self;
+        let Self { execution_ctx, native_rule_installed, native_planning_ctx, skip_cost_declined, backend } = self;
         let backend = {
-            let _contexts = (execution_ctx, optimizer, native_planning, skip_cost_declined);
+            let _contexts = (execution_ctx, native_rule_installed, native_planning_ctx, skip_cost_declined);
             backend
         };
         if let Some(backend) = backend {
@@ -129,11 +129,6 @@ impl BenchRuntime {
         }
         Ok(())
     }
-}
-
-struct NativePlanningRuntime {
-    ctx: SessionContext,
-    optimizer: Arc<AlgeonNativePhysicalOptimizerRule>,
 }
 
 struct BenchConfig {
@@ -168,13 +163,13 @@ struct PlanningSummary {
 }
 
 async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
-    if let Some(native_planning) = runtime.native_planning.as_ref() {
-        return run_cost_declined_datafusion_once(&runtime.execution_ctx, native_planning, query).await;
+    if let Some(native_planning_ctx) = runtime.native_planning_ctx.as_ref() {
+        return run_cost_declined_datafusion_once(&runtime.execution_ctx, native_planning_ctx, query).await;
     }
 
     run_query_collect(
         &runtime.execution_ctx,
-        runtime.optimizer.as_deref(),
+        runtime.native_rule_installed,
         query,
         None,
         None,
@@ -185,11 +180,10 @@ async fn run_once(runtime: &BenchRuntime, query: &TpcdsQuery) -> IterOutcome {
 
 async fn run_cost_declined_datafusion_once(
     cpu_ctx: &SessionContext,
-    native_planning: &NativePlanningRuntime,
+    native_planning_ctx: &SessionContext,
     query: &TpcdsQuery,
 ) -> IterOutcome {
-    let native_planning_summary = match plan_native_cost(&native_planning.ctx, &native_planning.optimizer, query).await
-    {
+    let native_planning_summary = match plan_native_cost(native_planning_ctx, query).await {
         Ok(summary) => summary,
         Err(outcome) => return *outcome,
     };
@@ -212,7 +206,7 @@ async fn run_cost_declined_datafusion_once(
 
     run_query_collect(
         cpu_ctx,
-        None,
+        false,
         query,
         Some(format!(
             "not_selected_by_cost cost_reason={reason} native_planning={}",
@@ -224,11 +218,7 @@ async fn run_cost_declined_datafusion_once(
     .await
 }
 
-async fn plan_native_cost(
-    ctx: &SessionContext,
-    optimizer: &AlgeonNativePhysicalOptimizerRule,
-    query: &TpcdsQuery,
-) -> Result<PlanningSummary, Box<IterOutcome>> {
+async fn plan_native_cost(ctx: &SessionContext, query: &TpcdsQuery) -> Result<PlanningSummary, Box<IterOutcome>> {
     let started_plan = Instant::now();
     let df = match ctx.sql(query.sql).await {
         Ok(df) => df,
@@ -248,28 +238,32 @@ async fn plan_native_cost(
             }));
         },
     };
-    if let Err(err) = df.create_physical_plan().await {
-        return Err(Box::new(IterOutcome {
-            wall: Some(started_plan.elapsed()),
-            outcome: "native_physical_planning_failed",
-            planning_outcome: String::from("native_physical_planning_failed"),
-            output_batches: None,
-            output_rows: None,
-            output_bytes: None,
-            retry_count: None,
-            native_runtime_started: false,
-            native_metrics: None,
-            timing_metrics: NativeTimingMetrics::default(),
-            failure: Some(err.to_string()),
-        }));
-    }
+    let (state, logical) = df.into_parts();
+    let diagnostics = match plan_with_native_diagnostics(&state, &logical).await {
+        Ok((_, diagnostics)) => diagnostics,
+        Err(err) => {
+            return Err(Box::new(IterOutcome {
+                wall: Some(started_plan.elapsed()),
+                outcome: "native_physical_planning_failed",
+                planning_outcome: String::from("native_physical_planning_failed"),
+                output_batches: None,
+                output_rows: None,
+                output_bytes: None,
+                retry_count: None,
+                native_runtime_started: false,
+                native_metrics: None,
+                timing_metrics: NativeTimingMetrics::default(),
+                failure: Some(err.to_string()),
+            }));
+        },
+    };
 
-    Ok(planning_summary(Some(optimizer)))
+    Ok(planning_summary(Some(&diagnostics)))
 }
 
 async fn run_query_collect(
     ctx: &SessionContext,
-    optimizer: Option<&AlgeonNativePhysicalOptimizerRule>,
+    native_rule_installed: bool,
     query: &TpcdsQuery,
     planning_outcome_override: Option<String>,
     native_runtime_started_override: Option<bool>,
@@ -294,8 +288,14 @@ async fn run_query_collect(
             };
         },
     };
-    let plan = match df.create_physical_plan().await {
-        Ok(plan) => plan,
+    let planned = if native_rule_installed {
+        let (state, logical) = df.into_parts();
+        plan_with_native_diagnostics(&state, &logical).await.map(|(plan, diagnostics)| (plan, Some(diagnostics)))
+    } else {
+        df.create_physical_plan().await.map(|plan| (plan, None))
+    };
+    let (plan, diagnostics) = match planned {
+        Ok(planned) => planned,
         Err(err) => {
             return IterOutcome {
                 wall: Some(started_plan.elapsed()),
@@ -312,7 +312,7 @@ async fn run_query_collect(
             };
         },
     };
-    let planning_summary = planning_summary(optimizer);
+    let planning_summary = planning_summary(diagnostics.as_ref());
     let planning_outcome = planning_outcome_override.unwrap_or(planning_summary.planning_outcome);
     let physical_plan_contains_native_runtime = plan_contains_native_runtime(plan.as_ref());
     let native_runtime_started = native_runtime_started_override.unwrap_or(physical_plan_contains_native_runtime);
@@ -422,9 +422,8 @@ fn native_metrics_from_metrics(metrics: Option<&MetricsSet>) -> Option<Box<Nativ
         .then(|| Box::new(NativeDataFusionExecutionMetrics::from_metrics(metrics)))
 }
 
-fn planning_summary(optimizer: Option<&AlgeonNativePhysicalOptimizerRule>) -> PlanningSummary {
-    optimizer
-        .and_then(|rule| rule.last_planning_diagnostics())
+fn planning_summary(diagnostics: Option<&NativePlanningDiagnostics>) -> PlanningSummary {
+    diagnostics
         .map(|diag| {
             let selected = diag.report.selected_count();
             let not_selected = diag.report.not_selected_count();

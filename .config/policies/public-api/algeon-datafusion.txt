@@ -27,6 +27,7 @@ pub fn algeon_datafusion::attempt::AlgeonAttempt::completion(&self) -> query_run
 pub async fn algeon_datafusion::attempt::AlgeonAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<algeon_datafusion::attempt::AttemptStream>
 pub fn algeon_datafusion::attempt::AlgeonAttempt::execute_physical_plan(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<algeon_datafusion::attempt::AttemptStream>
 pub fn algeon_datafusion::attempt::AlgeonAttempt::plan_sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> futures_core::future::BoxFuture<'a, datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>
+pub fn algeon_datafusion::attempt::AlgeonAttempt::planning_diagnostics(&self) -> core::option::Option<algeon_datafusion::planner::NativePlanningDiagnostics>
 pub fn algeon_datafusion::attempt::AlgeonAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<query_runtime::observability::attempt_report::QueryAttemptReport>>, query_runtime::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn algeon_datafusion::attempt::AlgeonAttempt::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
 pub fn algeon_datafusion::attempt::AlgeonAttempt::sealed_native_execution_snapshot(&self) -> core::option::Option<algeon_datafusion::attempt::SealedAttemptNativeExecutionSnapshot>
@@ -1372,7 +1373,6 @@ pub algeon_datafusion::native_report::NativeDataFusionPlanningReport::rows: allo
 pub algeon_datafusion::native_report::NativeDataFusionPlanningReport::workload_dataset: core::option::Option<algeon_datafusion::native_report::WorkloadDatasetMetadata>
 impl algeon_datafusion::native_report::NativeDataFusionPlanningReport
 pub fn algeon_datafusion::native_report::NativeDataFusionPlanningReport::collect(impl core::iter::traits::collect::IntoIterator<Item = algeon_datafusion::native_report::NativeDataFusionPlanningWorkloadItem>) -> Self
-pub fn algeon_datafusion::native_report::NativeDataFusionPlanningReport::from_retained_rule(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule) -> Self
 pub fn algeon_datafusion::native_report::NativeDataFusionPlanningReport::not_selected_count(&self) -> usize
 pub fn algeon_datafusion::native_report::NativeDataFusionPlanningReport::selected_count(&self) -> usize
 pub fn algeon_datafusion::native_report::NativeDataFusionPlanningReport::to_tsv(&self) -> alloc::string::String
@@ -1779,13 +1779,6 @@ pub fn algeon_datafusion::planner::FinalPlanDisposition::fmt(&self, &mut core::f
 #[non_exhaustive] pub enum algeon_datafusion::planner::RelationalNativeRewritePolicy
 pub algeon_datafusion::planner::RelationalNativeRewritePolicy::Disabled
 pub algeon_datafusion::planner::RelationalNativeRewritePolicy::Enabled
-pub struct algeon_datafusion::planner::AlgeonFinalPlanRequirementRule
-impl algeon_datafusion::planner::AlgeonFinalPlanRequirementRule
-pub fn algeon_datafusion::planner::AlgeonFinalPlanRequirementRule::new(algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
-impl datafusion_session::physical_optimizer::PhysicalOptimizerRule for algeon_datafusion::planner::AlgeonFinalPlanRequirementRule
-pub fn algeon_datafusion::planner::AlgeonFinalPlanRequirementRule::name(&self) -> &str
-pub fn algeon_datafusion::planner::AlgeonFinalPlanRequirementRule::optimize(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub fn algeon_datafusion::planner::AlgeonFinalPlanRequirementRule::schema_check(&self) -> bool
 pub struct algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 impl algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::datafusion_cpu_execution_policy(&self) -> algeon_datafusion::planner::DataFusionCpuExecutionPolicy
@@ -1808,10 +1801,8 @@ pub fn algeon_datafusion::planner::AlgeonNativeOptimizerConfig::default() -> Sel
 pub struct algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule
 impl algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule
 pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::config(&self) -> &algeon_datafusion::planner::AlgeonNativeOptimizerConfig
-pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::last_planning_diagnostics(&self) -> core::option::Option<algeon_datafusion::planner::NativePlanningDiagnostics>
-pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::last_report(&self) -> core::option::Option<algeon_datafusion::report::PlanningReport>
-pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::last_source_diagnostics(&self) -> alloc::vec::Vec<query_planning::source::diagnostics::SourceDiagnostics>
 pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::new(algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
+pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::optimize_with_diagnostics(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<(alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, core::option::Option<algeon_datafusion::planner::NativePlanningDiagnostics>)>
 impl datafusion_session::physical_optimizer::PhysicalOptimizerRule for algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule
 pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::name(&self) -> &str
 pub fn algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule::optimize(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
@@ -1858,9 +1849,9 @@ pub algeon_datafusion::planner::NativePlanningDiagnostics::input_plan_shape: all
 pub algeon_datafusion::planner::NativePlanningDiagnostics::native_optimizer: query_planning::optimizer::NativeOptimizerDiagnostics
 pub algeon_datafusion::planner::NativePlanningDiagnostics::report: algeon_datafusion::report::PlanningReport
 pub algeon_datafusion::planner::NativePlanningDiagnostics::source_diagnostics: alloc::vec::Vec<query_planning::source::diagnostics::SourceDiagnostics>
-pub const algeon_datafusion::planner::ALGEON_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str
 pub const algeon_datafusion::planner::CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str
 pub fn algeon_datafusion::planner::classify_final_plan(&dyn datafusion_physical_plan::execution_plan::ExecutionPlan) -> algeon_datafusion::planner::FinalPlanDisposition
+pub async fn algeon_datafusion::planner::plan_with_native_diagnostics(&datafusion::execution::session_state::SessionState, &datafusion_expr::logical_plan::plan::LogicalPlan) -> datafusion_common::error::Result<(alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, algeon_datafusion::planner::NativePlanningDiagnostics)>
 pub mod algeon_datafusion::report
 pub use algeon_datafusion::report::NativePlanCostReason
 pub use algeon_datafusion::report::PlanNodeId
@@ -2125,14 +2116,12 @@ pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuml_s
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuml_sql_config(self, algeon_datafusion::cuml_sql::CumlSqlConfig) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::with_algeon_native(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
-pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::with_algeon_native_rule(self, alloc::sync::Arc<algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule>) -> Self
 impl algeon_datafusion::session::AlgeonSessionStateBuilderExt for datafusion::execution::session_state::SessionStateBuilder
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cugraph_sql(self, algeon_datafusion::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuml_sql(self) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuml_sql_config(self, algeon_datafusion::cuml_sql::CumlSqlConfig) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_algeon_native(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
-pub fn datafusion::execution::session_state::SessionStateBuilder::with_algeon_native_rule(self, alloc::sync::Arc<algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule>) -> Self
 pub mod algeon_datafusion::source_cardinality
 pub const algeon_datafusion::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY: &str
 pub fn algeon_datafusion::source_cardinality::schema_with_source_unique_keys(&arrow_schema::schema::Schema, &[&[&str]]) -> arrow_schema::schema::Schema

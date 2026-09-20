@@ -27,7 +27,7 @@ use query_engine::{
 use super::{
     admission::{
         QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketAdmissionContext,
-        query_admission_ticket_from_task_context,
+        invocation_admission_ticket,
     },
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
