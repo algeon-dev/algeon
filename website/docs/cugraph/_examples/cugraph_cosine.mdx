@@ -4,22 +4,11 @@ This example runs on the [citation network demo dataset](../../guides/datasets/c
 
 ### Which papers share BERT's references despite different bibliography sizes?
 
-:::warning[Known cosine scoring issue]
-The query below currently returns incorrect scores on the tested native build.
-For example, BERT and *MASS: Masked Sequence to Sequence Pre-training for
-Language Generation* share 19 references out of lists of 55 and 53, giving a
-cosine of about 0.352. The current execution returns 1 for pairs with any shared
-reference, so its ordering cannot answer this question. This issue is recorded
-as [CUGRAPH-COSINE-001](https://github.com/algeon-dev/algeon/blob/main/docs/bugs/2026-09-26-cugraph-cosine-normalization.md);
-the result is withheld here pending a correction.
-The [Jaccard example](../functions/similarity/cugraph_jaccard.mdx) demonstrates
-a separately verified bibliography ranking with its own scoring definition.
-:::
-
 Compare BERT's 2018 reference list with NLP papers from 2015 through 2020 that
 have at least 10 references. Candidate papers use one of the listed field
-labels. The cosine score divides shared references by the square root of the
-two bibliography sizes, which accounts for lists of different lengths.
+labels. For bibliographies A and B, the cosine score is
+`|A ∩ B| / sqrt(|A| × |B|)`. Its denominator, the geometric mean of the two
+list sizes, accounts for bibliographies of different lengths.
 
 The function requires an undirected graph. Positive IDs represent citing
 papers, and negative IDs represent cited-paper reference roles. This keeps

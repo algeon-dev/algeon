@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, f32::consts::FRAC_1_SQRT_2, path::Path};
 
 use anyhow::Context;
 use cudf::{DataFrame, Runtime, core::Table};
@@ -80,7 +80,8 @@ pub const SIMILARITY_JACCARD_F32: &[f32] = &[0.2, 0.666667, 0.333333, 0.4, 0.166
 pub const SIMILARITY_SORENSEN_F32: &[f32] =
     &[0.333333, 0.8, 0.5, 0.571429, 0.285714, 0.666667, 0.333333, 0.4, 0.4, 0.8];
 pub const SIMILARITY_OVERLAP_F32: &[f32] = &[0.5, 1.0, 0.5, 0.666667, 0.333333, 1.0, 0.333333, 0.5, 0.5, 1.0];
-pub const SIMILARITY_COSINE_F32: &[f32] = &[1.0; 10];
+pub const SIMILARITY_COSINE_F32: &[f32] =
+    &[0.353553, 0.816497, 0.5, 0.57735, 0.288675, FRAC_1_SQRT_2, 0.333333, 0.408248, 0.408248, 0.816497];
 pub const ALL_PAIRS_JACCARD_FIRST_I32: &[i32] = &[0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5];
 pub const ALL_PAIRS_JACCARD_SECOND_I32: &[i32] = &[1, 2, 3, 4, 0, 2, 3, 5, 0, 1, 3, 4, 5, 0, 1, 2, 4, 0, 2, 3, 1, 2];
 pub const ALL_PAIRS_JACCARD_F32: &[f32] = &[
