@@ -32,6 +32,28 @@
   value cannot wait until end of scope (lock window, re-entrancy, `RefCell`
   re-borrow); otherwise delete the `drop()`. Test code is exempt.
 
+## Technical writing and anti-slop
+
+- **No false agency**: Never attribute human actions, consciousness, or feelings
+  to algorithms, data, or compilers (e.g. do not write `the planner decides`,
+  `the data tells us`, or `the engine understands`). Name the specific
+  condition, hardware constraint, or user input.
+- **No em-dashes**: The em-dash character (`—`) is banned across code comments
+  and technical documentation. Use commas, semicolons, parentheses, or separate
+  sentences.
+- **No rule of three or buzzword triads**: Prohibit listing three generic
+  adjectives (e.g. `fast, reliable, and scalable`, `flexible, robust, and extensible`).
+- **No binary contrasts and colon reveals**: Avoid theatrical structures such as
+  `It is not about X; it is about Y` or `The reality: X`.
+- **Burstiness and sentence length**: Vary sentence structures. Never generate
+  three consecutive sentences of identical length or repetitive subject-verb-object rhythm.
+- **Fact-dense, source-locked technical claims**: Every paragraph must advance
+  a concrete invariant, benchmark number, architectural boundary, or API contract.
+  Delete any sentence that functions purely as ungrounded promotional uplift.
+- **Direct reporting and interaction**: Omit conversational filler, flattery, and
+  apologies. State changed files, line ranges, non-obvious rationale, verification
+  commands and outcomes, and open technical decisions directly.
+
 ## Project boundaries
 
 `algeon-datafusion` lowers DataFusion physical plans through the compatible
@@ -56,7 +78,7 @@ compatibility belong in `crates/algeon-query-engine`.
   query_engine::…` and the `public-api` snapshots, which record library names.
 - Each crate declares `publish` directly: the release closure as
   `publish = ["crates-io"]`, everything else as `publish = false`. Never set
-  `[workspace.package].publish` — inheriting it once silently reverted the
+  `[workspace.package].publish`; inheriting it once silently reverted the
   whole closure to unpublishable. `scripts/ci/check_workspace_publication.py`
   holds the allowlist and fails closed.
 - Native sources are the root-registered submodules at
