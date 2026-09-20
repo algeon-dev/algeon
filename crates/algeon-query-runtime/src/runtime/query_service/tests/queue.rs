@@ -585,7 +585,6 @@ fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
 
     let mut queued = service
         .enqueue_admission_with_request(
@@ -809,68 +808,6 @@ fn close_waits_for_pending_owner_resolution_release() {
     let error =
         pending.join().expect("pending submission joins").expect_err("closed service rejects pending conversion");
     assert_eq!(error.fact_value("reason"), Some("admission_closed"));
-}
-
-#[test]
-fn direct_try_observes_pending_without_reserving_or_resolving() {
-    let service = test_service(1, 2);
-    let active = service.admit_query().expect("first admission occupies the only slot");
-    let pause = service.pause_pending_preflight();
-    let pending_service = service.clone();
-    let pending = std::thread::spawn(move || pending_service.admit_query());
-    pause.wait_until_entered(Duration::from_secs(1));
-    let resolver_calls = service.pending_preflight_resolver_calls();
-
-    assert!(service.try_admit_query().expect("direct path observes the older pending reservation").is_none());
-    assert_eq!(service.pending_preflight_resolver_calls(), resolver_calls);
-    pause.release();
-    drop(active);
-    pending.join().expect("pending submission joins").expect("pending request admits");
-}
-
-#[test]
-fn direct_try_rechecks_queue_after_owner_resolution() {
-    let service = test_service(1, 2);
-    let pause = service.pause_pending_preflight();
-    let direct_service = service.clone();
-    let direct = std::thread::spawn(move || direct_service.try_admit_query());
-    pause.wait_until_entered(Duration::from_secs(1));
-
-    let queued = service.enqueue_admission().expect("waiter arrives while direct owner preflight is resolving");
-    pause.release();
-    assert!(direct.join().expect("direct admission thread joins").expect("direct recheck succeeds").is_none());
-    assert_eq!(service.queued_len(), 1, "the older waiter remains authoritative at the direct recheck");
-
-    drop(queued);
-}
-
-#[test]
-fn direct_owner_resolution_does_not_consume_commit_wait() {
-    let max_wait = Duration::from_millis(20);
-    let service = admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait },
-        64 * 1024 * 1024,
-        8 * 1024 * 1024,
-        1,
-    );
-    let pause = service.pause_pending_preflight();
-    let direct_service = service;
-    let direct = std::thread::spawn(move || direct_service.try_admit_query());
-    pause.wait_until_entered(Duration::from_secs(1));
-
-    let preflight_deadline = Instant::now() + max_wait;
-    while Instant::now() < preflight_deadline {
-        std::thread::yield_now();
-    }
-    pause.release();
-    let admitted = direct
-        .join()
-        .expect("direct admission thread joins")
-        .expect("owner preflight does not spend the commit wait")
-        .expect("idle direct admission succeeds");
-
-    drop(admitted);
 }
 
 /// Waiter revalidation excludes closed devices from the impossible-cap

@@ -82,8 +82,6 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     pub(in crate::runtime::query_service) admission_transaction_probe:
         Mutex<Option<Arc<transaction::AdmissionTransactionProbe>>>,
     #[cfg(test)]
-    unknown_isolation_closure_pause: Mutex<Option<Arc<UnknownIsolationClosurePause>>>,
-    #[cfg(test)]
     direct_placement_resolution_failure: AtomicBool,
     #[cfg(test)]
     direct_provisional_cleanup_pause: Mutex<Option<Arc<DirectProvisionalCleanupPause>>>,
@@ -150,18 +148,12 @@ impl QueryServiceInner {
         // work on a fleet whose fault isolation is unknown.
         let _fleet_admission = self.fleet_admission.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let reason = format!("unknown-isolation backend failure: {}", detail.as_ref());
-        let mut closed_a_ledger = false;
         if let Some(resources) = &self.resources {
             for context in resources.devices.contexts() {
                 if let Err(error) = context.ledger().close_admission(reason.clone()) {
                     eprintln!(
                         "[query-engine] warning: failed to close device admission after unknown-isolation failure: {error}"
                     );
-                }
-                if !closed_a_ledger {
-                    closed_a_ledger = true;
-                    #[cfg(test)]
-                    self.pause_unknown_isolation_closure_after_first_ledger();
                 }
             }
         }
@@ -172,20 +164,7 @@ impl QueryServiceInner {
                 "[query-engine] warning: failed to close fallback admission ledger after unknown-isolation failure: {error}"
             );
         }
-        #[cfg(test)]
-        if !closed_a_ledger && self.fallback_device_ledger.is_some() {
-            self.pause_unknown_isolation_closure_after_first_ledger();
-        }
         self.notify_admission_available();
-    }
-
-    #[cfg(test)]
-    fn pause_unknown_isolation_closure_after_first_ledger(&self) {
-        let pause =
-            self.unknown_isolation_closure_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(pause) = pause {
-            pause.wait();
-        }
     }
 }
 
@@ -252,16 +231,6 @@ impl TestPauseHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv_timeout(timeout)
             .unwrap_or_else(|error| panic!("{} did not enter before the deadline: {error}", self.name));
-    }
-
-    pub(in crate::runtime::query_service) fn entered_within(&self, timeout: Duration) -> bool {
-        match self.entered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(timeout) {
-            Ok(()) => true,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("{} pause sender disconnected", self.name)
-            },
-        }
     }
 
     pub(in crate::runtime::query_service) fn release(&self) {
@@ -340,25 +309,6 @@ impl DirectProvisionalCleanupPause {
     }
 }
 
-#[cfg(test)]
-#[derive(Debug)]
-struct UnknownIsolationClosurePause {
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-#[cfg(test)]
-impl UnknownIsolationClosurePause {
-    fn wait(&self) {
-        self.entered.send(()).expect("unknown-isolation closure pause receiver remains live");
-        self.release
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recv()
-            .expect("unknown-isolation closure pause is released");
-    }
-}
-
 impl QueryService {
     /// Returns the first configured ordinal for diagnostics and admission-only
     /// fallback paths. Resource ownership remains in ledgers/profiles rather
@@ -424,23 +374,6 @@ impl QueryService {
         self.inner.close_unknown_isolation_admission(reason);
     }
 
-    /// Pauses a test-only unknown-isolation closure after its first ledger
-    /// closes, while the fleet admission gate remains held.
-    #[cfg(test)]
-    pub(in crate::runtime::query_service) fn pause_unknown_isolation_closure_after_first_ledger_for_test(
-        &self,
-    ) -> TestPauseHandle {
-        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
-        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
-        let pause =
-            Arc::new(UnknownIsolationClosurePause { entered: entered_sender, release: Mutex::new(release_receiver) });
-        let mut armed =
-            self.inner.unknown_isolation_closure_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(armed.is_none(), "only one unknown-isolation closure pause may be armed for a service");
-        *armed = Some(pause);
-        TestPauseHandle::new("unknown-isolation closure", entered_receiver, release_sender)
-    }
-
     /// Installs a fault-injection probe over the admission transaction.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn set_admission_transaction_probe(
@@ -452,12 +385,12 @@ impl QueryService {
     }
 
     #[cfg(test)]
-    pub(in crate::runtime::query_service) fn fail_next_direct_placement_resolution_for_test(&self) {
+    pub(in crate::runtime::query_service) fn fail_next_placement_resolution_for_test(&self) {
         self.inner.direct_placement_resolution_failure.store(true, Ordering::Release);
     }
 
     #[cfg(test)]
-    pub(in crate::runtime::query_service) fn pause_next_direct_provisional_cleanup_for_test(&self) -> TestPauseHandle {
+    pub(in crate::runtime::query_service) fn pause_next_provisional_cleanup_for_test(&self) -> TestPauseHandle {
         let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
         let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
         *self.inner.direct_provisional_cleanup_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =

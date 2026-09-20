@@ -1009,7 +1009,6 @@ mod tests {
                 shared_session_count: 0,
                 queue_max_queued_attempts: 0,
                 queue_max_queue_wait_ms: 0,
-                queue_max_overtakes_per_waiter: 0,
                 device_startup_records: serde_json::Value::Null,
                 close: test_close_evidence(),
             },

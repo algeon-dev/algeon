@@ -93,6 +93,9 @@ pub use query_planning::execution_contracts::{
 };
 #[cfg(feature = "qualification")]
 pub use query_service::DeviceQuarantineInjection;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use query_service::QueryAdmissionWaiter;
 #[doc(hidden)]
 pub use query_service::QueryService;
 pub use query_service::{

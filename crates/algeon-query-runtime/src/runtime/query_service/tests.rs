@@ -25,11 +25,11 @@ use tokio::{
 
 use super::{admission::AdmissionTicket, *};
 use crate::{
-    attempt::{AttemptBackendCounters, AttemptLifecycleError, AttemptOwner, BeginAttemptRequest},
+    attempt::{AttemptBackendCounters, AttemptCompletion, AttemptLifecycleError, AttemptOwner, BeginAttemptRequest},
     observability::{
-        AdmissionLifecycleState, AttemptAdmissionFact, AttemptAllocatorEventAction, AttemptAllocatorEventSource,
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDeviceHealthStatus, AttemptDisposition,
-        AttemptEvidenceField, AttemptEvidenceProvenance, AttemptFailureCode, AttemptFailureStatus,
+        AdmissionLifecycleState, AttemptAllocatorEventAction, AttemptAllocatorEventSource, AttemptCapacityDisposition,
+        AttemptCleanupDisposition, AttemptDeviceHealthStatus, AttemptDisposition, AttemptEvidenceField,
+        AttemptEvidenceProvenance, AttemptFailureCode, AttemptFailureStatus, AttemptFailureSummary,
         AttemptFaultIsolation, AttemptHealthTransition, AttemptNativeFaultKind, AttemptNativeStatus,
         AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, CleanupFailurePhase,
         CleanupFailureSummary, GpuJobLifecycleState, PlanExecutionId, QueryBoundaryKind, RuntimeObservationConfig,

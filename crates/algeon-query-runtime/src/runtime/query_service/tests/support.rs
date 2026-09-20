@@ -1,3 +1,15 @@
+/// Admits now, or reports that the request would queue, through the queue
+/// waiter; a request that cannot admit leaves the queue with its waiter.
+impl QueryService {
+    fn try_admit_query(&self) -> Result<Option<QueryHandle>> {
+        self.try_admit_query_with_request(QueryAdmissionRequest::new())
+    }
+
+    fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {
+        self.enqueue_admission_with_request(request)?.try_admit()
+    }
+}
+
 use query_planning::{
     admission::ExecutionCapability,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},

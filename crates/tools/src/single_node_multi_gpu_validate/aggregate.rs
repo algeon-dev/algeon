@@ -64,13 +64,12 @@ pub(super) struct AttemptObservation {
     pub(super) admission_sequence: Option<u64>,
     pub(super) admission_wait_ns: Option<u64>,
     /// Admission-boundary timestamps on the engine's shared observation
-    /// clock. They let the overload scenario prove unrelated-device progress
-    /// without relying on runner task order or a host-side clock.
+    /// clock. They let the overload scenario check request-before-admission
+    /// order without relying on runner task order or a host-side clock.
     pub(super) admission_requested_ns: Option<u64>,
     pub(super) admitted_ns: Option<u64>,
     /// Sealed FIFO queue facts emitted by the engine-owned admission
-    /// controller. Historical overtake fields remain zero and are not
-    /// inferred from runner ordering.
+    /// controller, never inferred from runner ordering.
     pub(super) admission_wait: Option<AdmissionWaitEvidence>,
     /// Ledger grant identity, when the report carried available resource
     /// evidence. `None` means the evidence field was unavailable, which is a
@@ -230,10 +229,6 @@ pub(super) struct AttemptTerminalEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct AdmissionWaitEvidence {
     pub(super) submission_sequence: u64,
-    pub(super) overtake_limit: u32,
-    pub(super) overtakes_consumed: u32,
-    pub(super) overtakes_remaining: u32,
-    pub(super) protection_device_ordinal: Option<usize>,
 }
 
 /// Per-device occupancy peaks observed by the sampler.
@@ -561,15 +556,12 @@ pub(super) struct ScenarioEvidence {
 ///
 /// `AttemptAdmissionWaitFact` is controller-owned and sealed with the final
 /// report. The release runner uses actual public plans to exercise the bounded
-/// oldest-eligible FIFO queue. Historical overtake fields are retained as
-/// zero-valued artifact facts.
+/// oldest-eligible FIFO queue.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct OverloadFairnessEvidence {
     pub(super) status: ClauseStatus,
     pub(super) configured_active_attempt_capacity: u64,
     pub(super) configured_queue_limit: u64,
-    /// Historical field retained as a zero fact after overtake policy removal.
-    pub(super) configured_overtake_limit: u32,
     pub(super) planned_cohort_attempts: u64,
     pub(super) sealed_attempts: u64,
     pub(super) begin_failures: u64,
@@ -584,21 +576,6 @@ pub(super) struct OverloadFairnessEvidence {
     pub(super) queue_bound_respected: bool,
     pub(super) queued_admission_reports: u64,
     pub(super) wait_facts_exact: bool,
-    pub(super) exhausted_waiter_count: u64,
-    pub(super) protected_exhausted_waiter_count: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) protected_waiter_submission_sequence: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) protected_waiter_admission_sequence: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) protection_device_ordinal: Option<usize>,
-    /// Successful native admissions to a different ordinal while the selected
-    /// protected waiter's public admission interval remained outstanding.
-    pub(super) unrelated_device_progress_count: u64,
-    /// The stricter subset whose sealed terminal timestamp also precedes the
-    /// protected waiter's admission. This is the liveness witness required by
-    /// the scenario.
-    pub(super) unrelated_device_completion_count: u64,
     /// The physical public workload must nevertheless complete on more than
     /// one eligible device while the saturated cohort drains.
     pub(super) eligible_device_completion_count: u64,
@@ -1058,10 +1035,6 @@ impl OverloadFairnessEvidence {
         let wait_facts_exact = !queued.is_empty()
             && queued.iter().all(|(attempt, wait)| {
                 submission_sequences.insert(wait.submission_sequence)
-                    && wait.overtake_limit == 0
-                    && wait.overtakes_consumed == 0
-                    && wait.overtakes_remaining == 0
-                    && wait.protection_device_ordinal.is_none()
                     && attempt.admission_sequence.is_some()
                     && attempt.admission_wait_ns.is_some()
                     && attempt
@@ -1074,7 +1047,6 @@ impl OverloadFairnessEvidence {
             status: ClauseStatus::Failed,
             configured_active_attempt_capacity,
             configured_queue_limit,
-            configured_overtake_limit: 0,
             planned_cohort_attempts,
             sealed_attempts,
             begin_failures,
@@ -1088,13 +1060,6 @@ impl OverloadFairnessEvidence {
             queue_bound_respected: observed_peak_queued_attempts <= configured_queue_limit_usize,
             queued_admission_reports: queued.len() as u64,
             wait_facts_exact,
-            exhausted_waiter_count: 0,
-            protected_exhausted_waiter_count: 0,
-            protected_waiter_submission_sequence: None,
-            protected_waiter_admission_sequence: None,
-            protection_device_ordinal: None,
-            unrelated_device_progress_count: 0,
-            unrelated_device_completion_count: 0,
             eligible_device_completion_count,
         };
         evidence.status = if evidence.is_evidenced() { ClauseStatus::Evidenced } else { ClauseStatus::Failed };

@@ -20,6 +20,8 @@ use tokio::task::spawn_blocking;
 
 #[cfg(feature = "qualification")]
 use super::DeviceQuarantineInjection;
+#[cfg(any(test, feature = "test-hooks"))]
+use super::QueryAdmissionWaiter;
 #[cfg(test)]
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
@@ -1298,10 +1300,14 @@ impl GpuBackendSession {
         self.admit_query_with_request(QueryAdmissionRequest::new())
     }
 
-    pub fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {
+    /// Queues an admission request and returns its waiter without blocking.
+    /// Dropping the waiter before admission removes the request.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn enqueue_admission_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryAdmissionWaiter> {
         let (observation, resource, completion_dispatcher) = self.acquire_resource()?;
         let service = resource.generation.service().cloned().ok_or_else(resource_generation_unpublished_error)?;
-        service.try_admit_query_with_backend_permits(request, observation, resource, completion_dispatcher)
+        service.enqueue_admission_with_backend_permits(request, observation, resource, completion_dispatcher)
     }
 
     pub async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {

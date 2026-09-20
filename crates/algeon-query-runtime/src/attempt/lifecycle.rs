@@ -15,12 +15,18 @@ use crate::observability::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptLifecycleError {
     DoubleTerminalization,
-    InvalidOrder { boundary: &'static str, reason: &'static str },
+    InvalidOrder {
+        boundary: &'static str,
+        reason: &'static str,
+    },
     DispositionConflict,
     ReportBeforeTerminal,
     CleanupWithoutAdmission,
     TerminalCommitConflict,
     FinalizationUnavailable,
+    /// The attempt's one admission right is already consumed, by an earlier
+    /// claim or by finishing the attempt without admission.
+    AdmissionAlreadyClaimed,
 }
 
 impl fmt::Display for AttemptLifecycleError {
@@ -113,7 +119,18 @@ impl AttemptLifecycle {
         }
     }
 
+    /// Records the attempt's one admission claim. Every check runs before the
+    /// timestamp is written, so a rejected claim leaves the lifecycle as it was.
     pub(crate) fn admission_requested(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+        if self.admission_requested.is_some() {
+            return Err(AttemptLifecycleError::AdmissionAlreadyClaimed);
+        }
+        if self.terminal.is_some() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_requested",
+                reason: "attempt_terminal",
+            });
+        }
         self.rejects_gpu_boundary("admission_requested")?;
         if self.disposition.is_none() {
             // The final plan is always classified before GPU admission can be
@@ -136,6 +153,11 @@ impl AttemptLifecycle {
         self.rejects_gpu_boundary("admitted")?;
         if self.admitted.is_some() {
             return Ok(());
+        }
+        // The owner may terminalize while admission is in flight; a grant
+        // published after that terminal would never execute.
+        if self.terminal.is_some() {
+            return Err(AttemptLifecycleError::InvalidOrder { boundary: "admitted", reason: "attempt_terminal" });
         }
         let Some(requested) = self.admission_requested else {
             return Err(AttemptLifecycleError::InvalidOrder {
@@ -322,19 +344,20 @@ impl AttemptLifecycle {
         Ok(())
     }
 
-    /// Terminalizes an admission request that failed before it received a
-    /// grant. This boundary deliberately excludes an admitted or physically
-    /// executing attempt, which remains owned by its attempt owner and
+    /// Terminalizes an admission request that failed before it claimed
+    /// admission. A claimed attempt is finished by its claim, and an admitted
+    /// or physically executing attempt remains owned by its attempt owner and
     /// release-commit path.
     pub(crate) fn terminalize_admission_rejection(
         &mut self,
         outcome: RuntimeTerminalOutcome,
+        summary: Option<AttemptFailureSummary>,
         at: u64,
     ) -> Result<(), AttemptLifecycleError> {
-        if self.admission_requested.is_none() {
+        if self.admission_requested.is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_rejection",
-                reason: "admission_not_requested",
+                reason: "admission_claimed",
             });
         }
         if self.admitted.is_some() || self.physical.is_some() || self.gpu.is_some() {
@@ -348,6 +371,12 @@ impl AttemptLifecycle {
                 boundary: "admission_rejection",
                 reason: "outcome_not_rejection",
             });
+        }
+        if self.terminal.is_some() {
+            return Err(AttemptLifecycleError::DoubleTerminalization);
+        }
+        if let Some(summary) = summary {
+            self.primary_failure(summary);
         }
         self.terminalize(outcome, at)
     }
@@ -966,45 +995,44 @@ mod tests {
     }
 
     #[test]
-    fn admission_rejection_is_limited_to_pre_grant_failure_or_cancellation() {
+    fn admission_rejection_is_limited_to_unclaimed_failure_or_cancellation() {
         let mut lifecycle = AttemptLifecycle::new(0);
         lifecycle.disposition(AttemptDisposition::Native).unwrap();
-        assert!(matches!(
-            lifecycle.terminalize_admission_rejection(RuntimeTerminalOutcome::Cancelled, 1),
+        assert_eq!(
+            lifecycle.terminalize_admission_rejection(RuntimeTerminalOutcome::Succeeded, None, 1),
             Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_rejection",
-                reason: "admission_not_requested"
+                reason: "outcome_not_rejection"
             })
-        ));
-        lifecycle.admission_requested(1).unwrap();
+        );
         lifecycle
             .terminalize_admission_rejection(
                 RuntimeTerminalOutcome::Failed {
                     error_code: AttemptFailureCode::Internal,
                     error_status: AttemptFailureStatus::Permanent,
                 },
+                None,
                 2,
             )
             .unwrap();
-        assert_eq!(
-            lifecycle.terminalize_admission_rejection(RuntimeTerminalOutcome::Succeeded, 3),
-            Err(AttemptLifecycleError::InvalidOrder {
-                boundary: "admission_rejection",
-                reason: "outcome_not_rejection"
-            })
-        );
 
-        let mut admitted = AttemptLifecycle::new(0);
-        admitted.disposition(AttemptDisposition::Native).unwrap();
-        admitted.admission_requested(1).unwrap();
-        admitted.admitted(fact(), 2).unwrap();
+        let mut claimed = AttemptLifecycle::new(0);
+        claimed.disposition(AttemptDisposition::Native).unwrap();
+        claimed.admission_requested(1).unwrap();
         assert_eq!(
-            admitted.terminalize_admission_rejection(RuntimeTerminalOutcome::Cancelled, 3),
-            Err(AttemptLifecycleError::InvalidOrder {
-                boundary: "admission_rejection",
-                reason: "admission_already_granted"
-            })
+            claimed.terminalize_admission_rejection(RuntimeTerminalOutcome::Cancelled, None, 3),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "admission_rejection", reason: "admission_claimed" })
         );
+    }
+
+    #[test]
+    fn a_second_admission_claim_is_rejected_without_changing_the_lifecycle() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        lifecycle.disposition(AttemptDisposition::Native).unwrap();
+        lifecycle.admission_requested(1).unwrap();
+        assert_eq!(lifecycle.admission_requested(2), Err(AttemptLifecycleError::AdmissionAlreadyClaimed));
+        assert_eq!(lifecycle.admission_requested, Some(1));
+        assert!(lifecycle.terminal.is_none() && lifecycle.primary_failure.is_none());
     }
 
     #[test]

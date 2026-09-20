@@ -625,7 +625,7 @@ impl RunProfile {
     pub(super) fn validate_overload_fairness_scenario(&self) -> ToolResult<()> {
         if self.backend.device_profiles.len() < 2 {
             return Err(
-                "--overload-fairness requires at least two configured devices for unrelated-device progress".into()
+                "--overload-fairness requires at least two configured devices for completion on more than one eligible device".into()
             );
         }
         if self.scheduling.arrival_mode != ArrivalMode::Concurrency {

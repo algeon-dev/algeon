@@ -100,20 +100,11 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("attempt-bound admission");
     let grant_identity = handle.grant_identity().expect("admitted handle owns its grant identity");
     assert_eq!(grant_identity.attempt_id, attempt_id);
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     let context = handle.acquire_context().expect("attempt-bound execution context");
 
     assert_eq!(context.context().attempt_id(), Some(attempt_id));
@@ -1014,19 +1005,10 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
-    attempt_handle.record_admission_requested().expect("admission requested");
 
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("attempt-bound admission");
-    attempt_handle
-        .record_admitted(AttemptAdmissionFact {
-            admission_sequence: handle.admission_sequence(),
-            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
-            device_ordinal: handle.device_ordinal(),
-            grant_bytes: handle.device_budget_bytes(),
-        })
-        .expect("attempt admission fact");
     let context = handle.acquire_context().expect("admitted execution context");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");

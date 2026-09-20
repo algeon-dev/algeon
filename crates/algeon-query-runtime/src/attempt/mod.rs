@@ -8,10 +8,10 @@ pub use cancellation::AttemptCancellation;
 #[doc(hidden)]
 pub use execution::{AttemptExecutionRound, AttemptHostOccurrence};
 pub(crate) use lifecycle::{AttemptLifecycle, AttemptLifecycleError};
+pub(crate) use owner::AttemptAdmission;
 pub use owner::{
     AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptBegin, AttemptCompletion, AttemptCompletionFactory,
     AttemptHandle, AttemptOwner, BeginAttemptRequest,
 };
-pub(crate) use owner::{AttemptFinalizer, AttemptFinalizerSlot};
 pub(crate) use queue::AttemptCompletionQueue;
 pub use queue::{AttemptBackendCounters, AttemptBackendCountersSnapshot};

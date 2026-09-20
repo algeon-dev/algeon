@@ -100,7 +100,11 @@ compatibility belong in `crates/algeon-query-engine`.
 - Support requires a correct kernel, types, and semantics; an operator lacking one is structured unsupported. A missing memory estimate is never a reason to reject.
 - Admission issues a service-configured cap, not a predicted requirement: `query-planning` proves the plan is executable, `query-runtime` admits it against the device ledger, and the query domain's allocator enforces the cap while `query-engine` executes.
 - The query domain's allocator is the single arbiter of a query's allocation limit. Never add a second Rust-side reservation, per-operator subgrant, or estimate-derived veto.
-- Use one compiled schedule, per-device ledger, and immutable grant; deferred refinement stays inside that grant.
+- Each native fragment runs one compiled schedule. An attempt owns one
+  admission claim and one immutable grant; all native fragments share that
+  grant, and deferred refinement stays inside it. A second admission claim
+  returns a typed error before queue or ledger mutation. Keep one authoritative
+  ledger per device.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
 - Keep one truth source; consolidate redundant constructors, flags, matchers, or ledgers within the requested change, preserving supported callers and contracts.
 - Output and resident facts carry scope, occurrence, schema, and provenance; allocation failures are typed at their source and reported with their cleanup disposition.
@@ -204,8 +208,16 @@ uses the same commands: `cargo nt -E 'package(bench)'`.
 
 ## Public contracts
 
-- Preserve report row schemas, TSV ordering, `NATIVE_*_TSV_HEADER` constants,
-  `NATIVE_ALGEON_DATAFUSION_METRIC_NAMES`, and native execution-plan wrappers.
+- Treat reports, TSV families, metrics, and native execution-plan wrappers as
+  explicit contracts. Before publication, change a contract atomically with all
+  workspace consumers and fixtures; do not retain deprecated paths or fabricate
+  values for removed behavior. Version persisted report and TSV schemas when
+  fields, units, or defined value semantics change. Each changed TSV family
+  carries an explicit schema field and a matching header constant. Rename a
+  metric in `NATIVE_ALGEON_DATAFUSION_METRIC_NAMES` when its meaning or unit
+  changes; preserve its name otherwise. Internal Rust refactors and fixes that
+  restore documented semantics do not by themselves require a wire-schema
+  version change.
 - TSV, DataFusion metrics, and `QueryMetrics` are projections of the runtime
   observation snapshot, not a second event store.
 - Preserve workload environment variables and item shapes.

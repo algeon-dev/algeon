@@ -14,8 +14,10 @@ use query_planning::{
 };
 
 use crate::{
+    attempt::AttemptLifecycleError,
     observability::{
-        AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionWaitFact, AttemptId, RuntimeObservationHandle,
+        AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptId,
+        RuntimeObservationHandle,
     },
     runtime::{
         ExecutionCancellation,
@@ -54,7 +56,6 @@ use super::{
 
 mod admit;
 mod enqueue;
-mod try_admit;
 
 impl QueryService {
     /// Resolves each capability-compatible candidate exactly once before the
@@ -186,6 +187,9 @@ impl QueryService {
         gpu_resource_permit: Option<GpuResourcePermit>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
     ) -> Result<PreparedSubmission> {
+        // The claim runs before any queue, ledger, stream, or lifecycle
+        // change; a rejected claim leaves the attempt exactly as it was.
+        let attempt_admission = request.claim_attempt_admission().map_err(attempt_admission_claim_error)?;
         let queue_deadline = request.queue_deadline;
         let requested_query_cap_bytes = request.requested_query_cap_bytes();
         let execution_cancellation = request.execution_cancellation.clone();
@@ -199,7 +203,7 @@ impl QueryService {
         let activity_error = observation_owner.activity_error.take();
         let completion = QueryCompletion::new(
             observation_owner.owner.take(),
-            observation_owner.attempt_finalizer_slot.take(),
+            attempt_admission,
             observation_permit,
             observation_owner.activity.take(),
             completion_dispatcher,
@@ -675,33 +679,39 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        let completion = match completion.into_admitted(&mut envelope) {
-            Ok(completion) => completion,
-            Err(error) => {
-                // A duplicate binding cannot manufacture a second post-cleanup
-                // finalizer. The provisional envelope rolls back and the
-                // admission is rejected; missing bookkeeping never closes the
-                // fleet, which only CUDA fault evidence can do.
-                envelope.preaccount_rollback_cleanup(&mut state);
-                record_admission_lifecycle(
-                    &observation,
-                    admission_request_id,
-                    admission_rejection(&error),
-                    state.queued.len(),
-                    None,
-                    None,
-                );
-                self.inner.notify_admission_available();
-                drop(state);
-                pause_after_rollback_accounting(probe.as_deref());
-                drop(envelope);
-                self.inner.notify_admission_available();
-                return Err(error);
-            },
-        };
         let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
         let device_ordinal = envelope.device_ordinal();
         let device_budget_bytes = envelope.memory_grant().budget_bytes();
+        let admitted_fact = AttemptAdmissionFact {
+            admission_sequence,
+            admission_wait_ns: u64::try_from(admission_wait.as_nanos()).unwrap_or(u64::MAX),
+            device_ordinal,
+            grant_bytes: device_budget_bytes,
+        };
+        if let Err(lifecycle_error) = completion.record_attempt_admitted(admitted_fact, admission_wait_fact) {
+            // The attempt owner committed a terminal outcome while this
+            // admission was in flight. The grant would never execute, so the
+            // envelope rolls back and the claim finishes the attempt as not
+            // admitted, keeping the owner's outcome.
+            let error = attempt_terminal_before_admission_error(&lifecycle_error);
+            envelope.preaccount_rollback_cleanup(&mut state);
+            record_admission_lifecycle(
+                &observation,
+                admission_request_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            self.inner.notify_admission_available();
+            drop(state);
+            pause_after_rollback_accounting(probe.as_deref());
+            drop(envelope);
+            self.inner.notify_admission_available();
+            completion.finish_error(&error);
+            return Err(error);
+        }
+        let completion = completion.into_admitted(&mut envelope);
         record_admission_lifecycle(
             &observation,
             admission_request_id,
@@ -734,4 +744,32 @@ impl QueryService {
             device_ordinal,
         })
     }
+}
+
+fn attempt_admission_claim_error(error: AttemptLifecycleError) -> QueryError {
+    let query_error = match error {
+        AttemptLifecycleError::AdmissionAlreadyClaimed => QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "query_engine.query_service.attempt_admission_claim",
+            "the attempt already used its one admission",
+        )
+        .with_fact("reason", "attempt_admission_already_claimed"),
+        _ => QueryError::new(
+            QueryErrorCode::Internal,
+            "query_engine.query_service.attempt_admission_claim",
+            "the attempt lifecycle rejected its admission claim",
+        )
+        .with_fact("reason", "attempt_admission_claim_rejected"),
+    };
+    query_error.with_source(error)
+}
+
+fn attempt_terminal_before_admission_error(error: &AttemptLifecycleError) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Cancelled,
+        "query_engine.query_service.admission_transaction.publish",
+        "the attempt ended before its admission was published",
+    )
+    .with_fact("reason", "attempt_terminal_before_admission")
+    .with_source(error.clone())
 }

@@ -41,9 +41,12 @@ mod service;
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use admission::QueryAdmissionWaiter;
 use admission::QueryCompletion;
 #[cfg(test)]
-use admission::{AdmissionState, DeviceAdmissionEntries, QueryAdmissionWaiter};
+use admission::{AdmissionState, DeviceAdmissionEntries};
 pub use config::{QueryExecutionConfig, QueueBounds};
 use device_waiters::{PendingDeviceSlotNotifications, notify_shared_device_admission_available};
 pub use handle::{AdmittedQueryContext, QueryHandle};

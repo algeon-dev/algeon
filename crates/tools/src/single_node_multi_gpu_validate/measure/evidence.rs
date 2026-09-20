@@ -67,15 +67,9 @@ pub(super) fn observe(
         admission_wait_ns: report.admission.as_ref().map(|admission| admission.admission_wait_ns),
         admission_requested_ns: report.timestamps.admission_requested_ns,
         admitted_ns: report.timestamps.admitted_ns,
-        admission_wait: report.admission_wait.map(|fact| AdmissionWaitEvidence {
-            submission_sequence: fact.submission_sequence,
-            // Preserve the historical artifact shape as explicit FIFO zero
-            // facts; overtake policy is no longer configurable.
-            overtake_limit: 0,
-            overtakes_consumed: 0,
-            overtakes_remaining: 0,
-            protection_device_ordinal: None,
-        }),
+        admission_wait: report
+            .admission_wait
+            .map(|fact| AdmissionWaitEvidence { submission_sequence: fact.submission_sequence }),
         grant_id: resource_evidence.and_then(|evidence| evidence.grant_id.value),
         domain_id: resource_evidence.and_then(|evidence| evidence.domain_id.value),
         domain_pool_usage: resource_evidence

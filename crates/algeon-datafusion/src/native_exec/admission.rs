@@ -38,8 +38,8 @@ use query_engine::{
     },
     error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
     observability::{
-        AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptFailureSummary,
-        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+        AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptFailureSummary, RuntimeObservationConfig,
+        RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
     },
     plan::QueryPlan,
     runtime::{AdmittedQueryContext, ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryHandle},
@@ -789,9 +789,6 @@ impl QueryAdmissionTicket {
         observation: NativeRuntimeObservation,
     ) -> QueryEngineResult<TicketAdmissionContext> {
         let cancellation = self.attempt_cancellation(cancellation);
-        if let Some(binding) = &self.attempt {
-            let _ = binding.handle.record_admission_requested();
-        }
         let mut reset_guard = TicketAdmitResetGuard {
             ticket: Arc::clone(self),
             task_key,
@@ -846,24 +843,6 @@ impl QueryAdmissionTicket {
                 return Err(error);
             },
         };
-
-        // Query-service admission has now published the immutable grant and
-        // moved the sole post-cleanup finalizer into the returned handle. The
-        // attempt lifecycle must record that fact before any later context
-        // acquisition can fail; otherwise the handle's necessary cleanup
-        // would have no truthful admitted lifecycle to finalize.
-        let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
-        if let Some(binding) = &self.attempt {
-            let _ = binding.handle.record_admitted(AttemptAdmissionFact {
-                admission_sequence: admission_facts.admission_sequence,
-                admission_wait_ns: admission_facts.admission_wait.as_nanos().min(u128::from(u64::MAX)) as u64,
-                device_ordinal: admission_facts.device_ordinal,
-                grant_bytes: admission_facts.query_grant_bytes,
-            });
-            if let Some(fact) = admission_facts.admission_wait_fact {
-                let _ = binding.handle.record_admission_wait(fact);
-            }
-        }
 
         let epoch = {
             let mut state = match self.lock_state() {

@@ -1235,11 +1235,11 @@ mod tests {
     fn cancelled_attempt_report() -> QueryAttemptReport {
         use query_engine::observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptId, AttemptTimestamps,
-            QUERY_ATTEMPT_REPORT_SCHEMA_V1,
+            QUERY_ATTEMPT_REPORT_SCHEMA_V2,
         };
 
         QueryAttemptReport {
-            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
+            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
             attempt_id: AttemptId::mint(),
             query_id: None,
             trace_context: None,
