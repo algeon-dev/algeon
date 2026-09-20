@@ -12,7 +12,7 @@ use crate::{
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// VertexIds — typed enum for runtime-width vertex id arrays
+// VertexIds; typed enum for runtime-width vertex id arrays
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime-typed vertex IDs from algorithm results.
@@ -32,7 +32,7 @@ pub enum VertexIds<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// IntegerValues — typed enum for runtime-width integer value arrays
+// IntegerValues; typed enum for runtime-width integer value arrays
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime-typed integer values from algorithm results.
@@ -180,7 +180,7 @@ impl<'a> VertexIds<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SizeValues — typed enum for runtime-width size_t arrays
+// SizeValues; typed enum for runtime-width size_t arrays
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime-typed `size_t` values from algorithm results.
@@ -221,7 +221,7 @@ impl<'a> SizeValues<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ScoreValues — typed enum for runtime-width float score arrays
+// ScoreValues; typed enum for runtime-width float score arrays
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime-typed score/weight values from algorithm results.
@@ -307,7 +307,7 @@ impl<'a> ScoreValues<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Distances — typed enum for algorithm distance arrays (integer or float)
+// Distances; typed enum for algorithm distance arrays (integer or float)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime-typed distance values from traversal algorithm results.
@@ -363,7 +363,7 @@ impl<'a> Distances<'a> {
 
     /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
     ///
-    /// Returns an error for float variants — use [`to_vec_f64`](Distances::to_vec_f64)
+    /// Returns an error for float variants; use [`to_vec_f64`](Distances::to_vec_f64)
     /// instead.
     pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {

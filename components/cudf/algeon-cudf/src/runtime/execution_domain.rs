@@ -662,7 +662,7 @@ impl ExecutionDomain {
 /// registered, so the same-provenance fast path stays free of CUDA calls.
 ///
 /// Failure policy: if the device-side fence cannot be recorded at drop time
-/// (event creation, record, or wait fails — in practice only after a sticky
+/// (event creation, record, or wait fails; in practice only after a sticky
 /// CUDA error), the drop falls back to host-synchronizing the output stream,
 /// which restores safety at the cost of blocking the calling thread. Both
 /// failures are reported on stderr; they are never silently ignored.

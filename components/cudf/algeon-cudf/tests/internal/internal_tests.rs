@@ -16,7 +16,7 @@ use cudf::{
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error, column_from_slice, error_context_value};
 
 // ---------------------------------------------------------------------------
-// TempTableView — exercised via filter, sort, distinct, drop_nulls
+// TempTableView; exercised via filter, sort, distinct, drop_nulls
 // These operations internally build table views from temporary column views.
 // ---------------------------------------------------------------------------
 
@@ -71,7 +71,7 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
 }
 
 // ---------------------------------------------------------------------------
-// resolve helpers — column name resolution errors
+// resolve helpers; column name resolution errors
 // ---------------------------------------------------------------------------
 
 fn sort_with_missing_column_returns_error() {
@@ -84,7 +84,7 @@ fn sort_with_missing_column_returns_error() {
 }
 
 // ---------------------------------------------------------------------------
-// reassemble helpers — from_table_with_names via join
+// reassemble helpers; from_table_with_names via join
 // ---------------------------------------------------------------------------
 
 fn join_reassembly_preserves_schema_names() {
@@ -133,7 +133,7 @@ fn reassembly_name_count_mismatch_uses_canonical_count_contract() {
 }
 
 // ---------------------------------------------------------------------------
-// validate_no_duplicate_names — exercised via DataFrame constructors
+// validate_no_duplicate_names; exercised via DataFrame constructors
 // ---------------------------------------------------------------------------
 
 fn from_series_rejects_duplicate_names() {

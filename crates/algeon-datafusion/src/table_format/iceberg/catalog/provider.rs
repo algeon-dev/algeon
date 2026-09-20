@@ -401,7 +401,7 @@ impl SchemaProvider for AlgeonIcebergSchemaProvider {
         .map_err(DataFusionError::from)?;
 
         // Insert into cache; under concurrent first-access races both paths
-        // produce equivalent providers — first write wins, the loser's provider
+        // produce equivalent providers; first write wins, the loser's provider
         // is discarded, subsequent callers see the winner.
         {
             let mut cache = self.table_cache.write().await;

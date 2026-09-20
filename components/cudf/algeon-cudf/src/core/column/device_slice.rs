@@ -5,7 +5,7 @@ use crate::core::types::TypeId;
 /// An opaque descriptor of a contiguous region of GPU device memory.
 ///
 /// `DeviceSlice` is a safe, typed handle that carries a device pointer, element
-/// count, and type information. It does **not** copy or dereference the pointer —
+/// count, and type information. It does **not** copy or dereference the pointer;
 /// device pointers are not accessible from host code, so holding one cannot cause
 /// undefined behavior.
 ///
@@ -51,7 +51,7 @@ pub struct DeviceSlice<'a> {
 // external GPU libraries (e.g., cugraph).
 //
 // If `DeviceSlice` ever gains methods that launch kernels, enqueue copies, or
-// interact with a CUDA stream, the Send + Sync impls must be re-evaluated —
+// interact with a CUDA stream, the Send + Sync impls must be re-evaluated;
 // those operations may require stream synchronization or CUDA-context affinity
 // that a cross-thread send would violate.
 unsafe impl Send for DeviceSlice<'_> {}
@@ -82,7 +82,7 @@ impl DeviceSlice<'_> {
     /// This method exposes only a pointer. It does not communicate null-mask
     /// semantics, original column offset, or execution provenance.
     ///
-    /// Returns `*const` (not `*mut`) because `DeviceSlice` is `Sync` — shared
+    /// Returns `*const` (not `*mut`) because `DeviceSlice` is `Sync`; shared
     /// references can cross threads, so the safe API must not hand out
     /// mutation-capable pointers from `&self`. Use [`as_mut_ptr()`](Self::as_mut_ptr)
     /// when mutable access is needed.

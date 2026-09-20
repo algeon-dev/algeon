@@ -311,7 +311,7 @@ fn validate_runtime_binding_device(
 /// Manages GPU resources (CUDA stream and the underlying cuGraph resource
 /// handle). Automatically freed on drop (unless created via
 /// [`from_raw_resource_handle`](Self::from_raw_resource_handle), which borrows
-/// an external cuGraph resource handle). Not thread-safe — must be used from
+/// an external cuGraph resource handle). Not thread-safe; must be used from
 /// the thread that created it.
 pub struct ResourceHandle {
     state: ResourceHandleState,
@@ -443,7 +443,7 @@ impl ResourceHandle {
     /// This constructor is intended for multi-GPU workflows where a
     /// per-thread `cugraph_resource_handle_t*` has already been created
     /// externally (for example by an MTMG or MPI-aware native layer). The
-    /// returned wrapper does **not** own the handle — it will not be freed on
+    /// returned wrapper does **not** own the handle; it will not be freed on
     /// drop. The wrapped handle is assumed to belong to the calling thread's
     /// current CUDA device at the moment this function is called.
     ///
@@ -628,7 +628,7 @@ impl Drop for ResourceHandle {
     }
 }
 
-// ResourceHandle is NOT Send/Sync — GPU state is thread-local.
+// ResourceHandle is NOT Send/Sync; GPU state is thread-local.
 
 #[cfg(test)]
 mod tests {
@@ -868,7 +868,7 @@ mod tests {
             // `borrowed` drops here without freeing `raw`.
         }
 
-        // `owned` is still valid — dropping it cleans up the actual handle.
+        // `owned` is still valid; dropping it cleans up the actual handle.
         assert!(!owned.as_ptr().is_null());
     }
 

@@ -60,7 +60,7 @@ where
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// to_series — result → cudf Series conversion
+// to_series; result → cudf Series conversion
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl VertexIds<'_> {
@@ -151,7 +151,7 @@ impl IntegerValues<'_> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TryFrom impls — result structs → cudf::DataFrame
+// TryFrom impls; result structs → cudf::DataFrame
 // ═══════════════════════════════════════════════════════════════════════════
 
 pub(crate) fn page_rank_result_to_dataframe(result: &PageRankResult, runtime: &Runtime) -> Result<cudf::DataFrame> {

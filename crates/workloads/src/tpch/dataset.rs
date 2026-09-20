@@ -241,7 +241,7 @@ pub fn default_tpch_dataset(root: &str, scale_factor: &str) -> Option<(PathBuf, 
     Some((root_path, metadata))
 }
 
-/// Same as `default_tpch_dataset` but includes a content fingerprint —
+/// Same as `default_tpch_dataset` but includes a content fingerprint;
 /// needed by the benchmark binary's strict-validation gate.
 pub fn default_tpch_dataset_with_fingerprint(root: &str, scale_factor: &str) -> Option<(PathBuf, TpchDatasetMetadata)> {
     let root_path = PathBuf::from(root);

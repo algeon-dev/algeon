@@ -9,7 +9,7 @@ use crate::{metrics::OperatorMetrics, plan::GraphEdgeColumnBindings};
 ///
 /// `source`/`destination` always gate: a null endpoint is not a valid graph
 /// edge. Optional columns only gate when the consuming operation actually reads
-/// them — dropping an edge because an unread column is null silently corrupts
+/// them; dropping an edge because an unread column is null silently corrupts
 /// the graph topology (e.g. BFS reachability). See the BFS regression in
 /// `graph_algorithm_execution.rs`.
 #[derive(Clone, Copy)]

@@ -30,7 +30,7 @@ use crate::{
 /// RAII wrapper around `cugraph_rng_state_t`.
 ///
 /// The RNG state is used by stochastic algorithms and is updated in-place
-/// with each call. Not thread-safe — must be used from the thread that
+/// with each call. Not thread-safe; must be used from the thread that
 /// created it.
 pub struct RngState {
     raw: *mut cugraph_rng_state_t,

@@ -631,7 +631,7 @@ struct EngineMeasurement {
     output_fingerprint: Option<String>,
     /// `None` on the CPU side. On the native side, `Some(true)` when the
     /// optimizer rule actually replaced a sub-plan with a native node, else
-    /// `Some(false)` — in which case the recorded wall time is the retained
+    /// `Some(false)`; in which case the recorded wall time is the retained
     /// DataFusion baseline, not GPU execution. Used to gate `speedup_vs_cpu`
     /// so the report cannot publish DataFusion-baseline time as native time.
     native_rewritten: Option<bool>,
@@ -752,7 +752,7 @@ impl BenchmarkRow {
     }
 
     /// `speedup_vs_cpu` is only meaningful when both sides succeeded **and**
-    /// the native rule actually rewrote the plan — otherwise the "native"
+    /// the native rule actually rewrote the plan; otherwise the "native"
     /// wall time is a retained DataFusion baseline and a 1.0× ratio would be
     /// misleading.
     fn speedup_vs_cpu(&self) -> Option<f64> {

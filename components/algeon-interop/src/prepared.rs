@@ -37,7 +37,7 @@ pub struct PreparedColumnExport<'a> {
 
 /// Structural equality over all observable export state.  `lease_backend` is
 /// compared by its `incomplete_drop_behavior()` rather than identity because
-/// backends are trait objects without a meaningful equality relation — the drop
+/// backends are trait objects without a meaningful equality relation; the drop
 /// behavior is the only semantically relevant property for export comparison.
 impl PartialEq for PreparedColumnExport<'_> {
     fn eq(&self, other: &Self) -> bool {

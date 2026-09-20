@@ -9,8 +9,8 @@
 //! and recycled through a bounded pool instead of being allocated per upload.
 //!
 //! Sizing knobs (read once at first use):
-//! - `CUDF_HOST_STAGING_SLAB_BYTES` — bytes per slab (default 16 MiB).
-//! - `CUDF_HOST_STAGING_SLAB_COUNT` — maximum retained slabs (default 8).
+//! - `CUDF_HOST_STAGING_SLAB_BYTES`: bytes per slab (default 16 MiB).
+//! - `CUDF_HOST_STAGING_SLAB_COUNT`: maximum retained slabs (default 8).
 
 use std::{
     ffi::c_void,

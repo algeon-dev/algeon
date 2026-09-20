@@ -1,8 +1,8 @@
 //! Open-loop goodput and latency harness for the fixed-cap admission model.
 //!
 //! The harness drives one process-scoped [`AlgeonGpuBackend`] through the
-//! adapter's attempt API — the same path `algeon-server` uses beneath its
-//! Flight transport — replays a seeded arrival trace, and reports, for one
+//! adapter's attempt API; the same path `algeon-server` uses beneath its
+//! Flight transport; replays a seeded arrival trace, and reports, for one
 //! observation window:
 //!
 //! - offered, completed, succeeded and SLO-met counts with one shared

@@ -440,7 +440,7 @@ impl Runtime {
     ///
     /// This is the dtype-erased counterpart to [`Self::null_scalar`] /
     /// [`Self::null_string_scalar`] and dispatches on the [`TypeId`].
-    /// Use it when the target data type is only known at runtime — for
+    /// Use it when the target data type is only known at runtime; for
     /// example when building a fill scalar from a column or schema. Fails
     /// with [`ErrorCode::UnsupportedDtype`](crate::core::error::ErrorCode)
     /// for types whose null encoding is not yet exposed by cudf.
@@ -885,7 +885,7 @@ impl RuntimeBuilder {
     /// operations that execute in this runtime. Temporary allocations made
     /// inside libcudf kernels always resolve through the device's long-lived
     /// memory domain (the per-device current resource installed at domain
-    /// creation) and are accounted per stream — they are never routed into
+    /// creation) and are accounted per stream; they are never routed into
     /// this resource. Use this when output buffers must live on a specific
     /// allocator (for example, interop buffers handed to an external system).
     ///
@@ -912,7 +912,7 @@ impl RuntimeBuilder {
     /// [`with_memory_resource`](Self::with_memory_resource), the pool receives
     /// only output allocations; libcudf temporaries route through the
     /// device's memory domain and are accounted per stream. An owned pool is
-    /// therefore not a budgeting tool — use the default device-level memory
+    /// therefore not a budgeting tool; use the default device-level memory
     /// manager plus stream-bound reservations
     /// ([`Runtime::stream_reservation`]) to bound a pipeline's memory.
     ///
@@ -990,7 +990,7 @@ impl RuntimeBuilder {
     /// Resolve the target device, validating handle provenance.
     fn resolve_device(&self) -> Result<DeviceId> {
         if let Some(target) = self.device {
-            // Explicit device — validate supplied handles agree.
+            // Explicit device; validate supplied handles agree.
             if let Some(ref stream) = self.stream
                 && stream.device() != target
             {
@@ -1013,7 +1013,7 @@ impl RuntimeBuilder {
             }
             Ok(target)
         } else {
-            // No explicit device — infer from handles.
+            // No explicit device; infer from handles.
             match (&self.stream, &self.mr_selection) {
                 (Some(stream), MemoryResourceSelection::Owned(mr)) => {
                     if stream.device() != mr.device() {

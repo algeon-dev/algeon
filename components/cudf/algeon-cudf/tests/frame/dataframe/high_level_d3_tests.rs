@@ -44,7 +44,7 @@ fn sample_df_with_dupes() -> DataFrame {
 }
 
 // ===========================================================================
-// dropna — default (any, all columns)
+// dropna; default (any, all columns)
 // ===========================================================================
 
 fn test_dropna_default_drops_any_null_row() {
@@ -53,17 +53,17 @@ fn test_dropna_default_drops_any_null_row() {
     let result = df.dropna(Default::default()).unwrap();
 
     // Rows 1,2,3,4 have at least one null → only row 0 survives.
-    // Wait: row 0 = (1, 10.0, "a") — all valid.
-    //       row 1 = (2, null, "b") — null in score → dropped
-    //       row 2 = (3, 30.0, null) — null in tag → dropped
-    //       row 3 = (4, null, "d") — null in score → dropped
-    //       row 4 = (5, 50.0, null) — null in tag → dropped
+    // Wait: row 0 = (1, 10.0, "a"); all valid.
+    //       row 1 = (2, null, "b"); null in score → dropped
+    //       row 2 = (3, 30.0, null); null in tag → dropped
+    //       row 3 = (4, null, "d"); null in score → dropped
+    //       row 4 = (5, 50.0, null); null in tag → dropped
     assert_eq!(result.num_rows(), 1);
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1]);
 }
 
 // ===========================================================================
-// dropna — how = all
+// dropna; how = all
 // ===========================================================================
 
 fn test_dropna_all_mode_keeps_partial_nulls() {
@@ -77,7 +77,7 @@ fn test_dropna_all_mode_keeps_partial_nulls() {
 }
 
 // ===========================================================================
-// dropna — subset
+// dropna; subset
 // ===========================================================================
 
 fn test_dropna_subset_single_column() {
@@ -100,7 +100,7 @@ fn test_dropna_subset_multiple_columns() {
 }
 
 // ===========================================================================
-// dropna — threshold
+// dropna; threshold
 // ===========================================================================
 
 fn test_dropna_threshold() {
@@ -130,7 +130,7 @@ fn test_dropna_threshold_one_keeps_most_rows() {
 }
 
 // ===========================================================================
-// dropna — error cases
+// dropna; error cases
 // ===========================================================================
 
 fn test_dropna_invalid_column_name() {
@@ -176,7 +176,7 @@ fn test_dropna_subset_count_limit_uses_canonical_contract() {
 }
 
 // ===========================================================================
-// dropna — empty result preserves schema
+// dropna; empty result preserves schema
 // ===========================================================================
 
 fn test_dropna_empty_result_preserves_schema() {
@@ -191,7 +191,7 @@ fn test_dropna_empty_result_preserves_schema() {
 }
 
 // ===========================================================================
-// drop_duplicates — basic (all columns)
+// drop_duplicates; basic (all columns)
 // ===========================================================================
 
 fn test_drop_duplicates_default() {
@@ -203,7 +203,7 @@ fn test_drop_duplicates_default() {
 }
 
 // ===========================================================================
-// drop_duplicates — subset
+// drop_duplicates; subset
 // ===========================================================================
 
 fn test_drop_duplicates_subset() {
@@ -216,7 +216,7 @@ fn test_drop_duplicates_subset() {
 }
 
 // ===========================================================================
-// drop_duplicates — keep options
+// drop_duplicates; keep options
 // ===========================================================================
 
 fn test_drop_duplicates_keep_first() {
@@ -276,7 +276,7 @@ fn test_drop_duplicates_keep_none() {
 }
 
 // ===========================================================================
-// drop_duplicates — error on invalid column
+// drop_duplicates; error on invalid column
 // ===========================================================================
 
 fn test_drop_duplicates_invalid_column() {
@@ -287,7 +287,7 @@ fn test_drop_duplicates_invalid_column() {
 }
 
 // ===========================================================================
-// drop_duplicates — preserves all columns
+// drop_duplicates; preserves all columns
 // ===========================================================================
 
 fn test_drop_duplicates_preserves_schema() {
@@ -299,7 +299,7 @@ fn test_drop_duplicates_preserves_schema() {
 }
 
 // ===========================================================================
-// fillna — scalar, single column
+// fillna; scalar, single column
 // ===========================================================================
 
 fn test_fillna_scalar_single_column() {
@@ -316,7 +316,7 @@ fn test_fillna_scalar_single_column() {
 }
 
 // ===========================================================================
-// fillna — with Series
+// fillna; with Series
 // ===========================================================================
 
 fn test_fillna_with_series_single_column() {
@@ -329,7 +329,7 @@ fn test_fillna_with_series_single_column() {
 }
 
 // ===========================================================================
-// fillna — error cases
+// fillna; error cases
 // ===========================================================================
 
 fn test_fillna_invalid_column() {
@@ -347,7 +347,7 @@ fn test_fillna_with_series_invalid_column() {
 }
 
 // ===========================================================================
-// fillna — preserves schema and other columns
+// fillna; preserves schema and other columns
 // ===========================================================================
 
 fn test_fillna_preserves_schema() {

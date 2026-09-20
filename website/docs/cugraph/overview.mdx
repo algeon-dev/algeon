@@ -28,11 +28,11 @@ add them, so treat each function page's signature as authoritative:
 cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json]]])
 ```
 
-- **`table_name`** — an edge relation (a registered table or view of edges).
-- **`src_col` / `dst_col`** — endpoint columns; default to `src` / `dst`.
-- **`weight_col`** — optional edge weight column. Whether it affects results
+- `table_name`: an edge relation (a registered table or view of edges).
+- `src_col` / `dst_col`: endpoint columns; default to `src` / `dst`.
+- `weight_col`: optional edge weight column. Whether it affects results
   depends on the function's **Weight column** entry in the cheat sheet below.
-- **`options_json`** — a JSON string of algorithm and graph options.
+- `options_json`: a JSON string of algorithm and graph options.
 
 For example, `cugraph_bfs` and `cugraph_sssp` take a source vertex as their
 second argument, and `cugraph_personalized_pagerank` requires all five
@@ -67,9 +67,9 @@ other calls bypass the cache. Configure and observe it through
 
 ## Next steps
 
-- **[Integrate cuGraph](../integration/overview.mdx)** — configure an embedded
+- [Integrate cuGraph](../integration/overview.mdx): configure an embedded
   session or a Flight SQL server.
-- **[Prepare graph inputs](./graph-options.mdx)** — choose a supported vertex-ID
+- [Prepare graph inputs](./graph-options.mdx): choose a supported vertex-ID
   domain and refine graph construction semantics.
-- **[Run the citation-network demo](./demo-dataset.mdx)** — follow the shared
+- [Run the citation-network demo](./demo-dataset.mdx): follow the shared
   dataset and runnable examples used by the algorithm reference.

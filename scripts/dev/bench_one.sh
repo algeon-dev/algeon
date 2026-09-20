@@ -3,7 +3,7 @@
 #
 # The raw bench TSVs are machine format (100+ columns); this wrapper resolves
 # the dataset env, runs one bench binary for the requested queries, keeps the
-# TSV clean (stdout only — progress stays on stderr), and prints a compact
+# TSV clean (stdout only: progress stays on stderr), and prints a compact
 # human-readable summary afterwards.
 #
 # Usage:

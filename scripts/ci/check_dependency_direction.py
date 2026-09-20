@@ -334,7 +334,7 @@ DATAFUSION_ROOT_IMPORT = re.compile(
 )
 # Planning consumes footers and decoded rows; it never obtains them. These are
 # the ways a Rust source file opens a file, a Parquet reader, or an object
-# store. `parquet::file::metadata` types stay allowed — reading them is not.
+# store. `parquet::file::metadata` types stay allowed: reading them is not.
 PLANNING_IO = re.compile(
     r"\bstd\s*::\s*fs\s*::"
     r"|\bFile\s*::\s*(?:open|create)\b"

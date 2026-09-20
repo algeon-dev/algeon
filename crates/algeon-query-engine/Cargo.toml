@@ -70,7 +70,7 @@ rapids-build-support = { workspace = true }
 async-trait = { workspace = true }
 
 # autotests = false above: every tests/*.rs harness must be registered here
-# explicitly — unregistered files are silently ignored by cargo.
+# explicitly: unregistered files are silently ignored by cargo.
 [[test]]
 name = "gpu_backend_shared_tests_gpu"
 path = "tests/gpu_backend_shared_tests_gpu.rs"

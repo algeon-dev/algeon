@@ -1,4 +1,4 @@
-//! Runtime device integration tests — single-GPU (always run).
+//! Runtime device integration tests; single-GPU (always run).
 
 use cudf::{DataFrame, DeviceId, Runtime, SortOptions};
 

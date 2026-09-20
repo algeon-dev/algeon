@@ -120,7 +120,7 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(void const* host_buffer,
 /// When `out_num_names` is zero, `*out_names` is NULL.
 /// The caller must free the names with `cudf_io_free_column_names()`.
 ///
-/// `row_groups` / `num_row_groups` — same semantics as `cudf_io_read_parquet_ex`.
+/// `row_groups` / `num_row_groups`; same semantics as `cudf_io_read_parquet_ex`.
 ///
 /// Read Parquet with metadata and explicit execution context.
 ///

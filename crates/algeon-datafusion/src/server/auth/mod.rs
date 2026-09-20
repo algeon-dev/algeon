@@ -2,8 +2,8 @@
 //!
 //! # Modes
 //!
-//! - [`AuthMode::Disabled`] — accepts every request; local/trusted use only.
-//! - [`AuthMode::BasicBearer`] — verifies Basic credentials from
+//! - [`AuthMode::Disabled`]: accepts every request; local/trusted use only.
+//! - [`AuthMode::BasicBearer`]: verifies Basic credentials from
 //!   `do_handshake`, returns a bearer token, and requires that token on later
 //!   RPCs.
 //!

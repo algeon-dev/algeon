@@ -71,7 +71,7 @@ fn assert_send_sync<T: Send + Sync>() {}
 /// the pool inside their critical section.
 ///
 /// Take the guard as the FIRST statement of the test body so every device
-/// allocation drops — releasing its pool accounting — before the guard is
+/// allocation drops; releasing its pool accounting; before the guard is
 /// released.
 static DEVICE_POOL_STATE: RwLock<()> = RwLock::new(());
 

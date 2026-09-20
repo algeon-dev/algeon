@@ -1,7 +1,7 @@
 //! The truthful error contract for `cudf`.
 //!
 //! `Error` stores one authoritative failure identity: [`ErrorCode`]. Both
-//! [`ErrorKind`] and [`ErrorStatus`] are pure projections of `code` — they are
+//! [`ErrorKind`] and [`ErrorStatus`] are pure projections of `code`; they are
 //! never stored independently, and there are no override APIs.
 //!
 //! The public surface is read-only: construction and mutation helpers are
@@ -164,7 +164,7 @@ impl Error {
 
     /// Internal: append a diagnostic detail. Repeated keys are allowed.
     ///
-    /// Panics if `key` is a canonical fact snake_case name — such keys must be
+    /// Panics if `key` is a canonical fact snake_case name; such keys must be
     /// written via [`with_fact`](Self::with_fact), never through the detail
     /// path. The check is structural so overlap-rule violations cannot be
     /// introduced by reviewer inattention.

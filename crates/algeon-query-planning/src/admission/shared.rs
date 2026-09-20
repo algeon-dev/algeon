@@ -157,9 +157,9 @@ fn capability_first_bounded_pipeline_admission_impl(
 /// path as shared source reads, with no cursor to alias (dynamic-filter
 /// application is a no-op for non-source frames, and the contract graph still
 /// refuses unresolvable sharing at compile time). Everything else still needs
-/// a capability no compiled contract carries yet — windowed composition,
+/// a capability no compiled contract carries yet; windowed composition,
 /// shared frame streams, and which join kernels accept another join's
-/// retained output — so it keeps the recogniser gate until those contracts
+/// retained output; so it keeps the recogniser gate until those contracts
 /// exist. Delete this function, and the branch that calls it, once they do.
 ///
 /// Union composition is covered separately: non-join families whose every

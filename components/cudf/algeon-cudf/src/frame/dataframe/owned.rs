@@ -24,7 +24,7 @@ use crate::{
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
 ///
-/// `DataFrame` is an immutable value — every mutating operation returns a
+/// `DataFrame` is an immutable value; every mutating operation returns a
 /// **new** `DataFrame` rather than modifying in place.
 ///
 /// Columns are stored as `Arc<Column>`, so operations that don't change
@@ -32,7 +32,7 @@ use crate::{
 /// unchanged columns) share GPU memory via reference counting.
 ///
 /// Cloning a `DataFrame` is cheap: it clones the `IndexMap` and bumps
-/// `Arc` reference counts — no GPU data is copied.
+/// `Arc` reference counts; no GPU data is copied.
 ///
 /// # Display
 ///
@@ -282,7 +282,7 @@ impl DataFrame {
     /// the `Series` itself. This also means unnamed `Series` are accepted as
     /// long as the caller supplies an explicit output name here.
     ///
-    /// GPU data is shared via `Arc` — no device copy.
+    /// GPU data is shared via `Arc`; no device copy.
     ///
     /// # Errors
     ///

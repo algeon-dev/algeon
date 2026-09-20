@@ -639,7 +639,7 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
         assert_eq!(metrics.dynamic_filter_produced_count, 1);
         assert_eq!(metrics.dynamic_filter_applied_count, 1);
-        // The build keyset is {1, 3, 4..=1026} — value 2 is absent. The probe's three
+        // The build keyset is {1, 3, 4..=1026}; value 2 is absent. The probe's three
         // row groups carry order_id stats [1,1], [2,2], [3,3]. Set-aware pruning
         // coalesces the keyset into runs [1,1] and [3,1026] and drops the [2,2] row
         // group, whose only value sits in the gap and matches no build key. A
@@ -797,7 +797,7 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         // [100,227]; the probe's [2,2] and [3,3] row groups are both in the gap and
         // are pruned set-aware, leaving only the [1,1] row group. The deferred
         // post-decode filter therefore sees 2 rows that already match and filters
-        // none — the deferral still fires (asserted above), but row-group pruning now
+        // none; the deferral still fires (asserted above), but row-group pruning now
         // removes the non-matching rows upstream instead of post-decode.
         assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 2);
         assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_after).sum::<u64>(), 2);
@@ -1181,7 +1181,7 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         // The build keyset {1, 3} coalesces to runs [1,1] and [3,3]; the probe's
         // [2,2] row group sits in the gap and is pruned set-aware (a single [1,3]
         // range would have kept it). Only the [1,1] and [3,3] row groups reach the
-        // reader predicate, so it evaluates 4 rows that all match and filters none —
+        // reader predicate, so it evaluates 4 rows that all match and filters none;
         // the row-group prune subsumes the per-row filtering the range path deferred.
         assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
         assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
@@ -1300,7 +1300,7 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         assert_eq!(metrics.dynamic_filter_applied_count, 1);
         // Build keyset {1, 3, 4..=401} coalesces to runs [1,1] and [3,401]; the probe's
         // [2,2] row group is in the gap and is pruned set-aware. The reader predicate
-        // then sees only the 4 surviving rows (all matching) and filters none — pruning
+        // then sees only the 4 surviving rows (all matching) and filters none; pruning
         // subsumes the per-row reader filtering the single-range path performed.
         assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
         assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);

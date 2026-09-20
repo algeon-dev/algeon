@@ -141,7 +141,7 @@ fn test_logical_not_with_nulls() {
     let values = rv.to_vec::<bool>().unwrap();
     assert!(!values[0]);
     assert!(values[1]);
-    // Index 2 is null — value is undefined, just check null mask
+    // Index 2 is null; value is undefined, just check null mask
     let validity = rv.to_host_validity().unwrap().unwrap();
     assert!(validity[0]);
     assert!(validity[1]);

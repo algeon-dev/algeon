@@ -3,9 +3,9 @@
 //! This crate depends on neither DataFusion nor any RAPIDS component: its
 //! resolved dependency closure under the union of every feature contains
 //! neither, which `scripts/ci/check_dependency_direction.py` enforces.
-//! Questions it cannot answer from Arrow and IR semantics alone — whether a
+//! Questions it cannot answer from Arrow and IR semantics alone; whether a
 //! backend can represent a type, bind an expression, or infer a kernel's
-//! output type — are asked through [`backend::BackendCapabilities`], which the
+//! output type; are asked through [`backend::BackendCapabilities`], which the
 //! execution engine implements and passes in explicitly as a
 //! [`backend::AnalysisContext`].
 //!

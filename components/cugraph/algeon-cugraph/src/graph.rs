@@ -15,8 +15,8 @@
 //! that require a specific layout accept only the correct variant, so
 //! mismatches are caught at compile time:
 //!
-//! - **[`Forward`]** — required by [`Graph::bfs`] and [`Graph::louvain`]
-//! - **[`Transposed`]** — required by [`Graph::pagerank`],
+//! - **[`Forward`]**: required by [`Graph::bfs`] and [`Graph::louvain`]
+//! - **[`Transposed`]**: required by [`Graph::pagerank`],
 //!   [`Graph::in_degrees`], and [`Graph::degrees`]
 //!
 //! Algorithms that work with either layout (e.g. betweenness centrality,
@@ -74,7 +74,7 @@ mod sealed {
 
 /// Trait implemented by the graph transposition marker types.
 ///
-/// This trait is [sealed] — it cannot be implemented outside this crate.
+/// This trait is [sealed]; it cannot be implemented outside this crate.
 ///
 /// [sealed]: https://rust-lang.github.io/api-guidelines/future-proofing.html#sealed-traits-protect-against-downstream-implementations-c-sealed
 pub trait Transposition: sealed::Sealed {
@@ -107,8 +107,8 @@ impl Transposition for Transposed {
 ///
 /// The type parameter `T` encodes the transposition state of the graph:
 ///
-/// - [`Forward`] — stored in forward (non-transposed) form (the default)
-/// - [`Transposed`] — stored in transposed form
+/// - [`Forward`]: stored in forward (non-transposed) form (the default)
+/// - [`Transposed`]: stored in transposed form
 ///
 /// Use [`GraphBuilder::build::<Forward>`](GraphBuilder::build) or
 /// [`GraphBuilder::build::<Transposed>`](GraphBuilder::build) to construct a
@@ -643,7 +643,7 @@ impl<T> Graph<T> {
         // Only the binding that owns the graph's native allocations is
         // retained for teardown. A borrowed execution binding allocates just
         // call-scoped workspace, so retaining its lease would keep its
-        // current-resource stream route — and the query domain behind it —
+        // current-resource stream route; and the query domain behind it;
         // attached for as long as the parked graph lives, long after the
         // borrowing attempt released that stream.
         let owns_teardown = leases.first().is_none_or(|existing| existing.same_binding(&lease));
@@ -849,7 +849,7 @@ impl<T> ParkedGraph<T> {
     /// produced the parked state happens before any borrower kernel reads it.
     /// Algorithm temporaries allocate through the entering handle, so
     /// workspace, auxiliary streams, and outputs charge to the borrower's
-    /// domain — never to the parking domain. cuGraph algorithms observe the
+    /// domain; never to the parking domain. cuGraph algorithms observe the
     /// graph through a const view: the borrower must not mutate shared
     /// storage, and the exclusive checkout guard that owns this parked graph
     /// must outlive every kernel launched under the borrower binding.
@@ -954,8 +954,8 @@ impl<T> std::fmt::Debug for ParkedGraph<T> {
 ///
 /// # Required parameters
 ///
-/// - `src` — source vertex ids (device array view)
-/// - `dst` — destination vertex ids (device array view)
+/// - `src`: source vertex ids (device array view)
+/// - `dst`: destination vertex ids (device array view)
 ///
 /// Properties default to a directed simple graph. Use
 /// [`properties()`](Self::properties) to override.
@@ -1156,8 +1156,8 @@ impl<'a> GraphBuilder<'a> {
     ///
     /// The type parameter `T` determines the transposition state:
     ///
-    /// - `build::<Forward>` — forward form, for [`Graph::bfs`]
-    /// - `build::<Transposed>` — transposed form, for [`Graph::pagerank`]
+    /// - `build::<Forward>`: forward form, for [`Graph::bfs`]
+    /// - `build::<Transposed>`: transposed form, for [`Graph::pagerank`]
     ///
     /// # Errors
     ///

@@ -893,7 +893,7 @@ fn enforce_single_rapids_runtime_libraries(metadata: &ResolvedMetadata, consumer
         // cudf-sys classified rapids_logger as absorbed by inspecting real
         // DT_NEEDED linkage. The single-RMM enforcement above already pins
         // cugraph to the same install prefix, whose static logger archive is
-        // therefore the only one either side can absorb — the invariant holds
+        // therefore the only one either side can absorb; the invariant holds
         // by construction, so this state stays quiet. What must not exist is
         // a *shared* logger reachable from the cugraph dirs: that is either a
         // second logger build in the process or a stale artifact any relink

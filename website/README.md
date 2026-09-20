@@ -59,9 +59,9 @@ import {StackDiagram} from '@site/src/components/design/Diagram';
 
 **Frontmatter.** Common fields used in this site:
 
-- `sidebar_position` — orders the page within its sidebar group (lower first).
-- `slug` — overrides the URL path (e.g. `slug: /` makes `intro.mdx` the homepage).
-- `description` — short summary for SEO and generated category index pages.
+- `sidebar_position`: orders the page within its sidebar group (lower first).
+- `slug`: overrides the URL path (e.g. `slug: /` makes `intro.mdx` the homepage).
+- `description`: short summary for SEO and generated category index pages.
 
 **Sidebar.** The sidebar is auto-generated from the content tree
 (`sidebars.ts`). Folder grouping, label, and ordering are controlled by a
@@ -92,7 +92,7 @@ Search is provided by
 [`@easyops-cn/docusaurus-search-local`](https://github.com/easyops-cn/docusaurus-search-local),
 a local, client-side search theme configured under `themes` in
 `docusaurus.config.ts`. The search index is generated at build time and queried
-entirely in the browser — there is no external search service, no account, and
+entirely in the browser; there is no external search service, no account, and
 no public-crawlability requirement.
 
 Two consequences to be aware of:
@@ -146,11 +146,11 @@ apex custom domain **<https://algeon.dev>** (`url` + `baseUrl: '/'` in
 
 Two paths, both live:
 
-- **Automatic** — `.github/workflows/deploy-website.yml` builds this directory
+- **Automatic**: `.github/workflows/deploy-website.yml` builds this directory
   and deploys via `cloudflare/wrangler-action` on every push to `main` that
   touches `website/**` (needs the `CLOUDFLARE_API_TOKEN` /
   `CLOUDFLARE_ACCOUNT_ID` repository secrets).
-- **Manual** —
+- **Manual**:
   `npm ci && npm run typecheck && npm run build && npm run deploy`.
 
 See [`DEPLOY.md`](./DEPLOY.md) for the full Cloudflare Pages setup, secrets, and

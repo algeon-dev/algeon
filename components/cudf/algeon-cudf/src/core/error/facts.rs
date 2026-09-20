@@ -5,7 +5,7 @@
 //! - Each `FactKeyName` binds to exactly one `FactValue` variant; the pairing
 //!   is enforced at the writer-API type layer via `FactKey<T>`.
 //! - Duplicate insertion is a programmer error and is rejected in all build
-//!   profiles — `debug_assert!` is explicitly *not* acceptable.
+//!   profiles; `debug_assert!` is explicitly *not* acceptable.
 //! - Public downstream API is read-only. Internal writers use the typed
 //!   `with_fact(FactKey<T>, T)` shape.
 
@@ -343,7 +343,7 @@ impl Facts {
         self.inner.iter().map(|(k, v)| (*k, v))
     }
 
-    /// Fallible insertion — returns `Err` if `key` is already present.
+    /// Fallible insertion; returns `Err` if `key` is already present.
     ///
     /// Also asserts the key/value variant pairing to catch any bulk-insertion
     /// miswiring at runtime (defense in depth; the typed `with_fact` API
@@ -361,7 +361,7 @@ impl Facts {
         Ok(())
     }
 
-    /// Panicking insertion — used by typed `with_fact(FactKey<T>, T)`.
+    /// Panicking insertion; used by typed `with_fact(FactKey<T>, T)`.
     pub(crate) fn insert(&mut self, key: FactKeyName, value: FactValue) {
         if let Err(err) = self.try_insert(key, value) {
             panic!("cudf internal error: {err}");

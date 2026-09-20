@@ -1,12 +1,12 @@
 //! Tests for explicit placement before `fillna_with_series` and runtime-seeded constructors.
 //!
 //! Coverage:
-//! - `DataFrame::copy_into_runtime` + `fillna_with_series` — explicit placement
-//! - `Series::copy_into_runtime` + `fillna_with_series` — explicit placement
-//! - `DataFrame::fillna_with_series` — v2: mixed-domain default path succeeds
-//! - `Series::fillna_with_series` — v2: mixed-domain default path succeeds
-//! - `Runtime::empty_column` — retains explicit domain
-//! - `Runtime::column_from_device_ptr` — uses `_ex` FFI, retains explicit domain
+//! - `DataFrame::copy_into_runtime` + `fillna_with_series`: explicit placement
+//! - `Series::copy_into_runtime` + `fillna_with_series`: explicit placement
+//! - `DataFrame::fillna_with_series`: v2: mixed-domain default path succeeds
+//! - `Series::fillna_with_series`: v2: mixed-domain default path succeeds
+//! - `Runtime::empty_column`: retains explicit domain
+//! - `Runtime::column_from_device_ptr`: uses `_ex` FFI, retains explicit domain
 use std::{ffi::c_void, ptr};
 
 use cudf::{DataFrame, Series, TypeId, testing::prelude::*};
@@ -43,7 +43,7 @@ fn obs_current_device_resource() -> *mut c_void {
 }
 
 // ---------------------------------------------------------------------------
-// copy_into_runtime + fillna_with_series — DataFrame
+// copy_into_runtime + fillna_with_series; DataFrame
 // ---------------------------------------------------------------------------
 
 /// Left DataFrame in domain A, fill series in domain B, target runtime C.
@@ -105,7 +105,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
-/// Both inputs already in the same runtime — no copy needed.
+/// Both inputs already in the same runtime; no copy needed.
 fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([
@@ -124,7 +124,7 @@ fn df_fillna_after_copy_into_runtime_same_domain_works() {
 }
 
 // ---------------------------------------------------------------------------
-// copy_into_runtime + fillna_with_series — Series
+// copy_into_runtime + fillna_with_series; Series
 // ---------------------------------------------------------------------------
 
 /// Same as the DataFrame test but at the Series level.

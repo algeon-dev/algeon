@@ -1340,7 +1340,7 @@ fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_cle
 
     let (transfer, releaser) = column.try_into_owned_transfer_with_release().unwrap();
 
-    // Drop both without import or release — should not panic or deadlock.
+    // Drop both without import or release; should not panic or deadlock.
     drop(transfer);
     drop(releaser);
 }

@@ -68,7 +68,7 @@ Arrow rows through that same interface. In between:
 5. **cuDF, cuGraph, and cuVS execute inside the cap.** The query's allocator
    enforces the grant; an allocation beyond it fails with a typed allocation
    error at its source. A native attempt that fails after execution starts is
-   terminal — it is not replayed on CPU.
+   terminal; it is not replayed on CPU.
 6. **Arrow batches return.** Results flow back through the DataFusion
    `ExecutionPlan` wrapper, so callers see ordinary record batches, metrics,
    and errors. Composed GPU fragments can hand a GPU-resident frame to the
@@ -80,13 +80,13 @@ use the same admission and allocation path.
 
 Three pages carry the details behind this flow:
 
-- [Native Lowering & Final Plans](./native-lowering.mdx) — the plan-time
+- [Native Lowering & Final Plans](./native-lowering.mdx): the plan-time
   boundary: candidate recognition, the `algeon_datafusion_native` rule,
   baseline preservation, final-plan requirements, and planning evidence.
-- [Admission & Memory Governance](./admission.mdx) — the runtime boundary:
+- [Admission & Memory Governance](./admission.mdx): the runtime boundary:
   process-wide admission, per-device ledgers, immutable grants, and
   allocation enforcement shared by library and server modes.
-- [Cache Design](./cache.mdx) — the data-reuse boundary: lakehouse object
+- [Cache Design](./cache.mdx): the data-reuse boundary: lakehouse object
   bytes, decoded cuDF sources, resident cuGraph graphs, eviction, and sizing.
 
 ## Crates and ownership
@@ -307,7 +307,7 @@ ORDER BY value DESC;
         <code>ResourceHandle</code> to a runtime on the same device and stream,
         builds a typed cuGraph graph, and runs the selected algorithm. Graph
         execution allocates inside the query's memory cap, so graph workspace
-        allocations — including libcugraph's own — are charged to the query.
+        allocations (including libcugraph's own) are charged to the query.
         Stable edge-id paths use borrowed device slices directly.</>,
     },
     {

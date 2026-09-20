@@ -282,7 +282,7 @@ fn test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract() {
     );
     assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "result_column_count").as_deref(), Some("1"));
-    // Canonical keys are published as facts only — confirm they are not duplicated into legacy details.
+    // Canonical keys are published as facts only; confirm they are not duplicated into legacy details.
     assert_eq!(err.detail_value("expected_count"), None);
     assert_eq!(err.detail_value("actual_count"), None);
 }
@@ -335,7 +335,7 @@ fn test_match_dictionaries_testing_hook_locks_null_result_array_contract() {
     );
     assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "result_column_count").as_deref(), Some("1"));
-    // Canonical keys are published as facts only — confirm they are not duplicated into legacy details.
+    // Canonical keys are published as facts only; confirm they are not duplicated into legacy details.
     assert_eq!(err.detail_value("expected_count"), None);
     assert_eq!(err.detail_value("actual_count"), None);
 }

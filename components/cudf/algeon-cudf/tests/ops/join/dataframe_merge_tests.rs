@@ -931,7 +931,7 @@ fn test_merge_options_builder_suffixes() {
 }
 
 // ---------------------------------------------------------------------------
-// Inner merge — same key name (on)
+// Inner merge; same key name (on)
 // ---------------------------------------------------------------------------
 
 fn test_inner_merge_same_key() {
@@ -996,7 +996,7 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
 }
 
 // ---------------------------------------------------------------------------
-// Left merge — different key names (left_on / right_on)
+// Left merge; different key names (left_on / right_on)
 // ---------------------------------------------------------------------------
 
 fn test_left_merge_asymmetric_keys() {

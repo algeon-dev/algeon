@@ -158,8 +158,8 @@ fn bounded_offset_only_limit_runs_below_a_full_sort() {
 
 #[test]
 fn bounded_sort_strategy_records_fused_binding_once() {
-    // The fused top-k decision is recorded in exactly one place — the sort
-    // task's strategy — with the consuming limit task and plan node bound to
+    // The fused top-k decision is recorded in exactly one place; the sort
+    // task's strategy; with the consuming limit task and plan node bound to
     // it; readers use the recorded value instead of re-deriving fusion.
     let mut builder = QueryPlanBuilder::new();
     let (join, output_schema) = compositional_inner_join_base(&mut builder);

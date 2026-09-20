@@ -1,6 +1,6 @@
 # Admission Design Rationale
 
-> **Draft** — companion to [Admission & Memory Governance](../docs/design/admission.mdx).
+> **Draft**: companion to [Admission & Memory Governance](../docs/design/admission.mdx).
 > That page states the contract; this document records why the contract has
 > this shape and how to configure it. It is not published on the website yet.
 

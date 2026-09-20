@@ -14,15 +14,15 @@ native libraries must be built in a fixed, bottom-up order.
 
 Follow the pages in this order:
 
-1. [Prerequisites](./prerequisites.md) — the GPU, compiler, Rust, and
+1. [Prerequisites](./prerequisites.md): the GPU, compiler, Rust, and
    test-runner environment.
-2. [Building from Source](./from-source.md) — one recursive clone, one build
+2. [Building from Source](./from-source.md): one recursive clone, one build
    shell, the three native builds, the Rust workspace, and the full gate.
-3. [Tests](./tests.md) — the full gate in detail, partial edit loops, and
+3. [Tests](./tests.md): the full gate in detail, partial edit loops, and
    maintainer diagnostics.
-4. [Building with Docker](./docker.md) — optional packaging of the Flight SQL
+4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
    server after a source build.
-5. [Troubleshooting](./troubleshooting.md) — native failures whose error text
+5. [Troubleshooting](./troubleshooting.md): native failures whose error text
    does not point at the cause.
 
 ## The stack
@@ -72,16 +72,16 @@ algeon-datafusion depends on that facade and uses the enabled cuDF, cuVS, and cu
 The full-feature build follows those dependencies, and each step below is
 one command in [Building from Source](./from-source.md):
 
-1. **libcudf and shared RMM** — `scripts/build/build_libcudf.sh` installs into
+1. **libcudf and shared RMM**: `scripts/build/build_libcudf.sh` installs into
    `target/native/cudf-install`, the one shared dependency prefix.
-2. **libcuvs** — `scripts/build/build_libcuvs.sh` consumes that RMM and installs
+2. **libcuvs**: `scripts/build/build_libcuvs.sh` consumes that RMM and installs
    into `target/native/cuvs-install`.
-3. **libcugraph** — `scripts/build/build_libcugraph.sh` consumes the same RMM
+3. **libcugraph**: `scripts/build/build_libcugraph.sh` consumes the same RMM
    and cuVS installs, builds in `target/native/cugraph-build`, and installs into
    `target/native/cugraph-install`.
-4. **Rust workspace** — `cargo build --workspace --all-features`, then the
+4. **Rust workspace**: `cargo build --workspace --all-features`, then the
    single full gate `bash scripts/check_all.sh`, run bare.
-5. **Docker image** — optional. `docker/stage-docker-payload.sh` stages the
+5. **Docker image**: optional. `docker/stage-docker-payload.sh` stages the
    release binary and the locally built RAPIDS libraries;
    `docker/build-image.sh` produces the runnable image.
 

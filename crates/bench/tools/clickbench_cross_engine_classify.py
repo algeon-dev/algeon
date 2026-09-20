@@ -4,15 +4,15 @@
 Reads rows.tsv or rows.jsonl produced by clickbench_cross_engine_outputs.py
 and emits one classification row per query covering:
 
-  all_engines_same    — all engines returned identical rows and values
-  tie_divergence      — engines returned same row count but different tied rows
+  all_engines_same   ; all engines returned identical rows and values
+  tie_divergence     ; engines returned same row count but different tied rows
                         (expected for waiver queries q18,q25,q26,q31,q32,q33,q39,q40,q41,q42)
-  float_variance      — engines returned same row count but differ in Float64 value
+  float_variance     ; engines returned same row count but differ in Float64 value
                         (expected for q04)
-  engine_instability  — same engine changed output between iterations
-  correctness_bug     — reference engines agree, algeon_datafusion differs (expected for q23)
-  insufficient_data   — fewer than two engines with successful output
-  unexpected_mismatch — mismatch not explained by known SQL nondeterminism or float variance
+  engine_instability ; same engine changed output between iterations
+  correctness_bug    ; reference engines agree, algeon_datafusion differs (expected for q23)
+  insufficient_data  ; fewer than two engines with successful output
+  unexpected_mismatch; mismatch not explained by known SQL nondeterminism or float variance
 """
 
 from __future__ import annotations
@@ -247,7 +247,7 @@ def _classify(
     if fingerprint_agreement == "true":
         return "all_engines_same", "all engines returned identical rows and values"
 
-    # Fingerprints differ — classify by query type.
+    # Fingerprints differ: classify by query type.
     if query_id in FLOAT_VARIANCE_QUERY_IDS:
         if row_count_agreement == "true":
             return (
@@ -276,7 +276,7 @@ def _classify(
             return (
                 "correctness_bug",
                 "reference engines agree; algeon_datafusion returns different COUNT(DISTINCT UserID) values "
-                "— over-count bug in native grouped distinct aggregate",
+                ": over-count bug in native grouped distinct aggregate",
             )
         if len(ref_fps) > 1:
             return (

@@ -28,7 +28,7 @@ fn sample_df() -> DataFrame {
 }
 
 // ===========================================================================
-// 1. DataFrame::series() — returns owned Series with Arc-shared Column
+// 1. DataFrame::series(): returns owned Series with Arc-shared Column
 // ===========================================================================
 
 /// `series()` returns an owned `Series` with correct metadata.
@@ -63,7 +63,7 @@ fn df_series_outlives_dataframe() {
 }
 
 /// Two `series()` calls for the same column produce Series with the
-/// same device pointer — proving Arc-sharing (zero GPU copy).
+/// same device pointer; proving Arc-sharing (zero GPU copy).
 fn df_series_two_calls_share_arc() {
     let df = sample_df();
     let s1 = df.series("id").unwrap();
@@ -76,7 +76,7 @@ fn df_series_two_calls_share_arc() {
 }
 
 // ===========================================================================
-// 2. DataFrame::get() / contains() — probe and existence check
+// 2. DataFrame::get() / contains(): probe and existence check
 // ===========================================================================
 
 /// `get()` returns `None` on miss, `Some(Series)` on hit.
@@ -161,7 +161,7 @@ fn df_iter_series_yields_per_item_errors_without_reordering() {
 }
 
 // ===========================================================================
-// 3. DataFrame::to_table() — deep-copies GPU data
+// 3. DataFrame::to_table(): deep-copies GPU data
 // ===========================================================================
 
 /// `to_table()` produces a new table with independent GPU memory.
@@ -183,7 +183,7 @@ fn df_to_table_deep_copies() {
     assert_eq!(table_col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-/// `to_table()` does not consume the DataFrame — source remains usable.
+/// `to_table()` does not consume the DataFrame; source remains usable.
 fn df_to_table_source_still_usable() {
     let df = sample_df();
     let _table = df.to_table_copy().unwrap();
@@ -194,7 +194,7 @@ fn df_to_table_source_still_usable() {
 }
 
 // ===========================================================================
-// 4. DataFrame::into_table() — conditional deep-copy
+// 4. DataFrame::into_table(): conditional deep-copy
 // ===========================================================================
 
 /// When the DataFrame is the sole owner of all columns (Arc strong
@@ -237,7 +237,7 @@ fn df_into_table_shared_columns_deep_copies() {
     assert_eq!(external_series.as_column().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-/// `into_table()` consumes the DataFrame — data values are preserved.
+/// `into_table()` consumes the DataFrame; data values are preserved.
 fn df_into_table_values_preserved() {
     let df = sample_df();
     let (table, names) = df.try_into_table().unwrap();
@@ -313,7 +313,7 @@ fn series_as_column_same_device_ptr_on_repeated_access() {
     assert_eq!(col.device_data_ptr().unwrap(), s.as_column().device_data_ptr().unwrap());
 }
 
-/// `Series::as_column()` returns `&Column` — a direct borrow.
+/// `Series::as_column()` returns `&Column`; a direct borrow.
 fn series_column_returns_ref() {
     let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
     let col_ref: &Column = s.as_column();
@@ -353,7 +353,7 @@ fn series_arc_accessor_shares_arc_without_consuming() {
 // Supplementary: clone semantics
 // ===========================================================================
 
-/// `Series::clone()` is a cheap Arc bump — same device pointer.
+/// `Series::clone()` is a cheap Arc bump; same device pointer.
 fn series_clone_shares_gpu_data() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
@@ -376,7 +376,7 @@ fn df_filter_gpu_allocates() {
     assert_eq!(filtered.num_rows(), 2);
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 
-    // New allocation — different device pointer
+    // New allocation; different device pointer
     assert_ne!(device_ptr(&df, "id"), device_ptr(&filtered, "id"));
 }
 

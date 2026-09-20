@@ -1,4 +1,4 @@
-//! DeviceGuard integration tests — single-GPU (always run).
+//! DeviceGuard integration tests; single-GPU (always run).
 //!
 //! DeviceGuard is `pub(crate)`, so these tests exercise it indirectly through
 //! Runtime::builder().with_device() which internally uses DeviceGuard.

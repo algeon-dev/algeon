@@ -1837,8 +1837,8 @@ fn clause(clause: &'static str, status: ClauseStatus, detail: String) -> Scenari
 
 /// Recounts the published rows and compares them with the summary reductions.
 ///
-/// The row side reads only the emitted [`AttemptRow`]s — the same values a
-/// consumer of the artifact would count — so it does not share an expression
+/// The row side reads only the emitted [`AttemptRow`]s; the same values a
+/// consumer of the artifact would count; so it does not share an expression
 /// with the aggregate side.
 fn equality(
     window: &MeasurementWindow,

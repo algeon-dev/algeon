@@ -1,11 +1,11 @@
-{/* Hand-owned examples for cugraph_spectral_modularity_maximization. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_spectral_modularity_maximization. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Peel the satellite fields off the dense citation core
 
 This cuGraph C API algorithm needs Int32 vertex ids, and AMiner paper ids overflow
-Int32 — so the example uses the
+Int32, so the example uses the
 [SQL renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-cugraph-c-api-algorithms)
 on a graph worth clustering: the k=30 citation core (every paper keeps at
 least 30 combined in+out citation links inside the subgraph, as in the
@@ -64,12 +64,12 @@ ORDER BY members DESC, rn;
 The spectral embedding keeps the deep-learning/vision nucleus in one 28,994-
 paper cluster and peels off coherent satellite literatures: a cryptography
 cluster, a fuzzy-logic/decision-making cluster, and a rough-set-theory cluster.
-That shape is characteristic of this algorithm on scale-free graphs — it will
+That shape is characteristic of this algorithm on scale-free graphs; it will
 not carve a power-law nucleus into equal parts (asking Louvain or
 [Leiden](../algorithms/community/cugraph_leiden.mdx) does that better); what it
 answers is "which satellite communities are spectrally separable from the
 core, given exactly `n_clusters` slots". The tight `evs_tolerance` matters;
 the loose default stops the eigensolver early and the satellites smear into
 the nucleus. Cluster ids are arbitrary and k-means may move a few boundary
-papers between runs — snapshot with `CREATE TABLE ... AS` per the
+papers between runs; snapshot with `CREATE TABLE ... AS` per the
 [demo dataset guide](../demo-dataset.mdx) before building on the labels.

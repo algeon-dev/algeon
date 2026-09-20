@@ -1,4 +1,4 @@
-//! DeviceId integration tests — single-GPU (always run).
+//! DeviceId integration tests; single-GPU (always run).
 
 use cudf::{DeviceId, ErrorCode, ErrorKind};
 

@@ -31,13 +31,13 @@ bash scripts/check_all.sh
 
 With no arguments it starts every phase at once, in four groups:
 
-- **policy** — rustfmt, native-source verification, checked bindings, and the
+- **policy**: rustfmt, native-source verification, checked bindings, and the
   policy self-test scripts, run independently in parallel.
-- **tests** — `cargo nt -P gate` runs the full workspace under the `gate`
+- **tests**: `cargo nt -P gate` runs the full workspace under the `gate`
   nextest profile, then doctests run through the GPU lock wrapper.
-- **static** — clippy with `-D warnings`, then strict rustdoc, then the public
+- **static**: clippy with `-D warnings`, then strict rustdoc, then the public
   API surface snapshot, in sequence.
-- **hygiene** — the six feature-isolation shards plus their union check,
+- **hygiene**: the six feature-isolation shards plus their union check,
   `msrv-check`, a docs.rs native-free compile check, and the component-package
   check, each in its own target directory.
 
@@ -50,7 +50,7 @@ Hygiene never blocks tests. Every Cargo phase uses `--workspace
 Each phase logs to `target/check-all/run.*/<phase>.log`; `target/check-all/latest`
 symlinks the newest run. That directory's `summary.tsv` (`phase`, `status`,
 `started`, `duration`, `log`, with `gate` itself as the first row) is
-rewritten every time a phase starts or finishes — poll it to watch a gate
+rewritten every time a phase starts or finishes; poll it to watch a gate
 started under `nohup`. A passing full run ends with:
 
 ```text
@@ -99,8 +99,8 @@ Feature selection is not an option: the gate always uses `--all-features`.
 ### Targeted edit loops
 
 `.config/nextest.toml` is the only test-lane source, and every command below
-selects with a `cargo nt` filterset — never `-p`, which resolves features
-differently and rebuilds:
+selects with a `cargo nt` filterset (never `-p`, which resolves features
+differently and rebuilds):
 
 ```bash
 cargo nt -E 'package(<package>)'                              # what you changed
@@ -221,9 +221,9 @@ gpu-exclusive = { max-threads = 1 }
 ```
 
 The NVIDIA driver serializes CUDA context creation, so on one GPU test
-throughput peaks around 4–8 concurrent processes; `gpu` caps at 8.
+throughput peaks around 4-8 concurrent processes; `gpu` caps at 8.
 `gpu-exclusive` tests run alone and last (`priority = -100`), reserved for
-binaries that observe or occupy the whole device or need multiple GPUs —
+binaries that observe or occupy the whole device or need multiple GPUs;
 nextest's one-process-per-test isolation already covers ordinary
 process-global state, so exclusivity is for tests that need the *device* to
 themselves, not just the process.
@@ -242,14 +242,14 @@ like any test, for example
 
 Every test binary lands in exactly one of:
 
-- **CPU, opt-in** — a `_cpu` target-name suffix, or a `binary_id` listed in
+- **CPU, opt-in**: a `_cpu` target-name suffix, or a `binary_id` listed in
   the CPU override in `.config/nextest.toml`. To move a binary onto CPU, add
   its `binary_id` (from `cargo nextest show-config test-groups`, or a
   `binary_id(...)` filterset) to that override list; an unlisted binary
   defaults into `gpu`, so a misclassification is only slower, never a
   scheduling hazard.
-- **`gpu-exclusive`** — any target whose name ends `_gpu_exclusive`.
-- **`gpu`** — every remaining test, matched last.
+- **`gpu-exclusive`**: any target whose name ends `_gpu_exclusive`.
+- **`gpu`**: every remaining test, matched last.
 
 `scripts/ci/nextest_gpu_lock.sh` is the run-wrapper nextest invokes for every
 test (`[scripts.wrapper.gpu-lock]`, applied through
@@ -281,7 +281,7 @@ tests to drain.
 
 `-R latest` reruns, `cargo nextest replay`, and any other `nextest store`
 command need recording enabled once per machine in nextest's own user config
-(not this repository's) — see
+(not this repository's); see
 [Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner).
 
 The two compile-only hygiene phases do not run tests, contact external

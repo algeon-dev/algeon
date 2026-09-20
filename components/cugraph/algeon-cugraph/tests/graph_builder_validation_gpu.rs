@@ -122,7 +122,7 @@ fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
     let handle = handle.enter("builder_rejects_vertices_dtype_mismatch_with_src_dst").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
-    // vertices are i64 but src/dst are i32 — upstream would silently truncate
+    // vertices are i64 but src/dst are i32; upstream would silently truncate
     let verts = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I64).expect("verts");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
@@ -150,7 +150,7 @@ fn builder_accepts_vertices_matching_src_dst_dtype() {
     let dst_view = dst.view().expect("dst_view");
     let verts_view = verts.view().expect("verts_view");
 
-    // Same dtype (i32) — should succeed
+    // Same dtype (i32); should succeed
     GraphBuilder::new(&src_view, &dst_view)
         .vertices(&verts_view)
         .renumber()

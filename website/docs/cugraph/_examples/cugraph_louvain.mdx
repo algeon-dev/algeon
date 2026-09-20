@@ -1,11 +1,11 @@
-{/* Hand-owned examples for cugraph_louvain. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_louvain. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Compare citation communities against field labels
 
-Two views select the 2010s AI literature — nodes by field-of-study label,
-edges where **both** endpoints qualify — and Louvain partitions it by citation
+Two views select the 2010s AI literature (nodes by field-of-study label,
+edges where **both** endpoints qualify), and Louvain partitions it by citation
 structure alone. Cross-tabulating each community against `primary_fos` (with a
 window function to keep the top 3 labels per community) shows how closely the
 detected communities align with the assigned labels:

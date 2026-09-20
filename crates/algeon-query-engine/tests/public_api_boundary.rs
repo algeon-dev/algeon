@@ -10,7 +10,7 @@
 //! The forbidden-item half of that coverage moved to
 //! `scripts/ci/check_public_api_surface.sh`, which snapshots this crate's
 //! complete public API surface (via `cargo public-api`, built on rustdoc
-//! JSON in the ordinary target directory — no duplicate dependency build)
+//! JSON in the ordinary target directory; no duplicate dependency build)
 //! and fails on any unreviewed drift, including additions the old
 //! hand-written cases never anticipated. Every migrated case reduced to a
 //! plain "item is absent/private" fact (rustc E0599/E0432/E0603/E0624/
@@ -90,7 +90,7 @@ fn query_executor(handle: &QueryHandle) -> Result<GpuExecutorLease> {
 fn supported_core_session_path_compiles() {
     // `GpuBackendCoreDraft`/`GpuBackendControllerDraft`/`DeploymentIoCapability::from_probe_inputs`
     // and `GpuBackendCore::builder` are pure in-memory construction (no cudf
-    // FFI, no device/NVML probe — verified by reading their bodies), so this
+    // FFI, no device/NVML probe; verified by reading their bodies), so this
     // runs safely in the CPU lane exactly as the trybuild `pass` fixture did.
     let deployment = DeploymentIoCapability::from_probe_inputs(
         NvidiaFsProbeStatus::DriverMissing,

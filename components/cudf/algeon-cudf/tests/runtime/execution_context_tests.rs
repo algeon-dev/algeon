@@ -6,16 +6,16 @@
 //!
 //! # Test categories
 //!
-//! 1. **Type properties** — `ExecutionOverrides` is Copy, default has null handles.
-//! 2. **Existing `_ex` FFI** — `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
+//! 1. **Type properties**: `ExecutionOverrides` is Copy, default has null handles.
+//! 2. **Existing `_ex` FFI**: `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
-//! 3. **High-level execution-context contract** — hidden safe-layer hooks
+//! 3. **High-level execution-context contract**: hidden safe-layer hooks
 //!    route explicit-lineage operations through `_ex` entry points and preserve
 //!    explicit retained provenance under borrowed overrides.
-//! 4. **Strict-context rejection** — production `_ex` APIs reject missing or
+//! 4. **Strict-context rejection**: production `_ex` APIs reject missing or
 //!    partial execution options.
-//! 5. **Allocator context** — explicit memory resource is passed through.
-//! 6. **cudf type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
+//! 5. **Allocator context**: explicit memory resource is passed through.
+//! 6. **cudf type contracts**: CudaStream, DeviceMemoryResource are Send+Sync.
 use std::{
     ffi::{c_char, c_void},
     ptr,
@@ -451,7 +451,7 @@ fn execution_context_with_mr_stores_handle() {
     assert_eq!(raw.mr, borrowed.as_raw(), "mr handle mismatch");
 }
 
-/// cudf_sys::ExecutionContext is Copy — copying produces an identical struct.
+/// cudf_sys::ExecutionContext is Copy; copying produces an identical struct.
 fn execution_context_is_copy() {
     let stream = CudaStream::new().expect("failed to create stream");
     let borrowed = stream.as_borrowed_sys();
@@ -559,7 +559,7 @@ fn column_to_host_ex_uses_explicit_stream() {
 }
 
 /// `cudf_column_view_to_host_ex` on a sliced view must copy from the sliced
-/// element offset, scaled by the element width — not by single bytes.
+/// element offset, scaled by the element width; not by single bytes.
 fn column_to_host_ex_reads_sliced_view_from_element_offset() {
     let data: [i32; 6] = [10, 20, 30, 40, 50, 60];
     let col = create_i32_column_raw(&data);
@@ -673,7 +673,7 @@ fn column_from_device_data_ex_uses_explicit_stream() {
 
     assert_observed_stream(explicit_stream);
 
-    // The _ex variant does NOT synchronize — the caller must keep src alive
+    // The _ex variant does NOT synchronize; the caller must keep src alive
     // until the stream completes.
     stream.synchronize().expect("stream sync failed");
 

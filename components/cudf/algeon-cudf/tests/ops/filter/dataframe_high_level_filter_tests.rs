@@ -7,7 +7,7 @@ use crate::common::{
 };
 
 // ---------------------------------------------------------------------------
-// filter(&Series) — happy path
+// filter(&Series); happy path
 // ---------------------------------------------------------------------------
 
 fn test_filter_series_mask_basic() {
@@ -69,7 +69,7 @@ fn test_filter_series_mask_all_false() {
 }
 
 // ---------------------------------------------------------------------------
-// filter(&Series) — preserves output column names
+// filter(&Series); preserves output column names
 // ---------------------------------------------------------------------------
 
 fn test_filter_series_preserves_column_names() {
@@ -83,7 +83,7 @@ fn test_filter_series_preserves_column_names() {
 }
 
 // ---------------------------------------------------------------------------
-// filter(&Series) — rejects wrong-length mask
+// filter(&Series); rejects wrong-length mask
 // ---------------------------------------------------------------------------
 
 fn test_filter_series_rejects_wrong_length_mask() {
@@ -101,12 +101,12 @@ fn test_filter_series_rejects_wrong_length_mask() {
 }
 
 // ---------------------------------------------------------------------------
-// filter(&Series) — rejects non-BOOL8 mask
+// filter(&Series); rejects non-BOOL8 mask
 // ---------------------------------------------------------------------------
 
 fn test_filter_series_rejects_non_bool_mask() {
     let df = sample_df();
-    // Pass an i32 series as mask — should be rejected.
+    // Pass an i32 series as mask; should be rejected.
     let mask = crate::common::series::<i32>("bad_mask", &[1, 0, 1, 0, 1]).unwrap();
 
     let result = df.filter(&mask);
@@ -120,7 +120,7 @@ fn test_filter_series_rejects_non_bool_mask() {
 }
 
 // ---------------------------------------------------------------------------
-// filter(&Series) — works with comparison-produced masks
+// filter(&Series); works with comparison-produced masks
 // ---------------------------------------------------------------------------
 
 fn test_filter_series_with_eq_scalar_mask() {

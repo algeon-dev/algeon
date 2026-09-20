@@ -187,7 +187,7 @@ and inherited by every workspace package; the canonical Clippy gate is
 - Clippy exceptions must be narrow and justified. Prefer a per-item
   `#[expect(clippy::..., reason = "...")]` with a concrete, verifiable
   justification. Do not add crate-, module-, or workspace-wide
-  `#[allow]` attributes, and never use `#[allow]` as a migration baseline —
+  `#[allow]` attributes, and never use `#[allow]` as a migration baseline;
   it silently survives the refactor it was meant to be temporary for.
 
 ## Local Setup

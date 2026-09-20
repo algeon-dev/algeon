@@ -7,7 +7,7 @@
 # algeon-datafusion links against FORKED RAPIDS C++ libraries (cuDF, cuGraph,
 # RMM, cuVS) that are built from the pinned monorepo sources. They are NOT the
 # stock libraries shipped in the official `rapidsai/*` or `nvidia/cuda` images,
-# so the image cannot pull them from a base layer — we must bundle the exact
+# so the image cannot pull them from a base layer: we must bundle the exact
 # `.so` files this binary was linked against. This script collects them.
 #
 # It stages, into docker/dist/:
@@ -18,7 +18,7 @@
 #   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
 #
 # The CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc, ...) are NOT
-# staged here — they are harvested from an official nvidia/cuda `-runtime`
+# staged here: they are harvested from an official nvidia/cuda `-runtime`
 # image inside the Dockerfile, since they are unmodified and version-matched to
 # the base image.
 #
@@ -39,7 +39,7 @@
 #
 # The image is feature-agnostic: it bundles whatever this script staged and
 # harvests only the CUDA libs the binary actually links. A lean cuDF-only
-# build therefore yields a ~3x smaller image automatically — no extra flag.
+# build therefore yields a ~3x smaller image automatically: no extra flag.
 
 set -euo pipefail
 
@@ -99,7 +99,7 @@ if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
         --manifest "$REPO_ROOT/crates/algeon-server/Cargo.toml" \
         --explicit-env "ALGEON_NATIVE_DIR=$ALGEON_NATIVE_DIR"
 else
-    echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
+    echo "==> SKIP_CARGO_BUILD=1; verifying canonical artifact before reuse"
     python3 "$POLICY_HELPER" verify-build \
         --features "$FEATURES" \
         --binary "$BINARY" \
@@ -162,12 +162,12 @@ copy_lib() {
 }
 
 CUDF_LIB="$CUDF_INSTALL_DIR/lib"
-[[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found — build cudf first." >&2; exit 1; }
+[[ -d "$CUDF_LIB" ]] || { echo "ERROR: $CUDF_LIB not found: build cudf first." >&2; exit 1; }
 echo "==> Staging forked cuDF libs from $CUDF_LIB"
 copy_lib "$CUDF_LIB/libcudf.so"          || { echo "ERROR: libcudf.so missing" >&2; exit 1; }
 copy_lib "$CUDF_LIB/librmm.so"           || { echo "ERROR: librmm.so missing" >&2; exit 1; }
 # Optional-but-bundled: kvikio (remote/GDS reads) + nvcomp (parquet codecs).
-# These are dlopen'd by libcudf, so they never show up in ldd — bundle eagerly.
+# These are dlopen'd by libcudf, so they never show up in ldd: bundle eagerly.
 copy_lib "$CUDF_LIB/libkvikio.so"        || echo "    note: libkvikio.so absent (remote-direct reads unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp.so"*       || echo "    note: libnvcomp.so absent (GPU parquet codecs may be unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp_cpu.so"*   || true
@@ -203,7 +203,7 @@ resolve_needed_realpath() {
 if [[ $want_cugraph -eq 1 ]]; then
     CUGRAPH_LIB="$CUGRAPH_INSTALL_DIR/lib"
     [[ -d "$CUGRAPH_LIB" ]] || {
-        echo "ERROR: $CUGRAPH_LIB not found — build cugraph first." >&2
+        echo "ERROR: $CUGRAPH_LIB not found; build cugraph first." >&2
         exit 1
     }
     GRAPH_CUVS_REALPATH=$(resolve_needed_realpath "$CUGRAPH_LIB/libcugraph.so" libcuvs) || {
@@ -278,7 +278,7 @@ if [[ $HAVE_PATCHELF -eq 1 ]]; then
         [[ -f "$so" && ! -L "$so" ]] && patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
     done
 else
-    echo "warning: patchelf absent — relying on ENV LD_LIBRARY_PATH=$RUNTIME_LIB_DIR set by the image"
+    echo "warning: patchelf absent; relying on ENV LD_LIBRARY_PATH=$RUNTIME_LIB_DIR set by the image"
 fi
 
 # ── 8. Fail-closed native loader closure validation ─────────────────────────

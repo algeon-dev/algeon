@@ -231,7 +231,7 @@ struct CudaStreamHandle {
     device: DeviceId,
 }
 
-// SAFETY: CUDA streams are thread-safe by design — operations can be enqueued
+// SAFETY: CUDA streams are thread-safe by design; operations can be enqueued
 // from any thread. The handle is an opaque pointer to a CUDA runtime object
 // that supports concurrent access. Sync is safe because synchronize() and
 // is_ready() are read-only queries on stream state.

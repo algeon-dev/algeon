@@ -124,7 +124,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DegreeValues — typed enum for runtime-width degree arrays
+// DegreeValues; typed enum for runtime-width degree arrays
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Runtime-typed degree values returned by cuGraph.
@@ -429,10 +429,10 @@ mod tests {
 
         let map = degree_map(&entered, &result);
 
-        // Vertex 0: hub — receives edges from 1,2,3 → in=3, out=0
+        // Vertex 0: hub; receives edges from 1,2,3 → in=3, out=0
         assert_eq!(map[&0], (3, 0), "hub should have in=3, out=0");
 
-        // Vertices 1,2,3: leaves — each sends one edge → in=0, out=1
+        // Vertices 1,2,3: leaves; each sends one edge → in=0, out=1
         for v in [1, 2, 3] {
             assert_eq!(map[&v], (0, 1), "leaf vertex {} should have in=0, out=1", v);
         }
@@ -551,7 +551,7 @@ mod tests {
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("test_degrees_isolated_vertex").expect("entered");
 
-        // Graph: 0->1, 3->4 — vertices 0,1,3,4 appear, and we check
+        // Graph: 0->1, 3->4; vertices 0,1,3,4 appear, and we check
         // that all degrees are correct.
         let src_data: Vec<i32> = vec![0, 3];
         let dst_data: Vec<i32> = vec![1, 4];

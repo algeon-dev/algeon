@@ -43,26 +43,26 @@
 //!
 //! # Primary Entry Points
 //!
-//! - [`DataFrame`] — A named, ordered collection of GPU columns with
+//! - [`DataFrame`]: A named, ordered collection of GPU columns with
 //!   immutable-value semantics.
-//! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
-//! - [`Runtime`] — Owns the default CUDA stream and retained provenance for a
+//! - [`Series`]: A named, `Arc`-shared GPU column; the primary column type.
+//! - [`Runtime`]: Owns the default CUDA stream and retained provenance for a
 //!   workflow, using the device-level memory manager by default.
 //!
 //! # Root-Level Operations
 //!
-//! - [`SortOptions`] / [`DataFrame::sort_values`] — GPU-accelerated sorting.
-//! - [`MergeOptions`] / [`DataFrame::merge`] — GPU-accelerated joins.
-//! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
-//! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
-//!   — high-level reductions that return host values directly.
+//! - [`SortOptions`] / [`DataFrame::sort_values`]: GPU-accelerated sorting.
+//! - [`MergeOptions`] / [`DataFrame::merge`]: GPU-accelerated joins.
+//! - [`GroupBy`] / [`DataFrame::groupby`]: GPU-accelerated groupby aggregation.
+//! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]:
+//!   high-level reductions that return host values directly.
 //!
 //! # Specialized High-Level Types
 //!
-//! - [`frame::dataframe`] — DataFrame-specific builders and result snapshots
+//! - [`frame::dataframe`]: DataFrame-specific builders and result snapshots
 //!   such as [`frame::dataframe::DropNaOptions`] and
 //!   [`frame::dataframe::InfoDetail`].
-//! - [`frame::factorization`] — typed categorical encoding results and
+//! - [`frame::factorization`]: typed categorical encoding results and
 //!   reusable mappings such as [`frame::factorization::Factorized`],
 //!   [`frame::factorization::Codebook`], and
 //!   [`frame::factorization::EncodedSeries`].
@@ -78,14 +78,14 @@
 //! higher-level table-style flows, use scoped surfaces such as
 //! [`DataFrame::with_execution`].
 //!
-//! - [`core::Column`] — An owned GPU column (analogous to `cudf::column`).
-//! - [`core::Table`] — An owned GPU table (collection of columns).
-//! - [`core::Scalar`] — A single value on the GPU. Most high-level reduction
+//! - [`core::Column`]: An owned GPU column (analogous to `cudf::column`).
+//! - [`core::Table`]: An owned GPU table (collection of columns).
+//! - [`core::Scalar`]: A single value on the GPU. Most high-level reduction
 //!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
 //!   `Scalar` when you need explicit device-resident scalar behavior.
-//! - [`Runtime`] / [`ExecutionOverrides`] — explicit stream and allocator control.
-//! - [`interop::arrow_host`] — Arrow `RecordBatch` conversion through host memory.
-//! - [`interop`] — `cudf`-specific interop adapters, runtime-backed
+//! - [`Runtime`] / [`ExecutionOverrides`]: explicit stream and allocator control.
+//! - [`interop::arrow_host`]: Arrow `RecordBatch` conversion through host memory.
+//! - [`interop`]: `cudf`-specific interop adapters, runtime-backed
 //!   release helpers, CUDA handle projection, and Arrow C Device ABI glue.
 //!   Import shared contract nouns from [`rapids_interop`].
 //! - For lower-level CUDA stream and event management, see the [`runtime`] module.
@@ -113,7 +113,7 @@
 //! with several data pipelines sharing each GPU. Three layers carry the
 //! model, and none of them takes a host-side lock around GPU work:
 //!
-//! - **Device domain** — each CUDA device gets exactly one memory domain
+//! - **Device domain**: each CUDA device gets exactly one memory domain
 //!   (cuda resource → pool → reservation-aware adaptor). The adaptor is
 //!   installed as RMM's per-device current resource when the domain is
 //!   created and **never changes afterwards**. libcudf temporaries
@@ -124,15 +124,15 @@
 //!   memory management of the devices it uses;
 //!   services should claim devices explicitly at startup via
 //!   [`DeviceMemoryManager::install_for_device`].
-//! - **Pipeline** — one pipeline = one [`Runtime`] (its own CUDA stream),
+//! - **Pipeline**: one pipeline = one [`Runtime`] (its own CUDA stream),
 //!   plus a [`StreamReservationLease`] when the pipeline needs its own memory
 //!   budget. Query engines can create a [`ReservationArena`] as a parent
 //!   budget and attach multiple stream leases as members under it. Pipelines
 //!   on the same device share the physical pool and are partitioned logically
 //!   by reservation accounting. Anti-pattern: do **not** share one `Runtime`
-//!   across pipelines — they would serialize on its stream and their budget
+//!   across pipelines; they would serialize on its stream and their budget
 //!   accounting would blur together.
-//! - **Operation** — every operation executes with explicit
+//! - **Operation**: every operation executes with explicit
 //!   device + stream + memory resource. The memory resource governs
 //!   **outputs only**, exactly like upstream libcudf's `mr` parameter;
 //!   temporaries belong to the device domain and are charged to the
@@ -155,7 +155,7 @@
 //! # Stream Synchronization Strategy
 //!
 //! Every owned GPU object ([`core::Column`], [`core::Table`], [`DataFrame`],
-//! [`core::Scalar`]) carries *retained provenance* — a record of the CUDA
+//! [`core::Scalar`]) carries *retained provenance*; a record of the CUDA
 //! stream and allocator handle that produced it. This differs from upstream
 //! libcudf, where callers pass a stream to each function call and are
 //! responsible for all cross-stream ordering themselves.
@@ -216,7 +216,7 @@ pub mod device;
 pub mod frame;
 pub mod hash;
 pub mod interop;
-// Internal helpers — not part of the public API.
+// Internal helpers; not part of the public API.
 pub(crate) mod internal;
 pub mod io;
 pub mod ops;
@@ -224,8 +224,8 @@ pub mod runtime;
 #[doc(hidden)]
 pub mod testing;
 
-// — Primary entry points —
-// — Types and error —
+//; Primary entry points;
+//; Types and error;
 pub use core::{
     error::{
         BudgetExhaustionDetail, CudfAllocationAttribution, CudfErrorClassification, CudfErrorDetail,
@@ -261,7 +261,7 @@ pub use frame::{
     },
     series::{IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series, SeriesPreparedScalarReduction},
 };
-// — High-level operations —
+//; High-level operations;
 pub use ops::Expr;
 pub use ops::{
     groupby::{

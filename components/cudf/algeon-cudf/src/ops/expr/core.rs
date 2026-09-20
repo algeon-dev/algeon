@@ -3,7 +3,7 @@ use super::*;
 /// A declarative expression over DataFrame columns.
 ///
 /// Expressions form a tree that is evaluated eagerly against a DataFrame via
-/// [`Expr::eval`]. No optimization is performed — each node is evaluated
+/// [`Expr::eval`]. No optimization is performed; each node is evaluated
 /// bottom-up.
 #[derive(Clone)]
 pub enum Expr {
@@ -56,7 +56,7 @@ pub enum Expr {
     /// Conditional: row-wise `if cond then true_val else false_val`.
     ///
     /// Construct via the staged [`when()`] conditional expression chain.
-    /// Output name is `None` — an explicit `.alias()` is required for use in
+    /// Output name is `None`; an explicit `.alias()` is required for use in
     /// `with_columns`.
     IfElse { condition: Box<Expr>, true_val: Box<Expr>, false_val: Box<Expr> },
     /// Set membership against a literal list.

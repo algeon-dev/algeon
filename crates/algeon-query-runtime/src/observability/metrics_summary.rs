@@ -41,8 +41,8 @@ pub enum SourceReadFact {
     /// One input batch reached execution.
     InputBatch { rows: u64 },
     /// Parquet source work, as explicit increments. Recording sites add
-    /// different subsets of these — a re-read that only learns its row-group
-    /// count adds no file — so each carries exactly what it adds.
+    /// different subsets of these; a re-read that only learns its row-group
+    /// count adds no file; so each carries exactly what it adds.
     ParquetSource { files: u64, known_bytes: u64, selected_row_groups: u64, read_columns: u64 },
     /// Time spent loading source metadata.
     MetadataLoadTime(Duration),

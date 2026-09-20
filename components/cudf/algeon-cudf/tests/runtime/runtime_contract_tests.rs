@@ -102,7 +102,7 @@ fn cuda_event_can_record_wait_and_synchronize() {
 // gains Send or Sync in the future.
 //
 // Approach: use `std::marker::PhantomData` + a const assertion trick.
-// If the type IS Send, the negative test would fail to compile — which is
+// If the type IS Send, the negative test would fail to compile; which is
 // exactly what we want to guard against.
 // ===========================================================================
 
@@ -419,7 +419,7 @@ async fn dataframe_filter_in_spawn_blocking() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_sort_on_shared_arc_dataframe() {
     // Two spawn_blocking workers both sort the same Arc<DataFrame>.
-    // Each sort produces an independent result — proving Sync is sound
+    // Each sort produces an independent result; proving Sync is sound
     // for concurrent compute on shared data.
     let df = Arc::new(sample_df());
 
@@ -500,7 +500,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
         sorted
     });
 
-    // Use a generous timeout — we are testing safety, not speed.
+    // Use a generous timeout; we are testing safety, not speed.
     let result = tokio::time::timeout(Duration::from_secs(30), handle).await;
 
     match result {
@@ -511,7 +511,7 @@ async fn timeout_on_spawn_blocking_is_safe() {
         Ok(Err(e)) => panic!("spawn_blocking panicked: {e}"),
         Err(_elapsed) => {
             // Timeout fired. The blocking thread is still running (or
-            // finished). This is safe — no GPU corruption, the DataFrame
+            // finished). This is safe; no GPU corruption, the DataFrame
             // will be dropped when the blocking thread exits.
             //
             // In CI this should not happen (30s is very generous), but

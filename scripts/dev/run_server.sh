@@ -35,7 +35,7 @@ fi
 # ---------------------------------------------------------------------------
 # Server core
 # ALGEON_SERVER_BIND              host:port to listen on (default: 0.0.0.0:50051)
-# ALGEON_SERVER_LOG               tracing filter — "info", "debug", "warn,datafusion=info"
+# ALGEON_SERVER_LOG               tracing filter: "info", "debug", "warn,datafusion=info"
 # ---------------------------------------------------------------------------
 export ALGEON_SERVER_BIND="${ALGEON_SERVER_BIND:-0.0.0.0:50051}"
 export ALGEON_SERVER_LOG="${ALGEON_SERVER_LOG:-info}"
@@ -139,7 +139,7 @@ if [[ "${ALGEON_RUN_SERVER_ICEBERG:-1}" != "0" ]]; then
 fi
 
 # AWS credentials forwarded from host environment (short-lived STS tokens).
-# Nothing to export here — they are already in the environment when set via
+# Nothing to export here: they are already in the environment when set via
 # `export AWS_ACCESS_KEY_ID=...` before calling this script.
 
 # ---------------------------------------------------------------------------

@@ -90,7 +90,7 @@ fn test_sort_options_builder() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — single column ascending (default)
+// sort_values; single column ascending (default)
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_single_column_ascending() {
@@ -102,7 +102,7 @@ fn test_sort_values_single_column_ascending() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — single column descending
+// sort_values; single column descending
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_single_column_descending() {
@@ -113,7 +113,7 @@ fn test_sort_values_single_column_descending() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — multi-column
+// sort_values; multi-column
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_multi_column() {
@@ -143,11 +143,11 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — stable sort preserves insertion order for ties
+// sort_values; stable sort preserves insertion order for ties
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_stable_preserves_order() {
-    // All ids are the same — stable sort should preserve original row order.
+    // All ids are the same; stable sort should preserve original row order.
     let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
     let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("tag", tags)]).unwrap();
@@ -159,7 +159,7 @@ fn test_sort_values_stable_preserves_order() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — rejects mismatched descending length
+// sort_values; rejects mismatched descending length
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_rejects_mismatched_descending_length() {
@@ -178,7 +178,7 @@ fn test_sort_values_rejects_mismatched_descending_length() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — rejects mismatched nulls_first length
+// sort_values; rejects mismatched nulls_first length
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_rejects_mismatched_nulls_first_length() {
@@ -197,7 +197,7 @@ fn test_sort_values_rejects_mismatched_nulls_first_length() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — preserves schema
+// sort_values; preserves schema
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_preserves_schema() {
@@ -210,7 +210,7 @@ fn test_sort_values_preserves_schema() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — nonexistent column returns error
+// sort_values; nonexistent column returns error
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_nonexistent_column() {
@@ -223,7 +223,7 @@ fn test_sort_values_nonexistent_column() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — empty descending vec means all ascending (defaults)
+// sort_values; empty descending vec means all ascending (defaults)
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_empty_options_means_defaults() {
@@ -240,7 +240,7 @@ fn test_sort_values_empty_options_means_defaults() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — nulls_first controls null placement
+// sort_values; nulls_first controls null placement
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_nulls_first() {
@@ -309,7 +309,7 @@ fn test_sort_values_default_places_nulls_last() {
 }
 
 // ---------------------------------------------------------------------------
-// sort_values — with_stable(false) is the default (unstable sort)
+// sort_values; with_stable(false) is the default (unstable sort)
 // ---------------------------------------------------------------------------
 
 fn test_sort_values_unstable_by_default() {

@@ -12,8 +12,8 @@ it replaces the original plan with a wrapper node that executes the
 `QueryPlan` on the native engine instead.
 
 It runs after DataFusion physical planning has finished, so it translates
-decisions DataFusion already made — aggregate mode, join shape, scan pushdown,
-partitioning, output order — rather than replanning them. The two plan models
+decisions DataFusion already made (aggregate mode, join shape, scan pushdown,
+partitioning, output order) rather than replanning them. The two plan models
 differ in one important way: `ExecutionPlan` is an open trait, so DataFusion
 can produce any operator shape, while `QueryPlan` is a closed,
 DataFusion-free set of nodes owned by the engine. Lowering handles only the

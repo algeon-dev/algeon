@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_weakly_connected_components. NOT generated; safe to edit. */}
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
@@ -26,7 +26,7 @@ FROM comp;
 Component labels are assigned **per execution**, so a query that scans the
 algorithm twice can join mismatched labels. Materialize one run in the mutable
 `datafusion.public` workspace, then summarize the largest components outside the
-giant one — one row per component, represented by its most-cited member.
+giant one: one row per component, represented by its most-cited member.
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.
@@ -57,6 +57,6 @@ ORDER BY members DESC;
 
 The three largest isolated components are a 39-paper cluster on
 electrical-contact arc discharge, a 25-paper photonics/electromagnetics
-cluster, and a 21-paper modified-gravity cosmology cluster — each citing only
+cluster, and a 21-paper modified-gravity cosmology cluster, each citing only
 itself. Communities that publish outside the corpus's main subject areas appear
 as disconnected components in the graph.

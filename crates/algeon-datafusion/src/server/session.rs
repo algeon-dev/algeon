@@ -206,7 +206,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         );
     }
 
-    // Register the dynamic catalog — from this point three-part addressing
+    // Register the dynamic catalog; from this point three-part addressing
     // (catalog_name.namespace.real_table_name) resolves through the backend.
     ctx.register_catalog(&iceberg.catalog_name, Arc::new(catalog_provider));
 

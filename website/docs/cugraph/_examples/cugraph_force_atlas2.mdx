@@ -1,4 +1,4 @@
-{/* Hand-owned examples for cugraph_force_atlas2. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_force_atlas2. NOT generated; safe to edit. */}
 
 import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
 
@@ -8,8 +8,8 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 Three statements build the one-hop neighborhood around *Attention Is All You
 Need* (its ~40 references, its 110 most-cited citers, and every citation among
-them), and ForceAtlas2 returns drawable coordinates. A second call —
-`cugraph_louvain` on the same edge view — colors the clusters:
+them), and ForceAtlas2 returns drawable coordinates. A second call
+(`cugraph_louvain` on the same edge view) colors the clusters:
 
 ```sql
 CREATE VIEW attention_ego_nodes AS
@@ -44,8 +44,8 @@ JOIN community c ON c.vertex = l.vertex
 JOIN papers p ON p.paper_id = l.vertex;
 ```
 
-The figure below renders that query's actual output — 133 rows of
-`(vertex, x, y, partition, title, year)` — with no client-side layout; the
+The figure below renders that query's actual output (133 rows of
+`(vertex, x, y, partition, title, year)`) with no client-side layout; the
 browser draws only what the SQL returned. Louvain's partitions correspond to
 distinct research threads (labels assigned by inspecting each cluster's
 members):
@@ -53,7 +53,7 @@ members):
 <CitationEgoGraph />
 
 `seed` fixes the initial placement, but the parallel layout itself is not
-bit-reproducible — expect different (equally valid) coordinates on each run;
+bit-reproducible; expect different (equally valid) coordinates on each run;
 on larger graphs individual vertices may land far apart. If downstream queries
 must agree on positions, snapshot into the
 mutable `datafusion.public` workspace with `CREATE TABLE … AS`; that does not

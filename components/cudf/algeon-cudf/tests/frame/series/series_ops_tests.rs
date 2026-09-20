@@ -12,7 +12,7 @@ use cudf::{DataType, Series, TypeId};
 use crate::common::{column_from_slice, host_export_i32_values, host_export_i64_values};
 
 // ===========================================================================
-// Series op Series — Result<Series> contract
+// Series op Series; Result<Series> contract
 // ===========================================================================
 
 fn test_series_add_operator_returns_result() {
@@ -214,7 +214,7 @@ fn test_series_timestamp_minus_timestamp_returns_duration_days() {
 }
 
 // ===========================================================================
-// Series op scalar — Result<Series> contract
+// Series op scalar; Result<Series> contract
 // ===========================================================================
 
 fn test_series_mul_scalar_f64_operator() {
@@ -284,7 +284,7 @@ fn test_series_op_scalar_unnamed_stays_unnamed() {
 }
 
 // ===========================================================================
-// scalar op Series — Result<Series> contract
+// scalar op Series; Result<Series> contract
 // ===========================================================================
 
 fn test_scalar_mul_series_f64_operator() {
@@ -375,7 +375,7 @@ fn test_scalar_sub_series_display_omits_input_name() {
 }
 
 // ===========================================================================
-// Error handling — surfaces Err, not panic
+// Error handling; surfaces Err, not panic
 // ===========================================================================
 
 fn test_series_op_series_type_mismatch_returns_err() {
@@ -459,7 +459,7 @@ fn test_series_scalar_operators_support_remaining_integer_types() {
 }
 
 // ===========================================================================
-// Rem (modulo) operator — Series % Series and Series % scalar
+// Rem (modulo) operator; Series % Series and Series % scalar
 // ===========================================================================
 
 fn test_series_rem_operator_i32() {
@@ -555,7 +555,7 @@ fn test_scalar_rem_series_f64() {
 }
 
 // ===========================================================================
-// Neg operator — -Series
+// Neg operator; -Series
 // ===========================================================================
 
 fn test_series_neg_operator_i32() {
@@ -592,7 +592,7 @@ fn test_series_neg_display_omits_input_name() {
 }
 
 // ===========================================================================
-// Not operator — !Series (logical not for Bool8)
+// Not operator; !Series (logical not for Bool8)
 // ===========================================================================
 
 fn test_series_not_operator_bool() {

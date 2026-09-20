@@ -2,7 +2,7 @@
 //!
 //! [`DeviceId`] is a validated GPU ordinal. Use it with
 //! [`RuntimeBuilder::with_device`](super::RuntimeBuilder::with_device) to pin
-//! a [`Runtime`](super::Runtime) — and all resources it creates — to a
+//! a [`Runtime`](super::Runtime); and all resources it creates; to a
 //! specific GPU.
 //!
 //! The device is a first-class part of the execution contract: when a
@@ -36,7 +36,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceId(i32);
 
-/// Cached device count — queried once, valid for process lifetime.
+/// Cached device count; queried once, valid for process lifetime.
 static DEVICE_COUNT_CACHE: OnceLock<usize> = OnceLock::new();
 
 impl DeviceId {
@@ -84,7 +84,7 @@ impl DeviceId {
         let mut count: i32 = 0;
         error::check_status_in(unsafe { cudf_sys::cudf_cuda_get_device_count(&mut count) }, "DeviceId::count")?;
         let n = count as usize;
-        // If another thread raced us, that's fine — same value.
+        // If another thread raced us, that's fine; same value.
         let _ = DEVICE_COUNT_CACHE.set(n);
         Ok(n)
     }

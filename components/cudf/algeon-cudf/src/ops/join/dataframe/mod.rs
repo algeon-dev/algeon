@@ -323,7 +323,7 @@ fn resolve_join_keys(
             "right_on_without_left_on",
             "set left_on() or use on()",
         )),
-        // on() together with left_on/right_on is ambiguous — treat as error
+        // on() together with left_on/right_on is ambiguous; treat as error
         (Some(_), _, _) => Err(merge_validation_error(
             operation,
             "on() cannot be combined with left_on()/right_on(); use one or the other",

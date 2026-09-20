@@ -471,7 +471,7 @@ pub fn is_sorted(
 /// # Length rules
 ///
 /// `descending` and `nulls_first` vectors must be either:
-/// - **empty** — meaning "use defaults for all sort keys", or
+/// - **empty**: meaning "use defaults for all sort keys", or
 /// - **exactly equal** in length to the number of sort-key columns.
 ///
 /// Any other length is rejected at sort time with

@@ -191,7 +191,7 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     if (null_count > 0) {
       // cudf bitmask is stored as uint32_t words.
       size_t mask_bytes = cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(size));
-      // We receive packed bytes from Rust — copy them to a device buffer
+      // We receive packed bytes from Rust; copy them to a device buffer
       // of the right alignment size.
       if (mask_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
       dev_null_mask.emplace(null_mask, mask_bytes, exec->stream, *exec->mr);
@@ -709,7 +709,7 @@ cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, void con
   {
     auto* view = reinterpret_cast<cudf::column_view*>(handle);
     // data<uint8_t>() returns the base device pointer. For STRING columns
-    // this is nullptr — callers should use child views instead.
+    // this is nullptr; callers should use child views instead.
     *out = view->head<uint8_t>();
     return CUDF_SUCCESS;
   }
@@ -751,7 +751,7 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(cudf_column_view_han
 
     // The returned pointer is the BASE of the chars buffer, and the slice's
     // offsets index from that base, so the reported span must end at
-    // last_offset — not span last_offset - first_offset bytes. Otherwise a
+    // last_offset; not span last_offset - first_offset bytes. Otherwise a
     // sliced view with first_offset > 0 under-reports the bound and rows near
     // the end of the slice reference bytes past the declared span.
     auto const span_bytes = static_cast<uint64_t>(last_offset);

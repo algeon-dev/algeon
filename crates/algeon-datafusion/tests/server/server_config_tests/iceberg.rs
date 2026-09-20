@@ -539,7 +539,7 @@ fn server_iceberg_config_kind_rest_does_not_require_region() {
         ALGEON_ICEBERG_CATALOG_KIND_ENV, ALGEON_ICEBERG_NAMESPACE_ENV, ALGEON_ICEBERG_REST_URI_ENV,
         ALGEON_ICEBERG_WAREHOUSE_ENV,
     };
-    // No AWS_REGION_ENV present — REST must still succeed.
+    // No AWS_REGION_ENV present; REST must still succeed.
     let env = BTreeMap::from([
         (ALGEON_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
         (ALGEON_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),

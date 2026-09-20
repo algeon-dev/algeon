@@ -1,6 +1,6 @@
 ---
 sidebar_position: 6
-description: The native-library failure modes whose fix is not documented anywhere else — cryptic configure aborts and runtime kernel errors.
+description: The native-library failure modes whose fix is not documented anywhere else: cryptic configure aborts and runtime kernel errors.
 ---
 
 # Troubleshooting
@@ -24,7 +24,7 @@ one-RMM-per-process invariant
 
 Usual cause: the build dir predates the external-RMM configure. Remove
 `target/native/cugraph-build` and re-run the script. Do not delete the check or point
-the build at a private RMM — a process that loads two `librmm.so` copies
+the build at a private RMM: a process that loads two `librmm.so` copies
 corrupts memory-resource state at runtime.
 
 ## cuGraph configure demands spdlog / fmt: prefix not fully bootstrapped
@@ -39,8 +39,8 @@ cuGraph does a real `find_package(rmm)`, whose closure pulls in
 packages are **not** part of the libcudf install; `bootstrap_cudf_install.sh`
 adds `rapids_logger`, `nvtx3`, `fmt`, and `spdlog` to the prefix together (it
 installs them from the canonical `target/native/cudf-build/_deps/`). This error means the
-prefix has `rapids_logger` but is missing its `fmt`/`spdlog` closure — i.e. the
-bootstrap did not run or could not complete.
+prefix has `rapids_logger` but is missing its `fmt`/`spdlog` closure (i.e. the
+bootstrap did not run or could not complete).
 
 `scripts/build/build_libcugraph.sh` runs the bootstrap automatically, so the usual fix is
 simply to run it (or the bootstrap alone) with the canonical cuDF build cache
@@ -52,8 +52,8 @@ cd "$ALGEON_ROOT" && bash scripts/build/build_libcugraph.sh
 bash scripts/build/bootstrap_cudf_install.sh
 ```
 
-Only if the canonical cuDF build cache (`target/native/cudf-build/_deps`) was deleted — leaving the
-bootstrap nothing to install from — rebuild libcudf first (keeping
+Only if the canonical cuDF build cache (`target/native/cudf-build/_deps`) was deleted
+(leaving the bootstrap nothing to install from), rebuild libcudf first (keeping
 `target/native/cudf-build`), then re-run the bootstrap:
 
 ```bash
@@ -86,7 +86,7 @@ The record each layer carries, and how to inspect it, is described under
 ## GPU op aborts: `cudaErrorNoKernelImageForDevice`
 
 The binary loads and links fine, then the first kernel launch aborts. The
-native build did not include full kernels for the GPU it is running on —
+native build did not include full kernels for the GPU it is running on:
 `CMAKE_CUDA_ARCHITECTURES=NATIVE` bakes kernels **only** for the GPU present at
 build time. Set one explicit deployment architecture list and rebuild cuDF,
 cuVS, and cuGraph in that order. The build helpers then confirm the three
@@ -113,7 +113,7 @@ cugraph_strongly_connected_components failed:
 
 Known upstream cuGraph defect on Blackwell
 (`sm_120`, e.g. RTX 50-series / RTX PRO 6000)
-([rapidsai/cugraph#5543](https://github.com/rapidsai/cugraph/issues/5543)) —
+([rapidsai/cugraph#5543](https://github.com/rapidsai/cugraph/issues/5543));
 CCCL 3.4.0's CUB select tuning has no policy for compute capability 12.0.
 The pinned `cugraph` fork routes SCC through a host-side fallback on
 single-GPU `sm_120` while keeping the C API result shape. If you see this,

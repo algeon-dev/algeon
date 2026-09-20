@@ -20,7 +20,7 @@ fn test_replace_nulls_with_scalar_i32() {
 }
 
 fn test_replace_nulls_no_nulls() {
-    // Column without nulls — output should be identical.
+    // Column without nulls; output should be identical.
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let replacement = scalar(0i32).unwrap();
     let view = col.testing_view().unwrap();
@@ -31,7 +31,7 @@ fn test_replace_nulls_no_nulls() {
 }
 
 fn test_replace_nulls_all_null() {
-    // All-null column — all values should be replaced.
+    // All-null column; all values should be replaced.
     let col = column_from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let replacement = scalar(42i32).unwrap();
     let view = col.testing_view().unwrap();

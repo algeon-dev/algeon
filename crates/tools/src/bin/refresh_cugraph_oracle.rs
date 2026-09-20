@@ -14,11 +14,11 @@
 //!
 //! Common flags:
 //!
-//! - `--all` — refresh every parity row's oracle JSON slot.
-//! - `--algorithm <name>` / `--dataset <name>` — restrict the run to
+//! - `--all`: refresh every parity row's oracle JSON slot.
+//! - `--algorithm <name>` / `--dataset <name>`: restrict the run to
 //!   matching specs.
-//! - `--force` — overwrite drifted JSON instead of writing a sibling preview.
-//! - `--check` — verify local JSON matches a fresh regeneration without writing.
+//! - `--force`: overwrite drifted JSON instead of writing a sibling preview.
+//! - `--check`: verify local JSON matches a fresh regeneration without writing.
 
 use std::{
     collections::BTreeMap,
@@ -169,7 +169,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
     // `oracle_relpath` slot for the per-vertex score cross-check, and
     // the previous truth-source filter caused
     // `refresh_cugraph_oracle --algorithm katz_centrality --check` to
-    // silently report nothing — letting CI miss a missing secondary
+    // silently report nothing; letting CI miss a missing secondary
     // oracle. The runtime parity comparator still consults
     // `truth_source` to pick the primary truth at compare time.
     for spec in CUGRAPH_PARITY_SPECS {

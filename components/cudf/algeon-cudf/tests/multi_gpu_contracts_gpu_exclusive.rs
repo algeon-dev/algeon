@@ -1034,7 +1034,7 @@ fn builder_infers_device_from_handles() {
     let mr1 = rt1.memory_resource().clone();
     drop(rt1);
 
-    // Build without explicit with_device — it should infer the device from the handles.
+    // Build without explicit with_device; it should infer the device from the handles.
     let rt = Runtime::builder().with_stream(stream1).with_memory_resource(mr1).build().unwrap();
     assert_eq!(rt.device(), device1, "builder should infer the device from the supplied handles");
 }

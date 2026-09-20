@@ -60,7 +60,7 @@ type HandshakeResponseStream = BoxStream<'static, Result<HandshakeResponse, Stat
 /// expected by [`arrow_flight::sql::server::FlightSqlService::do_handshake`].
 ///
 /// When [`AuthMode::Disabled`] is configured, the handshake is a no-op
-/// passthrough that emits a single empty response — clients can still
+/// passthrough that emits a single empty response; clients can still
 /// call it (some drivers do unconditionally), and the result is the
 /// same as the pre-auth stub.
 ///

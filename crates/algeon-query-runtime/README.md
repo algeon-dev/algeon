@@ -18,8 +18,8 @@ does not depend on `query-engine` execution.
 
 Source format parsing and chunk preparation are not here: Parquet footers and
 source chunk plans belong to `query-engine`. The runtime owns the
-resources those readers use — the object-store client registry, credential
-profiles, the I/O executor, queues, and cancellation — and does not need to
+resources those readers use; the object-store client registry, credential
+profiles, the I/O executor, queues, and cancellation; and does not need to
 understand row groups to own them.
 
 Runtime consumes the planning proof and refines deferred evidence inside the

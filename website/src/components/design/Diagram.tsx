@@ -5,15 +5,15 @@ import styles from './styles.module.css';
  * Interactive system diagrams for the Design page.
  *
  * SVG with a computed layout: every label is monospace, so text widths are
- * deterministic (chars × advance width) and boxes are sized to their content —
+ * deterministic (chars × advance width) and boxes are sized to their content;
  * nothing can wrap or overlap. Figures scale down proportionally on narrow
  * viewports (viewBox), with a legibility floor after which the container
  * scrolls horizontally.
  *
  * Two shapes:
- * - SystemDiagram — a lane-based DAG (host / GPU swim lanes, fork & merge
+ * - SystemDiagram: a lane-based DAG (host / GPU swim lanes, fork & merge
  *   edges, optional region underlays for shared invariants).
- * - StackDiagram — a top-down layering with optional boundary dividers.
+ * - StackDiagram: a top-down layering with optional boundary dividers.
  *
  * Nodes carrying a `detail` are clickable (and keyboard-focusable); the
  * selected node's detail renders in an HTML panel under the SVG, so the
@@ -30,9 +30,9 @@ export type Tone = 'plan' | 'gpu' | 'engine' | 'bridge' | 'graph' | 'lake' | 'fo
 export interface DiagramNode {
   /** Quiet uppercase type prefix above the name. */
   kind?: string;
-  /** Main label — one line, never wrapped. */
+  /** Main label (one line, never wrapped). */
   name: string;
-  /** Secondary line(s) — pass an array for explicit line breaks. */
+  /** Secondary line(s); pass an array for explicit line breaks. */
   note?: string | string[];
   tone?: Tone;
   /** Small mono source pointer shown in the detail panel header. */
@@ -165,7 +165,7 @@ function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS, kindC
       style={clickable ? ({'--node-tone': toneColor} as React.CSSProperties) : undefined}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
-      aria-label={clickable ? `${node.name} — show details` : undefined}
+      aria-label={clickable ? `${node.name}: show details` : undefined}
       aria-pressed={clickable ? selected : undefined}
       onClick={onSelect}
       onKeyDown={
@@ -646,7 +646,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   const outY = ruleCy - outSize.h / 2;
   const outBottom = outY + outSize.h;
   // Storage cards share one baseline even though their heights differ, and
-  // one container encloses both — the single KvikIO arrow below rises from
+  // one container encloses both: the single KvikIO arrow below rises from
   // the container's top edge, not from either card.
   const inputY = gpuBottom + 96;
   const inputBottom = inputY + Math.max(diskSize.h, sourceSize.h);
@@ -682,8 +682,8 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
         stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
       {head(smallHeadDown(spineX, gpuY))}
 
-      {/* A non-selected candidate falls back to DataFusion CPU execution —
-          dashed, as the non-selected path — and still lands in the same
+      {/* A non-selected candidate falls back to DataFusion CPU execution
+          (dashed, as the non-selected path) and still lands in the same
           Arrow stream. */}
       <line x1={ruleRight} y1={ruleCy} x2={outLeft - 1} y2={ruleCy}
         stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeDasharray="5 4" />
@@ -803,7 +803,7 @@ export interface FlowDiagramProps {
  * A top-down flow at ArchitectureDiagram scale: one centered column of large-type
  * boxes, arrow labels beside the spine, dashed ownership containers, and an
  * optional dashed return rail on the right for the backflow. Nodes with
- * `detail` are clickable and drive the panel below the SVG — a blend of the
+ * `detail` are clickable and drive the panel below the SVG, blending the
  * homepage figure's glanceability and the Design diagrams' interactivity.
  */
 export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], caption}: FlowDiagramProps) {

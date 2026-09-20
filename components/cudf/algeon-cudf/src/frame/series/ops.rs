@@ -1,6 +1,6 @@
 //! `std::ops` trait implementations for `Series` arithmetic.
 //!
-//! All operators return `Result<Series>` — GPU computation, type promotion,
+//! All operators return `Result<Series>`; GPU computation, type promotion,
 //! and FFI calls can fail at runtime.
 //!
 //! Supported forms:

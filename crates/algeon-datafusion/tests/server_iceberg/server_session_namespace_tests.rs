@@ -44,7 +44,7 @@ fn nation_batch() -> RecordBatch {
 }
 
 /// Registers a MemTable under the given three-part name and optionally also
-/// under a bare alias — exactly mirroring what `register_iceberg_tables` does.
+/// under a bare alias; exactly mirroring what `register_iceberg_tables` does.
 fn register_test_table(
     ctx: &SessionContext,
     catalog_name: &str,

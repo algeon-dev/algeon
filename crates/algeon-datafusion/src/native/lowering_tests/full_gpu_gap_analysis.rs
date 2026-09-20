@@ -112,7 +112,7 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         },
     },
     // TRY_CAST whose source is not a string column (here a numeric column)
-    // also stays unsupported in v1 — the lower-level primitive is
+    // also stays unsupported in v1; the lower-level primitive is
     // string→integer only.
     GpuGapCase {
         id: "try_cast_int_to_int",

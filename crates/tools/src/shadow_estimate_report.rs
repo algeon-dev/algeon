@@ -672,8 +672,8 @@ fn parse_compiled_task_index(compiled_task_id: &str) -> Option<usize> {
 
 /// Joins compiled-pipeline task envelopes (index space) against observed
 /// `compiled_task_id` rows (string space). The two spaces can legitimately
-/// diverge — for example when a retry grows the runtime task graph beyond
-/// what was compiled for the estimate — so every row that cannot be placed
+/// diverge; for example when a retry grows the runtime task graph beyond
+/// what was compiled for the estimate; so every row that cannot be placed
 /// unambiguously is reported as a `JoinMismatch` instead of guessed.
 fn join_task_runtime_rows(
     envelopes: &[ShadowTaskEnvelope],

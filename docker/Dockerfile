@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ===========================================================================
-# algeon-datafusion  —  Arrow Flight SQL service  (GPU query engine)
+# algeon-datafusion: Arrow Flight SQL service  (GPU query engine)
 # ===========================================================================
 #
 # This image ships a Rust binary that links FORKED RAPIDS C++ libraries
@@ -39,7 +39,7 @@ ARG CPU_BINARY_SHA256
 ARG CPU_MANIFEST_SHA256
 
 # ===========================================================================
-# Stage 1 — harvest the CUDA toolkit subset this binary actually links
+# Stage 1: harvest the CUDA toolkit subset this binary actually links
 # ===========================================================================
 FROM ${CUDA_RUNTIME_IMAGE} AS cuda-harvest
 USER root
@@ -120,7 +120,7 @@ RUN set -eu; mkdir -p /cuda-collect; \
     ls -la /cuda-collect
 
 # ===========================================================================
-# Stage 2 — minimal GPU runtime image
+# Stage 2: minimal GPU runtime image
 # ===========================================================================
 FROM ${CUDA_BASE_IMAGE} AS runtime
 USER root
@@ -202,7 +202,7 @@ ENV LD_LIBRARY_PATH=/app/lib \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # ===========================================================================
-# Runtime configuration — environment variables read by the server
+# Runtime configuration: environment variables read by the server
 # (verified against crates/algeon-datafusion/src/server/config/; names are load-bearing)
 # ===========================================================================
 #

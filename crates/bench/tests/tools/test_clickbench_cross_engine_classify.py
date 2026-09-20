@@ -142,7 +142,7 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_engine_instability_when_engine_returns_different_fingerprints(self) -> None:
         rows = [
             make_row("q39", "duckdb", 1, "fp-a"),
-            make_row("q39", "duckdb", 2, "fp-b"),  # different — unstable
+            make_row("q39", "duckdb", 2, "fp-b"),  # different; unstable
             make_row("q39", "cpu_datafusion", 1, "fp-stable"),
         ]
         result = self.m.classify_query("q39", rows)
@@ -163,7 +163,7 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_stable_engine_with_two_identical_iterations_is_not_unstable(self) -> None:
         rows = [
             make_row("q26", "duckdb", 1, "fp-same"),
-            make_row("q26", "duckdb", 2, "fp-same"),  # same — stable
+            make_row("q26", "duckdb", 2, "fp-same"),  # same; stable
             make_row("q26", "cpu_datafusion", 1, "fp-other"),
         ]
         result = self.m.classify_query("q26", rows)
@@ -213,7 +213,7 @@ class ClassifyQueryTest(unittest.TestCase):
         self.assertEqual(result.reference_fingerprint, "disagreement")
 
     def test_insufficient_data_q23_when_native_failed_and_single_reference(self) -> None:
-        # Only one engine succeeded — can't compare, so insufficient_data regardless of q23 identity.
+        # Only one engine succeeded: can't compare, so insufficient_data regardless of q23 identity.
         rows = [
             make_row("q23", "cpu_datafusion", 1, "fp-cpu"),
             make_row("q23", "algeon_datafusion", 1, "fp-ignored", status="failed"),
@@ -250,7 +250,7 @@ class ClassifyQueryTest(unittest.TestCase):
         self.assertEqual(result.classification, "all_engines_same")
 
     def test_unstable_engine_detection_ignores_failed_iterations(self) -> None:
-        # iteration 1 failed, iteration 2 succeeded — only one successful fp, so stable
+        # iteration 1 failed, iteration 2 succeeded: only one successful fp, so stable
         rows = [
             make_row("q40", "duckdb", 1, "fp-ignored", status="failed"),
             make_row("q40", "duckdb", 2, "fp-good"),

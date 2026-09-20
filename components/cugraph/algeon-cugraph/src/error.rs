@@ -215,26 +215,26 @@ impl fmt::Display for AllocationFailureSource {
 /// permission to retry. A caller must still complete its own cleanup and
 /// device-health checks before deciding anything:
 ///
-/// - [`Permanent`](ErrorStatus::Permanent) — will never succeed without
+/// - [`Permanent`](ErrorStatus::Permanent): will never succeed without
 ///   external changes (e.g. invalid input, unsupported operation). Do not
 ///   retry the same request.
-/// - [`Temporary`](ErrorStatus::Temporary) — transient condition that may
+/// - [`Temporary`](ErrorStatus::Temporary): transient condition that may
 ///   clear (e.g. GPU memory pressure, recoverable CUDA failure). Retry only
 ///   after cleanup and a health check.
-/// - [`Persistent`](ErrorStatus::Persistent) — the source reports a
+/// - [`Persistent`](ErrorStatus::Persistent): the source reports a
 ///   continuing condition (e.g. a fatal CUDA probe result, recorded without
 ///   any retry having happened). Stop automatic retry, finish cleanup, and
 ///   escalate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {
-    /// The error is permanent — retrying will not help without external
+    /// The error is permanent; retrying will not help without external
     /// intervention.
     Permanent,
     /// The source condition is transient and may clear. Retry remains the
     /// caller's decision after cleanup and device-health checks.
     Temporary,
     /// The source reports a continuing condition. It may be set directly by
-    /// a fatal probe result without any retry having happened — stop
+    /// a fatal probe result without any retry having happened; stop
     /// automatic retry, finish cleanup, and escalate.
     Persistent,
 }
@@ -496,7 +496,7 @@ impl Error {
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
-            // {:#?} — standard Rust struct-style inspection.
+            // {:#?}; standard Rust struct-style inspection.
             let allocation = self.allocation_facts();
             let mut d = f.debug_struct("Error");
             d.field("kind", &self.kind);
@@ -521,7 +521,7 @@ impl fmt::Debug for Error {
             }
             d.finish()
         } else {
-            // {:?} — multi-line format for human debugging.
+            // {:?}; multi-line format for human debugging.
             write!(f, "{} ({}) at {}", self.kind, self.status, self.operation)?;
             if !self.message.is_empty() {
                 write!(f, " => {}", self.message)?;
@@ -758,7 +758,7 @@ unsafe fn check_error_with_payload(
         cuda_error: payload.cuda_error,
     }));
 
-    // OutOfMemory is typically transient — GPU memory may free up.
+    // OutOfMemory is typically transient; GPU memory may free up.
     if kind == ErrorKind::OutOfMemory {
         err = err.set_temporary();
     }

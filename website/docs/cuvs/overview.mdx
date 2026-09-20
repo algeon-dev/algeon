@@ -8,11 +8,11 @@ description: SQL-visible cuVS vector search and vector ML over Algeon SQL sessio
 
 Algeon exposes NVIDIA RAPIDS
 [**cuVS**](https://github.com/NVIDIA/cuvs) as SQL table functions over
-DataFusion SQL sessions — the same pattern already used by the
+DataFusion SQL sessions, following the pattern already used by the
 [cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` function reads a
 relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
-session — no separate vector store and no copy to keep in sync.
+session, with no separate vector store and no copy to keep in sync.
 
 Three functions are available today: exact brute-force kNN
 (`cuvs_brute_force_knn`), KMeans clustering (`cuvs_kmeans`), and PCA
@@ -87,8 +87,8 @@ server requirements.
 
 ## Next steps
 
-- **[Integrate cuVS](../integration/overview.mdx)** — pick an embedded
+- **[Integrate cuVS](../integration/overview.mdx)**: pick an embedded
   session or the Flight SQL server, then confirm availability with
   `gpu_list_functions`.
-- **[Configure the server](../integration/configuration.mdx)** — set the
+- **[Configure the server](../integration/configuration.mdx)**: set the
   per-device memory cap that each call runs inside.

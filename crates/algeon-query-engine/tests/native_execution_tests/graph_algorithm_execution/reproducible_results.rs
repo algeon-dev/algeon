@@ -179,7 +179,7 @@ fn betweenness_scores_are_bitwise_stable_across_runs() {
 /// cuGraph sizes its multisource batches from the remaining query-domain
 /// budget, so different grants split the same seed set into different batch
 /// counts. Fixed source-order accumulation makes the total order the global
-/// seed order in every case, so the scores — and their bits — do not depend on
+/// seed order in every case, so the scores; and their bits; do not depend on
 /// the cap. Grants below ~6MiB cannot fit this query and fail loudly with
 /// `QueryMemoryLimitExceeded`; that is the designed behavior and is not
 /// exercised here.

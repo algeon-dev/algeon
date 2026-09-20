@@ -183,7 +183,7 @@ cudf_status_t cudf_table_release_columns(cudf_table_handle table,
 /// Free a heap-allocated array of column handles returned by APIs such as
 /// cudf_table_release_columns, cudf_groupby_aggregate, and
 /// cudf_dictionary_match_dictionaries.
-/// Does NOT destroy the individual columns — caller must do that first.
+/// Does NOT destroy the individual columns; caller must do that first.
 void cudf_free_column_array(cudf_column_handle* array);
 
 #ifdef __cplusplus

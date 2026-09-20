@@ -176,7 +176,7 @@ fn from_host_data_empty_slice() {
 }
 
 // ---------------------------------------------------------------------------
-// Zero-copy adoption — non-nullable
+// Zero-copy adoption; non-nullable
 // ---------------------------------------------------------------------------
 
 fn adopt_i32_roundtrip() {
@@ -306,7 +306,7 @@ fn adopt_rejects_row_count_exceeding_i32_max() {
 }
 
 // ---------------------------------------------------------------------------
-// Zero-copy adoption — nullable
+// Zero-copy adoption; nullable
 // ---------------------------------------------------------------------------
 
 fn adopt_nullable_with_nulls() {

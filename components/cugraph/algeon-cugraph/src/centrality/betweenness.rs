@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_betweenness_centrality_with_endpoints() {
-        // Test with include_endpoints=true — values should generally be higher
+        // Test with include_endpoints=true; values should generally be higher
         // than without endpoints.
         let handle = ResourceHandle::new().expect("handle");
         let entered = handle.enter("test_betweenness_centrality_with_endpoints").expect("entered");

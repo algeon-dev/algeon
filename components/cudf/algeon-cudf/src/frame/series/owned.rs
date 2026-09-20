@@ -34,7 +34,7 @@ pub(super) fn unsupported_numeric_target_error(operation: &'static str, target: 
 /// zero-copy on the GPU side.
 ///
 /// Metadata queries (`len()`, `is_empty()`, `null_count()`) are infallible and
-/// free — the values are cached at construction time.
+/// free; the values are cached at construction time.
 ///
 /// [`std::fmt::Display`] for `Series` is metadata-only. It reports the dtype,
 /// length, and nullability summary, but it never materializes values to host
@@ -240,7 +240,7 @@ impl Series {
     /// Copy fixed-width column data to a host `Vec<T>`, rejecting nullable
     /// columns.
     ///
-    /// Returns an error if the column is nullable — use
+    /// Returns an error if the column is nullable; use
     /// [`to_optional_vec`](Self::to_optional_vec) instead when nulls are
     /// expected.
     ///
@@ -288,7 +288,7 @@ impl Series {
     /// Copy string column data to a host `Vec<String>`, rejecting nullable
     /// columns.
     ///
-    /// Returns an error if the column is nullable — use
+    /// Returns an error if the column is nullable; use
     /// [`to_optional_strings`](Self::to_optional_strings) or
     /// [`to_strings_lossy`](Self::to_strings_lossy) instead.
     ///
@@ -654,7 +654,7 @@ impl Series {
         column.copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new)
     }
 
-    // -- Convenience methods — unary ops inherit name ---------
+    // -- Convenience methods; unary ops inherit name ---------
 
     /// Return a BOOL8 mask: `true` where elements are null.
     ///

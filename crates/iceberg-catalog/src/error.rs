@@ -65,7 +65,7 @@ pub enum ClassificationProvenance {
     /// A bounded scan of the source-chain text decided the code. Catalog
     /// backends flatten typed SDK errors into text, so authentication and
     /// access markers found here are structured transport detail, not a
-    /// guess — but they are still weaker than a typed kind.
+    /// guess; but they are still weaker than a typed kind.
     MessageFallback,
     /// Neither the typed kind, the retryable bit, nor the bounded chain
     /// text identified the condition; the error is generic

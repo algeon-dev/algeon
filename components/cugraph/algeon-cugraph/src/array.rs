@@ -3,9 +3,9 @@
 //! These types wrap the cuGraph C API's type-erased arrays and provide a safe
 //! Rust interface with proper ownership semantics:
 //!
-//! - [`DeviceArray<T>`] — owning device array, freed on drop
-//! - [`DeviceArrayView<'a, T>`] — non-owning view into device memory, lifetime-tied
-//! - internal `HostArrayView` — non-owning view into host memory, lifetime-tied
+//! - [`DeviceArray<T>`]: owning device array, freed on drop
+//! - [`DeviceArrayView<'a, T>`]: non-owning view into device memory, lifetime-tied
+//! - internal `HostArrayView`: non-owning view into host memory, lifetime-tied
 //!
 //! The type parameter `T: CugraphElement` carries the element type at compile
 //! time, eliminating the need for runtime type checks.

@@ -637,7 +637,7 @@ impl Column {
         let exec_options = output_domain.enter_execution()?;
         let mut handle = ptr::null_mut();
         // SAFETY: caller guarantees device_ptr is valid for `size` elements.
-        // The _ex variant does NOT synchronize — caller must keep device_ptr
+        // The _ex variant does NOT synchronize; caller must keep device_ptr
         // valid until the runtime's stream completes.
         error::check_status_in_with_details(
             unsafe {

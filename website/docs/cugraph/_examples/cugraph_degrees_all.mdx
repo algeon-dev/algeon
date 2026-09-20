@@ -1,12 +1,12 @@
-{/* Hand-owned examples for cugraph_degrees_all. NOT generated — safe to edit. */}
+{/* Hand-owned examples for cugraph_degrees_all. NOT generated; safe to edit. */}
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### In-degree and out-degree in one call
 
 One call returns in-degree and out-degree together, so a compound `WHERE`
-finds papers that are both heavy citers and heavily cited — comprehensive works
-that anchor a field and survey it at the same time:
+finds papers that are both heavy citers and heavily cited, anchoring a
+field while surveying prior literature:
 
 ```sql
 SELECT d.in_degree, d.out_degree, p.year, p.title

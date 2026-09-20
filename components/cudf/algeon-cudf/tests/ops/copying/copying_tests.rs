@@ -84,7 +84,7 @@ fn test_gather_out_of_bounds_nullify() {
     let table = Table::from_columns(vec![col]).unwrap();
     let tv = table.testing_view().unwrap();
 
-    // Index 5 is out of bounds — should become null.
+    // Index 5 is out of bounds; should become null.
     let map = column_from_slice(&[0i32, 5, 2]).unwrap();
     let map_view = map.testing_view().unwrap();
 

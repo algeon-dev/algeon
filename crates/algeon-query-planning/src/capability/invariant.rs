@@ -1,7 +1,7 @@
 //! Subgraph-invariant analysis (currently focused on join shape invariants).
 //!
 //! Inspects edge contracts plus producer/consumer node facts to verify
-//! invariants that span more than a single node — for example, "build side of
+//! invariants that span more than a single node; for example, "build side of
 //! this join must dominate its resident build resource."
 
 use super::{

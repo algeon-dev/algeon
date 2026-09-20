@@ -215,7 +215,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         label: "hits/karate@default",
         algorithm: CugraphAlgorithm::Hits,
         dataset: "karate",
-        // Mirrors `CugraphHitsParams::default()` — epsilon and
+        // Mirrors `CugraphHitsParams::default()`; epsilon and
         // max_iterations track the local `cugraph` crate defaults; `normalize`
         // stays off so the score range matches the upstream cuGraph
         // sample tests.
@@ -331,7 +331,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: Some("karate/weakly_connected_components__default.json"),
-        // Labels are partition identifiers, not ordered — use
+        // Labels are partition identifiers, not ordered; use
         // partition-equivalence comparison.
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
@@ -842,7 +842,7 @@ fn check_oracle_header(
         if header_sha != dataset_entry.sha256 {
             return Err(format!(
                 "oracle header dataset_sha256='{header_sha}' but manifest expects '{}' for dataset '{}'; \
-                 the local dataset bytes changed since this oracle was generated — refresh it",
+                 the local dataset bytes changed since this oracle was generated; refresh it",
                 dataset_entry.sha256, spec.dataset,
             ));
         }
