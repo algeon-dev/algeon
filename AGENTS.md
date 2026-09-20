@@ -53,6 +53,8 @@
 - **Direct reporting and interaction**: Omit conversational filler, flattery, and
   apologies. State changed files, line ranges, non-obvious rationale, verification
   commands and outcomes, and open technical decisions directly.
+- **Domain anti-slop policy**: Adhere to [.config/policies/algeon_domain_anti_slop.md](file:///.config/policies/algeon_domain_anti_slop.md)
+  for GPU query engine, physical optimization, and CUDA memory allocation constraints.
 
 ## Project boundaries
 
