@@ -25,7 +25,7 @@ import {
 const WEBSITE = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cuml');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cuml');
-const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
+const UDTFS_DIR = join(DOCS_DIR, 'udtfs');
 const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cuml/latest/';
 
 const FAMILIES = {
@@ -123,14 +123,15 @@ function renderInputs(spec) {
   ].join('\n');
 }
 
-function renderPage(spec) {
+function renderPage(spec, sidebarPosition) {
   const entry = densePresentation(spec);
   const documentation = FUNCTIONS[spec.function_name];
   return renderFunctionPage({
     generator: 'website/scripts/gen-cuml-docs.mjs',
     spec,
     title: entry.quickstart.display_name,
-    slug: `/cuml/functions/${spec.function_name}`,
+    slug: `/cuml/udtfs/${spec.function_name}`,
+    sidebarPosition,
     reference: `Official cuML reference: [${documentation.officialApi}](${officialRefUrl(documentation)})`,
     quickstart: {
       prerequisite: `Register the relations referenced by the parenthesized ${code('SELECT')} clauses below. For metadata validation, the descriptor names ${Object.values(entry.validation.call.relations).map(relation => code(relation.table)).join(' and ')}.`,
@@ -146,7 +147,7 @@ function renderPage(spec) {
     examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
       ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    discoveryLink: '../../reference/gpu-function-catalog.mdx',
+    discoveryLink: '../../reference/gpu-udtf-catalog.mdx',
   });
 }
 
@@ -154,10 +155,10 @@ function renderCheatsheet(specs) {
   return [
     '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}',
     '',
-    table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
+    table(['UDTF', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = FUNCTIONS[spec.function_name];
       return [
-        `[${cell(densePresentation(spec).quickstart.display_name)}](./functions/${spec.function_name}.mdx)`,
+        `[${cell(densePresentation(spec).quickstart.display_name)}](./udtfs/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
         cell(spec.summary),
         `[${cell(documentation.officialApi)}](${officialRefUrl(documentation)})`,
@@ -174,9 +175,13 @@ function main() {
       if (!names.has(name)) throw new Error(`missing unified descriptor for ${name}`);
     }
   }
-  for (const spec of specs) write(join(FUNCTIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
+  // The sidebar position is the cheatsheet row, so both list functions in the
+  // same order.
+  specs.forEach((spec, index) => {
+    write(join(UDTFS_DIR, `${spec.function_name}.mdx`), renderPage(spec, index + 1));
+  });
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
-  console.log(`Wrote ${specs.length} generated cuML function pages and cheatsheet.`);
+  console.log(`Wrote ${specs.length} generated cuML UDTF pages and cheatsheet.`);
 }
 
 main();

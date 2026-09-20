@@ -7,22 +7,52 @@ description: SQL-visible cuVS vector search and vector ML over Algeon SQL sessio
 # cuVS SQL API
 
 Algeon exposes NVIDIA RAPIDS
-[**cuVS**](https://github.com/NVIDIA/cuvs) as GPU UDTFs over
-DataFusion SQL sessions, following the pattern already used by the
+[**cuVS**](https://github.com/NVIDIA/cuvs) as GPU UDTFs (user-defined table
+functions) over DataFusion SQL sessions, following the pattern already used by the
 [cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` UDTF reads a
 relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
 session, with no separate vector store and no copy to keep in sync.
 
-Eight functions are available: exact brute-force kNN (`cuvs_brute_force_knn`),
+Eight UDTFs are available: exact brute-force kNN (`cuvs_brute_force_knn`),
 query-local approximate IVF-Flat (`cuvs_ivf_flat`), IVF-PQ (`cuvs_ivf_pq`),
 and CAGRA (`cuvs_cagra`) search, pairwise distances (`cuvs_pairwise_distance`), per-row vector selection
 (`cuvs_top_k`), KMeans clustering (`cuvs_kmeans`), and PCA (`cuvs_pca`). They execute on
 GPU when the prerequisites in [Execution](#execution) are met. Persistent
 indexes are not exposed.
 
-The function registry, JSON schemas, and generated pages below come from the
+The UDTF registry, JSON schemas, and generated pages below come from the
 same live metadata API exposed to embedded and Flight SQL clients.
+
+## Questions to explore
+
+Each question opens a captured example on its UDTF page. The examples read
+the [demo datasets](../guides/datasets/index.mdx); prepare one before running
+its queries.
+
+### Amazon Reviews
+
+Electronics products and low-rating reviews from Amazon Reviews 2023, with
+1,024-dimension BGE-M3 text embeddings computed before any SQL.
+
+- [Which travel headphones meet our price and review-history criteria?](./udtfs/cuvs_brute_force_knn.mdx#examples) (`cuvs_brute_force_knn`)
+- [Which products have a changed mix of low-rating reviews?](./udtfs/cuvs_kmeans.mdx#examples) (`cuvs_kmeans`)
+- [Which review themes describe each group of products?](./udtfs/cuvs_top_k.mdx#examples) (`cuvs_kmeans`, `cuvs_top_k`)
+
+### EMBER2024
+
+Extracted features for malware files: all 6,315 files in the challenge split,
+which holds only malicious files, plus 1% samples of the train and test splits.
+
+- [Which earlier Win32 files make useful references for a new quarter?](./udtfs/cuvs_cagra.mdx#examples) (`cuvs_brute_force_knn`, `cuvs_cagra`, `cuvs_ivf_flat`)
+- [How much histogram variation remains visible in two PCA dimensions?](./udtfs/cuvs_pca.mdx#examples) (`cuvs_pca`)
+- [Which high-scoring challenge files should an analyst review first?](./udtfs/cuvs_top_k.mdx?dataset=ember2024#examples) (`cuml_forest_predict`, `cuvs_top_k`)
+
+### MerRec marketplace
+
+Per-user category preferences from Mercari US browsing events, October 2023.
+
+- [Which category-specific campaign variants could be worth testing?](./udtfs/cuvs_kmeans.mdx?dataset=merrec#examples) (`cuvs_kmeans`, `cuvs_top_k`)
 
 ## Vector input and call shape
 
@@ -37,24 +67,24 @@ invoking the GPU. [Vector Inputs](./vector-inputs.mdx) documents relation
 identity, dense-vector binding shapes, and the validation-versus-runtime
 boundary.
 
-## Functions
+## UDTFs
 
-Start with [UDTFs](./functions/index.mdx) to choose nearest neighbors,
+Start with [cuVS UDTFs](./udtfs/index.mdx) to choose nearest neighbors,
 distance, selection, cluster, or preprocessing by its
 one-statement lifecycle. Every
-function page links back to [Vector Inputs](./vector-inputs.mdx) for the shared
+UDTF page links back to [Vector Inputs](./vector-inputs.mdx) for the shared
 input contract.
 
 ## Discovery and validation
 
-Use [Discover & Validate GPU UDTFs](../guides/gpu-function-discovery.mdx)
+Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
 for the shared list, describe, validate, and execute workflow. The detailed
 column and request schemas are in the
-[GPU UDTF Catalog API](../reference/gpu-function-catalog.mdx).
+[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
 
 ## Execution
 
-Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
+Use [`functions_only` execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
 to keep input subqueries and surrounding SQL on DataFusion CPU while vector
 operations run on GPU. That mode retains the prerequisites below and uses
 bounded, non-spilling host staging for CPU inputs.

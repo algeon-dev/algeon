@@ -139,7 +139,7 @@ the report with native optimizer, source, and capability evidence; it is
 diagnostic state, not a planning history.
 
 When enabled, relational selection is whole-candidate by default. Explicit GPU
-functions can separately compose with DataFusion CPU operators, including in
+UDTFs can separately compose with DataFusion CPU operators, including in
 `FunctionsOnly` mode. The narrow relational rewrite exception lives in
 `crates/algeon-datafusion/src/planner/native/mixed.rs`: when whole-plan lowering misses on
 an unsupported expression, Algeon may certify a final CPU `ILIKE` filter over a

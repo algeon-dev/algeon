@@ -10,7 +10,7 @@ similarity weights the intersection by the sum of both reference-list sizes.
 The score describes shared citation background; project-specific relevance
 falls outside the measure.
 
-The function requires an undirected graph. Positive IDs identify citing
+The UDTF requires an undirected graph. Positive IDs identify citing
 papers, while negative IDs identify reference-role vertices for cited papers.
 Outgoing bibliography neighbors are the negative IDs adjacent to each
 positive paper ID; citing papers remain on the positive-ID side. The edge
@@ -63,4 +63,4 @@ The strongest pair in this pool is *VQA: Visual Question Answering* with
 The coefficient is twice the shared-reference count divided by the sum of
 both reference counts. Project-specific relevance is outside this measure.
 For a score based on the union of the two lists, see the
-[Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx).
+[Jaccard similarity example](../udtfs/similarity/cugraph_jaccard.mdx).

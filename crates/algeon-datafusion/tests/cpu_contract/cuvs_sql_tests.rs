@@ -191,7 +191,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         .nth(2)
         .expect("adapter manifest must be two levels below the repository root");
     let spec_directory = repository.join("website/gpu-function-specs/cuvs");
-    let page_directory = repository.join("website/docs/cuvs/functions");
+    let page_directory = repository.join("website/docs/cuvs/udtfs");
     let expected_names =
         CUVS_OPERATION_REGISTRY.iter().map(|descriptor| descriptor.sql_function_name).collect::<BTreeSet<_>>();
     let captured_names = fs::read_dir(&spec_directory)
@@ -317,7 +317,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             page_path.display()
         );
         assert!(page.contains(&format!("# {}", descriptor.display_name)), "{}", page_path.display());
-        assert!(page.contains(&format!("SQL function: `{}`", descriptor.sql_function_name)), "{}", page_path.display());
+        assert!(page.contains(&format!("UDTF: `{}`", descriptor.sql_function_name)), "{}", page_path.display());
         assert!(page.contains(descriptor.quickstart_sql), "{}", page_path.display());
         let headings = [
             "## Quickstart",

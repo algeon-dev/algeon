@@ -1,0 +1,112 @@
+---
+title: UMAP
+sidebar_label: UMAP
+description: "cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows."
+slug: /cuml/udtfs/cuml_umap
+sidebar_position: 7
+---
+
+{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}
+
+# UMAP
+
+UDTF: `cuml_umap`
+
+Official cuML reference: [Python API](https://docs.nvidia.com/cuml/latest/api/generated/cuml.manifold.UMAP/)
+
+cuML UMAP fits a deterministic, query-local manifold embedding for Float32 rows.
+
+## Quickstart
+
+Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
+
+```sql
+SELECT id, dim_0, dim_1
+FROM cuml_umap(
+  input => (SELECT id, d0, d1 FROM t),
+  n_neighbors => 5
+)
+ORDER BY row_ordinal;
+```
+
+## Inputs
+
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+
+| Role | Required | Validation reference | Description |
+| --- | --- | --- | --- |
+| `input` | yes | `table` | Dense Float32 rows fitted and transformed in this statement. |
+
+### Vector element types
+
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | Not applicable |
+
+## Arguments and options
+
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `n_components` | `integer` | no | Number of embedding dimensions. |
+| `n_neighbors` | `integer` | no | Number of neighbors used to construct the manifold. |
+| `n_epochs` | `integer` | no | Optimization epochs; zero selects the native default. |
+| `learning_rate` | `number` | no | Positive embedding optimization rate. |
+| `min_dist` | `number` | no | Minimum distance between embedded points; at most spread. |
+| `spread` | `number` | no | Positive scale for embedded point distances. |
+| `set_op_mix_ratio` | `number` | no | Fuzzy-set intersection/union mix in [0, 1]. |
+| `local_connectivity` | `number` | no | Local connectivity adjustment. |
+| `repulsion_strength` | `number` | no | Repulsive force applied during optimization. |
+| `negative_sample_rate` | `integer` | no | Negative samples per positive edge. |
+| `init` | `enum ("spectral", "random")` | no | Embedding initialization method. |
+| `random_state` | `integer` | no | Seed for reproducible initialization. |
+
+### SQL value argument schemas
+
+| Argument | Required | Literal shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `init` | no | `string` | `"spectral"` | one of `"spectral"`, `"random"` | Embedding initialization method. |
+| `learning_rate` | no | `number` | `1` | greater than 0 | Positive embedding optimization rate. |
+| `local_connectivity` | no | `number` | `1` | minimum 0 | Local connectivity adjustment. |
+| `min_dist` | no | `number` | `0.1` | minimum 0 | Minimum distance between embedded points; at most spread. |
+| `n_components` | no | `integer` | `2` | minimum 1; maximum 2147483647 | Number of embedding dimensions. |
+| `n_epochs` | no | `integer` | `0` | minimum 0; maximum 2147483647 | Optimization epochs; zero selects the native default. |
+| `n_neighbors` | no | `integer` | `15` | minimum 1; maximum 2147483647 | Number of neighbors used to construct the manifold. |
+| `negative_sample_rate` | no | `integer` | `5` | minimum 1; maximum 2147483647 | Negative samples per positive edge. |
+| `random_state` | no | `integer` | `0` | minimum 0; maximum 18446744073709551615 | Seed for reproducible initialization. |
+| `repulsion_strength` | no | `number` | `1` | minimum 0 | Repulsive force applied during optimization. |
+| `set_op_mix_ratio` | no | `number` | `1` | minimum 0; maximum 1 | Fuzzy-set intersection/union mix in [0, 1]. |
+| `spread` | no | `number` | `1` | greater than 0 | Positive scale for embedded point distances. |
+
+### Vector binding shapes
+
+Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+
+The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
+| `id` | `same_as_input.id` | no | Logical input ID. |
+| `dim_<index>` | `Float32` | no | Embedded dimension value, repeated n_components times. The output contains `n_components` such columns, `dim_0` through `dim_&lt;n_components - 1&gt;`. |
+
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Examples
+
+import Examples from '../_examples/cuml_umap.mdx';
+
+<Examples />
+
+## Limits
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Only Float32 features are supported; L2SqrtExpanded distance, brute-force kNN, and deterministic mode are fixed.
+- Empty input returns an empty result. Other inputs require n_neighbors &lt; rows, checked at execution.
+- min_dist must not exceed spread. The fit and embedding are query-local.
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

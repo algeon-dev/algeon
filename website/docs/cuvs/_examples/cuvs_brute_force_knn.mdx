@@ -2,7 +2,7 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import EmberHistoricalSearch from './ember2024_historical_search.mdx';
 
-<Tabs>
+<Tabs queryString="dataset">
   <TabItem value="amazon-reviews" label="Amazon Reviews">
 This example uses the [Amazon Reviews demo dataset](../../guides/datasets/amazon-reviews.mdx).
 
@@ -121,7 +121,7 @@ In the separate 100,000-neighbor verification, three reported zeros had
 positive Float64 distances, at most 0.0002202. A zero distance alone does
 not establish a duplicate listing.
   </TabItem>
-  <TabItem value="ember2024-reference-search" label="EMBER2024 references">
+  <TabItem value="ember2024" label="EMBER2024 references">
     <EmberHistoricalSearch />
   </TabItem>
 </Tabs>

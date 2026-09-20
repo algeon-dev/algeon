@@ -80,7 +80,7 @@ query has 4.9 million papers and 45.6 million citation edges.
   [`algeon_explain_coverage`](https://algeon.dev/integration/gpu-coverage-validation)
   or `EXPLAIN GPU` over Flight SQL, and lets a person or an agent list,
   describe, and dry-run validate every installed UDTF through the
-  [GPU UDTF catalog](https://algeon.dev/guides/gpu-function-discovery).
+  [GPU UDTF catalog](https://algeon.dev/guides/gpu-udtf-discovery).
 - Returns its own failures with a stable machine-readable code, kind, and
   status, which lets a wrong first query inform the second attempt.
 - Admits each query against a per-device memory ledger and runs it inside an

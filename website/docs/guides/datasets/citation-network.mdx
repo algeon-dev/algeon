@@ -8,7 +8,7 @@ description: Prepare the DBLP / AMiner V12 citation network, start a local serve
 
 The DBLP / AMiner V12 citation network holds 4.9 million papers and 45.6
 million citations. An edge `src` → `dst` means paper `src` cites paper `dst`.
-Every cuGraph function page runs its examples on these tables, and the
+Every cuGraph UDTF page runs its examples on these tables, and the
 integration guides use them for their first query.
 
 The data is a fixed snapshot from April 2020. Graph scores describe a paper's
@@ -23,14 +23,14 @@ position in this snapshot and say nothing about its quality.
 | Preparation | 12.5 GB source JSON becomes about 4.6 GB of Parquet. The recorded conversion took 17–19 minutes and 7.8 GB RAM on a 32-core host with local NVMe |
 | Python packages | `pyarrow` |
 | Server | `127.0.0.1:50051` on GPU 0; cuGraph calls run on the GPU and ordinary SQL on the CPU |
-| Examples | Every [cuGraph function](../../cugraph/functions/index.mdx) |
+| Examples | Every [cuGraph UDTF](../../cugraph/udtfs/index.mdx) |
 
 ## Examples
 
 - [Rank papers by PageRank](#run-the-examples), the first query on this page.
-- [Find a citation path from BERT to LSTM](../../cugraph/functions/traversal/cugraph_bfs.mdx#examples).
-- [Compare citation communities with research fields](../../cugraph/functions/community/cugraph_louvain.mdx#examples).
-- [Find papers with references similar to the Transformer](../../cugraph/functions/similarity/cugraph_jaccard.mdx#examples).
+- [Find a citation path from BERT to LSTM](../../cugraph/udtfs/traversal/cugraph_bfs.mdx#examples).
+- [Compare citation communities with research fields](../../cugraph/udtfs/community/cugraph_louvain.mdx#examples).
+- [Find papers with references similar to the Transformer](../../cugraph/udtfs/similarity/cugraph_jaccard.mdx#examples).
 
 The remaining cuGraph pages, from degree counts to force-directed layout,
 read the same tables.
@@ -159,7 +159,7 @@ and running another example can replace shared names such as `ai_nodes` and
 
 `papers.n_citation` is AMiner's reported global citation count. In-graph
 degree counts only edges present here; the
-[in-degree example](../../cugraph/functions/structure/cugraph_in_degrees_all.mdx#examples)
+[in-degree example](../../cugraph/udtfs/structure/cugraph_in_degrees_all.mdx#examples)
 compares them.
 
 <details id="seed-papers-used-in-the-examples">

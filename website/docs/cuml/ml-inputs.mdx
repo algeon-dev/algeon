@@ -96,7 +96,7 @@ reads no feature values.
 
 Execution checks evaluated row count and feature values, including finiteness
 and uniform positive list length. An empty evaluated input produces zero rows
-with the function's stable output schema without calling cuML. For a nonempty
+with the UDTF's stable output schema without calling cuML. For a nonempty
 input, TSVD requires at least two rows and two feature dimensions;
 `n_components` cannot exceed the evaluated dimension. HDBSCAN requires at
 least two rows, `min_samples < rows`, `min_cluster_size <= rows`, and

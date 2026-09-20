@@ -616,7 +616,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
     name: 'GPU execution',
     note: [
       'cuDF for the relational plan',
-      'cugraph_* · cuvs_* · cuml_* table functions',
+      'cugraph_* · cuvs_* · cuml_* UDTFs',
     ],
     tone: 'gpu',
   };

@@ -10,7 +10,7 @@ description: SQL-visible cuOpt optimization over Algeon SQL sessions.
 
 The cuOpt SQL surface is under development. The planned `cuopt_*` UDTFs are
 not yet exposed in a release: there is no `cuopt` Cargo feature yet, and a
-query that calls a `cuopt_*` function currently fails as an unknown table
+query that calls a `cuopt_*` UDTF currently fails as an unknown table
 function. The shape described below is the intended direction and may change.
 
 :::
@@ -19,9 +19,9 @@ Algeon plans to expose NVIDIA
 [**cuOpt**](https://github.com/nvidia/cuopt) through SQL UDTFs over
 DataFusion SQL sessions, following the same pattern as the
 [cuGraph SQL API](../cugraph/overview.mdx) and the
-[cuVS SQL API](../cuvs/overview.mdx): each `cuopt_*` function reads a relation
+[cuVS SQL API](../cuvs/overview.mdx): each `cuopt_*` UDTF reads a relation
 of decision inputs, runs a GPU optimization workload, and returns rows you can
 join and filter alongside the rest of your query.
 
-Until the functions ship, `gpu_list_functions` does not list a `cuopt` family,
+Until the UDTFs ship, `gpu_list_functions` does not list a `cuopt` family,
 and no relation shape or option schema is final.

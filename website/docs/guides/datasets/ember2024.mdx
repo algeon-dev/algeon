@@ -25,26 +25,26 @@ files with which to evaluate false positives.
 | Preparation | About 24.3 GB of compressed raw archives. Python scripts read all three splits and write Parquet under `target/ember2024-research/` |
 | Python packages | Pinned in `fixture/demo/ember2024/research-requirements.txt` |
 | Server | `127.0.0.1:50062` with the EMBER model root; the captures used a 64 GiB device limit and 32 GiB per query |
-| Examples | Six cuML, four cuVS, and two cuGraph function pages |
+| Examples | Six cuML, four cuVS, and two cuGraph UDTF pages |
 
 ## Examples
 
-- [Group missed Win32 files for batch review](../../cuml/functions/cuml_hdbscan.mdx#examples)
+- [Group missed Win32 files for batch review](../../cuml/udtfs/cuml_hdbscan.mdx#examples)
   with HDBSCAN over the challenge histograms.
-- [Project the challenge cohort into two dimensions](../../cuml/functions/cuml_umap.mdx#examples)
-  with UMAP, [truncated SVD](../../cuml/functions/cuml_tsvd.mdx#examples), or
-  [PCA](../../cuvs/functions/cuvs_pca.mdx#examples).
-- [Rank high-scoring challenge files for review](../../cuml/functions/cuml_forest_predict.mdx#examples)
+- [Project the challenge cohort into two dimensions](../../cuml/udtfs/cuml_umap.mdx#examples)
+  with UMAP, [truncated SVD](../../cuml/udtfs/cuml_tsvd.mdx#examples), or
+  [PCA](../../cuvs/udtfs/cuvs_pca.mdx#examples).
+- [Rank high-scoring challenge files for review](../../cuml/udtfs/cuml_forest_predict.mdx#examples)
   with forest inference and precomputed attributions.
-- [Compare classifiers on a later quarter](../../cuml/functions/cuml_logistic_regression.mdx#examples)
+- [Compare classifiers on a later quarter](../../cuml/udtfs/cuml_logistic_regression.mdx#examples)
   with logistic regression and
-  [random forest](../../cuml/functions/cuml_random_forest_classifier.mdx#examples).
-- [Find earlier Win32 reference files](../../cuvs/functions/cuvs_brute_force_knn.mdx#examples)
-  with exact search, [CAGRA](../../cuvs/functions/cuvs_cagra.mdx#examples), or
-  [IVF-Flat](../../cuvs/functions/cuvs_ivf_flat.mdx#examples).
-- [Compare import patterns around an unlabeled file](../../cugraph/functions/centrality/cugraph_personalized_pagerank.mdx#examples)
+  [random forest](../../cuml/udtfs/cuml_random_forest_classifier.mdx#examples).
+- [Find earlier Win32 reference files](../../cuvs/udtfs/cuvs_brute_force_knn.mdx#examples)
+  with exact search, [CAGRA](../../cuvs/udtfs/cuvs_cagra.mdx#examples), or
+  [IVF-Flat](../../cuvs/udtfs/cuvs_ivf_flat.mdx#examples).
+- [Compare import patterns around an unlabeled file](../../cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx#examples)
   with personalized PageRank and
-  [Jaccard](../../cugraph/functions/similarity/cugraph_jaccard.mdx#examples).
+  [Jaccard](../../cugraph/udtfs/similarity/cugraph_jaccard.mdx#examples).
 
 ## Prepare the data
 
@@ -149,7 +149,7 @@ in the sample-count relation.
 
 ## Run the examples
 
-Copy an example's SQL from its function page into any Flight SQL client
+Copy an example's SQL from its UDTF page into any Flight SQL client
 connected to `127.0.0.1:50062`, or pass a saved query file to `research.py`:
 
 ```bash

@@ -1,0 +1,76 @@
+---
+title: In Degrees All
+sidebar_label: In Degrees All
+description: "Count incoming edges for every vertex in the graph."
+slug: /cugraph/udtfs/cugraph_in_degrees_all
+---
+
+{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
+
+# In Degrees All
+
+UDTF: `cugraph_in_degrees_all`
+
+Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/latest/api_docs/cugraph_c/graph/#_CPPv418cugraph_in_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t)
+
+Count incoming edges for every vertex in the graph.
+
+## Quickstart
+
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
+
+```sql
+SELECT *
+FROM cugraph_in_degrees_all(
+  edges => (SELECT src, dst FROM target_edges)
+);
+```
+
+## Inputs
+
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
+
+Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf); the concrete call-specific schema comes from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+
+## Arguments and options
+
+### Relation arguments
+
+| Argument | Required | Columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`, `Int64`, `Utf8`, `LargeUtf8`, `Utf8View`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`, `Int64`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+
+Every `edge_id` column must have the integer type of `src` and `dst`; string-keyed graphs accept no edge IDs.
+
+### Named value arguments
+
+_This UDTF has no algorithm-specific value arguments. Its inputs are the relation arguments above and the graph construction options below._
+
+### Graph construction options
+
+Graph construction follows the shared defaults (`directed=true`, renumbering, `python_cugraph` policy) documented in [Graph Construction Options](../../graph-options.mdx).
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64\|Utf8` | no | Vertex whose in-degree count is reported. |
+| `in_degree` | `Int64` | no | Number of incoming edges for the vertex. |
+
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.
+
+## Examples
+
+import Examples from '../../_examples/cugraph_in_degrees_all.mdx';
+
+<Examples />
+
+## Limits
+
+_No algorithm-specific limitations._
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx).

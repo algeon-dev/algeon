@@ -5,7 +5,7 @@ import EmberImportReview from './ember2024_import_review.mdx';
 
 {/* Hand-owned examples for cugraph_jaccard. NOT generated; safe to edit. */}
 
-<Tabs>
+<Tabs queryString="dataset">
 <TabItem value="citation-network" label="Citation network" default>
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
@@ -20,7 +20,7 @@ bibliographic overlap; topic meaning is outside this measure. Title-identical
 records are excluded from the candidate pairs, preventing an edition with the
 seed's title from appearing as a separate reading suggestion.
 
-The similarity function requires an undirected graph. Each citing paper keeps
+The similarity UDTF requires an undirected graph. Each citing paper keeps
 its positive ID, while each cited paper becomes a negative reference-role ID.
 Those separate roles make the neighborhood of a paper reflect its outgoing
 references, even when other papers cite it. The edge projection omits weights,
@@ -77,16 +77,16 @@ LIMIT 5;
 Jaccard score among these candidates, at 0.296.
 
 For coverage of a smaller bibliography, see the
-[Overlap example](../functions/similarity/cugraph_overlap.mdx).
+[Overlap example](../udtfs/similarity/cugraph_overlap.mdx).
 
 </TabItem>
 
-<TabItem value="merrec-marketplace" label="MerRec marketplace">
+<TabItem value="merrec" label="MerRec marketplace">
 
 <MerRecDiscovery />
 
 </TabItem>
-<TabItem value="ember2024-import-review" label="EMBER2024 import review">
+<TabItem value="ember2024" label="EMBER2024 import review">
 
 <EmberImportReview />
 

@@ -1,0 +1,97 @@
+---
+title: Brute-force kNN
+sidebar_label: Brute-force kNN
+description: "Exact brute-force nearest-neighbor search over dense vectors."
+slug: /cuvs/udtfs/cuvs_brute_force_knn
+sidebar_position: 2
+---
+
+{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
+
+# Brute-force kNN
+
+UDTF: `cuvs_brute_force_knn`
+
+Official cuVS reference: [C API](https://docs.nvidia.com/cuvs/api-reference/c-api-neighbors-brute-force)
+
+Exact brute-force nearest-neighbor search over dense vectors.
+
+## Quickstart
+
+The call below expects the registered relations `dataset_vectors` (the `dataset` role) and `query_vectors` (the `queries` role), each passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
+
+```sql
+SELECT *
+FROM cuvs_brute_force_knn(
+  dataset => (SELECT id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT id, d0, d1 FROM query_vectors),
+  k => 8,
+  metric => 'l2_expanded'
+);
+```
+
+## Inputs
+
+Each relation argument is a parenthesized `SELECT` subquery that the planner keeps as a real child; metadata validation resolves a registered table or view for the same role instead. See [Vector Inputs](../vector-inputs.mdx) for the relation identity rules and the ID, dense-vector type, null, finite-value, and runtime-dimension contract.
+
+| Role | Required | Validation reference | Description |
+| --- | --- | --- | --- |
+| `dataset` | yes | `table` | Dense-vector rows indexed for nearest-neighbor search. |
+| `queries` | yes | `table` | Dense-vector query rows matched against the evaluated dataset. |
+
+### Vector element types
+
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` |
+
+## Arguments and options
+
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `k` | `integer` | yes | Number of neighbors returned for each evaluated query row. |
+| `metric` | `enum ("l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product")` | yes | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
+
+### SQL value argument schemas
+
+| Argument | Required | Literal shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `k` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
+| `metric` | yes | `string` | No default | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
+
+### Vector binding shapes
+
+Each relation subquery must project a non-null `id` field followed by either one or more non-null feature fields of a supported element type (`Float32`) or one non-null list vector field named `vector`.
+
+For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `query_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated query row; it disambiguates duplicate query IDs. |
+| `query_id` | `same_as_queries.id` | no | Logical ID copied from the queries relation. |
+| `neighbor_ordinal` | `UInt64` | no | Zero-based ordinal of the matched dataset row; it disambiguates duplicate dataset IDs. |
+| `neighbor_id` | `same_as_dataset.id` | no | Logical ID copied from the matched dataset row. |
+| `rank` | `UInt32` | no | One-based neighbor rank within a query. Order consumers explicitly by query_ordinal, rank. |
+| `distance` | `Float32` | no | Metric value; smaller is better for distance metrics, while inner_product prefers larger values. |
+
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Examples
+
+import Examples from '../_examples/cuvs_brute_force_knn.mdx';
+
+<Examples />
+
+## Limits
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Builds an exact query-local index over the evaluated dataset relation; it does not persist an ANN index or replace a vector database.
+- The evaluated dataset must be non-empty and k must not exceed its row count. An empty query relation may return an empty result with the stable schema.
+- Dataset and query vector dimensions must match after both relation children are evaluated.
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

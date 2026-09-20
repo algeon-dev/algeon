@@ -83,10 +83,10 @@ let ctx = SessionContext::new_with_state(state);
 ```
 
 cuGraph UDTFs resolve the backend's admission and native execution
-configuration from session state when executed. To add the `cuvs_*` functions,
+configuration from session state when executed. To add the `cuvs_*` UDTFs,
 chain `try_with_cuvs_sql()` in the same manner; it takes no configuration. The
-functions execute only when the crate was built with the `cuvs` feature. For
-`cuml_*` functions, chain `try_with_cuml_sql()` as well; execution requires
+UDTFs execute only when the crate was built with the `cuvs` feature. For
+`cuml_*` UDTFs, chain `try_with_cuml_sql()` as well; execution requires
 the `cuml` feature. It installs no models root, so `cuml_forest_predict` is
 registered but stays unavailable with `model_root_unconfigured`. To enable
 it, chain `try_with_cuml_sql_config` instead with a `CumlSqlConfig` whose
@@ -215,9 +215,9 @@ let backend = AlgeonGpuBackend::builder()
     .build()?;
 ```
 
-Install the required function families with the features and session methods
+Install the required UDTF families with the features and session methods
 shown [above](#add-cugraph-and-cuvs-sql). `FunctionsOnly` changes relational
-planning; it does not register functions or remove their GPU runtime and
+planning; it does not register UDTFs or remove their GPU runtime and
 backend requirements. The Flight SQL equivalents are documented in
 [Configuration](./configuration.mdx#execution-mode).
 
@@ -241,7 +241,7 @@ for PageRank with CPU filtering and ordering.
 
 ### DataFusion fallback and GPU-only plans
 
-An explicit GPU UDTF has no CPU algorithm fallback. Unsupported function
+An explicit GPU UDTF has no CPU algorithm fallback. Unsupported UDTF
 inputs, memory exhaustion, cancellation, and runtime failures remain errors;
 after GPU execution starts, Algeon never replays the query on CPU. See
 [Handling Errors](./handling-errors.mdx) for the structured error contract.

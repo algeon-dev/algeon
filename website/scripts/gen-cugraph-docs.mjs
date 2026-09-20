@@ -25,7 +25,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
-const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
+const UDTFS_DIR = join(DOCS_DIR, 'udtfs');
 const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cugraph/latest/';
 
 const FAMILIES = {
@@ -515,7 +515,7 @@ function renderInputs(spec) {
   const contract = vertexIdContract(spec);
   const logicalEndpointTypes = contract.logical_string_endpoint_types;
   const supportsLogicalStrings = logicalEndpointTypes.length > 0;
-  const vertexIdLink = '[Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function)';
+  const vertexIdLink = '[Vertex ID support](../../graph-options.mdx#vertex-id-support-by-udtf)';
   const parts = [];
   parts.push(
     `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.`,
@@ -561,10 +561,10 @@ function renderGraphOptionsNote(spec) {
   const directed = spec.options_schema.properties?.directed;
   const link = '[Graph Construction Options](../../graph-options.mdx)';
   if (directed?.enum?.length === 1 && directed.enum[0] === false) {
-    return `This function requires ${code('directed=false')} (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in ${link}.`;
+    return `This UDTF requires ${code('directed=false')} (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in ${link}.`;
   }
   if (directed?.default === false) {
-    return `This function builds an undirected graph by default (${code('directed=false')}); all other graph construction options follow the shared defaults documented in ${link}.`;
+    return `This UDTF builds an undirected graph by default (${code('directed=false')}); all other graph construction options follow the shared defaults documented in ${link}.`;
   }
   return `Graph construction follows the shared defaults (${code('directed=true')}, renumbering, ${code('python_cugraph')} policy) documented in ${link}.`;
 }
@@ -623,7 +623,7 @@ function renderArguments(spec) {
     '',
     '### Named value arguments',
     '',
-    Object.keys(valueOptions).length === 0 ? '_This function has no algorithm-specific value arguments. Its inputs are the relation arguments above and the graph construction options below._' : optionTable(valueOptions),
+    Object.keys(valueOptions).length === 0 ? '_This UDTF has no algorithm-specific value arguments. Its inputs are the relation arguments above and the graph construction options below._' : optionTable(valueOptions),
   ];
   optionSections.push('', '### Graph construction options', '', renderGraphOptionsNote(spec));
   return optionSections.join('\n');
@@ -643,7 +643,7 @@ function renderSchemas(spec) {
       code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
     ]));
   });
-  blocks.push('These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.');
+  blocks.push('These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-udtf-catalog.mdx) to get the concrete, table-specific output schema.');
   return blocks.join('\n\n');
 }
 
@@ -695,7 +695,7 @@ function renderPage(spec) {
     generator: 'website/scripts/gen-cugraph-docs.mjs',
     spec: documentationSpec,
     title,
-    slug: `/cugraph/functions/${spec.function_name}`,
+    slug: `/cugraph/udtfs/${spec.function_name}`,
     reference: `Official cuGraph reference: [${documentation.officialApi}](${officialDocsUrl})`,
     quickstart: {
       prerequisite: quickstartPrerequisite(spec, example),
@@ -706,7 +706,7 @@ function renderPage(spec) {
     output: renderSchemas(spec),
     examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),
     limits: renderLimitations(spec),
-    discoveryLink: '../../../reference/gpu-function-catalog.mdx',
+    discoveryLink: '../../../reference/gpu-udtf-catalog.mdx',
   });
 }
 
@@ -714,10 +714,10 @@ function renderCheatsheet(specs) {
   return [
     '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
-    table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
+    table(['UDTF', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = documentationFor(spec.function_name);
       return [
-        `[${cell(displayName(spec))}](./functions/${spec.family}/${spec.function_name}.mdx)`,
+        `[${cell(displayName(spec))}](./udtfs/${spec.family}/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
         cell(docsText(spec.summary)),
         `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
@@ -736,7 +736,7 @@ function renderVertexIdSupport(specs) {
       && contract.numeric_endpoint_types[0] === 'Int32'
       && !supportsLogicalStrings;
     return [
-      `[${cell(displayName(spec))}](./functions/${spec.family}/${spec.function_name}.mdx)`,
+      `[${cell(displayName(spec))}](./udtfs/${spec.family}/${spec.function_name}.mdx)`,
       renderTypeList(contract.numeric_endpoint_types),
       supportsLogicalStrings ? renderTypeList(logicalEndpointTypes) : 'Not supported',
       supportsLogicalStrings ? code(contract.logical_string_output_type) : 'None',
@@ -747,13 +747,13 @@ function renderVertexIdSupport(specs) {
   return [
     '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
-    '## Vertex ID support by function',
+    '## Vertex ID support by UDTF',
     '',
-    'This matrix is generated from each function descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, logical string endpoint inputs, canonical string output, side-input limitations, and legacy Int32-only dispatch.',
+    'This matrix is generated from each UDTF descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, logical string endpoint inputs, canonical string output, side-input limitations, and legacy Int32-only dispatch.',
     '',
-    'Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. Numeric endpoint requirements remain function-specific and are not widened by logical string support.',
+    'Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. Numeric endpoint requirements remain UDTF-specific and are not widened by logical string support.',
     '',
-    table(['Function', 'Numeric endpoint types', 'Logical string endpoint types', 'Canonical string output', 'Logical side-input limitation', 'Legacy Int32-only'], rows),
+    table(['UDTF', 'Numeric endpoint types', 'Logical string endpoint types', 'Canonical string output', 'Logical side-input limitation', 'Legacy Int32-only'], rows),
     '',
     'Use `gpu_describe_function` for the full descriptor and `gpu_validate_call` for the concrete call-specific schema and side-input validation.',
   ].join('\n');
@@ -771,12 +771,12 @@ function main() {
     }
   }
   for (const [slug, family] of Object.entries(FAMILIES)) {
-    write(join(FUNCTIONS_DIR, slug, '_category_.json'), JSON.stringify({ label: family.label, position: family.position }, null, 2));
+    write(join(UDTFS_DIR, slug, '_category_.json'), JSON.stringify({ label: family.label, position: family.position }, null, 2));
   }
-  for (const spec of specs) write(join(FUNCTIONS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
+  for (const spec of specs) write(join(UDTFS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
   write(join(DOCS_DIR, '_vertex-id-support.mdx'), renderVertexIdSupport(specs));
-  console.log(`Wrote ${specs.length} generated cuGraph function pages, cheatsheet, and vertex-ID support partial.`);
+  console.log(`Wrote ${specs.length} generated cuGraph UDTF pages, cheatsheet, and vertex-ID support partial.`);
 }
 
 main();

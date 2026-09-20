@@ -24,7 +24,7 @@ production query with
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
 | Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. |
 | Joins | Equi joins and admitted residual/keyless forms for inner, outer, semi, anti, mark, and cross joins. Build side, output projection, key types, and residual expressions can narrow an otherwise supported join kind. |
-| Graph | cuGraph UDTFs are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the function-level contract. |
+| Graph | cuGraph UDTFs are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the UDTF-level contract. |
 
 When a relational candidate is not supported, or an enabled cost rule does not
 select it, the executable DataFusion baseline remains in place. Every Iceberg

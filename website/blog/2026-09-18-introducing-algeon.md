@@ -83,9 +83,10 @@ a join.
 />
 
 Algeon accepts SQL subqueries as the inputs of graph, vector, and
-machine-learning table functions, and their outputs are relations too.
+machine-learning UDTFs (user-defined table functions), and their outputs are
+relations too.
 Supported relational operations and GPU algorithms compose in one physical
-plan, and when one GPU function's output feeds another directly, the data
+plan, and when one GPU UDTF's output feeds another directly, the data
 stays on the device. Whether an analysis needs distributed execution depends
 on the reduced working set and the algorithm's state, and Algeon runs each
 query on one device inside a configured memory cap.
@@ -105,13 +106,13 @@ semantics without anyone comparing them.
 <GlueVsPlanFigure
   caption={<>Left: the detour most teams build today, where each step is an
   ad-hoc ETL script and most steps copy the data. Right: the same work as one
-  SQL statement, with the algorithm as a table function between the SQL that
+  SQL statement, with the algorithm as a UDTF between the SQL that
   prepares its input and the SQL that consumes its output.</>}
 />
 
 Algeon's answer is a declarative execution contract. Selection and cleaning
 happen in SQL before the algorithm, enrichment happens in SQL after it, and
-the algorithm sits between them as a table function with a documented input
+the algorithm sits between them as a UDTF with a documented input
 relation and a documented output schema. The physical decisions (what to
 scan, what to push down, whether a stage can stay on the device) belong to
 the planner; the choice of algorithm and its options stays with the query
@@ -149,7 +150,7 @@ tabular rows, attaching titles and pruning direct citations use standard
 `JOIN` and `NOT EXISTS` clauses. The 45 million edges are read into GPU memory
 when the statement runs and released when it finishes, unless a bounded server
 retains the constructed graph for reuse, and nothing is exported. The
-[captured example](/cugraph/functions/cugraph_personalized_pagerank#examples)
+[captured example](/cugraph/udtfs/cugraph_personalized_pagerank#examples)
 surfaces foundational work across continuous speech recognition and statistical
 machine translation; other valid rankings exist, and the corpus stops in early
 2020.
@@ -161,9 +162,9 @@ structure, or the feature the next stage needs, and often something plain
 SQL could not have produced at all. The
 [overview's composed query](/#from-a-question-to-a-working-set) keeps only
 the densely connected core of the citation graph with
-[k-core](/cugraph/functions/cugraph_k_core) and ranks it with
-[PageRank](/cugraph/functions/cugraph_pagerank) in the same plan. The core's
-symmetrized edges pass between the two functions without leaving the device.
+[k-core](/cugraph/udtfs/cugraph_k_core) and ranks it with
+[PageRank](/cugraph/udtfs/cugraph_pagerank) in the same plan. The core's
+symmetrized edges pass between the two UDTFs without leaving the device.
 
 In the supplier investigation, the same shape could carry the analysis
 somewhere the original shortlist did not point. A traversal might identify an
@@ -227,15 +228,15 @@ status describes the condition; whether and when to retry an attempted query
 comes from its sealed attempt report. The contract is written up in
 [Handling Errors](/integration/handling-errors).
 
-Before a query spends GPU time, the function catalog describes what a call
-needs. `gpu_list_functions` says which functions this build can run,
-`gpu_describe_function` returns a function's signature, option schema, and
+Before a query spends GPU time, the UDTF catalog describes what a call
+needs. `gpu_list_functions` says which UDTFs this build can run,
+`gpu_describe_function` returns a UDTF's signature, option schema, and
 output schema as JSON, and `gpu_validate_call` checks a concrete call against
 registered tables or views without reading a row or launching a kernel. For a
 whole statement, `algeon_explain_coverage` plans the query the way execution
 would and reports which parts will run on the GPU and why the rest will not.
 With those, an agent's second attempt is informed by its first. The
-[discovery guide](/guides/gpu-function-discovery) and
+[discovery guide](/guides/gpu-udtf-discovery) and
 [coverage validation](/integration/gpu-coverage-validation) pages walk
 through the loop. These interfaces do not establish that a hypothesis is
 sound or that a correlation has meaning in the domain; that judgment stays with
@@ -262,15 +263,15 @@ supported candidate to its own cuDF plan. A candidate it does not select
 keeps the executable DataFusion baseline, and the reason is recorded.
 
 The algorithms are explicit GPU islands in that plan. The
-[`cugraph_*`](/cugraph) functions cover traversal, centrality, community
+[`cugraph_*`](/cugraph) UDTFs cover traversal, centrality, community
 detection, components, similarity, core structure, and layout; the
-[`cuvs_*`](/cuvs) functions cover exact and approximate nearest neighbors,
-pairwise distances, KMeans, and PCA; and the [`cuml_*`](/cuml) functions fit
+[`cuvs_*`](/cuvs) UDTFs cover exact and approximate nearest neighbors,
+pairwise distances, KMeans, and PCA; and the [`cuml_*`](/cuml) UDTFs fit
 query-local models (TSVD, HDBSCAN, UMAP, logistic regression, random forests)
-while [`cuml_forest_predict`](/cuml/functions/cuml_forest_predict) scores
+while [`cuml_forest_predict`](/cuml/udtfs/cuml_forest_predict) scores
 rows with a pretrained XGBoost, LightGBM, or Treelite forest read from a
-server-configured model directory. Each family's function index lists every
-installed algorithm, and the families keep growing.
+server-configured model directory. Each family's UDTF index lists every
+installed UDTF, and the families keep growing.
 
 The last of those reflects a belief about where trained models usually
 live. The
@@ -316,7 +317,7 @@ would rather list the gaps than have you find them.
   and a few similarity scores were checked against independent calculations.
   There is no end-to-end graph benchmark and no value-level verification of
   every algorithm's output. One known defect is inherited from the pinned
-  cuGraph release: [`cugraph_cosine`](/cugraph/functions/cugraph_cosine)
+  cuGraph release: [`cugraph_cosine`](/cugraph/udtfs/cugraph_cosine)
   normalizes incorrectly, and its example page records the bug and withholds
   the ranking.
 - Performance is uneven. Exact edge betweenness over a 164,000-edge subgraph

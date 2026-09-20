@@ -142,7 +142,7 @@ fingerprints do not claim that source metadata or table contents are unchanged.
 
 ## Rust surface
 
-The SQL function and Rust API use the same validation primitive:
+The SQL UDTF and Rust API use the same validation primitive:
 
 ```rust
 use algeon_datafusion::{
@@ -195,10 +195,10 @@ executes the returned plan or performs GPU admission.
 
 ## Relationship to `gpu_validate_call`
 
-[`gpu_validate_call`](../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json)
+[`gpu_validate_call`](../reference/gpu-udtf-catalog.mdx#gpu_validate_callfunction_name-call_json)
 validates one installed GPU UDTF call's named relations and provider-owned
 options. Its result does not inspect the surrounding physical plan.
 `algeon_explain_coverage` inspects the whole planned query, including DataFusion
 boundaries feeding or consuming an explicit GPU island. Use both when composing
-graph SQL: validate the function call, then check coverage for the query that
+graph SQL: validate the UDTF call, then check coverage for the query that
 will execute.
