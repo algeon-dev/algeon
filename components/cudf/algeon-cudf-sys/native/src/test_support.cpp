@@ -791,6 +791,13 @@ cudf_status_t cudf_test_stream_synchronize_call_count(int32_t* out)
   return CUDF_SUCCESS;
 }
 
+cudf_status_t cudf_rust_test_support_stream_provider_fork(void* stream, size_t count, void** out_forks);
+
+cudf_status_t cudf_test_stream_provider_fork(void* stream, size_t count, void** out_forks)
+{
+  return cudf_rust_test_support_stream_provider_fork(stream, count, out_forks);
+}
+
 cudf_status_t cudf_test_event_stream_wait_call_count(int32_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");

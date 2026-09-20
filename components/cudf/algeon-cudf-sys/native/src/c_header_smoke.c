@@ -34,7 +34,7 @@ static int cudf_rust_c_header_smoke(void) {
   SMOKE_CHECK_FN(cudf_status_t, cudf_stream_provider_install, void);
   SMOKE_CHECK_FN(cudf_status_t, cudf_stream_provider_register_attempt, void*, void* const*, size_t);
   SMOKE_CHECK_FN(cudf_status_t, cudf_stream_provider_unregister_attempt, void*);
-  SMOKE_CHECK_FN(cudf_status_t, cudf_stream_provider_attach_attempt_stream, void*, void*);
+  SMOKE_CHECK_FN(cudf_status_t, cudf_stream_provider_attach_attempt_stream, void*, void*, size_t, size_t);
   SMOKE_CHECK_FN(cudf_status_t, cudf_stream_provider_detach_attempt_stream, void*);
   SMOKE_CHECK_FN(cudf_status_t, cudf_stream_wait_event, cudf_stream_handle, cudf_event_handle);
   SMOKE_CHECK_FN(cudf_status_t, cudf_raw_cuda_stream_wait_event, void*, void*);

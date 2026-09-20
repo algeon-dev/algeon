@@ -120,6 +120,57 @@ impl<T> CompiledTaskOutput<T> {
     }
 }
 
+/// Dispatch visibility of one compiled task from the coordinator's view.
+///
+/// The coordinator owns this board for the whole run. Serial execution walks
+/// the same claim/output-ready/commit protocol one task at a time; execution
+/// lanes claim disjoint ready tasks through the same protocol instead of
+/// re-dispatching behind the coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::exec::bounded::compiled) enum CompiledTaskFlight {
+    /// Dependencies are satisfied and no lane has claimed the task.
+    Ready,
+    /// A lane claimed the task; its previous dispatch has not completed.
+    Running,
+    /// The lane returned owned outputs that are not committed yet.
+    OutputReady,
+    /// Outputs were committed into the coordinator's resource state.
+    Committed,
+    /// The run failed while the task was dispatched; it drains without commit.
+    Failed,
+}
+
+/// Coordinator-owned dispatch board for one compiled pipeline run.
+#[derive(Debug, Default)]
+pub(in crate::exec::bounded::compiled) struct CompiledFlightBoard {
+    flights: BTreeMap<PipelineTaskId, CompiledTaskFlight>,
+}
+
+impl CompiledFlightBoard {
+    pub(in crate::exec::bounded::compiled) fn flight(&self, task: PipelineTaskId) -> CompiledTaskFlight {
+        self.flights.get(&task).copied().unwrap_or(CompiledTaskFlight::Ready)
+    }
+
+    pub(in crate::exec::bounded::compiled) fn in_flight_count(&self) -> usize {
+        self.flights
+            .values()
+            .filter(|flight| matches!(flight, CompiledTaskFlight::Running | CompiledTaskFlight::OutputReady))
+            .count()
+    }
+
+    fn set(&mut self, task: PipelineTaskId, flight: CompiledTaskFlight) {
+        self.flights.insert(task, flight);
+    }
+
+    pub(in crate::exec::bounded::compiled) fn drain_dispatched_to_failed(&mut self) {
+        for flight in self.flights.values_mut() {
+            if matches!(flight, CompiledTaskFlight::Running | CompiledTaskFlight::OutputReady) {
+                *flight = CompiledTaskFlight::Failed;
+            }
+        }
+    }
+}
+
 /// Deterministic single-threaded scheduler for a validated compiled pipeline.
 #[doc(hidden)]
 pub struct CompiledPipelineScheduler<'a> {
@@ -140,6 +191,112 @@ impl<'a> CompiledPipelineScheduler<'a> {
         pipeline.validate()?;
         let dependencies = build_dependencies(pipeline);
         Ok(Self { pipeline, dependencies, prioritized_join_builds })
+    }
+
+    /// Claims the next runnable task for one execution lane.
+    ///
+    /// The claim marks the task [`Running`](CompiledTaskFlight::Running) on
+    /// the coordinator board and validates its inputs are produced, so a
+    /// second claim before completion fails instead of dispatching the task
+    /// twice. The lane runs [`CompiledTaskExecutor::execute_task`] outside
+    /// the coordinator state borrow and returns owned outputs to
+    /// [`commit_claimed_task`](Self::commit_claimed_task).
+    pub(in crate::exec::bounded::compiled) fn claim_next_runnable_task<T>(
+        &self,
+        state: &CompiledPipelineState<T>,
+        flights: &mut CompiledFlightBoard,
+        cycle: CompiledSchedulingCycle,
+    ) -> Result<&'a PipelineTask> {
+        let task = self.next_runnable_task(state, flights, cycle)?;
+        self.claim_task(task.id(), state, flights)
+    }
+
+    /// Claims one specific task for lane work assignment.
+    ///
+    /// The claim enforces the same runnable predicate as task selection:
+    /// dispatch state, control/barrier dependencies, and produced inputs.
+    /// A lane therefore cannot start a task whose control predecessor has not
+    /// completed, even when the task declares no input resources.
+    pub(in crate::exec::bounded::compiled) fn claim_task<T>(
+        &self,
+        task: PipelineTaskId,
+        state: &CompiledPipelineState<T>,
+        flights: &mut CompiledFlightBoard,
+    ) -> Result<&'a PipelineTask> {
+        match flights.flight(task) {
+            CompiledTaskFlight::Running | CompiledTaskFlight::OutputReady => {
+                return Err(invalid("compiled task dispatched while its previous dispatch is still in flight")
+                    .with_fact("compiled_task_id", task));
+            },
+            CompiledTaskFlight::Committed => {
+                return Err(
+                    invalid("compiled task claimed after it was already committed").with_fact("compiled_task_id", task)
+                );
+            },
+            CompiledTaskFlight::Failed => {
+                return Err(invalid("compiled task claimed after its run failed").with_fact("compiled_task_id", task));
+            },
+            CompiledTaskFlight::Ready => {},
+        }
+        let pipeline: &'a CompiledPipeline = self.pipeline;
+        let candidate = pipeline.tasks().iter().find(|candidate| candidate.id() == task).ok_or_else(|| {
+            invalid("compiled task claim references an unknown pipeline task").with_fact("compiled_task_id", task)
+        })?;
+        if !self.dependencies_completed(task, state) {
+            let incomplete = self
+                .dependencies
+                .get(&task)
+                .into_iter()
+                .flatten()
+                .find(|dependency| !state.is_task_completed(**dependency))
+                .map(|dependency| dependency.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            return Err(invalid("compiled task claimed before its dependencies completed")
+                .with_fact("compiled_task_id", task)
+                .with_fact("incomplete_dependency_task", incomplete));
+        }
+        state.prepare_task(candidate)?;
+        flights.set(task, CompiledTaskFlight::Running);
+        Ok(candidate)
+    }
+
+    /// Marks a claimed task's owned outputs ready without committing them.
+    pub(in crate::exec::bounded::compiled) fn mark_task_output_ready(
+        &self,
+        task: PipelineTaskId,
+        flights: &mut CompiledFlightBoard,
+    ) -> Result<()> {
+        if flights.flight(task) != CompiledTaskFlight::Running {
+            return Err(
+                invalid("compiled task output arrived without a running dispatch").with_fact("compiled_task_id", task)
+            );
+        }
+        flights.set(task, CompiledTaskFlight::OutputReady);
+        Ok(())
+    }
+
+    /// Commits a claimed task's owned outputs into the coordinator state.
+    pub(in crate::exec::bounded::compiled) fn commit_claimed_task<T>(
+        &self,
+        task: &PipelineTask,
+        produced_resources: Vec<(ResidentResourceId, T)>,
+        state: &mut CompiledPipelineState<T>,
+        flights: &mut CompiledFlightBoard,
+    ) -> Result<Vec<ReleasedCompiledResource<T>>> {
+        if flights.flight(task.id()) != CompiledTaskFlight::OutputReady {
+            return Err(invalid("compiled task commit requires an output-ready dispatch")
+                .with_fact("compiled_task_id", task.id()));
+        }
+        match state.complete_task(task, produced_resources) {
+            Ok(released) => {
+                flights.set(task.id(), CompiledTaskFlight::Committed);
+                Ok(released)
+            },
+            Err(error) => {
+                flights.set(task.id(), CompiledTaskFlight::Failed);
+                Err(error)
+            },
+        }
     }
 
     pub fn run<E>(&self, executor: &mut E) -> Result<CompiledPipelineState<E::Resource>>
@@ -168,6 +325,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
         E: CompiledTaskExecutor,
     {
         let mut state = CompiledPipelineState::new(self.pipeline)?;
+        let mut flights = CompiledFlightBoard::default();
 
         while state.completed_task_count() < self.pipeline.tasks().len() {
             let cycle = match executor.before_scheduling_cycle() {
@@ -183,7 +341,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
                     return Err(error);
                 },
             };
-            let task = match self.next_runnable_task(&state, cycle) {
+            let selected = match self.next_runnable_task(&state, &flights, cycle) {
                 Ok(task) => task,
                 Err(error) => {
                     cleanup_preserving_primary(
@@ -196,29 +354,32 @@ impl<'a> CompiledPipelineScheduler<'a> {
                     return Err(error);
                 },
             };
-            let attempt_id = task_attempt_id(task.id().to_string(), 1);
-            let task_span_id = RuntimeSpanId::new((task.id().index() as u64).saturating_add(2));
+            let attempt_id = task_attempt_id(selected.id().to_string(), 1);
+            let task_span_id = RuntimeSpanId::new((selected.id().index() as u64).saturating_add(2));
             let mut task_lifecycle = observation_scope.map(|scope| {
                 RuntimeTaskLifecycle::new(
                     scope.observation().clone(),
                     scope.plan_execution_id().clone(),
                     attempt_id.clone(),
-                    task.kind().as_str(),
+                    selected.kind().as_str(),
                     task_span_id,
                     scope.plan_span_id(),
                 )
             });
-            if let Err(error) = state.prepare_task(task) {
-                fail_task_lifecycle(&mut task_lifecycle, &error);
-                cleanup_preserving_primary(
-                    executor,
-                    &mut state,
-                    observation_scope,
-                    CleanupFailurePhase::TaskPreparation,
-                    &error,
-                );
-                return Err(error);
-            }
+            let task = match self.claim_task(selected.id(), &state, &mut flights) {
+                Ok(task) => task,
+                Err(error) => {
+                    fail_task_lifecycle(&mut task_lifecycle, &error);
+                    cleanup_preserving_primary(
+                        executor,
+                        &mut state,
+                        observation_scope,
+                        CleanupFailurePhase::TaskPreparation,
+                        &error,
+                    );
+                    return Err(error);
+                },
+            };
             let output = match catch_unwind(AssertUnwindSafe(|| executor.execute_task(task, &mut state))) {
                 Ok(Ok(output)) => output,
                 Ok(Err(error)) => {
@@ -242,20 +403,32 @@ impl<'a> CompiledPipelineScheduler<'a> {
                     resume_unwind(payload);
                 },
             };
-            let released = match state.complete_task(task, output.into_produced_resources()) {
-                Ok(released) => released,
-                Err(error) => {
-                    fail_task_lifecycle(&mut task_lifecycle, &error);
-                    cleanup_preserving_primary(
-                        executor,
-                        &mut state,
-                        observation_scope,
-                        CleanupFailurePhase::TaskCompletion,
-                        &error,
-                    );
-                    return Err(error);
-                },
-            };
+            if let Err(error) = self.mark_task_output_ready(task.id(), &mut flights) {
+                fail_task_lifecycle(&mut task_lifecycle, &error);
+                cleanup_preserving_primary(
+                    executor,
+                    &mut state,
+                    observation_scope,
+                    CleanupFailurePhase::TaskCompletion,
+                    &error,
+                );
+                return Err(error);
+            }
+            let released =
+                match self.commit_claimed_task(task, output.into_produced_resources(), &mut state, &mut flights) {
+                    Ok(released) => released,
+                    Err(error) => {
+                        fail_task_lifecycle(&mut task_lifecycle, &error);
+                        cleanup_preserving_primary(
+                            executor,
+                            &mut state,
+                            observation_scope,
+                            CleanupFailurePhase::TaskCompletion,
+                            &error,
+                        );
+                        return Err(error);
+                    },
+                };
             if let Err(error) = release_completed_resources(executor, released, |cleanup_error| {
                 record_cleanup_failure(observation_scope, CleanupFailurePhase::CompletedResourceRelease, cleanup_error);
             }) {
@@ -287,9 +460,17 @@ impl<'a> CompiledPipelineScheduler<'a> {
         Ok(state)
     }
 
+    /// Control/barrier predecessors of `task` recorded by edges and barriers.
+    fn dependencies_completed<T>(&self, task: PipelineTaskId, state: &CompiledPipelineState<T>) -> bool {
+        self.dependencies
+            .get(&task)
+            .is_none_or(|dependencies| dependencies.iter().all(|dependency| state.is_task_completed(*dependency)))
+    }
+
     fn next_runnable_task<T>(
         &self,
         state: &CompiledPipelineState<T>,
+        flights: &CompiledFlightBoard,
         _cycle: CompiledSchedulingCycle,
     ) -> Result<&'a PipelineTask> {
         let ready_tasks = self
@@ -297,10 +478,9 @@ impl<'a> CompiledPipelineScheduler<'a> {
             .tasks()
             .iter()
             .filter(|task| {
-                !state.is_task_completed(task.id())
-                    && self.dependencies.get(&task.id()).is_none_or(|dependencies| {
-                        dependencies.iter().all(|dependency| state.is_task_completed(*dependency))
-                    })
+                matches!(flights.flight(task.id()), CompiledTaskFlight::Ready)
+                    && !state.is_task_completed(task.id())
+                    && self.dependencies_completed(task.id(), state)
             })
             .collect::<Vec<_>>();
         if ready_tasks.is_empty() {
@@ -397,13 +577,13 @@ impl<'a> CompiledPipelineScheduler<'a> {
     }
 }
 
-fn fail_task_lifecycle(lifecycle: &mut Option<RuntimeTaskLifecycle>, error: &QueryError) {
+pub(super) fn fail_task_lifecycle(lifecycle: &mut Option<RuntimeTaskLifecycle>, error: &QueryError) {
     if let Some(lifecycle) = lifecycle.take() {
         lifecycle.fail(error.code().as_str(), error.code() == QueryErrorCode::Cancelled);
     }
 }
 
-fn cleanup_preserving_primary<E>(
+pub(super) fn cleanup_preserving_primary<E>(
     executor: &mut E,
     state: &mut CompiledPipelineState<E::Resource>,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
@@ -421,7 +601,7 @@ fn cleanup_preserving_primary<E>(
     });
 }
 
-fn record_cleanup_failure(
+pub(super) fn record_cleanup_failure(
     observation_scope: Option<&RuntimeExecutionObservationScope>,
     phase: CleanupFailurePhase,
     cleanup_error: &QueryError,
@@ -439,7 +619,7 @@ fn record_cleanup_failure(
     );
 }
 
-fn release_live_resources_on_error<E, F>(
+pub(super) fn release_live_resources_on_error<E, F>(
     executor: &mut E,
     state: &mut CompiledPipelineState<E::Resource>,
     mut record_failure: F,
@@ -469,7 +649,7 @@ where
     }
 }
 
-fn release_completed_resources<E, F>(
+pub(super) fn release_completed_resources<E, F>(
     executor: &mut E,
     resources: Vec<ReleasedCompiledResource<E::Resource>>,
     mut record_failure: F,
@@ -549,6 +729,7 @@ mod tests {
     struct LifecycleTestExecutor {
         terminal_task: PipelineTaskId,
         panic: bool,
+        cancelled: bool,
         cleanup_failure: bool,
         resource_cleanup_failure: bool,
         released: Vec<ResidentResourceId>,
@@ -560,6 +741,19 @@ mod tests {
             Self {
                 terminal_task,
                 panic: false,
+                cancelled: false,
+                cleanup_failure: false,
+                resource_cleanup_failure: false,
+                released: Vec::new(),
+                cleanup_calls: 0,
+            }
+        }
+
+        fn cancelling(terminal_task: PipelineTaskId) -> Self {
+            Self {
+                terminal_task,
+                panic: false,
+                cancelled: true,
                 cleanup_failure: false,
                 resource_cleanup_failure: false,
                 released: Vec::new(),
@@ -571,6 +765,7 @@ mod tests {
             Self {
                 terminal_task,
                 panic: false,
+                cancelled: false,
                 cleanup_failure: true,
                 resource_cleanup_failure: false,
                 released: Vec::new(),
@@ -582,6 +777,7 @@ mod tests {
             Self {
                 terminal_task,
                 panic: false,
+                cancelled: false,
                 cleanup_failure: true,
                 resource_cleanup_failure: true,
                 released: Vec::new(),
@@ -593,6 +789,7 @@ mod tests {
             Self {
                 terminal_task,
                 panic: true,
+                cancelled: false,
                 cleanup_failure: false,
                 resource_cleanup_failure: false,
                 released: Vec::new(),
@@ -612,6 +809,14 @@ mod tests {
             if task.id() == self.terminal_task {
                 if self.panic {
                     panic!("scheduler lifecycle unwind probe");
+                }
+                if self.cancelled {
+                    return Err(QueryError::new(
+                        QueryErrorCode::Cancelled,
+                        OPERATION,
+                        "scheduler lifecycle cancellation probe",
+                    )
+                    .with_fact("primary_marker", "retained"));
                 }
                 return Err(QueryError::new(QueryErrorCode::Internal, OPERATION, "scheduler lifecycle failure probe")
                     .with_fact("primary_marker", "retained"));
@@ -668,6 +873,34 @@ mod tests {
                 ("t1".to_string(), TaskLifecycleState::Ready),
                 ("t1".to_string(), TaskLifecycleState::Started),
                 ("t1".to_string(), TaskLifecycleState::Failed { error_code: "internal".to_string() }),
+            ]
+        );
+    }
+
+    #[test]
+    fn observed_cancellation_drains_dispatched_work_and_seals_cancelled_once() {
+        let pipeline = lifecycle_test_pipeline();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
+        let lifecycle = lifecycle("scheduler-cancellation");
+        let scope = lifecycle.execution_scope();
+        let mut executor = LifecycleTestExecutor::cancelling(PipelineTaskId::new(1));
+
+        let error = scheduler.run_observed(&mut executor, &scope).expect_err("cancellation stops dispatch");
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.fact_value("primary_marker"), Some("retained"));
+        assert_eq!(executor.released, [ResidentResourceId::new(0)]);
+        assert_eq!(executor.cleanup_calls, 1, "uncommitted outputs drain exactly once");
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::from_query_error(&error)).expect("report seals once");
+        let states = task_states(&snapshot);
+        assert_eq!(
+            states,
+            [
+                ("t0".to_string(), TaskLifecycleState::Ready),
+                ("t0".to_string(), TaskLifecycleState::Started),
+                ("t0".to_string(), TaskLifecycleState::Finished),
+                ("t1".to_string(), TaskLifecycleState::Ready),
+                ("t1".to_string(), TaskLifecycleState::Started),
+                ("t1".to_string(), TaskLifecycleState::Cancelled),
             ]
         );
     }
@@ -777,6 +1010,312 @@ mod tests {
                 | TaskLifecycleState::Dropped
                 | TaskLifecycleState::Panicked
         )
+    }
+
+    #[test]
+    fn flight_board_guards_duplicate_dispatch_and_drives_claim_commit() {
+        let pipeline = lifecycle_test_pipeline();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
+        let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state builds");
+        let mut flights = CompiledFlightBoard::default();
+
+        let first = scheduler
+            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .expect("first claim selects the source task");
+        assert_eq!(first.id(), PipelineTaskId::new(0));
+        assert_eq!(flights.flight(first.id()), CompiledTaskFlight::Running);
+        assert_eq!(flights.in_flight_count(), 1);
+
+        let duplicate =
+            scheduler.claim_task(first.id(), &state, &mut flights).expect_err("duplicate dispatch must fail");
+        assert_eq!(duplicate.operation(), OPERATION);
+
+        scheduler
+            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .expect_err("the in-flight task is not offered to a second lane");
+
+        scheduler
+            .commit_claimed_task(first, vec![(ResidentResourceId::new(0), "r0".to_string())], &mut state, &mut flights)
+            .expect_err("commit requires an output-ready dispatch");
+        assert_eq!(flights.flight(first.id()), CompiledTaskFlight::Running);
+
+        scheduler.mark_task_output_ready(first.id(), &mut flights).expect("lane returns owned outputs");
+        assert_eq!(flights.flight(first.id()), CompiledTaskFlight::OutputReady);
+        let released = scheduler
+            .commit_claimed_task(first, vec![(ResidentResourceId::new(0), "r0".to_string())], &mut state, &mut flights)
+            .expect("commit installs owned outputs into coordinator state");
+        assert!(released.is_empty(), "between-tasks frame stays resident for its consumer");
+        assert_eq!(flights.flight(first.id()), CompiledTaskFlight::Committed);
+        assert_eq!(flights.in_flight_count(), 0);
+
+        scheduler.claim_task(first.id(), &state, &mut flights).expect_err("committed tasks are never redispatched");
+
+        let second = scheduler
+            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .expect("consumer is runnable after its input commits");
+        assert_eq!(second.id(), PipelineTaskId::new(1));
+        scheduler.mark_task_output_ready(second.id(), &mut flights).expect("consumer outputs ready");
+        let released = scheduler
+            .commit_claimed_task(second, vec![(ResidentResourceId::new(1), "r1".to_string())], &mut state, &mut flights)
+            .expect("consumer commits");
+        assert_eq!(released.len(), 2, "consumed frame and task-local output release on completion");
+        state.ensure_finished(&pipeline).expect("every logical input computed exactly once");
+    }
+
+    #[test]
+    fn two_lanes_enter_branch_work_simultaneously_and_commit_each_input_once() {
+        use std::sync::{Arc, Barrier, Mutex};
+
+        let pipeline = union_branches_test_pipeline();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
+        let coordinator = Arc::new(Mutex::new(LaneCoordinator::new(&scheduler, &pipeline).expect("state builds")));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let overlap = Arc::new(Mutex::new(false));
+
+        std::thread::scope(|scope| {
+            for branch in
+                [(PipelineTaskId::new(0), PipelineTaskId::new(1)), (PipelineTaskId::new(2), PipelineTaskId::new(3))]
+            {
+                let coordinator = Arc::clone(&coordinator);
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                let overlap = Arc::clone(&overlap);
+                scope.spawn(move || {
+                    for task in [branch.0, branch.1] {
+                        let claimed = coordinator.lock().expect("coordinator lock").claim(task);
+                        entered.wait();
+                        {
+                            let coordinator = coordinator.lock().expect("coordinator lock");
+                            let other = if task.index() < 2 {
+                                PipelineTaskId::new(task.index() + 2)
+                            } else {
+                                PipelineTaskId::new(task.index() - 2)
+                            };
+                            // Neither lane can commit before `release`: observing
+                            // the peer Running here proves simultaneous entry.
+                            assert_eq!(
+                                coordinator.flight(other),
+                                CompiledTaskFlight::Running,
+                                "both branch lanes stay dispatched across the rendezvous"
+                            );
+                            *overlap.lock().expect("overlap flag") = true;
+                        }
+                        release.wait();
+                        coordinator
+                            .lock()
+                            .expect("coordinator lock")
+                            .commit(claimed, vec![(branch_output(task), claimed.index().to_string())]);
+                    }
+                });
+            }
+        });
+
+        assert!(*overlap.lock().expect("overlap flag"), "both branch lanes were Running at the same barrier point");
+        let mut coordinator = coordinator.lock().expect("coordinator lock");
+        for task in [0, 1, 2, 3].map(PipelineTaskId::new) {
+            assert_eq!(coordinator.commits.get(&task), Some(&1), "each logical input committed exactly once");
+        }
+        coordinator.commit_union();
+    }
+
+    /// Single-owner coordinator behind one mutex: lanes move their claimed
+    /// task forward through owned-output commits, never through shared
+    /// `&mut` state borrows.
+    struct LaneCoordinator<'a> {
+        scheduler: &'a CompiledPipelineScheduler<'a>,
+        pipeline: &'a CompiledPipeline,
+        state: CompiledPipelineState<String>,
+        flights: CompiledFlightBoard,
+        commits: std::collections::BTreeMap<PipelineTaskId, usize>,
+    }
+
+    impl<'a> LaneCoordinator<'a> {
+        fn new(scheduler: &'a CompiledPipelineScheduler<'a>, pipeline: &'a CompiledPipeline) -> Result<Self> {
+            Ok(Self {
+                scheduler,
+                pipeline,
+                state: CompiledPipelineState::new(pipeline)?,
+                flights: CompiledFlightBoard::default(),
+                commits: std::collections::BTreeMap::new(),
+            })
+        }
+
+        fn claim(&mut self, task: PipelineTaskId) -> PipelineTaskId {
+            self.scheduler.claim_task(task, &self.state, &mut self.flights).expect("lane claims its branch work").id()
+        }
+
+        fn flight(&self, task: PipelineTaskId) -> CompiledTaskFlight {
+            self.flights.flight(task)
+        }
+
+        fn commit(&mut self, task: PipelineTaskId, produced: Vec<(ResidentResourceId, String)>) {
+            let pipeline = self.pipeline;
+            let candidate = pipeline.tasks().iter().find(|candidate| candidate.id() == task).expect("known task");
+            self.scheduler.mark_task_output_ready(task, &mut self.flights).expect("lane returns owned outputs");
+            let released = self
+                .scheduler
+                .commit_claimed_task(candidate, produced, &mut self.state, &mut self.flights)
+                .expect("each lane commits its own work once");
+            drop(released);
+            *self.commits.entry(task).or_insert(0) += 1;
+        }
+
+        fn commit_union(&mut self) {
+            let union = self
+                .scheduler
+                .claim_next_runnable_task(&self.state, &mut self.flights, CompiledSchedulingCycle)
+                .expect("union is runnable after both branches commit");
+            assert_eq!(union.id(), PipelineTaskId::new(4));
+            let union = union.id();
+            self.scheduler.mark_task_output_ready(union, &mut self.flights).expect("union outputs ready");
+            let pipeline = self.pipeline;
+            let candidate = pipeline.tasks().iter().find(|candidate| candidate.id() == union).expect("union task");
+            self.scheduler
+                .commit_claimed_task(
+                    candidate,
+                    vec![(ResidentResourceId::new(4), "r4".to_string())],
+                    &mut self.state,
+                    &mut self.flights,
+                )
+                .expect("union merges both branches");
+            self.state.ensure_finished(pipeline).expect("union run consumed every branch input once");
+        }
+    }
+
+    fn branch_output(task: PipelineTaskId) -> ResidentResourceId {
+        ResidentResourceId::new(task.index())
+    }
+
+    fn union_branches_test_pipeline() -> CompiledPipeline {
+        let source_a = PipelineTaskId::new(0);
+        let unary_a = PipelineTaskId::new(1);
+        let source_b = PipelineTaskId::new(2);
+        let unary_b = PipelineTaskId::new(3);
+        let union = PipelineTaskId::new(4);
+        let frame_a = ResidentResourceId::new(0);
+        let unary_frame_a = ResidentResourceId::new(1);
+        let frame_b = ResidentResourceId::new(2);
+        let unary_frame_b = ResidentResourceId::new(3);
+        let union_frame = ResidentResourceId::new(4);
+        CompiledPipeline::new(
+            vec![
+                PipelineTask::new(source_a, PipelineTaskKind::SourceRead).with_output_resources(vec![frame_a]),
+                PipelineTask::new(unary_a, PipelineTaskKind::Unary)
+                    .with_input_resources(vec![frame_a])
+                    .with_output_resources(vec![unary_frame_a]),
+                PipelineTask::new(source_b, PipelineTaskKind::SourceRead).with_output_resources(vec![frame_b]),
+                PipelineTask::new(unary_b, PipelineTaskKind::Unary)
+                    .with_input_resources(vec![frame_b])
+                    .with_output_resources(vec![unary_frame_b]),
+                PipelineTask::new(union, PipelineTaskKind::Union)
+                    .with_input_resources(vec![unary_frame_a, unary_frame_b])
+                    .with_output_resources(vec![union_frame]),
+            ],
+            vec![
+                PipelineEdge::new(PipelineEdgeId::new(0), source_a, unary_a, PipelineEdgeKind::ResidentFrame)
+                    .with_resources(vec![frame_a]),
+                PipelineEdge::new(PipelineEdgeId::new(1), source_b, unary_b, PipelineEdgeKind::ResidentFrame)
+                    .with_resources(vec![frame_b]),
+                PipelineEdge::new(PipelineEdgeId::new(2), unary_a, union, PipelineEdgeKind::ResidentFrame)
+                    .with_resources(vec![unary_frame_a]),
+                PipelineEdge::new(PipelineEdgeId::new(3), unary_b, union, PipelineEdgeKind::ResidentFrame)
+                    .with_resources(vec![unary_frame_b]),
+            ],
+            vec![
+                PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
+                    .with_upstream_tasks(vec![source_a])
+                    .with_downstream_tasks(vec![unary_a]),
+                PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SourceChunkBoundary)
+                    .with_upstream_tasks(vec![source_b])
+                    .with_downstream_tasks(vec![unary_b]),
+                PipelineBarrier::new(PipelineBarrierId::new(2), PipelineBarrierKind::SinkBoundary)
+                    .with_upstream_tasks(vec![union]),
+            ],
+            vec![
+                ResidentResource::new(
+                    frame_a,
+                    source_a,
+                    vec![unary_a],
+                    ResidentLifetime::BetweenTasks { producer: source_a },
+                ),
+                ResidentResource::new(
+                    unary_frame_a,
+                    unary_a,
+                    vec![union],
+                    ResidentLifetime::BetweenTasks { producer: unary_a },
+                ),
+                ResidentResource::new(
+                    frame_b,
+                    source_b,
+                    vec![unary_b],
+                    ResidentLifetime::BetweenTasks { producer: source_b },
+                ),
+                ResidentResource::new(
+                    unary_frame_b,
+                    unary_b,
+                    vec![union],
+                    ResidentLifetime::BetweenTasks { producer: unary_b },
+                ),
+                ResidentResource::new(union_frame, union, vec![], ResidentLifetime::TaskLocal { task: union }),
+            ],
+            SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, union),
+        )
+    }
+
+    #[test]
+    fn claim_rejects_control_gated_task_before_its_predecessor_completes() {
+        let head = PipelineTaskId::new(0);
+        let gated = PipelineTaskId::new(1);
+        let pipeline = CompiledPipeline::new(
+            vec![
+                PipelineTask::new(head, PipelineTaskKind::SourceRead)
+                    .with_output_resources(vec![ResidentResourceId::new(0)]),
+                PipelineTask::new(gated, PipelineTaskKind::SourceRead)
+                    .with_output_resources(vec![ResidentResourceId::new(1)]),
+            ],
+            vec![PipelineEdge::new(PipelineEdgeId::new(0), head, gated, PipelineEdgeKind::Control)],
+            vec![],
+            vec![
+                ResidentResource::new(
+                    ResidentResourceId::new(0),
+                    head,
+                    vec![],
+                    ResidentLifetime::TaskLocal { task: head },
+                ),
+                ResidentResource::new(
+                    ResidentResourceId::new(1),
+                    gated,
+                    vec![],
+                    ResidentLifetime::TaskLocal { task: gated },
+                ),
+            ],
+            SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, gated),
+        );
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("control-gated pipeline validates");
+        let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state builds");
+        let mut flights = CompiledFlightBoard::default();
+
+        let premature =
+            scheduler.claim_task(gated, &state, &mut flights).expect_err("control predecessor is incomplete");
+        assert_eq!(premature.operation(), OPERATION);
+        assert_eq!(premature.fact_value("incomplete_dependency_task"), Some("t0"));
+        assert_eq!(flights.flight(gated), CompiledTaskFlight::Ready, "rejected claim dispatches nothing");
+
+        let claimed = scheduler.claim_task(head, &state, &mut flights).expect("head has no dependencies");
+        scheduler.mark_task_output_ready(claimed.id(), &mut flights).expect("outputs ready");
+        scheduler
+            .commit_claimed_task(
+                claimed,
+                vec![(ResidentResourceId::new(0), "r0".to_string())],
+                &mut state,
+                &mut flights,
+            )
+            .expect("head commits");
+        let next = scheduler
+            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .expect("gate opened after the predecessor committed");
+        assert_eq!(next.id(), gated);
     }
 
     fn lifecycle_test_pipeline() -> CompiledPipeline {

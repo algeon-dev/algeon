@@ -910,10 +910,12 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Remove one attempt route after its streams have drained."]
     pub fn cudf_stream_provider_unregister_attempt(parent_stream: *mut core::ffi::c_void) -> cudf_status_t;
-    #[doc = " Attach another live attempt-member stream as a fork parent alias."]
+    #[doc = " Attach another live attempt-member stream as a fork parent alias, with an\n optional fork subset of its own.\n\n When `fork_end > fork_begin`, forks requested from `alias_stream` are\n served round-robin from `[fork_begin, fork_end)` of the attempt's\n registered fork pool; the range must be non-empty and inside that pool.\n Passing `fork_begin == fork_end == 0` attaches the alias with whole-pool\n behavior. The subset is a property of the alias, not of the calling\n thread, so forks requested from the alias on any thread stay inside it.\n Detaching the alias removes its subset."]
     pub fn cudf_stream_provider_attach_attempt_stream(
         parent_stream: *mut core::ffi::c_void,
         alias_stream: *mut core::ffi::c_void,
+        fork_begin: usize,
+        fork_end: usize,
     ) -> cudf_status_t;
     #[doc = " Remove a previously attached attempt-member stream alias after it drains."]
     pub fn cudf_stream_provider_detach_attempt_stream(alias_stream: *mut core::ffi::c_void) -> cudf_status_t;

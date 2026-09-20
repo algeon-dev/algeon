@@ -15,7 +15,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, Int32Array, Int64Array, StringArray},
+    array::{Array, ArrayRef, Int32Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -56,8 +56,8 @@ use query_engine::{
         resident::GpuResidentInputMap,
     },
     source::{
-        GpuResidentSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource, PartitionColumn,
-        SourceNode,
+        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
+        PartitionColumn, SourceNode,
     },
 };
 
@@ -100,6 +100,8 @@ mod fixtures_parquet;
 mod fixtures_plans;
 #[path = "native_contract_tests/pipeline_compiled_execution/gpu_execution.rs"]
 mod gpu_execution;
+#[path = "native_contract_tests/pipeline_compiled_execution/lane_execution.rs"]
+mod lane_execution;
 #[path = "native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
 // Shared with the CPU contract target; this binary only calls three constructors.
 #[expect(dead_code, reason = "shared fixture file partially exercised in this integration test binary")]

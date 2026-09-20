@@ -1,4 +1,10 @@
-use std::{cell::Cell, collections::VecDeque, rc::Rc};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use crate::{
     dynamic_filter::{DynamicFilter, DynamicFilterRoute},
@@ -28,7 +34,7 @@ pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// For Vec-backed payloads this equals `aggregate_reservation_bytes`
     /// because all frames are immediately live. Producer-owned partial state
     /// is added separately by `live_reservation_bytes()`.
-    live_reservation_bytes: Rc<Cell<u64>>,
+    live_reservation_bytes: Arc<AtomicU64>,
     aggregate_num_rows: u64,
     num_columns: usize,
     frames: VecDeque<ResidentGpuFrame>,
@@ -41,12 +47,12 @@ pub(in crate::exec::bounded) struct YieldedFrame {
 }
 
 impl YieldedFrame {
-    pub(in crate::exec::bounded) fn yield_from_producer(frame: ResidentGpuFrame, live_counter: Rc<Cell<u64>>) -> Self {
+    pub(in crate::exec::bounded) fn yield_from_producer(frame: ResidentGpuFrame, live_counter: Arc<AtomicU64>) -> Self {
         let contributed_bytes = frame.device_bytes();
         Self { frame: Some(frame), release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, true) }
     }
 
-    fn from_existing_payload_frame(frame: ResidentGpuFrame, live_counter: Rc<Cell<u64>>) -> Self {
+    fn from_existing_payload_frame(frame: ResidentGpuFrame, live_counter: Arc<AtomicU64>) -> Self {
         let contributed_bytes = frame.device_bytes();
         Self {
             frame: Some(frame),
@@ -62,22 +68,28 @@ impl YieldedFrame {
 }
 
 struct YieldedFrameReleaseGuard {
-    live_counter: Rc<Cell<u64>>,
+    live_counter: Arc<AtomicU64>,
     contributed_bytes: u64,
     drained: bool,
 }
 
 impl YieldedFrameReleaseGuard {
-    fn new(live_counter: Rc<Cell<u64>>, contributed_bytes: u64, increment_on_create: bool) -> Self {
+    fn new(live_counter: Arc<AtomicU64>, contributed_bytes: u64, increment_on_create: bool) -> Self {
         if increment_on_create {
-            live_counter.set(live_counter.get().saturating_add(contributed_bytes));
+            // Relaxed ordering: this counter is accounting only, never a
+            // happens-before edge; saturation preserves the serial semantics.
+            let _ = live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+                Some(live.saturating_add(contributed_bytes))
+            });
         }
         Self { live_counter, contributed_bytes, drained: false }
     }
 
     fn take_for_release(&mut self, double_take_message: &'static str) {
         assert!(!self.drained, "{double_take_message}");
-        self.live_counter.set(self.live_counter.get().saturating_sub(self.contributed_bytes));
+        let _ = self.live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            Some(live.saturating_sub(self.contributed_bytes))
+        });
         self.drained = true;
     }
 }
@@ -87,7 +99,9 @@ impl Drop for YieldedFrameReleaseGuard {
         if self.drained {
             return;
         }
-        self.live_counter.set(self.live_counter.get().saturating_sub(self.contributed_bytes));
+        let _ = self.live_counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            Some(live.saturating_sub(self.contributed_bytes))
+        });
         debug_assert!(
             false,
             "YieldedFrame dropped without explicit release; reservation bytes={} now leak the device pool",
@@ -98,7 +112,7 @@ impl Drop for YieldedFrameReleaseGuard {
 
 #[cfg(test)]
 pub(crate) struct YieldedFrameCounterTestHarness {
-    live_counter: Rc<Cell<u64>>,
+    live_counter: Arc<AtomicU64>,
 }
 
 #[cfg(test)]
@@ -111,16 +125,16 @@ impl Default for YieldedFrameCounterTestHarness {
 #[cfg(test)]
 impl YieldedFrameCounterTestHarness {
     pub(crate) fn new() -> Self {
-        Self { live_counter: Rc::new(Cell::new(0)) }
+        Self { live_counter: Arc::new(AtomicU64::new(0)) }
     }
 
     pub(crate) fn live_bytes(&self) -> u64 {
-        self.live_counter.get()
+        self.live_counter.load(Ordering::Relaxed)
     }
 
     pub(crate) fn yield_bytes(&self, contributed_bytes: u64) -> YieldedFrameCounterTestGuard {
         YieldedFrameCounterTestGuard {
-            release_guard: YieldedFrameReleaseGuard::new(Rc::clone(&self.live_counter), contributed_bytes, true),
+            release_guard: YieldedFrameReleaseGuard::new(Arc::clone(&self.live_counter), contributed_bytes, true),
         }
     }
 }
@@ -142,7 +156,7 @@ impl YieldedFrameCounterTestGuard {
 /// A yielded frame belongs to the caller. Storage the source still retains,
 /// such as unread inputs, build state, or pending outputs, belongs to the
 /// source until [`release`](Self::release) runs.
-pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
+pub(in crate::exec::bounded) trait ResidentFrameStreamSource: Send {
     /// Produces the next frame.
     ///
     /// `Some(Ok(frame))` transfers the frame and its device bytes to the
@@ -215,7 +229,7 @@ impl ResidentFrameStreamPayload {
         Self {
             max_per_frame_reservation_bytes,
             aggregate_reservation_bytes,
-            live_reservation_bytes: Rc::new(Cell::new(aggregate_reservation_bytes)),
+            live_reservation_bytes: Arc::new(AtomicU64::new(aggregate_reservation_bytes)),
             aggregate_num_rows,
             num_columns,
             frames: frames.into(),
@@ -233,7 +247,7 @@ impl ResidentFrameStreamPayload {
         Self {
             max_per_frame_reservation_bytes,
             aggregate_reservation_bytes,
-            live_reservation_bytes: Rc::new(Cell::new(0)),
+            live_reservation_bytes: Arc::new(AtomicU64::new(0)),
             aggregate_num_rows,
             num_columns,
             frames: VecDeque::new(),
@@ -250,7 +264,7 @@ impl ResidentFrameStreamPayload {
     }
 
     pub(in crate::exec::bounded) fn live_reservation_bytes(&self) -> u64 {
-        self.live_reservation_bytes.get().saturating_add(
+        self.live_reservation_bytes.load(Ordering::Relaxed).saturating_add(
             self.producer
                 .as_ref()
                 .and_then(|producer| producer.inner.as_ref())
@@ -294,7 +308,7 @@ impl ResidentFrameStreamPayload {
         })
     }
 
-    fn try_alias(&self) -> Option<Self> {
+    pub(super) fn try_alias(&self) -> Option<Self> {
         if let Some(producer) = &self.producer {
             return Some(Self::from_producer(
                 self.max_per_frame_reservation_bytes,
@@ -333,11 +347,14 @@ impl ResidentFrameStreamPayload {
     ) -> Option<Result<YieldedFrame>> {
         if !self.frames.is_empty() {
             let frame = self.frames.pop_front().expect("non-empty frame stream had no front frame");
-            return Some(Ok(YieldedFrame::from_existing_payload_frame(frame, Rc::clone(&self.live_reservation_bytes))));
+            return Some(Ok(YieldedFrame::from_existing_payload_frame(
+                frame,
+                Arc::clone(&self.live_reservation_bytes),
+            )));
         }
         let producer = self.producer.as_mut()?;
         producer.next_frame(execution).map(|result| {
-            result.map(|frame| YieldedFrame::yield_from_producer(frame, Rc::clone(&self.live_reservation_bytes)))
+            result.map(|frame| YieldedFrame::yield_from_producer(frame, Arc::clone(&self.live_reservation_bytes)))
         })
     }
 
@@ -366,7 +383,7 @@ impl ResidentFrameStreamPayload {
 
     pub(in crate::exec::bounded) fn release_remaining_frames(&mut self) {
         self.frames.clear();
-        self.live_reservation_bytes.set(0);
+        self.live_reservation_bytes.store(0, Ordering::Relaxed);
     }
 
     pub(in crate::exec::bounded) fn release_producer(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {

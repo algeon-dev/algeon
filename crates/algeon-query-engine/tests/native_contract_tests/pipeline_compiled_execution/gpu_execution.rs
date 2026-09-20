@@ -241,6 +241,54 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
 }
 
 #[test]
+fn execute_query_plan_runs_independent_union_branches_through_unified_admission() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let left_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("left literal batch");
+    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3])) as ArrayRef])
+        .expect("right literal batch");
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
+    let left = builder.add_projection(
+        left,
+        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+    );
+    let right =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
+    let right = builder.add_projection(
+        right,
+        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
+    let admission = decision.admission().expect("independent union branches use the same compiled admission");
+    assert!(
+        admission.pipeline().tasks().iter().any(|task| task.kind() == PipelineTaskKind::Union),
+        "both branches compile into one pipeline behind a union task"
+    );
+
+    let runtime = shared_runtime(runtime);
+    let context = runtime.acquire_context_for_plan(&plan).expect("admitted union plan acquires a context");
+    let result = execute_query_plan(&context, &plan).expect("admitted union plan should execute width 1");
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let mut values = int32_values(batch, 0);
+    values.sort();
+    assert_eq!(values, vec![Some(1), Some(2), Some(3)], "every branch input is computed exactly once");
+}
+
+#[test]
 fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     // ORDER BY right_value DESC LIMIT 1 OFFSET 1 over the join keeps (2, 200):
     // the fused top-k applies skip+fetch, and the limit pass-through drops the

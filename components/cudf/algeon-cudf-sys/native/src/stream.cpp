@@ -13,6 +13,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -32,21 +33,86 @@ struct stream_handle_state {
   std::shared_ptr<cudf_stream_owner> owner;
 };
 
+// A contiguous half-open claim on the route's fork pool, owned by one alias.
+struct alias_fork_subset {
+  std::size_t begin = 0;
+  std::size_t end   = 0;
+
+  bool claims(std::size_t index) const { return index >= begin && index < end; }
+  bool overlaps(alias_fork_subset const& other) const
+  {
+    return begin < other.end && other.begin < end;
+  }
+};
+
 struct attempt_stream_route {
   std::vector<cudaStream_t> fork_streams;
   std::unordered_set<cudaStream_t> canonical_streams;
   std::unordered_set<cudaStream_t> aliases;
+  // Live subset claims, keyed by the alias that owns them. This is the only
+  // place a subset is recorded: fork streams' own registry entries are never
+  // mutated, so two aliases can never race to set or clear one another's
+  // confinement, and a detach releases exactly the claim it made.
+  std::unordered_map<cudaStream_t, alias_fork_subset> alias_fork_subsets;
   std::size_t execution_scopes = 0;
   bool persistent_registration = true;
 };
 
+// One registry entry per fork parent. A subset-carrying alias additionally
+// appears in its route's `alias_fork_subsets`.
+struct attempt_stream_route_entry {
+  std::shared_ptr<attempt_stream_route> route;
+};
+
 std::mutex attempt_stream_routes_mutex;
-std::unordered_map<cudaStream_t, std::shared_ptr<attempt_stream_route>> attempt_stream_routes;
+std::unordered_map<cudaStream_t, attempt_stream_route_entry> attempt_stream_routes;
+
+// Which forks of `route` serve `stream`, resolved from the live alias claims
+// alone.
+//
+// (a) `stream` is an alias holding a subset: that subset. (b) `stream` is a
+// fork stream: the subset of the live alias that claims its index, so work
+// libcudf placed on a lane's fork keeps forking inside that lane. (c) the
+// parent or a subset-less alias: every fork no live alias claims. A lane's
+// forks belong to the permit holder that leased them, so a whole-pool caller
+// must not be served them. Only when every fork is claimed does (c) fall back
+// to the whole pool: a lane owning every fork means its attempt has no
+// auxiliary permit left for another holder, so no one else can be served.
+std::vector<cudaStream_t> resolve_fork_streams(attempt_stream_route const& route, cudaStream_t stream)
+{
+  auto const claimed = route.alias_fork_subsets.find(stream);
+  if (claimed != route.alias_fork_subsets.end()) {
+    return {route.fork_streams.begin() + static_cast<std::ptrdiff_t>(claimed->second.begin),
+            route.fork_streams.begin() + static_cast<std::ptrdiff_t>(claimed->second.end)};
+  }
+  for (std::size_t index = 0; index < route.fork_streams.size(); ++index) {
+    if (route.fork_streams[index] != stream) { continue; }
+    for (auto const& [alias, subset] : route.alias_fork_subsets) {
+      static_cast<void>(alias);
+      if (subset.claims(index)) {
+        return {route.fork_streams.begin() + static_cast<std::ptrdiff_t>(subset.begin),
+                route.fork_streams.begin() + static_cast<std::ptrdiff_t>(subset.end)};
+      }
+    }
+    break;
+  }
+  std::vector<cudaStream_t> unclaimed;
+  unclaimed.reserve(route.fork_streams.size());
+  for (std::size_t index = 0; index < route.fork_streams.size(); ++index) {
+    auto const is_claimed =
+      std::any_of(route.alias_fork_subsets.begin(),
+                  route.alias_fork_subsets.end(),
+                  [index](auto const& entry) { return entry.second.claims(index); });
+    if (!is_claimed) { unclaimed.push_back(route.fork_streams[index]); }
+  }
+  if (unclaimed.empty()) { return route.fork_streams; }
+  return unclaimed;
+}
 
 std::vector<rmm::cuda_stream_view> attempt_stream_provider_fork(rmm::cuda_stream_view parent,
                                                                 std::size_t count)
 {
-  std::shared_ptr<attempt_stream_route> route;
+  std::vector<cudaStream_t> served;
   {
     std::lock_guard<std::mutex> const lock(attempt_stream_routes_mutex);
     auto const it = attempt_stream_routes.find(parent.value());
@@ -54,15 +120,15 @@ std::vector<rmm::cuda_stream_view> attempt_stream_provider_fork(rmm::cuda_stream
       throw cudf::logic_error{
         "stream routing invariant: fork parent is not attached to an admitted attempt"};
     }
-    route = it->second;
+    served = resolve_fork_streams(*it->second.route, parent.value());
   }
 
-  CUDF_EXPECTS(count == 0 || !route->fork_streams.empty(),
+  CUDF_EXPECTS(count == 0 || !served.empty(),
                "stream routing invariant: admitted attempt has no auxiliary streams");
   std::vector<rmm::cuda_stream_view> result;
   result.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
-    result.emplace_back(route->fork_streams[index % route->fork_streams.size()]);
+    result.emplace_back(served[index % served.size()]);
   }
   return result;
 }
@@ -114,7 +180,8 @@ void register_attempt_stream_route(void* parent_stream,
   inserted.reserve(keys.size());
   try {
     for (auto const stream : keys) {
-      auto const [it, inserted_new] = attempt_stream_routes.emplace(stream, route);
+      auto const [it, inserted_new] = attempt_stream_routes.emplace(
+        stream, attempt_stream_route_entry{route});
       if (!inserted_new) {
         for (auto const inserted_stream : inserted) { attempt_stream_routes.erase(inserted_stream); }
         throw cudf::logic_error{"attempt stream route is already registered"};
@@ -134,7 +201,7 @@ void enter_execution_stream_route(rmm::cuda_stream_view parent)
   std::lock_guard<std::mutex> const lock(attempt_stream_routes_mutex);
   auto const existing = attempt_stream_routes.find(parent.value());
   if (existing != attempt_stream_routes.end()) {
-    existing->second->execution_scopes += 1;
+    existing->second.route->execution_scopes += 1;
     return;
   }
 
@@ -143,7 +210,7 @@ void enter_execution_stream_route(rmm::cuda_stream_view parent)
   route->canonical_streams       = {parent.value()};
   route->execution_scopes        = 1;
   route->persistent_registration = false;
-  attempt_stream_routes.emplace(parent.value(), std::move(route));
+  attempt_stream_routes.emplace(parent.value(), attempt_stream_route_entry{std::move(route)});
 }
 
 void exit_execution_stream_route(rmm::cuda_stream_view parent) noexcept
@@ -151,11 +218,11 @@ void exit_execution_stream_route(rmm::cuda_stream_view parent) noexcept
   std::lock_guard<std::mutex> const lock(attempt_stream_routes_mutex);
   auto const found = attempt_stream_routes.find(parent.value());
   if (found == attempt_stream_routes.end()) { return; }
-  auto const route = found->second;
+  auto const route = found->second.route;
   if (route->execution_scopes != 0) { route->execution_scopes -= 1; }
   if (route->execution_scopes != 0 || route->persistent_registration) { return; }
   for (auto it = attempt_stream_routes.begin(); it != attempt_stream_routes.end();) {
-    if (it->second == route) {
+    if (it->second.route == route) {
       it = attempt_stream_routes.erase(it);
     } else {
       ++it;
@@ -163,7 +230,10 @@ void exit_execution_stream_route(rmm::cuda_stream_view parent) noexcept
   }
 }
 
-void attach_attempt_stream_route(void* parent_stream, void* alias_stream)
+void attach_attempt_stream_route(void* parent_stream,
+                                 void* alias_stream,
+                                 std::size_t fork_begin,
+                                 std::size_t fork_end)
 {
   if (parent_stream == nullptr || alias_stream == nullptr) {
     throw std::invalid_argument{"attempt stream route parent and alias must be non-null"};
@@ -180,11 +250,31 @@ void attach_attempt_stream_route(void* parent_stream, void* alias_stream)
   if (attempt_stream_routes.find(alias) != attempt_stream_routes.end()) {
     throw cudf::logic_error{"attempt stream route alias is already registered"};
   }
-  auto route = parent_it->second;
+  auto route = parent_it->second.route;
+  // `0, 0` is the whole-pool alias; any other range must name real forks.
+  auto const claims_subset = fork_begin != 0 || fork_end != 0;
+  if (claims_subset) {
+    if (fork_begin >= fork_end || fork_end > route->fork_streams.size()) {
+      throw std::invalid_argument{"alias fork subset is empty or outside the attempt fork pool"};
+    }
+    // A fork belongs to exactly one live claim, so a lane cannot be served a
+    // stream another lane is already using. Equal ranges overlap too: two
+    // aliases sharing one range would each release it on detach.
+    alias_fork_subset const claim{fork_begin, fork_end};
+    for (auto const& [claimed_alias, subset] : route->alias_fork_subsets) {
+      static_cast<void>(claimed_alias);
+      if (claim.overlaps(subset)) {
+        throw cudf::logic_error{"attempt fork stream is already claimed by another alias fork subset"};
+      }
+    }
+  }
   route->aliases.insert(alias);
   try {
-    attempt_stream_routes.emplace(alias, route);
+    attempt_stream_routes.emplace(alias, attempt_stream_route_entry{route});
+    if (claims_subset) { route->alias_fork_subsets.emplace(alias, alias_fork_subset{fork_begin, fork_end}); }
   } catch (...) {
+    route->alias_fork_subsets.erase(alias);
+    attempt_stream_routes.erase(alias);
     route->aliases.erase(alias);
     throw;
   }
@@ -199,10 +289,12 @@ void detach_attempt_stream_route(void* alias_stream)
   if (it == attempt_stream_routes.end()) {
     throw cudf::logic_error{"attempt stream route alias is not registered"};
   }
-  if (it->second->canonical_streams.contains(alias)) {
+  auto const route = it->second.route;
+  if (route->canonical_streams.contains(alias)) {
     throw cudf::logic_error{"attempt stream route canonical stream cannot be detached as an alias"};
   }
-  it->second->aliases.erase(alias);
+  route->alias_fork_subsets.erase(alias);
+  route->aliases.erase(alias);
   attempt_stream_routes.erase(it);
 }
 
@@ -215,11 +307,11 @@ void unregister_attempt_stream_route(void* parent_stream)
   if (parent_it == attempt_stream_routes.end()) {
     throw cudf::logic_error{"attempt stream route is not registered"};
   }
-  auto const route = parent_it->second;
+  auto const route = parent_it->second.route;
   route->persistent_registration = false;
   if (route->execution_scopes != 0) { return; }
   for (auto it = attempt_stream_routes.begin(); it != attempt_stream_routes.end();) {
-    if (it->second == route) {
+    if (it->second.route == route) {
       it = attempt_stream_routes.erase(it);
     } else {
       ++it;
@@ -402,11 +494,13 @@ cudf_status_t cudf_stream_provider_unregister_attempt(void* parent_stream)
 
 /// Attach one attempt-member stream as another valid fork parent.
 cudf_status_t cudf_stream_provider_attach_attempt_stream(void* parent_stream,
-                                                         void* alias_stream)
+                                                         void* alias_stream,
+                                                         size_t fork_begin,
+                                                         size_t fork_end)
 {
   CUDF_RUST_TRY
   {
-    attach_attempt_stream_route(parent_stream, alias_stream);
+    attach_attempt_stream_route(parent_stream, alias_stream, fork_begin, fork_end);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -422,4 +516,28 @@ cudf_status_t cudf_stream_provider_detach_attempt_stream(void* alias_stream)
   }
   CUDF_RUST_CATCH
 }
+
+#ifdef CUDF_RUST_ENABLE_TEST_HOOKS
+/// Serve `count` forks for `stream` exactly as the installed provider does.
+///
+/// The route registry is the only state read; the returned raw values are
+/// never dereferenced, so this observes routing without CUDA work.
+cudf_status_t cudf_rust_test_support_stream_provider_fork(void* stream,
+                                                          size_t count,
+                                                          void** out_forks)
+{
+  CUDF_RUST_NULL_CHECK(out_forks, "out_forks is null");
+  CUDF_RUST_NULL_CHECK(stream, "stream is null");
+  CUDF_RUST_TRY
+  {
+    auto const forks = attempt_stream_provider_fork(
+      rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(stream)}, count);
+    for (std::size_t index = 0; index < count; ++index) {
+      out_forks[index] = reinterpret_cast<void*>(forks[index].value());
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+#endif  // CUDF_RUST_ENABLE_TEST_HOOKS
 }  // extern "C"

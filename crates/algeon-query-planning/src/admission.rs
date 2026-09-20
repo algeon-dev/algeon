@@ -31,6 +31,7 @@ pub use scope::{
 #[doc(hidden)]
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+    pipeline_tasks_within_migrated_contract,
 };
 
 #[doc(hidden)]
