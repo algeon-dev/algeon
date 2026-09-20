@@ -10,6 +10,7 @@ description: "Compose GPU graph, vector, and machine-learning algorithms through
 import Link from '@docusaurus/Link';
 import {ArchitectureDiagram, FlowDiagram} from '@site/src/components/design/Diagram';
 import styles from '@site/src/css/homepage.module.css';
+import HomeExamples from './_home-examples.mdx';
 
 <div className={styles.hero}>
 
@@ -26,26 +27,7 @@ import styles from '@site/src/css/homepage.module.css';
 
 </div>
 
-<div className={styles.example}>
-
-<p className={styles.exampleTitle}>Rank influential papers within the dense citation core, in one plan</p>
-
-```sql
--- Two GPU algorithms composed in one statement; intermediate edges stay on device.
-SELECT p.year, p.title
-FROM cugraph_pagerank(edges => (
-  SELECT src, dst
-  FROM cugraph_k_core(
-    edges => (SELECT src, dst FROM citation_edges), k => 30)
-)) r
-JOIN papers p ON p.paper_id = r.vertex
-ORDER BY r.value DESC
-LIMIT 5;
-```
-
-<p className={styles.exampleSetup}>Requires a cuGraph-enabled session and the <Link to="/guides/datasets/citation-network">citation dataset setup</Link>.</p>
-
-</div>
+<HomeExamples />
 
 :::warning[Experimental]
 
@@ -56,10 +38,11 @@ verification remain incomplete; compare outputs against trusted reference result
 
 ## Compose algorithms {/* #from-a-question-to-a-working-set */}
 
-The example uses k-core to select a densely connected subgraph, passes its
-edges directly to PageRank on the device, and joins the ranked vertex IDs to
-paper titles. K-core treats citation links as undirected and returns symmetrized
-edges; the scores describe position in that undirected core.
+Each example above passes a subquery to a GPU table function and gets rows
+back. SQL groups those rows, joins them to titles or file metadata, or hands
+them to another function. In the marketplace example, the product groups
+ranked by personalized PageRank become the vertex pairs that Jaccard scores,
+inside the same statement.
 
 SQL filters and joins select the input rows. The size of that input depends
 on the data and conditions, and each function requires specific columns and
@@ -114,8 +97,8 @@ for prerequisites and build instructions, then choose an integration:
 - **Rust application:** install Algeon in an [embedded DataFusion session](./integration/datafusion-session.mdx).
 - **SQL client:** run the [Arrow Flight SQL server](./integration/flight-sql-server.mdx) and connect with ADBC.
 
-The [citation dataset guide](./guides/datasets/citation-network.mdx) provides the table
-setup and queries for the example above. [Introducing Algeon](/blog/introducing-algeon)
+The [demo dataset guides](./guides/datasets/index.mdx) prepare and register the
+tables behind the examples above. [Introducing Algeon](/blog/introducing-algeon)
 describes the project's motivation and application scenarios.
 
 ## DataFusion integration {/* #how-it-fits-into-datafusion */}

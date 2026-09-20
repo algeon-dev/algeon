@@ -1,0 +1,77 @@
+This example uses the prepared graph inputs described on the
+[MerRec dataset and graph capture page](../../guides/datasets/merrec.mdx).
+
+### Which markets draw most of their viewers from the Nintendo Games audience?
+
+The seed audience is the 262 users who viewed Nintendo Games
+(`15928_1315`). The query scores it against the audience of every other
+market in `mr_audience`, running cosine and Jaccard over the same 1,710
+pairs. For audiences A and B, cosine divides `|A ∩ B|` by
+`sqrt(|A| × |B|)`; Jaccard divides it by `|A ∪ B|`. Rows are ordered by
+cosine, and `jaccard_rank` places each market among all 1,710 Jaccard scores.
+
+```sql
+WITH seed AS (
+  SELECT id FROM mr_nodes WHERE product_id = '15928_1315'
+), pairs AS (
+  SELECT seed.id AS first, candidate.id AS second
+  FROM seed CROSS JOIN mr_nodes candidate
+  WHERE candidate.id <> seed.id
+), cosine AS (
+  SELECT * FROM cugraph_cosine(
+    edges => (SELECT src, dst FROM mr_audience),
+    vertex_pairs => (SELECT first, second FROM pairs),
+    directed => false)
+), jaccard AS (
+  SELECT second, RANK() OVER (ORDER BY similarity DESC) AS jaccard_rank
+  FROM cugraph_jaccard(
+    edges => (SELECT src, dst FROM mr_audience),
+    vertex_pairs => (SELECT first, second FROM pairs),
+    directed => false)
+), shared AS (
+  SELECT b.src AS second, COUNT(*) AS shared_viewers
+  FROM seed
+  JOIN mr_audience a ON a.src = seed.id
+  JOIN mr_audience b ON b.dst = a.dst AND b.src <> seed.id
+  GROUP BY b.src
+)
+SELECT m.product_id, m.brand_name, m.leaf_category, m.viewers,
+       s.shared_viewers, c.similarity AS audience_cosine, j.jaccard_rank
+FROM cosine c
+JOIN jaccard j ON j.second = c.second
+JOIN shared s ON s.second = c.second
+JOIN mr_nodes m ON m.id = c.second
+ORDER BY c.similarity DESC, m.product_id
+LIMIT 10;
+```
+
+Cosine is rounded to six decimal places.
+
+| Rank | Product ID | Brand | Leaf category | Viewers | Shared viewers | Audience cosine | Jaccard rank |
+|---:|---|---|---|---:|---:|---:|---:|
+| 1 | `15928_1314` | Nintendo | Consoles | 180 | 101 | 0.465087 | 1 |
+| 2 | `15928_1313` | Nintendo | Accessories | 105 | 74 | 0.446156 | 2 |
+| 3 | `20652_1315` | Sony | Games | 170 | 76 | 0.360113 | 3 |
+| 4 | `0_1315` | NULL | Games | 108 | 54 | 0.321019 | 4 |
+| 5 | `14034_1315` | Microsoft | Games | 87 | 48 | 0.317930 | 5 |
+| 6 | `0_1313` | NULL | Accessories | 97 | 47 | 0.294823 | 6 |
+| 7 | `17360_1315` | PlayStation | Games | 58 | 33 | 0.267701 | 10 |
+| 8 | `15928_3223` | Nintendo | Other Video Game Merchandise | 19 | 18 | 0.255120 | 32 |
+| 9 | `20222_1315` | Sega | Games | 26 | 21 | 0.254438 | 22 |
+| 10 | `17470_3525` | Pokemon | Single Cards | 135 | 47 | 0.249908 | 7 |
+
+The two rankings split on small markets. Nintendo video game merchandise
+has 19 viewers, and 18 of them also viewed Nintendo Games:
+`18 / sqrt(262 × 19) = 0.255` places it eighth by cosine. Its union with the
+seed audience still holds 263 users, so Jaccard ranks it 32nd. Sega Games
+moves from Jaccard rank 22 to cosine rank 9 for the same reason. For the
+share of the smaller audience alone, see the
+[Overlap coefficient](../functions/similarity/cugraph_overlap.mdx).
+
+A CPU computation of the set formula over all 1,710 pairs differs from the
+returned cosine scores by at most `4.06e-8`. The score measures audience
+overlap in one October 2023 shard; the query does not evaluate purchases,
+conversions, or revenue.
+
+[Download the capture](/data/merrec-cosine-capture.json), including the
+executed SQL, schema, query ID, and all ten rows.

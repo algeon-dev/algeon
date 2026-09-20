@@ -25,13 +25,16 @@ uplift.
 | Preparation | The fixture script downloads the sample shard; graph and preference tables are built by SQL on the running server |
 | Python packages | `pyarrow`, and the `duckdb` CLI on `PATH` for conversion |
 | Server | `127.0.0.1:50063`; the research configuration uses a 32 GiB device limit and 16 GiB per query |
-| Examples | cuGraph personalized PageRank, Jaccard, Leiden, and PageRank; cuML HDBSCAN and UMAP; cuVS KMeans and Top-K |
+| Examples | cuGraph personalized PageRank, Jaccard, cosine, Leiden, and PageRank; cuML HDBSCAN and UMAP; cuVS KMeans and Top-K |
 
 ## Examples
 
 - [Find collectible markets that share an audience with Nintendo games](../../cugraph/functions/centrality/cugraph_personalized_pagerank.mdx#examples)
   with personalized PageRank and Jaccard.
   [Download its ten result rows](/data/merrec-graph-capture.json).
+- [Compare audience cosine with Jaccard for Nintendo games](../../cugraph/functions/similarity/cugraph_cosine.mdx#examples),
+  where small markets that draw most viewers from the seed audience rank
+  higher under cosine. [Download its ten result rows](/data/merrec-cosine-capture.json).
 - [Inspect concentrated and mixed preferences](../../cuml/functions/cuml_hdbscan.mdx#examples)
   with HDBSCAN and UMAP.
   [Download all 1,919 points](/data/merrec-audience-capture.json).
@@ -129,11 +132,6 @@ connected to `127.0.0.1:50063`, or pass a saved query file to the runner:
 python3 scripts/dev/merrec_run.py \
   docs/research/merrec/sql/20_cross_category_discovery.sql
 ```
-
-A direct `cugraph_pagerank` call over the live `merrec_transitions` view is
-recorded as a physical planning failure in
-[M01](https://github.com/algeon-dev/algeon/blob/main/docs/research/merrec/FINDINGS.md#m01-pagerank-over-nested-views-fails-during-physical-planning).
-The examples read the registered snapshots, which avoids that failure.
 
 ## Tables
 
