@@ -13,6 +13,10 @@ pub enum LakehouseCacheFillOutcome {
     Completed,
     /// The background fill failed after it was accepted for execution.
     Failed,
+    /// The fill gave up its cache write because the byte budget could not
+    /// cover its growth. Growth never waits, so this is routine saturation
+    /// rather than an error; the reader still gets its data.
+    Abandoned,
 }
 
 /// Error facts captured for a failed asynchronous lakehouse cache fill.
@@ -83,6 +87,7 @@ impl LakehouseCacheFillOutcome {
         match self {
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Abandoned => "abandoned",
         }
     }
 }

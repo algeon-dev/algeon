@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
+    logical_expr::AggregateUDF,
     physical_expr::{expressions::Column, projection::ProjectionExprs},
     physical_plan::{ExecutionPlan, aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
@@ -24,7 +25,7 @@ use crate::{
     capability::CapabilityReason,
     native::{
         LoweringRejection,
-        expression_contract::validate_physical_expr_contract,
+        expression_contract::{native_aggregate_function_kind, validate_physical_expr_contract},
         normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
         validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
     },
@@ -283,7 +284,7 @@ pub(super) fn lower_aggregate_spec(
                         )
                         .map(Some)
                 })?;
-            let (function, distinct) = lower_native_aggregate_expr_function(expr.fun().name(), expr.is_distinct())?;
+            let (function, distinct) = lower_native_aggregate_expr_function(expr.fun(), expr.is_distinct())?;
             Ok(NativeAggregateExpr::new(function, lowered_arg, expr.name())
                 .with_distinct(distinct)
                 .with_filter(lowered_filter))
@@ -349,41 +350,17 @@ pub(super) fn lower_zero_column_count_aggregate_spec(
     ))
 }
 
-pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggregateFunction, LoweringRejection> {
-    if name.eq_ignore_ascii_case("sum") {
-        Ok(NativeAggregateFunction::Sum)
-    } else if name.eq_ignore_ascii_case("min") {
-        Ok(NativeAggregateFunction::Min)
-    } else if name.eq_ignore_ascii_case("max") {
-        Ok(NativeAggregateFunction::Max)
-    } else if name.eq_ignore_ascii_case("count") {
-        Ok(NativeAggregateFunction::Count)
-    } else if name.eq_ignore_ascii_case("avg") {
-        Ok(NativeAggregateFunction::Avg)
-    } else if name.eq_ignore_ascii_case("median") {
-        Ok(NativeAggregateFunction::Median)
-    } else if name.eq_ignore_ascii_case("stddev") || name.eq_ignore_ascii_case("stddev_samp") {
-        Ok(NativeAggregateFunction::StddevSamp)
-    } else if name.eq_ignore_ascii_case("stddev_pop") {
-        Ok(NativeAggregateFunction::StddevPop)
-    } else if name.eq_ignore_ascii_case("var_samp")
-        || name.eq_ignore_ascii_case("var_sample")
-        || name.eq_ignore_ascii_case("var")
-        || name.eq_ignore_ascii_case("variance")
-    {
-        Ok(NativeAggregateFunction::VarSamp)
-    } else if name.eq_ignore_ascii_case("var_pop") || name.eq_ignore_ascii_case("var_population") {
-        Ok(NativeAggregateFunction::VarPop)
-    } else {
-        Err(CapabilityReason::UnsupportedOperator.into())
-    }
+pub(super) fn lower_native_aggregate_function(
+    fun: &AggregateUDF,
+) -> Result<NativeAggregateFunction, LoweringRejection> {
+    native_aggregate_function_kind(fun).ok_or_else(|| CapabilityReason::UnsupportedOperator.into())
 }
 
 fn lower_native_aggregate_expr_function(
-    name: &str,
+    fun: &AggregateUDF,
     distinct: bool,
 ) -> Result<(NativeAggregateFunction, bool), LoweringRejection> {
-    let function = lower_native_aggregate_function(name)?;
+    let function = lower_native_aggregate_function(fun)?;
     if distinct && function == NativeAggregateFunction::Count {
         Ok((NativeAggregateFunction::NUnique, false))
     } else {

@@ -281,7 +281,7 @@ fn lower_scalar_function_expr(
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, LoweringRejection> {
-    let kind = ScalarFunctionKind::from_name(function.name()).expect("validated scalar function kind");
+    let kind = ScalarFunctionKind::from_scalar_function(function).expect("validated scalar function kind");
     match kind {
         ScalarFunctionKind::Substring => lower_substring_function(function, validated, bindings),
         ScalarFunctionKind::Extract => lower_extract_function(function, validated, bindings),

@@ -423,6 +423,7 @@ impl QueryHandle {
             attempt_allocation_domain: Some(attempt_allocation_domain),
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
             admitted_capability_evidence: self.lifetime.admitted_capability_evidence.clone(),
+            activated_deferred_resident_phase: None,
             attempt_member_lease: Some(attempt_member_lease),
             attempt_stream_provider_route: Some(Arc::clone(&attempt_stream_provider_route)),
             attempt_stream_provider_alias: None,

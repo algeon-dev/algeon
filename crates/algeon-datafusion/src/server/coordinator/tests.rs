@@ -16,10 +16,11 @@ use futures::future::BoxFuture;
 use query_engine::{
     error::{QueryError, QueryErrorCode},
     observability::{
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureSummary, AttemptId,
-        AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTimestamps,
-        QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner,
-        RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureOperation,
+        AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite,
+        AttemptRetryRecovery, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport,
+        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
+        SealedRuntimeObservationSnapshot,
     },
     runtime::ExecutionCancellation,
 };
@@ -167,6 +168,7 @@ fn queue_backoff_attempt_report(query_id: &str) -> QueryAttemptReport {
             "bounded admission queue is full",
         )
         .with_fact("reason", "admission_queue_full"),
+        AttemptFailureOperation::Admission,
     );
     report.outcome = RuntimeTerminalOutcome::failed(&failure);
     report.primary_failure = Some(failure);
@@ -1675,11 +1677,14 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
         )
         .expect("attempt-owned query registers");
     let mut report = cpu_attempt_report("terminal-error-identity");
-    let failure = AttemptFailureSummary::from_native_error(&QueryError::new(
-        QueryErrorCode::CudfResourceExhausted,
-        "algeon_datafusion.test.terminal_error_identity",
-        "native execution failed",
-    ));
+    let failure = AttemptFailureSummary::from_native_error(
+        &QueryError::new(
+            QueryErrorCode::CudfResourceExhausted,
+            "algeon_datafusion.test.terminal_error_identity",
+            "native execution failed",
+        ),
+        AttemptFailureOperation::Execution,
+    );
     report.outcome = RuntimeTerminalOutcome::failed(&failure);
     report.primary_failure = Some(failure);
     let (report, snapshot) = sealed_attempt_report_snapshot(report);

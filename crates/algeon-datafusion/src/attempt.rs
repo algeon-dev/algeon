@@ -70,7 +70,7 @@ use crate::{
         native_execution_metrics, sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
     native_report::NativeDataFusionExecutionMetrics,
-    planner::{FinalPlanCoverage, FinalPlanDisposition, classify_final_plan},
+    planner::{FinalPlanCoverage, FinalPlanDisposition, classify_final_plan, native::Invocation},
 };
 
 /// Inputs used to create an execution attempt before DataFusion planning.
@@ -497,6 +497,7 @@ impl AlgeonAttempt {
         let mut builder = SessionStateBuilder::new_from_existing(state);
         let config = builder.config().get_or_insert_with(Default::default);
         config.options_mut().extensions.insert(AlgeonAttemptExtension::new(Arc::clone(&self.state)));
+        config.options_mut().extensions.insert(Invocation::new());
         builder.build()
     }
 

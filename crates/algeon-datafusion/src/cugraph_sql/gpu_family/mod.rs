@@ -288,6 +288,9 @@ fn take_source(
         Some(value) => Some(CugraphBfsSource::Scalar(vertex_value(&value)?)),
         None => match array {
             Some(Value::Array(values)) if !values.is_empty() => {
+                if algorithm != CugraphAlgorithm::Bfs {
+                    return Err("source_vertices is supported only by cugraph_bfs".to_string());
+                }
                 let vertices = values.iter().map(vertex_value).collect::<Result<Vec<_>, _>>()?;
                 let string_domain = vertices[0].is_utf8();
                 if vertices.iter().any(|vertex| vertex.is_utf8() != string_domain) {

@@ -16,8 +16,6 @@
 //! Rust's `&` / `|`, because those operators conventionally imply bitwise
 //! semantics for integer-valued data.
 
-use std::sync::Arc;
-
 use super::owned::Series;
 use crate::{
     core::{error::Result, scalar::Scalar, types::CudfType},
@@ -150,8 +148,7 @@ fn scalar_left_op<T: CudfType>(series: &Series, lhs: T, op: BinaryOperator) -> R
     // The temporary scalar is created in the Series' execution domain so
     // multi-GPU pipelines do not accidentally allocate it on the calling
     // thread's current device.
-    let result_col = binary::binary_operation_sv(&scalar, &col_view, op, &out_type)
-        .map(|c| c.with_execution_domain(Arc::clone(series.column.execution_domain())))?;
+    let result_col = binary::binary_operation_sv(&scalar, &col_view, op, &out_type)?;
 
     Series::from_column(result_col)
 }

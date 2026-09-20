@@ -12,7 +12,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -413,13 +413,19 @@ const PHASE_FAILED: u8 = 4;
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct CloseCompletion {
-    phase: AtomicU8,
-    error: Mutex<Option<CloseFailure>>,
+    wait: Mutex<CloseWaitState>,
+    changed: Condvar,
     deadline_elapsed: AtomicU64,
     late_successes: AtomicU64,
     cleanup_phases: Mutex<BTreeMap<&'static str, CleanupPhaseProgress>>,
-    wait: Mutex<()>,
-    changed: Condvar,
+}
+
+/// Phase and failure guarded by the same mutex as the [`Condvar`] predicate,
+/// so a state change and its notification are atomic to waiters.
+#[derive(Debug)]
+struct CloseWaitState {
+    phase: u8,
+    failure: Option<CloseFailure>,
 }
 
 #[derive(Debug, Clone)]
@@ -438,13 +444,11 @@ impl CloseCompletion {
     #[doc(hidden)]
     pub fn new() -> Self {
         Self {
-            phase: AtomicU8::new(PHASE_OPEN),
-            error: Mutex::new(None),
+            wait: Mutex::new(CloseWaitState { phase: PHASE_OPEN, failure: None }),
+            changed: Condvar::new(),
             deadline_elapsed: AtomicU64::new(0),
             late_successes: AtomicU64::new(0),
             cleanup_phases: Mutex::new(BTreeMap::new()),
-            wait: Mutex::new(()),
-            changed: Condvar::new(),
         }
     }
 
@@ -461,16 +465,16 @@ impl CloseCompletion {
     }
 
     fn advance(&self, phase: u8) {
-        let mut current = self.phase.load(Ordering::Acquire);
-        while current < phase && current != PHASE_FAILED {
-            match self.phase.compare_exchange_weak(current, phase, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => {
-                    self.changed.notify_all();
-                    return;
-                },
-                Err(observed) => current = observed,
+        // TEMP-NEGATIVE-CONTROL: pre-fix discipline, notify outside the mutex.
+        {
+            let mut state = self.wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.phase < phase && state.phase != PHASE_FAILED {
+                state.phase = phase;
+            } else {
+                return;
             }
         }
+        self.changed.notify_all();
     }
 
     fn record_deadline(&self, phase: &'static str) {
@@ -489,25 +493,27 @@ impl CloseCompletion {
     }
 
     fn fail(&self, phase: &'static str, error: impl fmt::Display) {
-        let mut failure = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if failure.is_none() {
-            *failure = Some(CloseFailure { phase, error: error.to_string() });
+        let mut state = self.wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.failure.is_none() {
+            state.failure = Some(CloseFailure { phase, error: error.to_string() });
         }
-        drop(failure);
         // A later observation-cleanup failure must not erase the already
         // established GPU-resource-quiescent fact. Before GPU quiescence the
         // failed sentinel also prevents any later success transition.
-        if self.phase.load(Ordering::Acquire) < PHASE_GPU_QUIESCENT {
-            self.phase.store(PHASE_FAILED, Ordering::Release);
+        if state.phase < PHASE_GPU_QUIESCENT {
+            state.phase = PHASE_FAILED;
         }
         self.changed.notify_all();
     }
 
     #[doc(hidden)]
     pub fn snapshot(&self, lifecycle: &BackendLifecycle) -> GpuBackendCloseSnapshot {
-        let phase = self.phase.load(Ordering::Acquire);
+        let state = self.wait.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.snapshot_with(state.phase, state.failure.is_some(), lifecycle)
+    }
+
+    fn snapshot_with(&self, phase: u8, cleanup_failed: bool, lifecycle: &BackendLifecycle) -> GpuBackendCloseSnapshot {
         let lifecycle = lifecycle.snapshot();
-        let cleanup_failed = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
         GpuBackendCloseSnapshot {
             closing: lifecycle.closing,
             gpu_resource_quiescent: phase == PHASE_GPU_QUIESCENT || phase == PHASE_OBSERVATION_QUIESCENT,
@@ -522,48 +528,36 @@ impl CloseCompletion {
 
     #[doc(hidden)]
     pub fn wait_until(&self, deadline: Instant, lifecycle: &BackendLifecycle) -> Result<GpuBackendCloseSnapshot> {
-        let mut wait = super::deadline::mutex_lock_until(&self.wait, deadline).map_err(|error| match error {
+        let mut state = super::deadline::mutex_lock_until(&self.wait, deadline).map_err(|error| match error {
             super::deadline::DeadlineMutexLockError::Poisoned => close_wait_poisoned_error(),
             super::deadline::DeadlineMutexLockError::TimedOut => close_timeout_error(self.snapshot(lifecycle)),
         })?;
         loop {
-            let snapshot = self.snapshot(lifecycle);
-            if snapshot.cleanup_failed {
-                let cleanup_failure =
-                    self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(|| {
-                        CloseFailure { phase: "unknown", error: "unknown cleanup failure".to_string() }
-                    });
+            if let Some(failure) = state.failure.clone() {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
                     CLOSE_OPERATION,
                     "backend cleanup failed closed",
                 )
                 .with_fact("reason", "cleanup_failed_closed")
-                .with_fact("cleanup_phase", cleanup_failure.phase)
-                .with_fact("cleanup_error", cleanup_failure.error));
+                .with_fact("cleanup_phase", failure.phase)
+                .with_fact("cleanup_error", failure.error));
             }
-            if snapshot.observation_quiescent {
-                return Ok(snapshot);
+            if state.phase == PHASE_OBSERVATION_QUIESCENT {
+                return Ok(self.snapshot_with(state.phase, false, lifecycle));
             }
             if super::deadline::deadline_expired(deadline) {
-                return Err(close_timeout_error(snapshot));
+                return Err(close_timeout_error(self.snapshot_with(state.phase, false, lifecycle)));
             }
             let Some(remaining) = super::deadline::deadline_remaining(deadline) else {
-                return Err(close_timeout_error(snapshot));
+                return Err(close_timeout_error(self.snapshot_with(state.phase, false, lifecycle)));
             };
-            let (next, timeout) =
-                self.changed.wait_timeout(wait, remaining).map_err(|_error| close_wait_poisoned_error())?;
-            wait = next;
-            if timeout.timed_out() {
-                // A notify that lands between the deadline expiring and the
-                // waiter rescheduling must not be reported as a timeout: take
-                // one final snapshot before failing.
-                let snapshot = self.snapshot(lifecycle);
-                if snapshot.observation_quiescent {
-                    return Ok(snapshot);
-                }
-                return Err(close_timeout_error(snapshot));
-            }
+            // Every wakeup re-reads the full wait state at the top of the
+            // loop, so a failure recorded during the wait is reported as a
+            // cleanup failure rather than a timeout.
+            let (next, _) =
+                self.changed.wait_timeout(state, remaining).map_err(|_error| close_wait_poisoned_error())?;
+            state = next;
         }
     }
 }
@@ -621,7 +615,10 @@ pub fn reject_reentrant_observation_close() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::{
+        sync::Barrier,
+        time::{Duration, Instant},
+    };
 
     use super::{CleanupPhaseProgress, CloseCompletion};
     use crate::runtime::{backend_lifecycle::BackendLifecycle, query_service::QueryServiceDrainPhase};
@@ -690,5 +687,47 @@ mod tests {
         let error = state.wait_until(Instant::now(), &lifecycle).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("backend_close_timeout"));
         assert_eq!(error.fact_value("gpu_resource_quiescent"), Some("false"));
+    }
+
+    #[test]
+    fn waiter_never_misses_a_phase_advance() {
+        // The phase change and its notification are atomic to waiters: a
+        // waiter either observes the new phase or blocks before the change
+        // and is woken by it. Advancing outside the wait mutex lets the
+        // change slip between a waiter's check and its sleep; the waiter
+        // then sleeps out its full deadline before the recheck recovers, so
+        // the regression signal is latency, bounded generously below. The
+        // advancer snapshots first so both sides run duration-matched paths
+        // after the barrier, aligning the advance with the waiters'
+        // check-then-block window.
+        const ITERATIONS: usize = 2000;
+        let started = Instant::now();
+        for _ in 0..ITERATIONS {
+            // Fail fast once stalled: a regressed run would otherwise sleep
+            // out thousands of full deadlines before the bound below trips.
+            assert!(started.elapsed() < Duration::from_secs(30), "waiters stalled on missed phase advances");
+            let state = CloseCompletion::new();
+            let lifecycle = BackendLifecycle::new();
+            let barrier = Barrier::new(3);
+            std::thread::scope(|scope| {
+                for _ in 0..2 {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let snapshot = state
+                            .wait_until(Instant::now() + Duration::from_secs(5), &lifecycle)
+                            .expect("phase advance must wake the waiter");
+                        assert!(snapshot.observation_quiescent);
+                    });
+                }
+                barrier.wait();
+                let _ = state.snapshot(&lifecycle);
+                state.mark_observation_quiescent();
+            });
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "waiters stalled on missed phase advances ({} iterations)",
+            ITERATIONS
+        );
     }
 }

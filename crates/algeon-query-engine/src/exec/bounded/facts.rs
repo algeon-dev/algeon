@@ -23,7 +23,7 @@ impl RuntimeResourceFacts<'_> {
     }
 
     pub(in crate::exec) fn attach_to(self, error: QueryError) -> QueryError {
-        if error.code() != QueryErrorCode::CudfResourceExhausted {
+        if error.code() != QueryErrorCode::QueryMemoryLimitExceeded {
             return error;
         }
 
@@ -45,7 +45,7 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
     max_attempts: usize,
     metrics: &ExecutionMetrics,
 ) -> QueryError {
-    if error.code() != QueryErrorCode::CudfResourceExhausted {
+    if error.code() != QueryErrorCode::QueryMemoryLimitExceeded {
         return error;
     }
 
@@ -77,7 +77,7 @@ pub(in crate::exec) fn attach_source_batch_resource_facts(
     if batch.is_singleton() {
         return attach_chunk_resource_facts(error, first_chunk, memory_boundary, attempt, max_attempts, metrics);
     }
-    if error.code() != QueryErrorCode::CudfResourceExhausted {
+    if error.code() != QueryErrorCode::QueryMemoryLimitExceeded {
         return error;
     }
 
@@ -91,4 +91,71 @@ pub(in crate::exec) fn attach_source_batch_resource_facts(
         metrics,
     }
     .attach_to(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::{
+        runtime::SourceChunkPlanningMode,
+        source::{ParquetSourceLocation, ResolvedParquetSource},
+    };
+
+    fn test_chunk() -> SourceChunk {
+        SourceChunk {
+            source_node_id: NodeId::from_index_for_internal_use(1),
+            chunk_index: 0,
+            file_index: 0,
+            location: ParquetSourceLocation::LocalPath(PathBuf::from("part-0.parquet")),
+            path: PathBuf::from("part-0.parquet"),
+            resolved_source: ResolvedParquetSource::local_kvikio("part-0.parquet"),
+            stable_id: "file-0".to_string(),
+            row_group_indexes: vec![0],
+            reads_all_row_groups: false,
+            known_file_bytes: Some(1024),
+            known_row_group_bytes: Some(1024),
+            known_projected_compressed_bytes: Some(1024),
+            known_projected_uncompressed_bytes: Some(1024),
+            known_pure_filter_compressed_bytes: Some(0),
+            known_pure_filter_uncompressed_bytes: Some(0),
+            estimated_chunk_bytes: Some(1024),
+            estimated_source_read_bytes: Some(1024),
+            exact_source_read_preflight_bytes: Some(1024),
+            source_file_row_groups: None,
+            source_file_row_group_bytes: Some(vec![1024]),
+            source_file_projected_compressed_bytes: Some(vec![1024]),
+            source_file_projected_uncompressed_bytes: Some(vec![1024]),
+            source_file_pure_filter_compressed_bytes: Some(vec![0]),
+            source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
+            source_file_row_group_rows: Some(vec![1]),
+            reader_decimal_types: Vec::new(),
+            reader_decimal_types_footer_verified: false,
+            read_columns: vec!["c0".to_string()],
+            partition_values: Vec::new(),
+            zero_column_count: false,
+            known_row_count: Some(1),
+            scan_limit_rows: None,
+            size_estimate_based: false,
+            source_batching_reason: None,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test_policy".to_string(),
+        }
+    }
+
+    #[test]
+    fn chunk_resource_facts_attach_to_memory_limit_errors() {
+        let metrics = ExecutionMetrics::detached("chunk_resource_facts_attach");
+        let error = QueryError::new(
+            QueryErrorCode::QueryMemoryLimitExceeded,
+            "query_engine.test.chunk_facts",
+            "injected memory limit error",
+        );
+        let error = attach_chunk_resource_facts(error, &test_chunk(), "source_chunk_read", 1, 3, &metrics);
+        assert!(error.fact_value("memory_boundary").is_some());
+        assert!(error.fact_value("node_id").is_some());
+        assert!(error.fact_value("attempt").is_some());
+        assert!(error.fact_value("max_attempts").is_some());
+    }
 }

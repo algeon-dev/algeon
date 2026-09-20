@@ -27,7 +27,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     .with_fact("reason", "backend_closing")
     .with_cugraph_allocation_source(CugraphAllocationSource::RmmBadAlloc);
 
-    let summary = AttemptFailureSummary::from_native_error(&error);
+    let summary = AttemptFailureSummary::from_native_error(&error, AttemptFailureOperation::Execution);
     assert_eq!(
         summary.facts(),
         &[
@@ -50,7 +50,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         )
         .with_cugraph_allocation_source(source);
         assert_eq!(
-            AttemptFailureSummary::from_native_error(&error).facts(),
+            AttemptFailureSummary::from_native_error(&error, AttemptFailureOperation::Execution).facts(),
             &[AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value: expected }]
         );
     }
@@ -61,7 +61,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         "cuGraph allocation failed",
     )
     .with_cugraph_allocation_source(CugraphAllocationSource::Unknown);
-    assert!(AttemptFailureSummary::from_native_error(&unknown).facts().is_empty());
+    assert!(AttemptFailureSummary::from_native_error(&unknown, AttemptFailureOperation::Execution).facts().is_empty());
 
     let untyped_fact = QueryError::new(
         QueryErrorCode::CudfResourceExhausted,
@@ -70,7 +70,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     )
     .with_fact("cugraph_allocation_source", "rmm_bad_alloc");
     assert!(
-        AttemptFailureSummary::from_native_error(&untyped_fact).facts().is_empty(),
+        AttemptFailureSummary::from_native_error(&untyped_fact, AttemptFailureOperation::Execution).facts().is_empty(),
         "free-form diagnostic facts must not mint sealed allocation provenance"
     );
 }

@@ -499,7 +499,7 @@ fn pagerank_utf8_spec() -> CugraphAlgorithmSpec {
 }
 
 fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
-    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None);
+    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None).expect("native defaults are total");
     let graph_options = algorithm.effective_default_graph_options(&CugraphGraphOptions::default());
     let output_schema =
         result_schema_for_vertex_domain(algorithm, &params, Some(&CugraphVertexIdDomain::StringLogical));
@@ -509,7 +509,7 @@ fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
 #[test]
 fn numeric_graph_results_preserve_the_input_vertex_domain_for_every_vertex_column() {
     for algorithm in CugraphAlgorithm::all() {
-        let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None);
+        let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None).expect("native defaults are total");
         let schema = result_schema_for_vertex_domain(algorithm, &params, Some(&CugraphVertexIdDomain::Int32));
         for output in algorithm.definition().vertex_output_columns() {
             assert_eq!(

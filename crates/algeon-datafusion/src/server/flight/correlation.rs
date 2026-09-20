@@ -76,21 +76,21 @@ pub(crate) fn attach_query_response_metadata<T>(
 #[cfg(test)]
 mod correlation_tests {
     use std::{
-        sync::Arc,
+        sync::{Arc, mpsc},
         time::{Duration, Instant},
     };
 
     use query_engine::observability::{
-        QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationPayload,
+        QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig, RuntimeObservationPayload,
         RuntimeObservationRecordDisposition, RuntimeReservationAction, RuntimeReservationDisposition,
         RuntimeReservationId, RuntimeReservationObservation,
     };
-    use tokio::{task::yield_now, time::timeout};
+    use tokio::{spawn, task::yield_now, time::timeout};
 
     use super::*;
     use crate::server::{
         attempt::AttemptOptions,
-        coordinator::QueryTerminalOutcome,
+        coordinator::{QueryTerminalOutcome, install_coordinator_render_probe},
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
         },
@@ -657,6 +657,79 @@ mod correlation_tests {
             ),
             "{payload}"
         );
+    }
+
+    /// The GetQueryStats handler waits for another query's render off the
+    /// tokio worker: on a single-threaded runtime a witness task must still
+    /// run while the handler's waiter blocks, and only the witness releases
+    /// the held render. A handler that waits on the worker starves the
+    /// witness, so the render never completes and the action times out.
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_query_stats_action_waits_for_another_render_off_the_tokio_worker() {
+        const QUERY_ID: &str = "worker-stats-render";
+        let service = test_service();
+        let execution = service
+            .coordinator
+            .register_with_id(QUERY_ID, "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+            .expect("live query registration")
+            .into_execution()
+            .expect("execution phase");
+        let cache = {
+            let state = service.coordinator.lock_state();
+            let key = state.current.get(QUERY_ID).expect("registered query key");
+            Arc::clone(&state.records.get(key).expect("registered query record").live_stats_cache)
+        };
+        let (wait_tx, wait_rx) = mpsc::channel();
+        *cache.wait_observer.lock().unwrap() = Some(wait_tx);
+        let (entered_tx, entered_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let render_coordinator = Arc::clone(&service.coordinator);
+        let renderer = std::thread::spawn(move || {
+            let _probe = install_coordinator_render_probe(move |operation| {
+                if operation == "query-stats projection" {
+                    entered_tx.send(()).expect("render entry must be observed");
+                    release_rx.recv().expect("render release must arrive");
+                }
+            });
+            render_coordinator.query_stats_result(QUERY_ID).expect("held render completes")
+        });
+
+        // The handler must wait rather than render itself, so it only runs
+        // once the other render is already in flight.
+        loop {
+            if entered_rx.try_recv().is_ok() {
+                break;
+            }
+            yield_now().await;
+        }
+        let witness = spawn(async move {
+            loop {
+                if wait_rx.try_recv().is_ok() {
+                    release_tx.send(()).expect("render release must send");
+                    return;
+                }
+                yield_now().await;
+            }
+        });
+
+        let response = timeout(
+            Duration::from_secs(10),
+            service.do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: GET_QUERY_STATS_ACTION.to_string(),
+                body: QUERY_ID.as_bytes().to_vec().into(),
+            })),
+        )
+        .await
+        .expect("the handler must not park the only worker on another render")
+        .expect("GetQueryStats action should succeed");
+        let results = response.into_inner().try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].body.is_empty());
+
+        witness.await.expect("the witness must run while the handler waits");
+        renderer.join().expect("held render must complete");
+        execution.succeed();
     }
 
     #[tokio::test]

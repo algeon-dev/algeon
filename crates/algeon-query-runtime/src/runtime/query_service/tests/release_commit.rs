@@ -1131,6 +1131,73 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     assert!(report.timestamps.report_ready_ns.is_some());
 }
 
+/// A duplicate attempt binding rejects the second admission with a typed
+/// error and leaves every ledger open: missing finalizer bookkeeping never
+/// closes the fleet, which only CUDA fault evidence can do. An independent
+/// attempt admitted afterwards still gets a grant.
+#[test]
+fn duplicate_attempt_binding_rejects_second_admission_without_closing_ledgers() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let device = service
+        .inner
+        .resources
+        .as_ref()
+        .expect("runtime-backed service")
+        .devices
+        .context_by_ordinal(0)
+        .expect("device context");
+    let backend_lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        Arc::new(AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let first = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("first admission");
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: first.admission_sequence(),
+            admission_wait_ns: first.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: first.device_ordinal(),
+            grant_bytes: first.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+    first.finish();
+    drop(first);
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || device.ledger().snapshot().map(|snapshot| snapshot.active_attempts == 0).unwrap_or(false),
+        "first admission releases its grant",
+    );
+
+    let error = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect_err("duplicate binding cannot manufacture a second finalizer");
+    assert_eq!(error.fact_value("reason"), Some("attempt_finalizer_unavailable"));
+    assert!(
+        matches!(device.ledger().health(), Ok(DeviceAdmissionHealth::Open)),
+        "rejected duplicate admission must not close the ledger"
+    );
+
+    let third = service.admit_query().expect("fleet still admits independent attempts");
+    third.finish();
+    drop(third);
+    drop(completion);
+}
+
 /// A stream synchronization failure during cleanup is device-local fault
 /// evidence: the device closes before report publication and the attempt's
 /// capacity is never reusable, while the report still publishes.

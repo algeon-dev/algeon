@@ -18,12 +18,14 @@ use datafusion::{
 use query_engine::{
     capability::is_cudf_median_input_type,
     datatypes::{is_supported_arrow_type, is_timestamp_with_timezone},
+    expr::AggregateFunction as NativeAggregateFunction,
 };
 
 use super::{
     LoweringRejection,
     expression_contract::{
-        is_list_carry_type, is_narrow_decimal_carry, resolve_column, validate_physical_expr_contract,
+        is_list_carry_type, is_narrow_decimal_carry, native_aggregate_function_kind, resolve_column,
+        validate_physical_expr_contract,
     },
 };
 use crate::capability::CapabilityReason;
@@ -55,18 +57,17 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         return Err(CapabilityReason::UnsupportedOperator.into());
     }
     for aggregate_expr in aggregate.aggr_expr() {
-        if aggregate_expr.is_distinct() && !aggregate_expr.fun().name().eq_ignore_ascii_case("count") {
+        let kind = native_aggregate_function_kind(aggregate_expr.fun());
+        if aggregate_expr.is_distinct() && !matches!(kind, Some(NativeAggregateFunction::Count)) {
             return Err(CapabilityReason::UnsupportedOperator.into());
         }
         if !aggregate_expr.order_bys().is_empty() {
             return Err(CapabilityReason::UnsupportedExpression.into());
         }
-        if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
+        if kind.is_none() {
             return Err(CapabilityReason::UnsupportedOperator.into());
         }
-        if matches!(aggregate.mode(), AggregateMode::Partial)
-            && aggregate_expr.fun().name().eq_ignore_ascii_case("median")
-        {
+        if matches!(aggregate.mode(), AggregateMode::Partial) && matches!(kind, Some(NativeAggregateFunction::Median)) {
             return Err(CapabilityReason::UnsupportedOperator.into());
         }
         let expressions = aggregate_expr.expressions();
@@ -75,7 +76,7 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         };
         validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
-        if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
+        if matches!(kind, Some(NativeAggregateFunction::Median)) {
             validate_median_input_type(arg, &aggregate.input().schema())?;
         }
     }
@@ -87,9 +88,21 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
 }
 
 fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> bool {
-    let has_median = aggregate.aggr_expr().iter().any(|expr| expr.fun().name().eq_ignore_ascii_case("median"));
-    let has_floating_statistical =
-        aggregate.aggr_expr().iter().any(|expr| is_floating_statistical_aggregate_function(expr.fun().name()));
+    let has_median = aggregate
+        .aggr_expr()
+        .iter()
+        .any(|expr| matches!(native_aggregate_function_kind(expr.fun()), Some(NativeAggregateFunction::Median)));
+    let has_floating_statistical = aggregate.aggr_expr().iter().any(|expr| {
+        matches!(
+            native_aggregate_function_kind(expr.fun()),
+            Some(
+                NativeAggregateFunction::StddevSamp
+                    | NativeAggregateFunction::StddevPop
+                    | NativeAggregateFunction::VarSamp
+                    | NativeAggregateFunction::VarPop
+            )
+        )
+    });
     has_median && has_floating_statistical
 }
 
@@ -123,10 +136,11 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
             return Err(CapabilityReason::UnsupportedExpression.into());
         }
-        if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
+        let kind = native_aggregate_function_kind(aggregate_expr.fun());
+        if kind.is_none() {
             return Err(CapabilityReason::UnsupportedOperator.into());
         }
-        if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
+        if matches!(kind, Some(NativeAggregateFunction::Median)) {
             return Err(CapabilityReason::UnsupportedOperator.into());
         }
         let expressions = aggregate_expr.expressions();
@@ -224,7 +238,10 @@ pub(super) fn aggregate_is_count_star_only(aggregate: &AggregateExec) -> bool {
         return false;
     }
     let expr = &aggregate.aggr_expr()[0];
-    if !expr.fun().name().eq_ignore_ascii_case("count") || expr.is_distinct() || !expr.order_bys().is_empty() {
+    if !matches!(native_aggregate_function_kind(expr.fun()), Some(NativeAggregateFunction::Count))
+        || expr.is_distinct()
+        || !expr.order_bys().is_empty()
+    {
         return false;
     }
     let expressions = expr.expressions();
@@ -237,36 +254,6 @@ pub(super) fn aggregate_is_count_star_only(aggregate: &AggregateExec) -> bool {
     let mut required_columns = BTreeSet::new();
     collect_required_columns(arg, &aggregate.input().schema(), &mut required_columns).is_ok()
         && required_columns.is_empty()
-}
-
-fn is_supported_native_aggregate_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("sum")
-        || name.eq_ignore_ascii_case("min")
-        || name.eq_ignore_ascii_case("max")
-        || name.eq_ignore_ascii_case("count")
-        || name.eq_ignore_ascii_case("avg")
-        || name.eq_ignore_ascii_case("median")
-        || name.eq_ignore_ascii_case("stddev")
-        || name.eq_ignore_ascii_case("stddev_samp")
-        || name.eq_ignore_ascii_case("stddev_pop")
-        || name.eq_ignore_ascii_case("var_samp")
-        || name.eq_ignore_ascii_case("var_sample")
-        || name.eq_ignore_ascii_case("var")
-        || name.eq_ignore_ascii_case("variance")
-        || name.eq_ignore_ascii_case("var_pop")
-        || name.eq_ignore_ascii_case("var_population")
-}
-
-fn is_floating_statistical_aggregate_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("stddev")
-        || name.eq_ignore_ascii_case("stddev_samp")
-        || name.eq_ignore_ascii_case("stddev_pop")
-        || name.eq_ignore_ascii_case("var_samp")
-        || name.eq_ignore_ascii_case("var_sample")
-        || name.eq_ignore_ascii_case("var")
-        || name.eq_ignore_ascii_case("variance")
-        || name.eq_ignore_ascii_case("var_pop")
-        || name.eq_ignore_ascii_case("var_population")
 }
 
 pub(super) fn collect_required_columns(

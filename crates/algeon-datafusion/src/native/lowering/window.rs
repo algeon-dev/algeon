@@ -1,8 +1,13 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{any::Any, collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::{
     common::ScalarValue,
+    functions_window::{
+        lead_lag::{WindowShift, WindowShiftKind},
+        rank::Rank,
+        row_number::RowNumber,
+    },
     logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits},
     physical_expr::{
         PhysicalExpr,
@@ -155,7 +160,7 @@ fn validate_plain_aggregate_window(
     if aggregate.is_distinct() || !aggregate.order_bys().is_empty() {
         return Err(CapabilityReason::UnsupportedOperator.into());
     }
-    lower_native_aggregate_function(aggregate.fun().name())?;
+    lower_native_aggregate_function(aggregate.fun())?;
     let expressions = aggregate.expressions();
     let [arg] = expressions.as_slice() else {
         return Err(CapabilityReason::UnsupportedExpression.into());
@@ -190,18 +195,24 @@ fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &Schema
 }
 
 fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, LoweringRejection> {
-    match standard_window_function_name(standard).to_ascii_lowercase().as_str() {
-        "rank" => Ok(StandardWindowKind::Rank),
-        "row_number" => Ok(StandardWindowKind::RowNumber),
-        "lag" => Ok(StandardWindowKind::Lag),
-        "lead" => Ok(StandardWindowKind::Lead),
-        _ => Err(CapabilityReason::UnsupportedOperator.into()),
+    let udf = standard
+        .get_standard_func_expr()
+        .as_any()
+        .downcast_ref::<WindowUDFExpr>()
+        .ok_or(CapabilityReason::UnsupportedOperator)?;
+    let implementation = udf.fun().inner().as_ref() as &dyn Any;
+    if implementation.is::<Rank>() {
+        Ok(StandardWindowKind::Rank)
+    } else if implementation.is::<RowNumber>() {
+        Ok(StandardWindowKind::RowNumber)
+    } else if let Some(shift) = implementation.downcast_ref::<WindowShift>() {
+        match shift.kind() {
+            WindowShiftKind::Lag => Ok(StandardWindowKind::Lag),
+            WindowShiftKind::Lead => Ok(StandardWindowKind::Lead),
+        }
+    } else {
+        Err(CapabilityReason::UnsupportedOperator.into())
     }
-}
-
-fn standard_window_function_name(standard: &StandardWindowExpr) -> &str {
-    let function = standard.get_standard_func_expr();
-    function.as_any().downcast_ref::<WindowUDFExpr>().map_or_else(|| function.name(), |expr| expr.fun().name())
 }
 
 #[derive(Debug, Clone)]
@@ -566,7 +577,7 @@ fn lower_window_spec(
                 return Err(CapabilityReason::UnsupportedOperator.into());
             };
             functions.push(NativeWindowFunction::Aggregate {
-                function: lower_native_aggregate_function(aggregate.fun().name())?,
+                function: lower_native_aggregate_function(aggregate.fun())?,
                 expr,
                 alias,
                 frame,
@@ -620,4 +631,52 @@ fn unique_window_output_name(
     unique_name_with_suffix(base.as_str(), |candidate| {
         !frontend_names.contains(candidate) && !used_native_names.contains(candidate)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::FieldRef;
+    use datafusion::{
+        common::Result as DataFusionResult,
+        logical_expr::{
+            PartitionEvaluator, Signature, WindowUDF, WindowUDFImpl,
+            function::{PartitionEvaluatorArgs, WindowUDFFieldArgs},
+        },
+        physical_expr::window::StandardWindowExpr,
+        physical_plan::windows::create_udwf_window_expr,
+    };
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct ShadowingRankFunc {
+        inner: Rank,
+    }
+
+    impl WindowUDFImpl for ShadowingRankFunc {
+        fn name(&self) -> &str {
+            "rank"
+        }
+
+        fn signature(&self) -> &Signature {
+            self.inner.signature()
+        }
+
+        fn partition_evaluator(&self, args: PartitionEvaluatorArgs) -> DataFusionResult<Box<dyn PartitionEvaluator>> {
+            self.inner.partition_evaluator(args)
+        }
+
+        fn field(&self, args: WindowUDFFieldArgs) -> DataFusionResult<FieldRef> {
+            self.inner.field(args)
+        }
+    }
+
+    #[test]
+    fn window_function_shadowed_by_name_is_rejected() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, true)]));
+        let shadowing = Arc::new(WindowUDF::new_from_impl(ShadowingRankFunc { inner: Rank::basic() }));
+        let func_expr = create_udwf_window_expr(&shadowing, &[], schema.as_ref(), "rank".to_string(), false).unwrap();
+        let standard = StandardWindowExpr::new(func_expr, &[], &[], Arc::new(WindowFrame::new(None)));
+        assert!(standard_window_kind(&standard).is_err());
+    }
 }

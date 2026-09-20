@@ -62,10 +62,11 @@ pub fn optimize_aggregate_join_pushdown(
         return AggregateJoinPushdownResult { plan, change: NativeOptimizerChange::Unchanged, diagnostics };
     }
 
+    let (compacted, remap) = rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink());
     AggregateJoinPushdownResult {
-        plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink())
+        plan: compacted
             .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from(&plan),
+            .with_advisory_outputs_from_remapped(&plan, &remap),
         change: NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

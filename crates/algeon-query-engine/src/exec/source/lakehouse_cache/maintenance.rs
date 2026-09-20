@@ -121,8 +121,10 @@ fn cache_fill_reserve_bytes(
 }
 
 fn account_cache_fill_payload_bytes(permit: &mut CacheFillBytePermit, actual_bytes: u64) -> Result<()> {
-    let charge_bytes = actual_bytes.max(1);
-    permit.grow_to(charge_bytes)?;
+    // The payload is already fetched, so a saturated budget abandons the
+    // extra charge instead of waiting for it: the read proceeds with the
+    // original reservation, which releases after publish.
+    permit.try_grow(actual_bytes.max(1))?;
     Ok(())
 }
 

@@ -25,6 +25,8 @@ use datafusion::physical_plan::ExecutionPlan;
 use tokio::sync::Notify;
 
 #[cfg(test)]
+pub(crate) use self::artifacts::install_coordinator_render_probe;
+#[cfg(test)]
 use self::artifacts::{FinalizationTestGate, run_coordinator_render_probe};
 #[cfg(test)]
 pub(crate) use self::types::{CoordinatorArtifact, QueryTerminalOutcome, RetainedUnavailableReason};

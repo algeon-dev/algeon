@@ -38,6 +38,7 @@ use crate::{
 
 mod attempt;
 mod capability_envelope;
+mod invocation;
 mod mixed;
 
 use attempt::{
@@ -49,6 +50,7 @@ pub use capability_envelope::{
     NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics,
     NativeCapabilityDeferredCandidateDiagnostics, NativeCapabilityRejectedCandidateDiagnostics,
 };
+pub(crate) use invocation::Invocation;
 use mixed::is_certified_mixed_execution_plan;
 
 /// Internal optimizer-rule identity for the completed-plan DataFusion CPU policy.
@@ -75,7 +77,13 @@ impl AlgeonFinalPlanRequirementRule {
         Self { config, native_rule: Some(native_rule) }
     }
 
-    fn planning_report(&self) -> Option<PlanningReport> {
+    fn planning_report(&self, config: &ConfigOptions) -> Option<PlanningReport> {
+        // The invocation's own record first: the shared rule state may already
+        // hold another query's report. Only invocations without a record store
+        // (plain planning outside an attempt) read the shared last report.
+        if let Some(invocation) = Invocation::of_options(config) {
+            return invocation.planning_diagnostics().map(|diagnostics| diagnostics.report);
+        }
         self.native_rule.as_ref().and_then(|rule| rule.last_report())
     }
 }
@@ -84,7 +92,7 @@ impl PhysicalOptimizerRule for AlgeonFinalPlanRequirementRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
+        config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if self.config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Allow {
             return Ok(plan);
@@ -96,9 +104,12 @@ impl PhysicalOptimizerRule for AlgeonFinalPlanRequirementRule {
         // misclassified as a native workload.
         let feature_disabled_terminal = is_feature_disabled_execution_plan(plan.as_ref());
         if disposition != FinalPlanDisposition::Native && !feature_disabled_terminal {
-            return Err(
-                final_plan_requirement_error(plan.as_ref(), disposition, self.planning_report().as_ref()).into()
-            );
+            return Err(final_plan_requirement_error(
+                plan.as_ref(),
+                disposition,
+                self.planning_report(config).as_ref(),
+            )
+            .into());
         }
         Ok(plan)
     }
@@ -354,12 +365,18 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
         };
         let retains_prior_selection_report = already_selected.is_some();
 
+        // Captured once into locals: the invocation record below must carry this
+        // call's input even if another query overwrites the shared rule state
+        // before this call finishes planning.
+        let input_plan_root = plan.name().to_string();
+        let input_plan_shape = physical_plan_shape(plan.as_ref());
+        let input_join_diagnostics = physical_join_diagnostics(plan.as_ref());
         *self.state.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
-            plan.name().to_string();
+            input_plan_root.clone();
         *self.state.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
-            physical_plan_shape(plan.as_ref());
+            input_plan_shape.clone();
         *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
-            physical_join_diagnostics(plan.as_ref());
+            input_join_diagnostics.clone();
 
         let attempt_extension = config.extensions.get::<AlgeonAttemptExtension>().cloned();
         let effective_config = self.config.clone().with_query_id_if_absent(
@@ -431,6 +448,17 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
         }
         if !retains_prior_selection_report {
             self.store_optimization_attempt(&optimized)?;
+            if let Some(invocation) = Invocation::of_options(config) {
+                invocation.record_planning(NativePlanningDiagnostics {
+                    input_plan_root,
+                    input_plan_shape,
+                    input_join_diagnostics,
+                    report: optimized.report.clone(),
+                    native_optimizer: optimized.native_optimizer.clone(),
+                    source_diagnostics: optimized.source_diagnostics.clone(),
+                    capability_contract: optimized.capability_contract.clone(),
+                });
+            }
         }
         Ok(optimized.plan)
     }
@@ -781,10 +809,10 @@ fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     #[cfg(feature = "cugraph")]
     use datafusion::physical_plan::coop::CooperativeExec;
-    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
     #[cfg(feature = "cugraph")]
     use query_engine::source::GpuResidentSource;
     use query_engine::{
@@ -1029,5 +1057,72 @@ mod tests {
             plan_is_query_admission_wrapped(final_plan.as_ref()),
             "the final pass must bind admission even when relational selection already happened"
         );
+    }
+
+    fn union_over_empty_with_unsupported_field(name: &str) -> Arc<dyn ExecutionPlan> {
+        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            name,
+            DataType::Struct(Fields::from(vec![Arc::new(Field::new("x", DataType::Int64, true))])),
+            true,
+        )]));
+        UnionExec::try_new(vec![Arc::new(EmptyExec::new(Arc::clone(&schema))), Arc::new(EmptyExec::new(schema))])
+            .expect("union over empty inputs")
+    }
+
+    fn unsupported_column_name(diagnostics: &NativePlanningDiagnostics) -> &str {
+        diagnostics
+            .report
+            .outcomes()
+            .iter()
+            .enumerate()
+            .find_map(|(index, outcome)| match outcome {
+                CandidateOutcome::NotSupported { .. } => diagnostics.report.unsupported_column(index),
+                CandidateOutcome::Selected { .. }
+                | CandidateOutcome::Deferred { .. }
+                | CandidateOutcome::NotSelectedByCost { .. } => None,
+            })
+            .expect("unsupported column detail")
+            .name
+            .as_str()
+    }
+
+    /// Two invocations sharing one rule instance keep their own planning
+    /// records and NativeRequired errors: neither sees the other's field
+    /// names, Arrow types, or candidate shapes.
+    #[test]
+    fn native_required_error_and_records_stay_with_their_own_invocation() {
+        let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(AlgeonNativeOptimizerConfig::default()));
+        let requirement_rule = AlgeonFinalPlanRequirementRule::with_native_rule(
+            AlgeonNativeOptimizerConfig::default()
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            Arc::clone(&native_rule),
+        );
+        let mut config_a = ConfigOptions::default();
+        let invocation_a = Invocation::new();
+        config_a.extensions.insert(invocation_a.clone());
+        let mut config_b = ConfigOptions::default();
+        let invocation_b = Invocation::new();
+        config_b.extensions.insert(invocation_b.clone());
+
+        let out_a = native_rule
+            .optimize(union_over_empty_with_unsupported_field("a_col"), &config_a)
+            .expect("unsupported plan stays a DataFusion plan");
+        let out_b = native_rule
+            .optimize(union_over_empty_with_unsupported_field("b_col"), &config_b)
+            .expect("unsupported plan stays a DataFusion plan");
+
+        let diagnostics_a = invocation_a.planning_diagnostics().expect("invocation A record");
+        let diagnostics_b = invocation_b.planning_diagnostics().expect("invocation B record");
+        assert_eq!(unsupported_column_name(&diagnostics_a), "a_col");
+        assert_eq!(unsupported_column_name(&diagnostics_b), "b_col");
+
+        let failure_a = requirement_rule.optimize(out_a, &config_a).expect_err("NativeRequired rejects the CPU plan");
+        let error_a = failure_a.find_algeon_error().expect("typed adapter error");
+        assert!(error_a.message().contains("a_col"), "{}", error_a.message());
+        assert!(!error_a.message().contains("b_col"), "{}", error_a.message());
+        let failure_b = requirement_rule.optimize(out_b, &config_b).expect_err("NativeRequired rejects the CPU plan");
+        let error_b = failure_b.find_algeon_error().expect("typed adapter error");
+        assert!(error_b.message().contains("b_col"), "{}", error_b.message());
+        assert!(!error_b.message().contains("a_col"), "{}", error_b.message());
     }
 }

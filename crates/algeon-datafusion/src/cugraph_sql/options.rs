@@ -13,7 +13,7 @@ pub(super) fn default_options(
     algorithm: CugraphAlgorithm,
     config: &CugraphSqlConfig,
     source: Option<CugraphBfsSource>,
-) -> (CugraphGraphOptions, CugraphAlgorithmParams) {
+) -> Result<(CugraphGraphOptions, CugraphAlgorithmParams)> {
     let mut graph_options = config.default_graph_options.clone();
     // Several algorithms require (or are only semantically meaningful on)
     // undirected graphs. Set directed=false before parsing user-supplied
@@ -27,8 +27,8 @@ pub(super) fn default_options(
     // - minimum_spanning_tree / spectral_modularity_maximization: cuGraph
     //   requires an undirected/symmetric graph for these cuGraph C API operations.
     graph_options = algorithm.effective_default_graph_options(&graph_options);
-    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, source);
-    (graph_options, params)
+    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, source)?;
+    Ok((graph_options, params))
 }
 
 pub(super) fn validate_graph_directedness(

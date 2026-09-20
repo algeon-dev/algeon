@@ -22,7 +22,7 @@ use cudf::{
         expr::{col, lit},
         join, strings,
     },
-    runtime::CudaStream,
+    runtime::{CudaStream, DeviceEntryGuard, DeviceHealthStatus, device_health_snapshot},
 };
 use tempfile::TempDir;
 
@@ -48,6 +48,32 @@ fn runtime_matrix_pack_rejects_cross_device_input() {
     assert_eq!(error.operation(), "runtime::pack_columns");
     assert!(matches!(error.fact_value(FactKeyName::LeftDevice), Some(FactValue::DeviceId(_))));
     assert!(matches!(error.fact_value(FactKeyName::RightDevice), Some(FactValue::DeviceId(_))));
+}
+
+#[test]
+fn cross_device_value_drop_does_not_quarantine_teardown_device() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+    let (device_a, device_b) = first_two_test_devices();
+    let runtime_b = Runtime::builder().with_device(device_b).build().unwrap();
+    let series_b = runtime_b.series(&[1i32, 2, 3]).unwrap();
+    {
+        let _entry_a = DeviceEntryGuard::enter(device_a, "test::cross_device_drop").unwrap();
+        drop(series_b);
+    }
+    assert_eq!(
+        device_health_snapshot(device_b).status(),
+        DeviceHealthStatus::Healthy,
+        "dropping a B-owned value while A is entered must destroy it, not quarantine B"
+    );
+    let series_b_again = runtime_b.series(&[4i32]).unwrap();
+    drop(series_b_again);
+    assert_eq!(
+        device_health_snapshot(device_b).status(),
+        DeviceHealthStatus::Healthy,
+        "B must still admit teardown after a cross-device drop"
+    );
 }
 
 fn should_run_multi_gpu_test() -> bool {

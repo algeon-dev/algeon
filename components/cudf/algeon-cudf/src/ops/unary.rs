@@ -4,7 +4,7 @@ use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
-        column::{Column, ColumnView, copy_view_to_owned},
+        column::{Column, ColumnView, copy_view_in},
         error::{self, Error, ErrorCode, Result},
         types::{DataType, TypeId},
     },
@@ -224,9 +224,7 @@ pub(crate) fn cast_impl(
 ) -> Result<Column> {
     let input_type = input.data_type()?;
     if input_type == *output_type {
-        return copy_view_to_owned(input)
-            .map(|col| col.with_execution_domain(Arc::clone(output_domain)))
-            .map_err(|error| error.reanchor(operation));
+        return copy_view_in(input, output_domain, exec_options).map_err(|error| error.reanchor(operation));
     }
     validate_float64_to_int64_cast_input(input, &input_type, output_type, output_domain, exec_options, operation)?;
     let dtype_handle = output_type.to_raw_handle_for("unary::cast")?;
@@ -374,4 +372,52 @@ pub(crate) fn is_not_nan_impl(
     error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        core::memory::DeviceMemoryResource,
+        runtime::{CudaStream, DeviceId, Runtime},
+    };
+
+    /// A same-dtype cast with an explicit output domain copies on that
+    /// domain. The input budget fits the input once but never twice, so a
+    /// copy charged to the input MR is rejected while the output-domain copy
+    /// succeeds.
+    #[test]
+    fn same_dtype_cast_copies_on_the_output_domain() {
+        let device = DeviceId::current().expect("test device");
+        let input_budget = DeviceMemoryResource::cuda_on(device)
+            .expect("input upstream MR")
+            .budget_tracking_limit(12 * 1024 * 1024)
+            .expect("input budget");
+        let input_runtime = Runtime::builder()
+            .with_stream(CudaStream::new().expect("input stream"))
+            .with_memory_resource(input_budget)
+            .build()
+            .expect("input runtime");
+        let output_runtime = Runtime::builder()
+            .with_stream(CudaStream::new().expect("output stream"))
+            .with_pool_memory_resource(64 * 1024 * 1024, None)
+            .build()
+            .expect("output runtime");
+
+        let values: Vec<i32> = (0..2_000_000).collect();
+        let series = input_runtime.series(&values).expect("input series");
+        let view = series.as_column().view().expect("input view");
+        let dtype = view.data_type().expect("input dtype");
+
+        let output_domain = Arc::clone(output_runtime.execution_domain());
+        let exec_options = output_domain.enter_execution().expect("output execution");
+        let result = cast_impl(&view, &dtype, &output_domain, exec_options.options(), "test::same_dtype_cast")
+            .expect("same-dtype cast must copy on the output domain, not the capped input budget");
+        assert!(
+            ExecutionDomain::same_provenance(result.execution_domain(), &output_domain),
+            "cast output must retain the output domain"
+        );
+        let result_series = Series::from_column(result).expect("result series");
+        assert_eq!(result_series.to_vec_strict::<i32>().expect("result values"), values);
+    }
 }

@@ -261,7 +261,7 @@ fn validate_scalar_function_expr(
     function: &ScalarFunctionExpr,
     input_schema: &SchemaRef,
 ) -> Result<(), ExpressionRejection> {
-    let kind = ScalarFunctionKind::from_name(function.name())?;
+    let kind = ScalarFunctionKind::from_scalar_function(function)?;
     validate_scalar_function_kind(kind, function, input_schema)
         .map_err(|rejection| rejection.for_scalar_function(function.name()))
 }

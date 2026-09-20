@@ -4,7 +4,7 @@
 //! calling host thread and restores the thread's prior ambient device on drop.
 //! It does not migrate a query or any GPU allocation between devices.
 
-use std::{cell::RefCell, marker::PhantomData};
+use std::{cell::RefCell, iter::repeat_n, marker::PhantomData};
 
 use super::{
     DeviceId,
@@ -165,6 +165,53 @@ impl DeviceEntryGuard {
     pub fn device(&self) -> DeviceId {
         self.owner
     }
+
+    /// Suspends the thread's active device entry so another device's teardown
+    /// can enter. Returns `None` when no entry is active.
+    ///
+    /// The entered stack holds one owner device at a time (nested entry
+    /// rejects device changes), so one suspend drains the whole stack and a
+    /// single teardown retry always reaches an empty stack. Dropping the
+    /// returned guard restores the suspended entries; the retry's entry guard
+    /// must unwind first so its ambient restore and pop happen before the
+    /// resume. The CUDA current device is untouched: entries are suspended,
+    /// not exited.
+    pub(crate) fn suspend_active_device() -> Option<SuspendedDeviceEntry> {
+        THREAD_AUTHORITY.with(|authority| {
+            let mut authority = authority.borrow_mut();
+            let owner = authority.entered_devices.last().copied()?;
+            let depth = authority.entered_devices.len();
+            authority.entered_devices.clear();
+            let ambient = authority.ambient_device.take();
+            Some(SuspendedDeviceEntry { owner, depth, ambient, _not_send_sync: PhantomData })
+        })
+    }
+}
+
+/// A suspended host-thread device entry; dropping it resumes the entries.
+///
+/// See [`DeviceEntryGuard::suspend_active_device`].
+pub(crate) struct SuspendedDeviceEntry {
+    owner: DeviceId,
+    depth: usize,
+    ambient: Option<DeviceId>,
+    _not_send_sync: PhantomData<*mut ()>,
+}
+
+impl Drop for SuspendedDeviceEntry {
+    fn drop(&mut self) {
+        THREAD_AUTHORITY.with(|authority| {
+            let mut authority = authority.borrow_mut();
+            debug_assert!(
+                authority.entered_devices.is_empty(),
+                "suspended device entries resume only after the teardown retry unwinds"
+            );
+            if let Some(ambient) = self.ambient.take() {
+                authority.ambient_device = Some(ambient);
+            }
+            authority.entered_devices.extend(repeat_n(self.owner, self.depth));
+        });
+    }
 }
 
 impl Drop for DeviceEntryGuard {
@@ -262,6 +309,43 @@ mod tests {
         assert_eq!(scope.remaining_call_count(), 0);
         assert_eq!(scope.health_snapshot(owner).fault_count(), 0);
         assert_eq!(scope.health_snapshot(ambient).fault_count(), 0);
+    }
+
+    #[test]
+    fn suspend_active_device_drains_nested_entries_and_resumes_after_teardown_entry() {
+        let scope = DeviceSafetyTestScope::install([
+            get(cudf_sys::CUDF_SUCCESS, 1),
+            set(0, cudf_sys::CUDF_SUCCESS),
+            get(cudf_sys::CUDF_SUCCESS, 0),
+            set(1, cudf_sys::CUDF_SUCCESS),
+            set(0, cudf_sys::CUDF_SUCCESS),
+            set(1, cudf_sys::CUDF_SUCCESS),
+        ]);
+        let owner = injected_device_id(0).expect("owner device");
+        let other = injected_device_id(1).expect("other device");
+
+        let outer = DeviceEntryGuard::enter(owner, "outer_suspend_entry").expect("outer entry");
+        let nested = DeviceEntryGuard::enter(owner, "nested_suspend_entry").expect("nested entry");
+        let suspended = DeviceEntryGuard::suspend_active_device().expect("active entry suspends");
+        assert_eq!(current_entered_device(), None);
+        assert!(DeviceEntryGuard::suspend_active_device().is_none(), "empty stack suspends to None");
+        {
+            let teardown =
+                DeviceEntryGuard::enter_for_teardown(other, "suspended_teardown").expect("teardown enters cleanly");
+            assert_eq!(current_entered_device(), Some(other));
+            drop(teardown);
+            assert_eq!(current_entered_device(), None);
+        }
+        drop(suspended);
+        assert_eq!(current_entered_device(), Some(owner));
+        drop(outer);
+        assert_eq!(current_entered_device(), Some(owner));
+        drop(nested);
+
+        assert_eq!(current_entered_device(), None);
+        assert_eq!(scope.remaining_call_count(), 0);
+        assert_eq!(scope.health_snapshot(owner).fault_count(), 0);
+        assert_eq!(scope.health_snapshot(other).fault_count(), 0);
     }
 
     #[test]

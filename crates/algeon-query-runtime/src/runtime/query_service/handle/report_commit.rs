@@ -108,11 +108,10 @@ impl QueryHandleReportCommit {
             cache_scope_allocator_event,
         ) {
             // A linear finalizer can never be replaced with a second set of
-            // facts. Close admission, suppress the untruthful report, and let
-            // the normal post-accounting tail release activity after capacity.
-            if let Some(service) = self.service.as_ref() {
-                service.close_unknown_isolation_admission(format!("attempt finalization failed: {error}"));
-            }
+            // facts. Suppress the untruthful report, and let the normal
+            // post-accounting tail release activity after capacity. Missing
+            // bookkeeping never closes the fleet, which only CUDA fault
+            // evidence can do.
             eprintln!(
                 "[query-engine] warning: failed to consume attempt finalizer after cleanup; suppressing report publication: {error}"
             );
@@ -627,5 +626,89 @@ impl QueryHandleReportCommit {
             discard_admitted_domain(&service.allocator_event_correlation, binding);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::{
+        attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
+        observability::RuntimeObservationConfig,
+        runtime::{
+            BackendLifecycle, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile, gpu::DeviceLedger,
+        },
+    };
+
+    /// A completion whose finalizer never arrived (no admission handoff) must
+    /// suppress the report and leave every ledger open: missing bookkeeping
+    /// never closes the fleet, which only CUDA fault evidence can do.
+    #[test]
+    fn finalize_failure_after_cleanup_keeps_device_ledgers_open() {
+        let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 64 * 1024 * 1024,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            default_query_limit_bytes: 64 * 1024 * 1024,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .expect("test ledger profile must resolve");
+        let service = QueryService::new_for_admission_tests(
+            QueryExecutionConfig::default(),
+            QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(500) },
+            DeviceLedger::new(profile),
+        )
+        .expect("admission test service");
+        let backend_lifecycle = BackendLifecycle::new();
+        let attempt = AttemptOwner::begin(
+            BeginAttemptRequest {
+                observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+                ..BeginAttemptRequest::default()
+            },
+            backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+            Arc::new(AttemptBackendCounters::default()),
+            None,
+        );
+        // The binding never passes through admission, so the slot still holds
+        // the finalizer outside the completion: finalization is unavailable.
+        let slot = attempt.owner.admission_binding().into_parts().1;
+        let completion = QueryCompletion::new(None, Some(slot), None, None, None, None);
+        let commit = QueryHandleReportCommit {
+            service: Some(Arc::clone(&service.inner)),
+            admission_request_id: AdmissionRequestId::new(7),
+            observation: RuntimeObservationHandle::disabled(),
+            device_ordinal: 0,
+            admitted_device_requirements: BTreeMap::new(),
+            compatible_devices: Vec::new(),
+            domain: None,
+            memory_grant: None,
+            allocator_domain_attempt: None,
+            cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation::default(),
+            outcome_terminal_domain_usage: None,
+            pending_frozen_resident_publish: Arc::new(AtomicBool::new(false)),
+            release_commit_gate: None,
+            terminal_domain_usage: None,
+        };
+        let tail = commit.run(Some(completion), RuntimeTerminalOutcome::Succeeded, CleanupEvidence::Completed);
+        assert!(tail.is_some(), "suppressed report still releases activity after capacity");
+        let health = service
+            .inner
+            .fallback_device_ledger
+            .as_ref()
+            .expect("fallback ledger")
+            .health()
+            .expect("ledger health readable");
+        assert!(
+            matches!(health, DeviceAdmissionHealth::Open),
+            "missing finalizer bookkeeping must not close the ledger: {health:?}"
+        );
     }
 }

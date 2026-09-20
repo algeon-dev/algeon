@@ -321,8 +321,8 @@ pub enum CugraphAlgorithmParams {
 }
 
 impl CugraphAlgorithmParams {
-    pub(crate) fn from_native_defaults(algorithm: CugraphAlgorithm, source: Option<CugraphBfsSource>) -> Self {
-        match algorithm.native_algorithm().definition().default_params() {
+    pub(crate) fn from_native_defaults(algorithm: CugraphAlgorithm, source: Option<CugraphBfsSource>) -> Result<Self> {
+        Ok(match algorithm.native_algorithm().definition().default_params() {
             NativeGraphAlgorithmParams::PageRank(params) => Self::PageRank(CugraphPageRankParams {
                 alpha: params.alpha,
                 epsilon: params.epsilon,
@@ -387,12 +387,12 @@ impl CugraphAlgorithmParams {
                 let default_source = match params.source_vertex {
                     NativeGraphSsspSource::I64(value) => value,
                     NativeGraphSsspSource::Input(_) => {
-                        unreachable!("native registry defaults never contain relation-backed SSSP selectors")
+                        return Err(plan("native SSSP defaults never contain relation-backed selectors"));
                     },
                 };
                 let source = source.unwrap_or_else(|| CugraphBfsSource::scalar_i64(default_source));
                 let CugraphBfsSource::Scalar(source) = source else {
-                    unreachable!("SSSP parser accepts only scalar source vertices")
+                    return Err(plan("source_vertices is supported only by cugraph_bfs"));
                 };
                 Self::Sssp(CugraphSsspParams { source_vertex: source.into(), cutoff: params.cutoff })
             },
@@ -458,7 +458,7 @@ impl CugraphAlgorithmParams {
                 initial_positions: None,
             }),
             NativeGraphAlgorithmParams::Similarity(_) => Self::Similarity(CugraphSimilarityParams::default()),
-        }
+        })
     }
 }
 

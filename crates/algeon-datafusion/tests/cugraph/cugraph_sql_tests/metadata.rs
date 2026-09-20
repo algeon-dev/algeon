@@ -308,6 +308,22 @@ async fn cugraph_validation_requires_flat_common_options() {
 }
 
 #[tokio::test]
+async fn cugraph_validation_rejects_sssp_source_vertices_list() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let batch = validate(&ctx, "cugraph_sssp", "edges", serde_json::json!({ "source_vertices": [1, 2] })).await;
+
+    assert!(!bool_value(&batch, 0, 0));
+    assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
+    assert!(string_value(&batch, 2, 0).contains("source_vertices is supported only by cugraph_bfs"));
+}
+
+#[tokio::test]
 async fn cugraph_validation_keeps_relation_aware_errors_structured() {
     let state = SessionStateBuilder::new_with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())

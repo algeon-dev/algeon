@@ -369,25 +369,16 @@ impl GraphBfsSingleflight {
     }
 
     /// Signals one joined follower's copy settlement for a GPU handoff drain.
-    /// Every joined follower signals exactly once, on copy or on drop, so the
-    /// drain reaches zero and is removed however each follower settles.
-    /// Followers of host publications or retried generations find no drain
-    /// and are unaffected.
+    /// A copy settles exactly once per follower; a drop settles through
+    /// [`leave_follower`](Self::leave_follower), which checks the group and
+    /// the drain under one lock hold. Followers of host publications or
+    /// retried generations find no drain and are unaffected.
     fn signal_handoff_copy_settled(&self, key: &GraphBfsSingleflightKey, generation: u64) {
         let Ok(mut state) = self.inner.state.lock() else {
             eprintln!("[algeon-datafusion] warning: failed to signal poisoned BFS singleflight GPU handoff drain");
             return;
         };
-        let drained = match state.gpu_handoff_drains.get(&(key.clone(), generation)) {
-            Some(drain) => {
-                drain.signal_copy_settled();
-                drain.remaining.load(Ordering::Acquire) == 0
-            },
-            None => false,
-        };
-        if drained {
-            state.gpu_handoff_drains.remove(&(key.clone(), generation));
-        }
+        state.signal_handoff_drain_locked(key, generation);
     }
 
     fn participant_count(&self, key: &GraphBfsSingleflightKey, generation: u64) -> Result<usize> {
@@ -429,6 +420,11 @@ impl GraphBfsSingleflight {
         }
     }
 
+    /// Leaves a follower's generation through one locked section: a generation
+    /// that already published a GPU handoff settles this follower's drain
+    /// share, otherwise the live group shrinks before the leader counts it.
+    /// Publish holds the same lock, so it cannot land between the drain check
+    /// and the group update and strand a counted follower without its settle.
     fn leave_follower(&self, key: &GraphBfsSingleflightKey, generation: u64, cancelled: bool) {
         if cancelled {
             self.inner.counters.cancelled_waiters.fetch_add(1, Ordering::Relaxed);
@@ -437,6 +433,9 @@ impl GraphBfsSingleflight {
             eprintln!("[algeon-datafusion] warning: failed to leave poisoned BFS singleflight state");
             return;
         };
+        if state.signal_handoff_drain_locked(key, generation) {
+            return;
+        }
         let Some(groups) = state.groups.get_mut(key) else {
             return;
         };
@@ -482,6 +481,21 @@ struct SingleflightState {
 
 #[cfg(feature = "cugraph")]
 impl SingleflightState {
+    /// Signals one follower's share of this generation's GPU handoff drain,
+    /// removing the drain at zero. Returns whether a drain existed. The
+    /// caller holds the state lock, so the check, the signal, and the removal
+    /// are atomic with respect to publish and to other followers leaving.
+    fn signal_handoff_drain_locked(&mut self, key: &GraphBfsSingleflightKey, generation: u64) -> bool {
+        let Some(drain) = self.gpu_handoff_drains.get(&(key.clone(), generation)).cloned() else {
+            return false;
+        };
+        drain.signal_copy_settled();
+        if drain.remaining.load(Ordering::Acquire) == 0 {
+            self.gpu_handoff_drains.remove(&(key.clone(), generation));
+        }
+        true
+    }
+
     fn record_event(
         &mut self,
         key: &GraphBfsSingleflightKey,
@@ -805,10 +819,12 @@ impl GraphBfsFollower {
         self.signal_handoff_settled();
     }
 
-    /// Settles this follower's share of a GPU handoff drain exactly once.
-    /// Copy and drop both settle: whichever happens first releases the
-    /// leader, and a follower of a host publication or a retried generation
-    /// finds no drain and only flips its local flag.
+    /// Settles this follower's copied share of a GPU handoff drain exactly once.
+    /// A copy implies the generation published, so the drain exists for GPU
+    /// publications; a follower of a host publication or a retried generation
+    /// finds no drain and only flips its local flag. Drop consults the same
+    /// flag and leaves through `leave_follower`, which settles an unsettled
+    /// follower under the same lock hold that checks the live group.
     fn signal_handoff_settled(&self) {
         if self.handoff_settled.swap(true, Ordering::AcqRel) {
             return;
@@ -848,10 +864,13 @@ impl GraphBfsFollower {
 #[cfg(feature = "cugraph")]
 impl Drop for GraphBfsFollower {
     fn drop(&mut self) {
-        // A follower that never copied (error, retry, or cancellation) still
-        // holds a drain share when its generation published a GPU handoff;
-        // settling on drop keeps the leader's rendezvous exact.
-        self.signal_handoff_settled();
+        // A copy already settled this follower's drain share, and the
+        // generation published before the copy, so no group membership
+        // remains to leave. Anything else leaves through one locked section
+        // that either shrinks the live group or settles the published drain.
+        if self.handoff_settled.swap(true, Ordering::AcqRel) {
+            return;
+        }
         self.coordinator.leave_follower(&self.key, self.generation, !self.completed);
     }
 }
@@ -930,10 +949,27 @@ mod tests {
 
     #[cfg(feature = "cugraph")]
     mod singleflight_tests {
-        use arrow::record_batch::RecordBatch;
+        use std::sync::Barrier;
+
+        use arrow::{
+            array::{ArrayRef, Int32Array},
+            datatypes::{DataType, Field},
+            record_batch::RecordBatch,
+        };
         use datafusion::execution::{TaskContext, memory_pool::MemoryConsumer};
+        use query_engine::{
+            admission::AttemptCapabilityEvidence,
+            plan::QueryPlanBuilder,
+            runtime::{
+                QueryAdmissionRequest,
+                resident::{GpuDataFrame, GpuResultHandle},
+            },
+            source::{LiteralBatchSource, SourceNode},
+        };
+        use tokio::task::spawn_blocking;
 
         use super::*;
+        use crate::backend::InstalledTestGpuBackend;
 
         fn key(source_vertex: i64) -> GraphBfsSingleflightKey {
             GraphBfsSingleflightKey {
@@ -1281,6 +1317,91 @@ mod tests {
             first.record_traversal_submission();
             second.record_traversal_submission();
             assert_eq!(coordinator.snapshot().physical_traversals, 2);
+        }
+
+        /// Races follower drops against a GPU publish from one barrier, so
+        /// the publish wedges between drop and group bookkeeping however the
+        /// threads interleave. Every joined follower either leaves the group
+        /// before publish (and is never counted) or settles its drain share
+        /// after publish, so the leader's drain always reaches zero and is
+        /// removed. A drop that settles the drain and leaves the group in two
+        /// lock sections strands the drain when publish lands between them.
+        #[tokio::test]
+        async fn follower_drops_racing_publish_still_drain_the_leader() {
+            const FOLLOWER_COUNT: usize = 31;
+            const ITERATIONS: usize = 100;
+
+            let backend = InstalledTestGpuBackend::new();
+            let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+            let batch =
+                RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef])
+                    .expect("literal batch");
+            let mut builder = QueryPlanBuilder::new();
+            let source =
+                builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+            let plan = builder.finish_gpu_resident(source);
+            let attempt = backend
+                .backend()
+                .session_capability()
+                .admit_query_with_request(
+                    QueryAdmissionRequest::new()
+                        .with_query_plan_capability_evidence(AttemptCapabilityEvidence::for_query_plan(&plan)),
+                )
+                .expect("attempt admission");
+            let admitted = attempt.acquire_context().expect("admitted context");
+            let context = admitted.context();
+            let runtime = context.runtime().expect("attempt runtime");
+            let upload =
+                RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef])
+                    .expect("upload batch");
+            let publication = GpuResultHandle::new(
+                context,
+                GpuDataFrame::new(cudf::DataFrame::from_record_batch(&runtime, &upload).expect("resident frame")),
+                Arc::clone(&schema),
+            )
+            .expect("resident handle");
+
+            for iteration in 0..ITERATIONS {
+                let coordinator = GraphBfsSingleflight::new(FOLLOWER_COUNT + 1);
+                let join_key = key(i64::try_from(iteration).unwrap());
+                let GraphBfsSingleflightJoin::Leader(mut leader) = coordinator.join(join_key.clone()).unwrap() else {
+                    panic!("iteration {iteration}: first request must lead")
+                };
+                let mut followers = Vec::with_capacity(FOLLOWER_COUNT);
+                for _ in 0..FOLLOWER_COUNT {
+                    let GraphBfsSingleflightJoin::Follower(follower) = coordinator.join(join_key.clone()).unwrap()
+                    else {
+                        panic!("iteration {iteration}: follower requests must follow")
+                    };
+                    followers.push(follower);
+                }
+                let barrier = Arc::new(Barrier::new(FOLLOWER_COUNT + 1));
+                let mut tasks = Vec::with_capacity(FOLLOWER_COUNT + 1);
+                for follower in followers {
+                    let gate = Arc::clone(&barrier);
+                    tasks.push(spawn_blocking(move || {
+                        gate.wait();
+                        drop(follower);
+                    }));
+                }
+                let result = GraphBfsPublishedResult::Gpu(Box::new(publication.clone()));
+                let gate = Arc::clone(&barrier);
+                tasks.push(spawn_blocking(move || {
+                    gate.wait();
+                    leader.publish(result).expect("publish must succeed");
+                }));
+                for task in tasks {
+                    task.await.expect("worker must not panic");
+                }
+                assert!(
+                    coordinator.inner.state.lock().unwrap().gpu_handoff_drains.is_empty(),
+                    "iteration {iteration}: every joined follower either left before publish or settled after it"
+                );
+            }
+
+            drop(publication);
+            drop(admitted);
+            attempt.finish();
         }
     }
 }

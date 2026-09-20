@@ -121,7 +121,7 @@ impl DataFrame {
     /// source chunk read.
     ///
     /// This is not an exact decoded-output preflight contract. It is a lower
-    /// bound for the scoped limiting allocator used by
+    /// bound for the member-enforced execution budget used by
     /// [`read_parquet_source_chunk_with_budget`](Self::read_parquet_source_chunk_with_budget),
     /// covering small lower-level allocations that happen before retained
     /// output bytes can be observed.
@@ -733,8 +733,12 @@ impl DataFrame {
 mod tests {
     use tempfile::TempDir;
 
-    use super::*;
-    use crate::frame::series::Series;
+    use super::{source_columns::materialize_all_null_read_columns, *};
+    use crate::{
+        core::types::{DataType, TypeId},
+        frame::series::Series,
+        io::source::{LocalParquetFile, SourceColumn, SourceColumnRef, SourceOutputColumn, SourceSchema},
+    };
 
     /// A bounded pass-read limit must decode the exact same rows, in the
     /// same order, as the unbounded one-shot reader.
@@ -786,5 +790,31 @@ mod tests {
         );
         assert_eq!(bounded.series("id").unwrap().to_vec_strict::<i64>().unwrap(), ids);
         assert_eq!(bounded.series("value").unwrap().to_vec_strict::<i64>().unwrap(), values);
+    }
+
+    #[test]
+    fn all_null_read_column_length_mismatch_returns_structured_error() {
+        let runtime = Runtime::new().unwrap();
+        let ids = vec![1i64, 2, 3];
+        let id_series = Series::from_column(runtime.column_from_slice(&ids).unwrap()).unwrap();
+        let frame = DataFrame::from_series([("id", id_series)]).unwrap();
+
+        let schema = SourceSchema::new([
+            SourceColumn::new("id", DataType::new(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("extra", DataType::new(TypeId::Int64), true).unwrap(),
+        ])
+        .unwrap();
+        let source = LocalParquetSource::data(
+            [LocalParquetFile::new("part-0.parquet", "part-0", []).unwrap()],
+            schema,
+            ["id"],
+            [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+            [],
+            [],
+        )
+        .unwrap();
+
+        let error = materialize_all_null_read_columns(&runtime, &source, frame, &["extra".to_string()], 5).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
     }
 }

@@ -904,10 +904,6 @@ impl Column {
         &self.domain
     }
 
-    pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
-        self.domain = domain;
-        self
-    }
     pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
     }
@@ -1376,7 +1372,6 @@ impl Column {
             )?;
             binary::binary_operation_vs(&lv, rhs, op, &out_type)
         })()
-        .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
         .map_err(|e| e.reanchor("column::binary_op_scalar").with_detail("operator", op.name()))
     }
 
@@ -1395,7 +1390,6 @@ impl Column {
             let lv = self.view()?;
             binary::binary_operation_vs(&lv, rhs, op, output_type)
         })()
-        .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
         .map_err(|e| {
             e.reanchor("column::binary_op_scalar_with_type")
                 .with_detail("operator", op.name())

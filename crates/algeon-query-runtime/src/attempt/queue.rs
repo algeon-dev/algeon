@@ -1,4 +1,6 @@
 //! Bounded best-effort report delivery and exact backend counters.
+#[cfg(test)]
+use std::sync::MutexGuard;
 use std::{
     collections::VecDeque,
     sync::{
@@ -48,7 +50,9 @@ impl AttemptCompletionQueue {
     }
     #[doc(hidden)]
     pub fn try_push(&self, report: Arc<QueryAttemptReport>) -> bool {
-        let Ok(mut queue) = self.queue.try_lock() else { return false };
+        // Blocking is bounded by one VecDeque push or drain; a failed try_lock
+        // used to miscount a contended push as a capacity overflow.
+        let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if queue.len() == self.capacity {
             false
         } else {
@@ -60,5 +64,12 @@ impl AttemptCompletionQueue {
         let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let n = max.min(queue.len());
         queue.drain(..n).collect()
+    }
+
+    /// Holds the queue mutex so tests can prove a contended push waits for
+    /// capacity instead of failing as if the queue were full.
+    #[cfg(test)]
+    pub(super) fn hold_lock_for_test(&self) -> MutexGuard<'_, VecDeque<Arc<QueryAttemptReport>>> {
+        self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

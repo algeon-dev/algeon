@@ -155,20 +155,6 @@ pub enum AttemptFailureOperation {
     AttemptControl,
 }
 
-impl AttemptFailureOperation {
-    fn from_native_operation(operation: &str) -> Self {
-        if operation.contains("query_service") || operation.contains("admission") {
-            Self::Admission
-        } else if operation.contains("cleanup") {
-            Self::Cleanup
-        } else if operation.contains("plan") || operation.contains("validate") {
-            Self::Planning
-        } else {
-            Self::Execution
-        }
-    }
-}
-
 /// Stable allowlisted fact keys for bounded failure summaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -445,7 +431,7 @@ impl AttemptFailureSummary {
     /// match a known URI, credential, or SQL pattern. The returned
     /// [`query_planning::error::QueryError`] keeps that complete source text on its
     /// ordinary error path.
-    pub fn from_native_error(error: &QueryError) -> Self {
+    pub fn from_native_error(error: &QueryError, operation: AttemptFailureOperation) -> Self {
         let mut facts = Vec::with_capacity(2);
         let reason = match error.fact_value("reason") {
             Some("backend_closing") => Some(AttemptFailureFactValue::BackendClosing),
@@ -482,7 +468,7 @@ impl AttemptFailureSummary {
             origin: AttemptFailureOrigin::Native,
             code: AttemptFailureCode::from_query_error_code(error.code()),
             status: AttemptFailureStatus::from_query_error_status(error.status()),
-            operation: AttemptFailureOperation::from_native_operation(error.operation()),
+            operation,
             text: None,
             facts,
         }
@@ -578,7 +564,11 @@ pub struct CleanupFailureSummary {
 
 impl CleanupFailureSummary {
     pub fn from_native_error(phase: CleanupFailurePhase, error: &QueryError) -> Self {
-        Self { phase, failure: AttemptFailureSummary::from_native_error(error), complete: true }
+        Self {
+            phase,
+            failure: AttemptFailureSummary::from_native_error(error, AttemptFailureOperation::Cleanup),
+            complete: true,
+        }
     }
 
     pub const fn stream_synchronization_failed() -> Self {
@@ -1666,7 +1656,10 @@ impl RuntimeTerminalOutcome {
         if error.code() == QueryErrorCode::Cancelled {
             Self::Cancelled
         } else {
-            Self::failed(&AttemptFailureSummary::from_native_error(error))
+            Self::Failed {
+                error_code: AttemptFailureCode::from_query_error_code(error.code()),
+                error_status: AttemptFailureStatus::from_query_error_status(error.status()),
+            }
         }
     }
 
@@ -1675,10 +1668,13 @@ impl RuntimeTerminalOutcome {
     /// remains a text-free control outcome, while an expired deadline retains
     /// its stable reason beside the same `Cancelled` terminal outcome.
     #[doc(hidden)]
-    pub fn primary_failure_from_query_error(error: &QueryError) -> Option<AttemptFailureSummary> {
+    pub fn primary_failure_from_query_error(
+        error: &QueryError,
+        operation: AttemptFailureOperation,
+    ) -> Option<AttemptFailureSummary> {
         match error.code() {
             QueryErrorCode::Cancelled if error.fact_value("reason") != Some("deadline_expired") => None,
-            _ => Some(AttemptFailureSummary::from_native_error(error)),
+            _ => Some(AttemptFailureSummary::from_native_error(error, operation)),
         }
     }
 

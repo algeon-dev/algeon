@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Barrier},
+    time::Duration,
+};
 
 use ::object_store::{ObjectStoreExt, memory::InMemory, path::Path};
 use query_planning::{
@@ -350,13 +353,52 @@ fn cache_fill_byte_budget_tracks_acquire_grow_and_release() {
         .unwrap()
         .unwrap();
     assert_eq!(first.bytes(), 256);
-    first.grow_to(512).unwrap();
+    assert!(first.try_grow(512).unwrap());
     assert_eq!(first.bytes(), 512);
     let second = budget.try_acquire(512).unwrap().unwrap();
     drop(first);
     let third = budget.try_acquire(512).unwrap().unwrap();
     drop(second);
     drop(third);
+}
+
+#[test]
+fn cache_fill_byte_budget_grow_reports_saturation_without_waiting() {
+    let budget = CacheFillByteBudget::new(1024).unwrap();
+    let mut first = budget.try_acquire(768).unwrap().unwrap();
+    let _second = budget.try_acquire(256).unwrap().unwrap();
+
+    // The budget is fully held: growth fails immediately instead of waiting
+    // for the other holder, and the permit keeps its original charge.
+    assert!(!first.try_grow(1024).unwrap());
+    assert_eq!(first.bytes(), 768);
+    // Shrinking or re-stating the current charge always succeeds.
+    assert!(first.try_grow(768).unwrap());
+    assert!(first.try_grow(100).unwrap());
+    assert_eq!(first.bytes(), 768);
+}
+
+#[test]
+fn cache_fill_byte_budget_two_holders_growing_past_the_remainder_never_deadlock() {
+    // Two fills each hold half the budget and both ask for more than the
+    // remainder covers. Neither waits, so neither can strand the other while
+    // holding its share; both observe saturation and abandon.
+    let budget = CacheFillByteBudget::new(1024).unwrap();
+    let mut first = budget.try_acquire(512).unwrap().unwrap();
+    let mut second = budget.try_acquire(512).unwrap().unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let first_gate = Arc::clone(&barrier);
+    let second_gate = Arc::clone(&barrier);
+    let (first_grew, second_grew) = std::thread::scope(|scope| {
+        let first_handle = scope.spawn(move || {
+            first_gate.wait();
+            first.try_grow(1024)
+        });
+        second_gate.wait();
+        let second_grew = second.try_grow(1024);
+        (first_handle.join().unwrap(), second_grew)
+    });
+    assert_eq!((first_grew.unwrap(), second_grew.unwrap()), (false, false));
 }
 
 #[test]

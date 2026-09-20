@@ -397,16 +397,3 @@ fn fast_hash_surface_is_publicly_importable() {
     let empty: FastIndexMap<String, i32> = fast_index_map();
     assert!(empty.is_empty());
 }
-
-#[test]
-fn expression_allocation_preflight_surface_is_publicly_importable() {
-    use cudf::ops::expr::{
-        DataFrameExpressionAllocationPreflight, DataFrameExpressionInputColumn, DataFrameExpressionPeakGroup,
-        dataframe_expression_allocation_preflight_for_metadata,
-    };
-
-    let _: Option<DataFrameExpressionAllocationPreflight> = None;
-    let _: Option<DataFrameExpressionPeakGroup> = None;
-    let input = DataFrameExpressionInputColumn::new("value", cudf::DataType::new(cudf::TypeId::Int32), false, 4);
-    let _ = dataframe_expression_allocation_preflight_for_metadata(0, &[input], &[], false);
-}

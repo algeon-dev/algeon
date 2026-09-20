@@ -13,7 +13,7 @@ mod sequence;
 mod testing_hooks;
 mod view;
 
-pub(crate) use convert::copy_view_to_owned;
+pub(crate) use convert::{copy_view_in, copy_view_to_owned};
 pub use device_buffer::{DeviceBuffer, ValidatedFloat32DeviceBuffer, ValidatedInt64DeviceBufferRange};
 pub use device_slice::DeviceSlice;
 pub use owned::Column;
