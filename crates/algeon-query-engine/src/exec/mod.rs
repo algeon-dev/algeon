@@ -79,6 +79,9 @@ use query_planning::validate_query_plan;
 #[doc(hidden)]
 pub use source::sanitize_cache_component;
 use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};
+#[cfg(all(feature = "cuvs", feature = "test-hooks"))]
+#[doc(hidden)]
+pub use vector_algorithm::set_vector_after_index_build_hook_for_tests;
 
 use self::{
     bounded::*,

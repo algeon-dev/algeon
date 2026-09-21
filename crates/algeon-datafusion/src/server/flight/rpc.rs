@@ -738,6 +738,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                         let (status, captured) = datafusion_error_to_status_and_capture(
                             error,
                             "algeon_datafusion.server.flight.do_action_create_prepared_statement.create_logical_plan",
+                            FailedStatement::Other,
                         );
                         let status = status_with_query_id_and_correlation_id(
                             status,
@@ -778,6 +779,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             let (status, captured) = datafusion_error_to_status_and_capture(
                 error,
                 "algeon_datafusion.server.flight.do_action_create_prepared_statement.parameter_binding",
+                FailedStatement::Other,
             );
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
             planning_lease.finish_captured("planning", &status, captured);
@@ -795,6 +797,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 let (status, captured) = datafusion_error_to_status_and_capture(
                     error,
                     "algeon_datafusion.server.flight.do_action_create_prepared_statement.dataset_schema",
+                    FailedStatement::Other,
                 );
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 planning_lease.finish_captured("planning", &status, captured);

@@ -48,6 +48,7 @@ use super::coordinator::CoordinatorArtifact;
 #[cfg(test)]
 use super::coordinator::RetainedUnavailableReason;
 use super::{
+    adapter_error::FailedStatement,
     admission::QueryAdmission,
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,

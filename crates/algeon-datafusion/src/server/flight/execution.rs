@@ -343,7 +343,11 @@ impl DatafusionAlgeonFlightSqlService {
             ) {
                 Ok(context) => context,
                 Err(error) => {
-                    let (status, captured) = datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                    let (status, captured) = datafusion_error_to_status_and_capture(
+                        error,
+                        ticket_kind.sql_operation(),
+                        FailedStatement::Other,
+                    );
                     let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
                     return Err(status);
@@ -396,6 +400,7 @@ impl DatafusionAlgeonFlightSqlService {
                     let (status, captured) = datafusion_error_to_status_and_capture(
                         error,
                         "algeon_datafusion.server.flight.do_get_statement.explain_gpu.project",
+                        FailedStatement::Other,
                     );
                     let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
@@ -459,7 +464,11 @@ impl DatafusionAlgeonFlightSqlService {
             ) {
                 Ok(context) => context,
                 Err(error) => {
-                    let (status, captured) = datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                    let (status, captured) = datafusion_error_to_status_and_capture(
+                        error,
+                        ticket_kind.sql_operation(),
+                        FailedStatement::Other,
+                    );
                     let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                     coordinator_terminal.finish_captured("planning", &status, captured);
                     return Err(status);
@@ -485,7 +494,7 @@ impl DatafusionAlgeonFlightSqlService {
                         attempt.planning_failed(&error);
                     }
                     let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), FailedStatement::Other);
                     let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
@@ -542,6 +551,7 @@ impl DatafusionAlgeonFlightSqlService {
             return Err(status);
         }
         let completes_eagerly_without_result_stream = matches!(&logical_plan, LogicalPlan::Ddl(_));
+        let failed_statement = FailedStatement::of(&logical_plan);
         let df = tokio::select! {
             result = query_ctx.execute_logical_plan(logical_plan)
                 .instrument(Self::query_stage_span(
@@ -556,7 +566,7 @@ impl DatafusionAlgeonFlightSqlService {
                         attempt.planning_failed(&error);
                     }
                     let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation());
+                        datafusion_error_to_status_and_capture(error, ticket_kind.sql_operation(), failed_statement);
                     let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
@@ -637,7 +647,7 @@ impl DatafusionAlgeonFlightSqlService {
                         error.to_string(),
                     );
                     let (status, captured) =
-                        datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation());
+                        datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation(), FailedStatement::Other);
                     let status = status_with_query_id(status, &query_id);
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
@@ -687,8 +697,11 @@ impl DatafusionAlgeonFlightSqlService {
         let stream = match stream_result {
             Ok(stream) => stream,
             Err(error) => {
-                let (status, captured) =
-                    datafusion_error_to_status_and_capture(error, ticket_kind.execute_stream_operation());
+                let (status, captured) = datafusion_error_to_status_and_capture(
+                    error,
+                    ticket_kind.execute_stream_operation(),
+                    FailedStatement::Other,
+                );
                 let status = status_with_query_id(status, &query_id);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
                 coordinator_terminal.finish_captured("execute_stream", &status, captured);

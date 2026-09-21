@@ -98,6 +98,8 @@ mod lane_execution;
 // Shared with the CPU contract target; this binary only calls three constructors.
 #[expect(dead_code, reason = "shared fixture file partially exercised in this integration test binary")]
 mod remaining_topologies;
+#[path = "native_contract_tests/pipeline_compiled_execution/source_read_lease.rs"]
+mod source_read_lease;
 
 use fixtures_parquet::*;
 use fixtures_plans::*;

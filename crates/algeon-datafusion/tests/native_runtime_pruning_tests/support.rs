@@ -19,8 +19,16 @@ pub(super) fn direct_friendly_sql_session_config() -> SessionConfig {
 }
 
 pub(super) async fn native_datafusion_sql_plan(path: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
+    native_datafusion_sql_plan_with_config(path, SessionConfig::new(), sql).await
+}
+
+pub(super) async fn native_datafusion_sql_plan_with_config(
+    path: &std::path::Path,
+    config: SessionConfig,
+    sql: &str,
+) -> Arc<dyn ExecutionPlan> {
     let state = pruning_test_backend()
-        .install_on(SessionStateBuilder::new_with_default_features())
+        .install_on(SessionStateBuilder::new_with_default_features().with_config(config))
         .expect("pruning backend must install on the DataFusion session")
         .build();
     let ctx = SessionContext::new_with_state(state);
