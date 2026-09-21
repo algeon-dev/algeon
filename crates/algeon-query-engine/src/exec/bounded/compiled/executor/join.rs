@@ -258,6 +258,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         node,
                         build,
                         stream,
+                        self.aggregate_dispatch.as_ref(),
                     )
                 },
             }
@@ -287,7 +288,14 @@ impl CompiledGpuTaskExecutor<'_> {
                     },
                 };
                 let stream = self.apply_dynamic_filters_to_join_probe_stream(node_id, node, stream)?;
-                execute_bounded_compiled_join_probe_from_frame_stream(&mut self.execution, node_id, node, build, stream)
+                execute_bounded_compiled_join_probe_from_frame_stream(
+                    &mut self.execution,
+                    node_id,
+                    node,
+                    build,
+                    stream,
+                    self.aggregate_dispatch.as_ref(),
+                )
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
             {
                 return Err(invalid("compiled join probe cannot share a pending source read")
@@ -351,8 +359,14 @@ impl CompiledGpuTaskExecutor<'_> {
                 },
             }
         } else {
-            let frame = execute_bounded_compiled_join_materialize(&mut self.execution, node_id, node, probe)
-                .map_err(|error| attach_task_facts(error, task, node_id))?;
+            let frame = execute_bounded_compiled_join_materialize(
+                &mut self.execution,
+                node_id,
+                node,
+                probe,
+                self.aggregate_dispatch.as_ref(),
+            )
+            .map_err(|error| attach_task_facts(error, task, node_id))?;
             CompiledGpuResource::new(frame)
         };
         Ok(CompiledTaskOutput::new(vec![(output, resource)]))

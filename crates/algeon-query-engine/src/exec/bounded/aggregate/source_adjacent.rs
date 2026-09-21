@@ -68,7 +68,7 @@ pub(in crate::exec::bounded) fn execute_source_aggregate_with_dispatch(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
-    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    dispatch: Option<&AggregateLaneDispatch>,
     partitioned: bool,
 ) -> Result<CompiledGpuResource> {
     if partitioned {
@@ -408,7 +408,7 @@ fn execute_partitioned_source_adjacent_aggregate(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
-    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<CompiledGpuResource> {
     let owned = dispatch.map(|_| Arc::new(OwnedSourceAdjacentAggregate::new(bounded)));
     let partitioner = source_adjacent_aggregate_partitioner(bounded);
@@ -607,7 +607,7 @@ fn execute_partitioned_source_adjacent_batch_work(
     bounded: &BoundedPlan<'_>,
     work: PartitionedSourceBatchWork,
     partitioner: &SourceAdjacentAggregatePartitioner,
-    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    dispatch: Option<&AggregateLaneDispatch>,
     owned: Option<&Arc<OwnedSourceAdjacentAggregate>>,
 ) -> Result<PartitionedSourceBatchOutput> {
     let Some(dispatch) = dispatch else {
@@ -737,7 +737,7 @@ fn execute_partitioned_source_adjacent_final_work(
     pending: Vec<Vec<SourceAdjacentPartitionInput>>,
     partition_count: usize,
     partitioner: &SourceAdjacentAggregatePartitioner,
-    dispatch: Option<&AggregateLaneDispatch<'_>>,
+    dispatch: Option<&AggregateLaneDispatch>,
     owned: Option<&Arc<OwnedSourceAdjacentAggregate>>,
 ) -> Result<Vec<SourceAdjacentAlignedPartial>> {
     let Some(dispatch) = dispatch else {

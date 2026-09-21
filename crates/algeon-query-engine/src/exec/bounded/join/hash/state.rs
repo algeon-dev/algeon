@@ -6,19 +6,22 @@ use super::{
 };
 
 // Reusable build artifact plus its observed native allocation.
+// Fields stay visible across the join owner so the parallel-probe owner can
+// share an immutable build view without new unsafe impls; per-lane scratch
+// remains private to each probe call.
 pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
-    pub(in crate::exec::bounded::join::hash) build_side: JoinSide,
-    pub(in crate::exec::bounded::join::hash) probe_side: JoinSide,
-    pub(in crate::exec::bounded::join::hash) left_keys: Vec<String>,
-    pub(in crate::exec::bounded::join::hash) right_keys: Vec<String>,
-    pub(in crate::exec::bounded::join::hash) left_columns: Vec<String>,
-    pub(in crate::exec::bounded::join::hash) right_columns: Vec<String>,
-    pub(in crate::exec::bounded::join::hash) build: BoundedJoinSideFrame,
-    pub(in crate::exec::bounded::join::hash) hash_join: GpuHashJoinBuildHandle,
-    pub(in crate::exec::bounded::join::hash) hash_table_bytes: u64,
-    pub(in crate::exec::bounded::join::hash) left_indices_from_probe: bool,
-    pub(in crate::exec::bounded::join::hash) build_keys_unique: bool,
-    pub(in crate::exec::bounded::join::hash) timer: Instant,
+    pub(in crate::exec::bounded) build_side: JoinSide,
+    pub(in crate::exec::bounded) probe_side: JoinSide,
+    pub(in crate::exec::bounded) left_keys: Vec<String>,
+    pub(in crate::exec::bounded) right_keys: Vec<String>,
+    pub(in crate::exec::bounded) left_columns: Vec<String>,
+    pub(in crate::exec::bounded) right_columns: Vec<String>,
+    pub(in crate::exec::bounded) build: BoundedJoinSideFrame,
+    pub(in crate::exec::bounded) hash_join: GpuHashJoinBuildHandle,
+    pub(in crate::exec::bounded) hash_table_bytes: u64,
+    pub(in crate::exec::bounded) left_indices_from_probe: bool,
+    pub(in crate::exec::bounded) build_keys_unique: bool,
+    pub(in crate::exec::bounded) timer: Instant,
 }
 
 // Probe indices and observed allocation facts captured before materializing output.

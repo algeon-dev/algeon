@@ -534,3 +534,1231 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     assert_eq!(run(2), expected, "two lanes preserve the single-lane overflow outcome");
     assert_eq!(run(4), expected, "four lanes preserve the single-lane overflow outcome");
 }
+
+/// Join DAG branches overlap on lanes while one build serves every probe.
+///
+/// The probe side is a union of two literal branches; the build side is a
+/// third literal. Width 1 runs the lane protocol inline, width 2 runs the
+/// two union branches on pool workers with disjoint forks, and the serial
+/// scheduler is the baseline. All three share `execute_task` and the
+/// claim/output-ready/commit protocol. The hash table is built once
+/// (`hash_join_build_count == 1`) regardless of probe branch count, and the
+/// lane gate proves the two branches occupied distinct lanes and forks.
+#[test]
+fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
+    use std::sync::Mutex;
+
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let build_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("join build literal batch");
+    let left_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("join probe left literal batch");
+    let right_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 3])) as ArrayRef])
+            .expect("join probe right literal batch");
+    let mut builder = QueryPlanBuilder::new();
+    let build =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![build_batch])));
+    let left =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
+    let right =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
+    let probe = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let join = builder.add_join(
+        build,
+        probe,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
+    let admission = decision.admission().expect("join branches use the compiled admission");
+    let pipeline = admission.pipeline().clone();
+    assert!(is_lane_family_pipeline(&pipeline), "join pipelines dispatch on lanes");
+    assert!(
+        pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::JoinBuild),
+        "the join trio stays in the lane family on the coordinator"
+    );
+
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("join plan acquires a context");
+    let route = test_context.attempt_stream_provider_route().expect("join attempt owns a fork route");
+
+    let run = |requested_lanes: Option<usize>, gate: bool| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("join-lane-parity");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let observed = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
+        let completed = match requested_lanes {
+            None => {
+                let state = scheduler.run(&mut executor).expect("serial join should execute");
+                assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
+                executor.take_host_output().expect("serial join materializes")
+            },
+            Some(width) => {
+                let mut support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                if gate {
+                    // Rendezvous gate: both lane workers must reach completion
+                    // (holding uncommitted outputs) before either returns.
+                    // Sequential execution on distinct forks cannot pass: the
+                    // first worker blocks in the gate until the second
+                    // arrives, proving simultaneous in-flight branch work and
+                    // distinct fork ownership, not just post-hoc IDs.
+                    let observed = Arc::clone(&observed);
+                    support = support.with_lane_completion_gate(Arc::new(move |lane, fork| {
+                        let (mutex, wake) = &*observed;
+                        let mut guard = mutex.lock().expect("lane observation mutex");
+                        guard.push((lane, fork));
+                        wake.notify_all();
+                        let (guard, _) = wake
+                            .wait_timeout_while(guard, Duration::from_secs(10), |guard| guard.len() < 2)
+                            .expect("lane rendezvous wait");
+                        assert!(guard.len() >= 2, "two branch lanes must hold uncommitted outputs simultaneously");
+                    }));
+                }
+                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                    .expect("lane-dispatched join should execute");
+                assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
+                executor.take_host_output().expect("lane join materializes")
+            },
+        };
+        let mut values = int32_values(&completed, 0);
+        values.sort();
+        let builds = metrics.snapshot().hash_join_build_count;
+        let observed = observed.0.lock().expect("observation mutex").clone();
+        (values, builds, observed)
+    };
+
+    let (expected, expected_builds, _) = run(None, false);
+    assert_eq!(expected, vec![Some(1), Some(2), Some(2)], "serial baseline joins every probe row once");
+    assert_eq!(expected_builds, 1, "serial build runs once for every probe branch");
+    let (width1, width1_builds, _) = run(Some(1), false);
+    assert_eq!(width1, expected, "width 1 runs the same lane protocol inline");
+    assert_eq!(width1_builds, 1, "width 1 still builds once");
+    let (width2, width2_builds, observed) = run(Some(2), true);
+    assert_eq!(width2, expected, "width 2 computes every branch input exactly once");
+    assert_eq!(width2_builds, 1, "probe branch count never grows the build count");
+    let mut lanes: Vec<_> = observed.iter().map(|(lane, _)| *lane).collect();
+    lanes.sort();
+    lanes.dedup();
+    assert!(lanes.len() >= 2, "two union branches occupied distinct lanes: {observed:?}");
+    let mut forks: Vec<_> = observed.iter().filter_map(|(_, fork)| *fork).collect();
+    forks.sort();
+    forks.dedup();
+    assert!(forks.len() >= 2, "two union branches owned distinct fork streams: {observed:?}");
+}
+
+/// Probe batch growth never grows the build count, across join kinds.
+///
+/// The probe parquet doubles its row groups while the build stays one
+/// literal; both shapes report exactly one hash build and identical joined
+/// rows. Inner and left-semi stand in for the parallel-safe chunk contract
+/// (concatenation preserves membership); the serial outer path is covered by
+/// width parity so a future parallel outer merge cannot drift semantics.
+#[test]
+fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
+    let dir = unique_temp_dir("query-engine-join-probe-scaling");
+    let build_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let probe_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
+    let run_shape = |probe_rows: Vec<i32>, join_type: JoinType| {
+        let path = dir.join(format!("probe-{}-{}.parquet", probe_rows.len(), join_type));
+        let values: Vec<i64> = (0..probe_rows.len() as i64).collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&probe_schema),
+            vec![
+                Arc::new(Int32Array::from(probe_rows)) as ArrayRef,
+                Arc::new(arrow::array::Int64Array::from(values)) as ArrayRef,
+            ],
+        )
+        .expect("probe batch");
+        let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), Arc::clone(&probe_schema), Some(props))
+            .expect("probe parquet writer");
+        writer.write(&batch).expect("probe parquet write");
+        writer.close().expect("probe parquet close");
+        let build_batch =
+            RecordBatch::try_new(Arc::clone(&build_schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+                .expect("build batch");
+        let mut builder = QueryPlanBuilder::new();
+        let build = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+            Arc::clone(&build_schema),
+            vec![build_batch],
+        )));
+        let probe = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&path, &probe_schema)));
+        // Filtered semi builds on the right dimension side; inner builds on
+        // the left literal. Both keep one build for every probe batch.
+        let (output_schema, projection, build_side, left, right) = match join_type {
+            JoinType::LeftSemi => (
+                Arc::new(Schema::new(vec![
+                    Field::new("k", DataType::Int32, false),
+                    Field::new("v", DataType::Int64, false),
+                ])),
+                vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ],
+                JoinSide::Right,
+                probe,
+                build,
+            ),
+            _ => (
+                Arc::new(Schema::new(vec![
+                    Field::new("k", DataType::Int32, false),
+                    Field::new("v", DataType::Int64, false),
+                ])),
+                vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "v"),
+                ],
+                JoinSide::Left,
+                build,
+                probe,
+            ),
+        };
+        let join = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+                .with_output_projection(projection)
+                .with_build_side(build_side),
+            output_schema,
+        );
+        let plan = builder.finish_with_host_sink(join);
+        let decision = bounded_pipeline_decision(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            query_engine::rapids_backend::rapids_analysis_context(),
+        )
+        .expect("join admission should not error");
+        let pipeline = decision
+            .admission()
+            .unwrap_or_else(|| panic!("join {join_type} uses compiled admission"))
+            .pipeline()
+            .clone();
+        let runtime = lane_shared_runtime(cudf::Runtime::new().expect("join scaling runtime"));
+        let test_context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
+        let route = test_context.attempt_stream_provider_route().expect("join scaling route");
+        let run = |width: usize| {
+            let metrics = query_engine::exec::ExecutionMetrics::detached("join-probe-scaling");
+            let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+            let gpu_inputs = GpuResidentInputMap::new();
+            let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join scaling schedulable");
+            let mut executor =
+                CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+            let support = LaneDispatchSupport::new(
+                Arc::clone(&route),
+                metrics_context.clone(),
+                plan.clone(),
+                pipeline.clone(),
+                gpu_inputs.clone(),
+                metrics.clone(),
+            )
+            .with_requested_lanes(width);
+            let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                .expect("join scaling lanes should execute");
+            assert_eq!(state.live_resource_count(), 0);
+            let batch = executor.take_host_output().expect("join scaling output");
+            let snapshot = metrics.snapshot();
+            (batch, snapshot.hash_join_build_count, snapshot.filtered_join_build_count)
+        };
+        (run(1), run(2))
+    };
+    let ((inner_batch1, builds1, _), (inner_batch2, builds2, _)) = run_shape(vec![1, 2], JoinType::Inner);
+    let small1 = int32_int64_pairs_sorted(&inner_batch1, 0, 1);
+    assert_eq!((builds1, builds2), (1, 1), "small probe builds once on both widths");
+    assert_eq!(int32_int64_pairs_sorted(&inner_batch2, 0, 1), small1);
+    assert_eq!(small1, vec![(Some(1), Some(0)), (Some(2), Some(1))]);
+    let ((inner_batch1, builds1, _), (inner_batch2, builds2, _)) =
+        run_shape(vec![1, 2, 2, 3, 1, 2, 2, 3], JoinType::Inner);
+    let inner1 = int32_int64_pairs_sorted(&inner_batch1, 0, 1);
+    let inner2 = int32_int64_pairs_sorted(&inner_batch2, 0, 1);
+    assert_eq!(builds1, 1, "large probe still builds once (width 1)");
+    assert_eq!(builds2, 1, "large probe still builds once (width 2): batch growth never grows builds");
+    assert_eq!(inner1, inner2, "widths agree on large inner probe batches");
+    assert_eq!(inner1.len(), small1.len() * 2 + 2, "large probe joins every row once");
+    let ((semi_batch1, semi_hash1, semi_f1), (semi_batch2, semi_hash2, semi_f2)) =
+        run_shape(vec![1, 2, 2, 3, 1, 2, 2, 3], JoinType::LeftSemi);
+    let semi1 = int32_int64_pairs_sorted(&semi_batch1, 0, 1);
+    let semi2 = int32_int64_pairs_sorted(&semi_batch2, 0, 1);
+    assert_eq!((semi_hash1, semi_hash2), (0, 0), "filtered semi uses no hash build");
+    assert_eq!((semi_f1, semi_f2), (1, 1), "filtered build runs once for every probe batch count");
+    assert_eq!(semi1, semi2, "widths agree on semi probe batches");
+    assert_eq!(semi1, inner1, "semi keeps every matching probe row once");
+}
+
+fn bool_values(batch: &RecordBatch, column: usize) -> Vec<Option<bool>> {
+    use arrow::array::Array as _;
+    let array = batch.column(column).as_any().downcast_ref::<arrow::array::BooleanArray>().expect("boolean column");
+    (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
+}
+
+fn int32_strlens_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, usize)> {
+    use arrow::array::Array as _;
+    let strings = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().expect("utf8 payload column");
+    let mut pairs = int32_values(batch, 0)
+        .into_iter()
+        .zip((0..strings.len()).map(|index| {
+            assert!(!strings.is_null(index), "payload strings stay non-null");
+            strings.value(index).len()
+        }))
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+fn int32_int64_int64_triples_sorted(
+    batch: &RecordBatch,
+    c0: usize,
+    c1: usize,
+    c2: usize,
+) -> Vec<(Option<i32>, Option<i64>, Option<i64>)> {
+    let mut triples = int32_values(batch, c0)
+        .into_iter()
+        .zip(int64_values(batch, c1))
+        .zip(int64_values(batch, c2))
+        .map(|((a, b), c)| (a, b, c))
+        .collect::<Vec<_>>();
+    triples.sort();
+    triples
+}
+
+fn int32_bool_pairs_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, Option<bool>)> {
+    let mut pairs = int32_values(batch, 0).into_iter().zip(bool_values(batch, 1)).collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+fn int32_strlen_int64_triples_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, usize, Option<i64>)> {
+    use arrow::array::Array as _;
+    let strings = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().expect("utf8 payload column");
+    let mut triples = int32_values(batch, 0)
+        .into_iter()
+        .zip((0..strings.len()).map(|index| strings.value(index).len()))
+        .zip(int64_values(batch, 2))
+        .map(|((a, b), c)| (a, b, c))
+        .collect::<Vec<_>>();
+    triples.sort();
+    triples
+}
+
+/// A filtered semi over four leaf files feeds an eager four-frame stream
+/// into a second hash join, whose probe then shares one build across chunks
+/// on lanes. Wide payloads (~700KB per row) force the byte-driven chunk
+/// planner to keep every file in its own chunk; tiny rows would be merged
+/// into one chunk and collapse the stream to a single frame. The
+/// `parallel_probe=hash` strategy decision proves the new path ran (chunk
+/// count and lane width recorded); the hash/filtered build counts prove batch
+/// growth never rebuilds; serial/width-1/width-2 agreement plus the
+/// hand-checked rows prove semantics.
+#[test]
+fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
+    let dir = unique_temp_dir("query-engine-chained-hash-parallel-probe");
+    // Wide payloads (~700KB per row) force the byte-driven chunk planner to
+    // keep every probe file in its own chunk; tiny rows would be merged into
+    // one chunk and collapse the stream to a single frame.
+    let wide = "x".repeat(700_000);
+    let probe_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Utf8, false)]));
+    let mut probe_files = Vec::new();
+    for (file_index, keys) in [[1, 2], [2, 3], [1, 2], [2, 3]].into_iter().enumerate() {
+        let path = dir.join(format!("probe-{file_index}.parquet"));
+        let values = vec![wide.clone(), wide.clone()];
+        let batch = RecordBatch::try_new(
+            Arc::clone(&probe_schema),
+            vec![
+                Arc::new(Int32Array::from(keys.to_vec())) as ArrayRef,
+                Arc::new(arrow::array::StringArray::from(values)) as ArrayRef,
+            ],
+        )
+        .expect("chained probe batch");
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), Arc::clone(&probe_schema), None)
+            .expect("chained probe writer");
+        writer.write(&batch).expect("chained probe write");
+        writer.close().expect("chained probe close");
+        probe_files.push(enrich_fixture_local_parquet_file(LocalParquetFile::new(&path)));
+    }
+    let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let kv_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Utf8, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let b1 = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+        Arc::clone(&key_schema),
+        vec![
+            RecordBatch::try_new(Arc::clone(&key_schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+                .expect("semi build batch"),
+        ],
+    )));
+    let p1 = builder.add_source(SourceNode::LocalParquet(NativeLocalParquetSource::from_files(
+        probe_files,
+        Arc::clone(&probe_schema),
+        vec!["k".to_string(), "v".to_string()],
+    )));
+    let join1 = builder.add_join(
+        p1,
+        b1,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&kv_schema),
+    );
+    let b2 = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+        Arc::clone(&key_schema),
+        vec![
+            RecordBatch::try_new(Arc::clone(&key_schema), vec![Arc::new(Int32Array::from(vec![2])) as ArrayRef])
+                .expect("hash build batch"),
+        ],
+    )));
+    let join2 = builder.add_join(
+        join1,
+        b2,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&kv_schema),
+    );
+    let plan = builder.finish_with_host_sink(join2);
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("chained join admission should not error");
+    let pipeline = decision.admission().expect("chained joins use compiled admission").pipeline().clone();
+    assert_eq!(
+        pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinBuild).count(),
+        2,
+        "two joins build separately"
+    );
+    let runtime = lane_shared_runtime(cudf::Runtime::new().expect("chained join runtime"));
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("chained join context");
+    let route = test_context.attempt_stream_provider_route().expect("chained join route");
+    let run = |width: Option<usize>| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("chained-hash-parallel");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("chained pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let batch = match width {
+            None => {
+                let state = scheduler.run(&mut executor).expect("serial chained joins should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("serial chained output")
+            },
+            Some(width) => {
+                let support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                    .expect("lane chained joins should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("lane chained output")
+            },
+        };
+        (batch, metrics.snapshot())
+    };
+    let wide_len = "x".repeat(700_000).len();
+    let expected = vec![(Some(2), wide_len), (Some(2), wide_len), (Some(2), wide_len), (Some(2), wide_len)];
+    for (label, (batch, snapshot)) in [("serial", run(None)), ("width1", run(Some(1))), ("width2", run(Some(2)))] {
+        assert_eq!(int32_strlens_sorted(&batch), expected, "{label} joins every chained probe row once");
+        assert_eq!(snapshot.hash_join_build_count, 1, "{label} builds the hash table once");
+        assert_eq!(snapshot.filtered_join_build_count, 1, "{label} builds the filtered table once");
+        assert_eq!(
+            snapshot.source_chunks_committed, 4,
+            "{label} reads four probe files as four chunks feeding four probe batches"
+        );
+    }
+    let (_, width2_snapshot) = run(Some(2));
+    let parallel = width2_snapshot
+        .join_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("parallel_probe").map(String::as_str) == Some("hash"))
+        .expect("width-2 run records the hash parallel-probe decision");
+    assert_eq!(
+        parallel.facts.get("parallel_probe_chunks").map(String::as_str),
+        Some("4"),
+        "four probe chunks share the second join build"
+    );
+    assert!(
+        parallel.facts.get("parallel_probe_width").map(String::as_str).unwrap_or("1").parse::<usize>().unwrap() >= 2,
+        "probe chunks spread over at least two lanes: {:?}",
+        parallel.facts
+    );
+}
+
+/// Same chain shape with a faked-large build so the second join plans a
+/// split partitioned build; its lazy stream then drains probe chunks in
+/// parallel sharing the partitions. Skew handling stays inside the existing
+/// per-chunk driver (split/retry/typed failure), which lanes reuse
+/// unchanged; adding lanes never assumes the max partition shrinks.
+#[test]
+fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
+    let dir = unique_temp_dir("query-engine-chained-partitioned-parallel-probe");
+    let wide = "x".repeat(700_000);
+    let probe_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Utf8, false)]));
+    let mut probe_files = Vec::new();
+    for (file_index, keys) in [[1, 2], [2, 3], [1, 2], [2, 3]].into_iter().enumerate() {
+        let probe_path = dir.join(format!("probe-{file_index}.parquet"));
+        let values = vec![wide.clone(), wide.clone()];
+        let batch = RecordBatch::try_new(
+            Arc::clone(&probe_schema),
+            vec![
+                Arc::new(Int32Array::from(keys.to_vec())) as ArrayRef,
+                Arc::new(arrow::array::StringArray::from(values)) as ArrayRef,
+            ],
+        )
+        .expect("partitioned chain probe batch");
+        let mut writer = ArrowWriter::try_new(File::create(&probe_path).unwrap(), Arc::clone(&probe_schema), None)
+            .expect("partitioned chain probe writer");
+        writer.write(&batch).expect("partitioned chain probe write");
+        writer.close().expect("partitioned chain probe close");
+        probe_files.push(enrich_fixture_local_parquet_file(LocalParquetFile::new(&probe_path)));
+    }
+    let key_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let kv_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Utf8, false)]));
+    let kvw_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v", DataType::Utf8, false),
+        Field::new("w", DataType::Int64, false),
+    ]));
+    let build_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("w", DataType::Int64, false)]));
+    let build_path = dir.join("build.parquet");
+    let build_batch = RecordBatch::try_new(
+        Arc::clone(&build_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(arrow::array::Int64Array::from(vec![100, 200])) as ArrayRef,
+        ],
+    )
+    .expect("partitioned chain build batch");
+    let mut build_writer = ArrowWriter::try_new(File::create(&build_path).unwrap(), Arc::clone(&build_schema), None)
+        .expect("partitioned chain build writer");
+    build_writer.write(&build_batch).expect("partitioned chain build write");
+    build_writer.close().expect("partitioned chain build close");
+    let mut builder = QueryPlanBuilder::new();
+    let b1 = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+        Arc::clone(&key_schema),
+        vec![
+            RecordBatch::try_new(Arc::clone(&key_schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+                .expect("semi build batch"),
+        ],
+    )));
+    let p1 = builder.add_source(SourceNode::LocalParquet(NativeLocalParquetSource::from_files(
+        probe_files,
+        Arc::clone(&probe_schema),
+        vec!["k".to_string(), "v".to_string()],
+    )));
+    let join1 = builder.add_join(
+        p1,
+        b1,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&kv_schema),
+    );
+    let mut build_file = enrich_fixture_local_parquet_file(LocalParquetFile::new(&build_path));
+    build_file.row_group_rows = Some(vec![100_000_000]);
+    let b2 = builder.add_source(SourceNode::LocalParquet(NativeLocalParquetSource::from_files(
+        vec![build_file],
+        Arc::clone(&build_schema),
+        vec!["k".to_string(), "w".to_string()],
+    )));
+    let join2 = builder.add_join(
+        join1,
+        b2,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            JoinOutputColumn::right(ColumnRef::input(1, "w", "w"), "w"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&kvw_schema),
+    );
+    let plan = builder.finish_with_host_sink(join2);
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("partitioned chain admission should not error");
+    let pipeline = decision.admission().expect("partitioned chain uses compiled admission").pipeline().clone();
+    let runtime = lane_shared_runtime(cudf::Runtime::new().expect("partitioned chain runtime"));
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("partitioned chain context");
+    let route = test_context.attempt_stream_provider_route().expect("partitioned chain route");
+    let run = |width: Option<usize>| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("chained-partitioned-parallel");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("partitioned pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let batch = match width {
+            None => {
+                let state = scheduler.run(&mut executor).expect("serial partitioned chain should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("serial partitioned output")
+            },
+            Some(width) => {
+                let support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                    .expect("lane partitioned chain should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("lane partitioned output")
+            },
+        };
+        (batch, metrics.snapshot())
+    };
+    let wide_len = "x".repeat(700_000).len();
+    let expected = vec![
+        (Some(1), wide_len, Some(100)),
+        (Some(1), wide_len, Some(100)),
+        (Some(2), wide_len, Some(200)),
+        (Some(2), wide_len, Some(200)),
+        (Some(2), wide_len, Some(200)),
+        (Some(2), wide_len, Some(200)),
+    ];
+    for (label, (batch, snapshot)) in [("serial", run(None)), ("width1", run(Some(1))), ("width2", run(Some(2)))] {
+        assert_eq!(
+            int32_strlen_int64_triples_sorted(&batch),
+            expected,
+            "{label} joins every partitioned probe row once"
+        );
+        assert_eq!(snapshot.hash_join_build_count, 0, "{label} builds no hash table");
+        assert_eq!(
+            snapshot.source_chunks_committed, 5,
+            "{label} reads four probe files plus one build file as five chunks"
+        );
+    }
+    let (_, width2_snapshot) = run(Some(2));
+    assert!(
+        width2_snapshot.join_strategy_decisions.iter().any(|decision| {
+            decision.facts.get("join_strategy").map(String::as_str) == Some("partitioned_hash_equi")
+        }),
+        "second join plans a split partitioned build"
+    );
+    let parallel = width2_snapshot
+        .join_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("parallel_probe").map(String::as_str) == Some("partitioned"))
+        .expect("width-2 run records the partitioned parallel-probe decision");
+    assert_eq!(
+        parallel.facts.get("parallel_probe_chunks").map(String::as_str),
+        Some("4"),
+        "four probe chunks share the partitioned build"
+    );
+    assert!(
+        parallel.facts.get("parallel_probe_width").map(String::as_str).unwrap_or("1").parse::<usize>().unwrap() >= 2,
+        "partitioned probe chunks spread over at least two lanes: {:?}",
+        parallel.facts
+    );
+}
+
+/// Lane widths preserve every D-stage join contract: inner/left/semi/anti
+/// with null keys and duplicate fanout, nulls-match equality, mark
+/// membership, full-outer complements (serial fallback), build-left outer
+/// (serial fallback), and residual predicates (serial fallback). Serial is
+/// the CPU-oracle-checked baseline (existing bounded-join coverage proves
+/// serial semantics); width-1/width-2 agreement proves lanes preserve them.
+/// Hand-checked rows below pin the oracle for this data so a lane drift
+/// cannot hide behind agreement alone.
+#[test]
+fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
+    let key = || Field::new("k", DataType::Int32, true);
+    let left_schema = Arc::new(Schema::new(vec![key(), Field::new("v", DataType::Int64, false)]));
+    let right_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("w", DataType::Int64, false)]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&left_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(2), Some(2)])) as ArrayRef,
+            Arc::new(arrow::array::Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
+        ],
+    )
+    .expect("null-key left batch");
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(2), None, Some(3)])) as ArrayRef,
+            Arc::new(arrow::array::Int64Array::from(vec![200, 300, 400])) as ArrayRef,
+        ],
+    )
+    .expect("null-key right batch");
+    let kvw_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, true),
+        Field::new("v", DataType::Int64, true),
+        Field::new("w", DataType::Int64, true),
+    ]));
+    let kv_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, false)]));
+    let mark_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, true),
+        Field::new("mark", DataType::Boolean, false),
+    ]));
+
+    fn execute3(plan: &QueryPlan, pipeline: &CompiledPipeline) -> (RecordBatch, RecordBatch, RecordBatch) {
+        let runtime = lane_shared_runtime(cudf::Runtime::new().expect("parity runtime"));
+        let test_context = runtime.acquire_context_for_plan(plan).expect("parity context");
+        let route = test_context.attempt_stream_provider_route().expect("parity route");
+        let metrics = query_engine::exec::ExecutionMetrics::detached("join-kind-parity");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(pipeline).expect("parity pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, plan, pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut run = |width: Option<usize>| match width {
+            None => {
+                let state = scheduler.run(&mut executor).expect("serial parity should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("serial parity output")
+            },
+            Some(width) => {
+                let support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                let state =
+                    run_lane_dispatched(&scheduler, &mut executor, None, &support).expect("lane parity should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("lane parity output")
+            },
+        };
+        (run(None), run(Some(1)), run(Some(2)))
+    }
+
+    fn admit(label: &str, plan: &QueryPlan) -> CompiledPipeline {
+        bounded_pipeline_decision(
+            plan,
+            StatisticalAggregateExecutionMode::default(),
+            query_engine::rapids_backend::rapids_analysis_context(),
+        )
+        .expect("parity admission should not error")
+        .admission()
+        .unwrap_or_else(|| panic!("{label}: parity shape uses compiled admission"))
+        .pipeline()
+        .clone()
+    }
+
+    // (label, join_type, build_side, null_equality, residual)
+    // Build-left outer has no compiled strategy (structured fallback to the
+    // generic executor, verified by existing admission coverage), so lane
+    // preservation is vacuous there; full-outer below covers the serial
+    // complement fallback inside compiled execution.
+    for (label, join_type, build_side, null_eq, residual) in [
+        ("inner", JoinType::Inner, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
+        ("inner-nulls-match", JoinType::Inner, JoinSide::Right, JoinNullEquality::NullsMatch, false),
+        ("left", JoinType::Left, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
+        ("semi", JoinType::LeftSemi, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
+        ("anti", JoinType::LeftAnti, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
+        ("full", JoinType::Full, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
+        ("inner-residual", JoinType::Inner, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, true),
+    ] {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+            Arc::clone(&left_schema),
+            vec![left_batch.clone()],
+        )));
+        let right = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+            Arc::clone(&right_schema),
+            vec![right_batch.clone()],
+        )));
+        let (projection, output_schema) = match join_type {
+            JoinType::LeftSemi | JoinType::LeftAnti => (
+                vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ],
+                Arc::clone(&kv_schema),
+            ),
+            _ => (
+                vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "w", "w"), "w"),
+                ],
+                Arc::clone(&kvw_schema),
+            ),
+        };
+        let mut spec =
+            JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+                .with_output_projection(projection)
+                .with_null_equality(null_eq)
+                .with_build_side(build_side);
+        if residual {
+            spec = spec.with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "v", "v"),
+                BinaryOp::Lt,
+                Expr::input_column(1, "w", "w"),
+            ));
+        }
+        let join = builder.add_join(left, right, spec, output_schema);
+        let plan = builder.finish_with_host_sink(join);
+        let pipeline = admit(label, &plan);
+        let (serial, width1, width2) = execute3(&plan, &pipeline);
+        assert_eq!(width1.num_rows(), serial.num_rows(), "{label}: width 1 keeps row count");
+        assert_eq!(width2.num_rows(), serial.num_rows(), "{label}: width 2 keeps row count");
+        match join_type {
+            JoinType::LeftSemi | JoinType::LeftAnti => {
+                let expected = int32_int64_pairs_sorted(&serial, 0, 1);
+                assert_eq!(int32_int64_pairs_sorted(&width1, 0, 1), expected, "{label}: width 1 preserves rows");
+                assert_eq!(int32_int64_pairs_sorted(&width2, 0, 1), expected, "{label}: width 2 preserves rows");
+                let oracle = match join_type {
+                    JoinType::LeftSemi => vec![(Some(2), Some(30)), (Some(2), Some(40))],
+                    _ => vec![(None, Some(20)), (Some(1), Some(10))],
+                };
+                assert_eq!(expected, oracle, "{label}: serial matches the null-key oracle");
+            },
+            _ => {
+                let expected = int32_int64_int64_triples_sorted(&serial, 0, 1, 2);
+                assert_eq!(
+                    int32_int64_int64_triples_sorted(&width1, 0, 1, 2),
+                    expected,
+                    "{label}: width 1 preserves rows"
+                );
+                assert_eq!(
+                    int32_int64_int64_triples_sorted(&width2, 0, 1, 2),
+                    expected,
+                    "{label}: width 2 preserves rows"
+                );
+                let oracle = match (label, join_type) {
+                    (_, JoinType::Inner) if !residual => {
+                        vec![(Some(2), Some(30), Some(200)), (Some(2), Some(40), Some(200))]
+                    },
+                    (_, JoinType::Inner) => {
+                        vec![(Some(2), Some(30), Some(200)), (Some(2), Some(40), Some(200))]
+                    },
+                    (_, JoinType::Left) => vec![
+                        (None, Some(20), None),
+                        (Some(1), Some(10), None),
+                        (Some(2), Some(30), Some(200)),
+                        (Some(2), Some(40), Some(200)),
+                    ],
+                    (_, JoinType::Full) => vec![
+                        (None, None, Some(300)),
+                        (None, None, Some(400)),
+                        (None, Some(20), None),
+                        (Some(1), Some(10), None),
+                        (Some(2), Some(30), Some(200)),
+                        (Some(2), Some(40), Some(200)),
+                    ],
+                    _ => unreachable!("oracle covers every parity case"),
+                };
+                // Nulls-match inner adds the (None,20,300) row; residual
+                // keeps the same rows here because every matched pair
+                // satisfies v < w.
+                let mut oracle = oracle;
+                if label == "inner-nulls-match" {
+                    oracle.push((None, Some(20), Some(300)));
+                    oracle.sort();
+                }
+                assert_eq!(expected, oracle, "{label}: serial matches the null-key oracle");
+            },
+        }
+    }
+
+    // Mark membership reports every probe row with its boolean flag.
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&left_schema), vec![left_batch])));
+    let right = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let mark = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftMark,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right)
+        .with_mark_column_name("mark"),
+        Arc::clone(&mark_schema),
+    );
+    let plan = builder.finish_with_host_sink(mark);
+    let pipeline = admit("mark", &plan);
+    let (serial, width1, width2) = execute3(&plan, &pipeline);
+    let oracle = vec![(None, Some(false)), (Some(1), Some(false)), (Some(2), Some(true)), (Some(2), Some(true))];
+    assert_eq!(int32_bool_pairs_sorted(&serial), oracle, "mark: serial matches the membership oracle");
+    assert_eq!(int32_bool_pairs_sorted(&width1), oracle, "mark: width 1 preserves membership");
+    assert_eq!(int32_bool_pairs_sorted(&width2), oracle, "mark: width 2 preserves membership");
+}
+
+/// Cancelling while join branch workers hold uncommitted outputs drains
+/// without committing: the coordinator re-checks cancellation after joining
+/// workers, releases every uncommitted output through accounting (including
+/// coordinator-owned join state via the error-cleanup path), reports typed
+/// `Cancelled`, and materializes no sink output. Late completions can never
+/// resurrect because commit requires re-checking cancellation first.
+#[test]
+fn join_lane_cancellation_drains_branch_work_without_committing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let build_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("cancel build batch");
+    let left_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("cancel left batch");
+    let right_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 3])) as ArrayRef])
+            .expect("cancel right batch");
+    let mut builder = QueryPlanBuilder::new();
+    let build =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![build_batch])));
+    let left =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
+    let right =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
+    let probe = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let join = builder.add_join(
+        build,
+        probe,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("cancel admission should not error");
+    let pipeline = decision.admission().expect("cancel join uses compiled admission").pipeline().clone();
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("cancel context");
+    let route = test_context.attempt_stream_provider_route().expect("cancel route");
+    assert!(route.lane_capacity() >= 2, "cancel test needs two branch lanes");
+    let metrics = query_engine::exec::ExecutionMetrics::detached("join-lane-cancel");
+    let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+    let gpu_inputs = GpuResidentInputMap::new();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("cancel pipeline is schedulable");
+    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    // Park the first two lane completions (holding uncommitted branch
+    // outputs) until the canceller fires; later rounds are unaffected. The
+    // Condvar timeouts turn a lost rendezvous into a test failure instead
+    // of a hung worker.
+    let entered = Arc::new((Mutex::new(0usize), Condvar::new()));
+    let released = Arc::new((Mutex::new(false), Condvar::new()));
+    let remaining = Arc::new(AtomicUsize::new(2));
+    let gate_entered = Arc::clone(&entered);
+    let gate_released = Arc::clone(&released);
+    let support = LaneDispatchSupport::new(
+        Arc::clone(&route),
+        metrics_context.clone(),
+        plan.clone(),
+        pipeline.clone(),
+        gpu_inputs.clone(),
+        metrics.clone(),
+    )
+    .with_requested_lanes(2)
+    .with_lane_completion_gate(Arc::new(move |_, _| {
+        // Only the first two completions park; later rounds skip the gate.
+        if remaining.fetch_sub(1, Ordering::AcqRel) < 1 {
+            return;
+        }
+        {
+            let (mutex, wake) = &*gate_entered;
+            *mutex.lock().expect("cancel gate mutex") += 1;
+            wake.notify_all();
+        }
+        let (mutex, wake) = &*gate_released;
+        let (guard, result) = wake
+            .wait_timeout_while(mutex.lock().expect("cancel release mutex"), Duration::from_secs(10), |ready| !*ready)
+            .expect("cancel release wait");
+        assert!(*guard || result.timed_out(), "release gate always wakes parked workers");
+    }));
+    let cancellation = test_context.cancellation().clone();
+    let waiter_entered = Arc::clone(&entered);
+    let waiter_released = Arc::clone(&released);
+    let canceller = std::thread::spawn(move || {
+        let (mutex, wake) = &*waiter_entered;
+        let (guard, result) = wake
+            .wait_timeout_while(mutex.lock().expect("canceller mutex"), Duration::from_secs(10), |count| *count < 2)
+            .expect("canceller wait");
+        assert_eq!(*guard, 2, "both branch workers park holding uncommitted outputs");
+        assert!(!result.timed_out(), "branch workers rendezvous before the timeout");
+        cancellation.cancel();
+        *waiter_released.0.lock().expect("release mutex") = true;
+        waiter_released.1.notify_all();
+    });
+    let error = match run_lane_dispatched(&scheduler, &mut executor, None, &support) {
+        Ok(_) => panic!("a cancelled join run must not commit its branch outputs"),
+        Err(error) => error,
+    };
+    canceller.join().expect("the cancelling thread joins");
+    assert_eq!(error.code(), query_engine::error::QueryErrorCode::Cancelled, "cancellation is typed");
+    assert!(executor.take_host_output().is_err(), "no sink output is committed on a cancelled join run");
+}
+
+/// Eager lane scheduling must not lose dynamic-filter pruning: the optimized
+/// plan carries a build-complete-before-consumer route, so the probe source
+/// waits for the coordinator build and reads with the filter snapshot.
+/// Serial/width-1/width-2 must prune the same row groups, apply the filter,
+/// and return the same rows. The all-`3` row group is pruned by the `[2,2]`
+/// build range on every width.
+#[test]
+fn join_lane_widths_preserve_dynamic_filter_pruning() {
+    let dir = unique_temp_dir("query-engine-join-lane-dynamic-filter-pruning");
+    let probe_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
+    let probe_path = dir.join("probe.parquet");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&probe_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2, 2, 3, 3])) as ArrayRef,
+            Arc::new(arrow::array::Int64Array::from(vec![0, 1, 2, 3, 4, 5])) as ArrayRef,
+        ],
+    )
+    .expect("pruning probe batch");
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let mut writer = ArrowWriter::try_new(File::create(&probe_path).unwrap(), Arc::clone(&probe_schema), Some(props))
+        .expect("pruning probe writer");
+    writer.write(&batch).expect("pruning probe write");
+    writer.close().expect("pruning probe close");
+    let build_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let probe = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&probe_path, &probe_schema)));
+    let build_batch =
+        RecordBatch::try_new(Arc::clone(&build_schema), vec![Arc::new(Int32Array::from(vec![2])) as ArrayRef])
+            .expect("pruning build batch");
+    let build = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&build_schema), vec![build_batch])));
+    let output_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
+    let join = builder.add_join(
+        probe,
+        build,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let raw = builder.finish_with_host_sink(join);
+    let optimized = query_engine::optimizer::optimize_query_plan(
+        raw,
+        &query_engine::optimizer::NativeOptimizerOptions::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+    );
+    assert!(
+        !optimized.plan.dynamic_filter_routes().is_empty(),
+        "optimizer discovers a build-to-probe dynamic-filter route"
+    );
+    let plan = optimized.plan;
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("pruning admission should not error");
+    let pipeline = decision.admission().expect("pruning shape uses compiled admission").pipeline().clone();
+    let runtime = lane_shared_runtime(cudf::Runtime::new().expect("pruning runtime"));
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("pruning context");
+    let route = test_context.attempt_stream_provider_route().expect("pruning route");
+    let run = |width: Option<usize>| {
+        let metrics = query_engine::exec::ExecutionMetrics::detached("join-lane-pruning");
+        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pruning pipeline is schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let batch = match width {
+            None => {
+                let state = scheduler.run(&mut executor).expect("serial pruning should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("serial pruning output")
+            },
+            Some(width) => {
+                let support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                    .expect("lane pruning should execute");
+                assert_eq!(state.live_resource_count(), 0);
+                executor.take_host_output().expect("lane pruning output")
+            },
+        };
+        (batch, metrics.snapshot())
+    };
+    let expected = vec![(Some(2), Some(2)), (Some(2), Some(3))];
+    for (label, (batch, snapshot)) in [("serial", run(None)), ("width1", run(Some(1))), ("width2", run(Some(2)))] {
+        assert_eq!(int32_int64_pairs_sorted(&batch, 0, 1), expected, "{label} joins pruned probe rows once");
+        assert!(
+            snapshot.dynamic_filter_runtime_rows.iter().any(|row| row.event == "applied"),
+            "{label} applies the build filter on the probe source"
+        );
+        assert_eq!(
+            snapshot.row_groups_committed, 1,
+            "{label} prunes the all-1 and all-3 row groups instead of reading all three"
+        );
+    }
+}
+
+/// A GPU-resident sink over a join plus an aggregate still routes through the
+/// resident lane path after the lane-family widening, and the join trio keeps
+/// its serial coordinator contract there: `run_resident_aggregate_chunks`
+/// runs the DAG on one coordinator executor (join state never crosses lanes;
+/// only aggregate source chunks borrow lanes), and the sink adopts frames to
+/// the root runtime with lane leases held through the handoff.
+#[test]
+fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("query-engine-resident-join-lanes");
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let probe_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
+    let count_schema = Arc::new(Schema::new(vec![Field::new("rows", DataType::Int64, false)]));
+    let build_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("resident build batch");
+    let probe_path = dir.join("probe.parquet");
+    let probe_batch = RecordBatch::try_new(
+        Arc::clone(&probe_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 2, 3])) as ArrayRef,
+            Arc::new(arrow::array::Int64Array::from(vec![10, 20, 30, 40])) as ArrayRef,
+        ],
+    )
+    .expect("resident probe batch");
+    let mut writer = ArrowWriter::try_new(File::create(&probe_path).unwrap(), Arc::clone(&probe_schema), None)
+        .expect("resident probe writer");
+    writer.write(&probe_batch).expect("resident probe write");
+    writer.close().expect("resident probe close");
+    let mut builder = QueryPlanBuilder::new();
+    let build =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![build_batch])));
+    let probe = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&probe_path, &probe_schema)));
+    let join = builder.add_join(
+        build,
+        probe,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("k"), "rows")]),
+        Arc::clone(&count_schema),
+    );
+    let plan = builder.finish_gpu_resident(aggregate);
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("resident admission should not error");
+    let pipeline = decision.admission().expect("resident join uses compiled admission").pipeline().clone();
+    assert!(
+        is_resident_aggregate_lane_pipeline(&pipeline),
+        "a resident join-plus-aggregate pipeline takes the resident lane path"
+    );
+    let runtime = lane_shared_runtime(runtime);
+    let test_context = runtime.acquire_context_for_plan(&plan).expect("resident join acquires a context");
+    let result = execute_query_plan(&test_context, &plan).expect("resident join lanes should execute");
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("resident join retains its output");
+    };
+    assert_eq!(
+        handle.frame().placement().bundle_id,
+        handle.runtime().placement().bundle_id,
+        "a resident join output is adopted onto the root runtime"
+    );
+    let handle = handle.clone();
+    drop(result);
+    let batch = materialize_gpu_result_to_host(handle, &mut QueryMetrics::default())
+        .expect("resident join output stays readable after its lane leases are released");
+    assert_eq!(int64_values(&batch, 0), vec![Some(3)], "inner join feeds three rows into the count");
+}

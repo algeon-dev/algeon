@@ -26,6 +26,7 @@ mod common;
 pub(in crate::exec) mod compiled;
 mod hash;
 mod leaf;
+mod probe_parallel;
 
 pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
@@ -53,6 +54,9 @@ pub(super) use leaf::{
     plan_bounded_shared_join_aggregate_local_parquet_source_stream, stream_bounded_join_leaf_local_parquet_source,
     stream_bounded_join_leaf_local_parquet_source_chunks, stream_bounded_join_leaf_local_parquet_source_serial,
     try_start_bounded_join_leaf_local_parquet_source_prefetch,
+};
+pub(in crate::exec::bounded) use probe_parallel::{
+    hash_parallel_probe_supported, parallel_hash_probe_frame_stream, serial_probe_reason,
 };
 
 use crate::materialization_sizing::{JoinOutputColumnUpperBoundInput, join_output_upper_bound_bytes};

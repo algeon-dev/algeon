@@ -34,8 +34,8 @@ pub(super) use hash_equi::{
     execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream,
     execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream,
     execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream,
-    execute_compiled_partitioned_hash_equi_join_probe_from_stream,
-    partitioned_hash_equi_join_frame_stream_probe_to_payload,
+    execute_compiled_partitioned_hash_equi_join_probe_from_stream, parallel_partitioned_lazy_drain,
+    partitioned_hash_equi_join_frame_stream_probe_to_payload, partitioned_parallel_probe_supported,
 };
 pub(super) use mixed_keyed::{
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize,

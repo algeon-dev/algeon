@@ -58,7 +58,7 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) execution: BoundedExecutionAttempt<'a>,
-    pub(super) aggregate_dispatch: Option<&'a super::lanes::AggregateLaneDispatch<'a>>,
+    pub(super) aggregate_dispatch: Option<super::lanes::AggregateLaneDispatch>,
     pub(super) plan: &'a QueryPlan,
     pub(super) pipeline: &'a CompiledPipeline,
     pub(super) gpu_inputs: GpuResidentInputMap,
@@ -99,6 +99,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
 
     pub fn remaining_bytes(&self) -> u64 {
         self.execution.device_budget_bytes()
+    }
+
+    /// Merges a successful lane's dynamic-filter set into the coordinator.
+    pub(super) fn merge_lane_dynamic_filters(&mut self, filters: crate::dynamic_filter::DynamicFilterSet) {
+        self.dynamic_filters.merge_from(&filters);
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {

@@ -161,7 +161,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
     output_schema: &ArrowSchemaRef,
     stream: BoundedJoinLeafLocalParquetSourceStream,
     preserve_output_stream: bool,
-    dispatch: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch<'_>>,
+    dispatch: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
     topk: Option<&super::SourceAggregateTopK<'_>>,
 ) -> Result<CompiledGpuResource> {
     if aggregate_spec_requires_whole_input(&aggregate.spec) {
