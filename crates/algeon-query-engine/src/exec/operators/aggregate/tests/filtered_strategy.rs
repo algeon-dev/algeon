@@ -236,16 +236,17 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         Some("filtered_global_segmented_state")
     );
 
-    let context = ExecutionContext::builder()
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = ExecutionContext::standalone(StandaloneConfig {
+        memory_control_policy: MemoryControlPolicy::Bounded {
             device_budget_bytes: 32 * 1024 * 1024,
             max_source_chunk_bytes: 8 * 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .expect("execution context builds");
+        },
+        ..StandaloneConfig::default()
+    })
+    .expect("execution context builds");
     let metrics = ExecutionMetrics::detached("aggregate-test");
     let node_id = NodeId::from_index_for_internal_use(7);
     let stats = FilteredGlobalSegmentRuntimeStats {

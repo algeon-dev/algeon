@@ -22,7 +22,10 @@ use super::{
     DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
     MemoryControlPolicy, MemoryGrant, SourceChunkPlanningMode, SourceSchedulerPolicy,
     cache_events::LakehouseCacheFillEventSink,
-    context::{ExecutionContextParts, QueryServiceEpochUser, validate_service_stream_pool_device},
+    context::{
+        AdmittedAttempt, PlanScope, QueryServiceEpochUser, StreamBinding, memory_control_policy_for_grant,
+        validate_service_stream_pool_device,
+    },
 };
 use crate::{
     metrics::QueryId,

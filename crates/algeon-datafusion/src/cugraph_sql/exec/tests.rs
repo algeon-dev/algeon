@@ -34,7 +34,7 @@ use query_engine::{
     expr::{Expr, SortExpr, SortSpec},
     observability::{AttemptDisposition, RuntimeTerminalOutcome},
     plan::{NodeId, PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
-    runtime::{ExecutionCancellation, QueryAdmissionRequest},
+    runtime::{ExecutionCancellation, QueryAdmissionRequest, StandaloneConfig},
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
         GraphSimpleDirectedEdgeTopology, LiteralBatchSource, LocalParquetFile, LocalParquetSource,
@@ -1412,8 +1412,11 @@ async fn cugraph_host_staging_polls_every_partition_of_a_dynamic_filter_join() {
 async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let native_context =
-        ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().expect("test CUDA runtime"))).unwrap();
+    let native_context = ExecutionContext::standalone(StandaloneConfig {
+        runtime: Some(Arc::new(cudf::Runtime::new().expect("test CUDA runtime"))),
+        ..StandaloneConfig::default()
+    })
+    .unwrap();
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
     let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
@@ -1446,9 +1449,10 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
 async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_upload() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let mut native_context =
-        ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().expect("test CUDA runtime"))).unwrap();
-    native_context.replace_query_service_admitted_for_test(true);
+    let backend = test_gpu_backend();
+    let attempt = backend.admit_query().expect("test owns the backend admission slot");
+    let admitted = attempt.acquire_context().expect("admitted context");
+    let native_context = admitted.context();
     assert!(native_context.is_query_service_admitted());
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
@@ -1465,7 +1469,7 @@ async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_uplo
     .expect("host graph inputs should stage");
     assert!(staged_inputs.admitted_graph_plan.is_none());
 
-    let error = match staged_inputs.upload(&native_context, &mut graph_metrics, task_context).await {
+    let error = match staged_inputs.upload(native_context, &mut graph_metrics, task_context).await {
         Err(error) => error,
         Ok(_) => panic!("an admitted upload without its exact graph plan must fail closed"),
     };

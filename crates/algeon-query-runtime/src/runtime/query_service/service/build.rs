@@ -35,7 +35,7 @@ use crate::runtime::{
     },
     backend_metrics::BackendMetricsStore,
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
-    context::QueryServiceEpoch,
+    context::{DeviceRuntime, QueryServiceEpoch},
     gpu::{
         DeviceOwnerToken, normalize_device_ordinals,
         registry::{
@@ -200,21 +200,44 @@ impl QueryService {
         // lives in `QueryServiceResources`, which the backend resource
         // generation owns through close and destruction.
         let resident_caches = QueryServiceResources::install_resident_caches(&devices)?;
+        let lakehouse_cache_fill_budget = CacheFillByteBudget::new(
+            config.lakehouse_cache_fill.budget_bytes.unwrap_or_else(default_lakehouse_cache_fill_budget_bytes),
+        )?;
+        let lakehouse_cache_fill_concurrency =
+            CacheFillConcurrencyGate::new(config.lakehouse_cache_fill.max_concurrent_ops)?;
+        let object_store_control_runtime = default_object_store_control_runtime()?;
+        let source_object_stores =
+            Arc::new(SourceObjectStoreRegistry::with_profiles(config.source_storage_profiles.clone())?);
+        let device_runtimes = gpu_execution_pools
+            .iter()
+            .map(|(&device_ordinal, gpu_execution_pool)| {
+                let device = devices.context_by_ordinal(device_ordinal)?;
+                let device_runtime = DeviceRuntime {
+                    gpu_execution_pool: gpu_execution_pool.clone(),
+                    service_stream_pool: device.stream_pool().clone(),
+                    resident_source_cache: resident_caches.source_for_device(device_ordinal),
+                    #[cfg(feature = "cugraph")]
+                    resident_graph_cache: resident_caches.graph_for_device(device_ordinal),
+                    lakehouse_cache_fill_config: config.lakehouse_cache_fill.clone(),
+                    lakehouse_cache_fill_budget: lakehouse_cache_fill_budget.clone(),
+                    lakehouse_cache_fill_concurrency: lakehouse_cache_fill_concurrency.clone(),
+                    object_store_control_runtime: Arc::clone(&object_store_control_runtime),
+                    source_object_stores: Arc::clone(&source_object_stores),
+                    source_scheduler_policy: config.source_scheduler_policy,
+                    source_chunk_planning_mode: config.source_chunk_planning_mode,
+                    source_chunk_planning_options: config.source_chunk_planning_options,
+                    statistical_aggregate_execution_mode: config.statistical_aggregate_execution_mode,
+                    aggregate_strategy_execution_options: config.aggregate_strategy_execution_options,
+                };
+                Ok((device_ordinal, Arc::new(device_runtime)))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
         Ok(QueryServiceResources {
+            device_runtimes,
             devices,
             gpu_execution_pools,
             resident_caches,
             gpu_execution_query_tracker,
-            lakehouse_cache_fill_budget: CacheFillByteBudget::new(
-                config.lakehouse_cache_fill.budget_bytes.unwrap_or_else(default_lakehouse_cache_fill_budget_bytes),
-            )?,
-            lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate::new(
-                config.lakehouse_cache_fill.max_concurrent_ops,
-            )?,
-            object_store_control_runtime: default_object_store_control_runtime()?,
-            source_object_stores: Arc::new(SourceObjectStoreRegistry::with_profiles(
-                config.source_storage_profiles.clone(),
-            )?),
         })
     }
 

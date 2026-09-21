@@ -2,11 +2,15 @@
 
 #[cfg(test)]
 use std::sync::{Barrier, mpsc};
+#[cfg(any(test, feature = "test-hooks"))]
 use std::{
     collections::HashMap,
+    sync::{OnceLock, Weak},
+};
+use std::{
     fmt, mem,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
@@ -50,9 +54,10 @@ use crate::{
 /// Fallback and upper bound for the default service stream pool size.
 ///
 /// The pool creates streams lazily, so this is a concurrency cap rather than a
-/// startup allocation count. [`default_service_stream_pool_size_for_device`]
+/// startup allocation count. `default_service_stream_pool_size_for_device`
 /// uses this value as the fallback when device SM count detection is
 /// unavailable and as the upper bound when detection succeeds.
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
 const STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -64,6 +69,7 @@ static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
 /// multiprocessor count cannot be detected, this returns
 /// [`DEFAULT_SERVICE_STREAM_POOL_SIZE`]. The detected value is cached per
 /// device ordinal for the process lifetime.
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn default_service_stream_pool_size_for_device(device: DeviceId) -> usize {
     static DEFAULT_SIZES: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
     let sizes = DEFAULT_SIZES.get_or_init(|| Mutex::new(HashMap::new()));
@@ -78,6 +84,7 @@ pub(crate) fn default_service_stream_pool_size_for_device(device: DeviceId) -> u
         .or_insert_with(|| default_service_stream_pool_size_from_sm_count(detect_device_multiprocessor_count(device)))
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(super) fn default_service_stream_pool_size_from_sm_count(sm_count: Option<usize>) -> usize {
     sm_count
         .filter(|count| *count > 0)
@@ -91,10 +98,12 @@ pub(super) fn default_service_stream_pool_size_from_device_facts(facts: &DeviceF
     default_service_stream_pool_size_from_sm_count(facts.sm_count.and_then(nonzero_sm_count))
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 fn detect_device_multiprocessor_count(device: DeviceId) -> Option<usize> {
     device.multiprocessor_count().ok().and_then(nonzero_sm_count)
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(super) fn nonzero_sm_count(count: u32) -> Option<usize> {
     (count > 0).then(|| usize::try_from(count).ok()).flatten()
 }
@@ -116,6 +125,7 @@ pub(super) struct ServiceStreamPoolInner {
     pub(super) process_exit_started: AtomicBool,
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 type ServiceStreamPoolRegistry = HashMap<(usize, usize), Weak<ServiceStreamPoolInner>>;
 
 /// Resource class for bounded stream-pool admission.
@@ -226,6 +236,7 @@ impl ServiceStreamPool {
     /// injected its own pool yet. Pools are keyed by `(device ordinal,
     /// pool_size)` so differently sized service tests do not silently share a
     /// capacity contract.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn for_device(device: DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
         static POOLS: OnceLock<Mutex<ServiceStreamPoolRegistry>> = OnceLock::new();

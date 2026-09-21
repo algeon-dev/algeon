@@ -308,22 +308,23 @@ mod tests {
     use crate::{
         chunk::SourceChunkBatch,
         expr::{BinaryOp, Expr, LiteralValue},
-        runtime::SourceChunkPlanningMode,
+        runtime::{SourceChunkPlanningMode, StandaloneConfig},
         source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
 
     #[test]
     fn generic_source_batches_cap_decode_scratch_risk_only() {
-        let context = ExecutionContext::builder()
-            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            memory_control_policy: MemoryControlPolicy::Bounded {
                 device_budget_bytes: 64 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
                 max_row_groups_per_chunk: 1,
                 max_retry_attempts: 1,
                 min_retry_chunk_row_groups: 1,
-            })
-            .build()
-            .expect("valid bounded context");
+            },
+            ..StandaloneConfig::default()
+        })
+        .expect("valid bounded context");
         let chunk_bytes = BoundedSourceBatchingPolicy::DEFAULT_SOURCE_BATCH_READ_MAX_PLANNED_BYTES / 2 + 1;
         let chunks = vec![test_chunk(0, chunk_bytes, false), test_chunk(1, chunk_bytes, false)];
 
@@ -339,16 +340,17 @@ mod tests {
 
     #[test]
     fn generic_source_chunk_batches_batch_whole_row_groups_ahead_of_scan_limit_prefix() {
-        let context = ExecutionContext::builder()
-            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            memory_control_policy: MemoryControlPolicy::Bounded {
                 device_budget_bytes: 64 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
                 max_row_groups_per_chunk: 1,
                 max_retry_attempts: 1,
                 min_retry_chunk_row_groups: 1,
-            })
-            .build()
-            .expect("valid bounded context");
+            },
+            ..StandaloneConfig::default()
+        })
+        .expect("valid bounded context");
         let source = test_source(false).with_scan_limit(Some(8));
         let mut chunks = (0..4).map(|index| test_chunk(index, 1024, false)).collect::<Vec<_>>();
         chunks[3].scan_limit_rows = Some(5);
@@ -367,16 +369,17 @@ mod tests {
 
     #[test]
     fn serial_source_chunk_retry_policy_uses_bounded_context() {
-        let context = ExecutionContext::builder()
-            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            memory_control_policy: MemoryControlPolicy::Bounded {
                 device_budget_bytes: 64 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
                 max_row_groups_per_chunk: 1024,
                 max_retry_attempts: 4,
                 min_retry_chunk_row_groups: 8,
-            })
-            .build()
-            .expect("valid bounded context");
+            },
+            ..StandaloneConfig::default()
+        })
+        .expect("valid bounded context");
 
         assert_eq!(source_read_retry_policy(&context), (4, 8));
     }

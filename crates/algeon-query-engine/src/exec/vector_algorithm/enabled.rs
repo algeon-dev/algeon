@@ -1901,7 +1901,7 @@ mod tests {
             PlanNode, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorPcaParams, VectorRowIdBinding,
             vector_pca_output_schema,
         },
-        runtime::{ExecutionCancellation, MemoryControlPolicy},
+        runtime::{ExecutionCancellation, MemoryControlPolicy, StandaloneConfig},
         source::{GpuResidentSource, SourceNode},
     };
 
@@ -1923,12 +1923,13 @@ mod tests {
         let dataset = DeviceBuffer::from_slice(&resources, &points).expect("dataset allocation");
         let tensor = dataset.as_validated_matrix(&resources, 64, 4).expect("validated dataset");
         let cancellation = ExecutionCancellation::new();
-        let context = ExecutionContext::builder()
-            .with_shared_runtime(Arc::clone(&runtime))
-            .with_memory_control_policy(MemoryControlPolicy::Unbounded)
-            .with_cancellation(cancellation.clone())
-            .build()
-            .expect("execution context");
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::clone(&runtime)),
+            memory_control_policy: MemoryControlPolicy::Unbounded,
+            cancellation: cancellation.clone(),
+            ..StandaloneConfig::default()
+        })
+        .expect("execution context");
         let main_before = reservation.usage().unwrap().current_bytes;
         let pool_before = coverage.usage().unwrap().iter().map(|usage| usage.current_bytes).collect::<Vec<_>>();
         let mut params = IvfFlatIndexParams::new(DistanceMetric::L2Expanded, 2);
@@ -2015,8 +2016,8 @@ mod tests {
         };
         let cancellation = ExecutionCancellation::new();
         cancellation.cancel();
-        let context =
-            ExecutionContext::builder().with_cancellation(cancellation).build().expect("cancelled execution context");
+        let context = ExecutionContext::standalone(StandaloneConfig { cancellation, ..StandaloneConfig::default() })
+            .expect("cancelled execution context");
 
         let error = match execute_vector_algorithm(&context, &plan, root, node, &BTreeMap::new()) {
             Ok(_) => panic!("pre-cancelled direct execution must stop before resource or input access"),

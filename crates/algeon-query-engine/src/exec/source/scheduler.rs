@@ -605,7 +605,7 @@ mod observation_tests {
             RuntimeTerminalOutcome, RuntimeTopologyRecord, StreamLeaseLifecycleState, TaskDefinitionRow,
             WorkerDefinitionRow, assert_live_topology_references_resolve,
         },
-        runtime::{ExecutionCancellation, ExecutionContext, ServiceStreamPool},
+        runtime::{ExecutionCancellation, RuntimeObservedExecutionContext, ServiceStreamPool, StandaloneConfig},
     };
 
     fn observed_source_states(owner: &RuntimeObservationOwner) -> Vec<SourceReadLifecycleState> {
@@ -721,16 +721,19 @@ mod observation_tests {
         let runtime = cudf::Runtime::new().unwrap();
         let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
-        let observed_context = ExecutionContext::builder()
-            .with_runtime(runtime)
-            .with_service_stream_pool(pool.clone())
-            .with_runtime_observation_session(RuntimeObservationSession::new(
+        let observed_context = RuntimeObservedExecutionContext::standalone(
+            StandaloneConfig {
+                runtime: Some(Arc::new(runtime)),
+                service_stream_pool: Some(pool.clone()),
+                ..StandaloneConfig::default()
+            },
+            RuntimeObservationSession::new(
                 "source-lease-contention",
                 None,
                 RuntimeObservationConfig::bounded(64, 64 * 1024),
-            ))
-            .build_with_runtime_observation()
-            .unwrap();
+            ),
+        )
+        .unwrap();
         let owner = observed_context.observation().clone();
         let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
         let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
@@ -773,17 +776,20 @@ mod observation_tests {
         let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
         let clock = Arc::new(DeterministicRuntimeObservationClock::new(None));
-        let observed_context = ExecutionContext::builder()
-            .with_runtime(runtime)
-            .with_service_stream_pool(pool.clone())
-            .with_runtime_observation_session(RuntimeObservationSession::with_clock(
+        let observed_context = RuntimeObservedExecutionContext::standalone(
+            StandaloneConfig {
+                runtime: Some(Arc::new(runtime)),
+                service_stream_pool: Some(pool.clone()),
+                ..StandaloneConfig::default()
+            },
+            RuntimeObservationSession::with_clock(
                 "source-queue-clock",
                 None,
                 RuntimeObservationConfig::bounded(64, 64 * 1024),
                 Arc::clone(&clock) as _,
-            ))
-            .build_with_runtime_observation()
-            .unwrap();
+            ),
+        )
+        .unwrap();
         let owner = observed_context.observation().clone();
         let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
         let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
@@ -862,17 +868,20 @@ mod observation_tests {
         let pool = ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
         let cancellation = ExecutionCancellation::new();
-        let observed_context = ExecutionContext::builder()
-            .with_runtime(runtime)
-            .with_service_stream_pool(pool.clone())
-            .with_cancellation(cancellation.clone())
-            .with_runtime_observation_session(RuntimeObservationSession::new(
+        let observed_context = RuntimeObservedExecutionContext::standalone(
+            StandaloneConfig {
+                runtime: Some(Arc::new(runtime)),
+                service_stream_pool: Some(pool.clone()),
+                cancellation: cancellation.clone(),
+                ..StandaloneConfig::default()
+            },
+            RuntimeObservationSession::new(
                 "source-lease-cancel",
                 None,
                 RuntimeObservationConfig::bounded(64, 64 * 1024),
-            ))
-            .build_with_runtime_observation()
-            .unwrap();
+            ),
+        )
+        .unwrap();
         let owner = observed_context.observation().clone();
         let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
         let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();

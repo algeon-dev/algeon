@@ -3,18 +3,16 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::runtime::Runtime as TokioRuntime;
 
 #[cfg(feature = "cugraph")]
 use crate::runtime::cache::resident_graph::GpuResidentGraphCache;
 use crate::runtime::{
-    CacheFillByteBudget, GpuExecutionPool, GpuExecutionQueryTracker,
+    GpuExecutionPool, GpuExecutionQueryTracker,
     cache::{
         CacheSourceEventSnapshot, DeviceCacheAllocationFactory, DeviceCacheReport,
         local_parquet::GpuLocalParquetSourceCache,
     },
-    cache_fill::CacheFillConcurrencyGate,
-    object_store::SourceObjectStoreRegistry,
+    context::DeviceRuntime,
 };
 
 /// Cache resources owned by one installed backend resource generation.
@@ -126,6 +124,10 @@ impl DeviceResidentCaches {
 
 #[derive(Debug, Clone)]
 pub(super) struct QueryServiceResources {
+    /// The execution-context scope of each installed device. Declared first so
+    /// the pool and resident-cache clones it holds release before the caches
+    /// and device contexts below.
+    pub(super) device_runtimes: HashMap<usize, Arc<DeviceRuntime>>,
     pub(super) devices: super::DeviceRegistry,
     pub(super) gpu_execution_pools: HashMap<usize, GpuExecutionPool>,
     /// Process-owned resident-cache allocator domains and cache subdomains.
@@ -133,10 +135,6 @@ pub(super) struct QueryServiceResources {
     /// released before device contexts and their memory managers are dropped.
     pub(super) resident_caches: DeviceResidentCaches,
     pub(super) gpu_execution_query_tracker: GpuExecutionQueryTracker,
-    pub(super) lakehouse_cache_fill_budget: CacheFillByteBudget,
-    pub(super) lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate,
-    pub(super) object_store_control_runtime: Arc<TokioRuntime>,
-    pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
 }
 
 impl QueryServiceResources {
@@ -178,6 +176,17 @@ impl QueryServiceResources {
 
     pub(super) fn close_and_drain_resident_caches_until(&self, deadline: Instant) -> Result<()> {
         self.resident_caches.close_and_drain_until(deadline)
+    }
+
+    pub(super) fn device_runtime(&self, device_ordinal: usize) -> Result<Arc<DeviceRuntime>> {
+        self.device_runtimes.get(&device_ordinal).cloned().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "query_engine.query_service.device_runtime",
+                "query service runtime resources are not configured for the selected device",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+        })
     }
 
     pub(super) fn gpu_execution_pool_for_device(&self, device_ordinal: usize) -> Result<GpuExecutionPool> {

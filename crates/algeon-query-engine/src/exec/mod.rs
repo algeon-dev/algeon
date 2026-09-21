@@ -236,8 +236,8 @@ impl<'a> QueryExecutionRequest<'a> {
 /// both success and structured failure.
 ///
 /// A query-service context finishes only this plan execution. A standalone
-/// observed context built by [`ExecutionContext::builder`] owns query
-/// terminalization and returns its sealed snapshot in the outcome.
+/// context that owns its runtime observation owns query terminalization and
+/// returns its sealed snapshot in the outcome.
 pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionRequest<'_>) -> QueryExecutionOutcome {
     let empty_inputs = GpuResidentInputMap::new();
     let gpu_inputs = request.gpu_inputs.unwrap_or(&empty_inputs);
@@ -585,7 +585,7 @@ mod tests {
             write_runtime_observation_jsonl,
         },
         plan::QueryPlanBuilder,
-        runtime::ExecutionCancellation,
+        runtime::{ExecutionCancellation, RuntimeObservedExecutionContext, StandaloneConfig},
         source::{LiteralBatchSource, SourceNode},
     };
 
@@ -636,11 +636,11 @@ mod tests {
     #[test]
     fn source_location_key_failure_preserves_successful_execution() {
         let plan = literal_plan();
-        let observed = ExecutionContext::builder()
-            .with_query_id("key-unavailable-success")
-            .with_runtime_observation_session(unavailable_key_session("key-unavailable-success"))
-            .build_with_runtime_observation()
-            .expect("observed execution context builds");
+        let observed = RuntimeObservedExecutionContext::standalone(
+            StandaloneConfig { query_id: Some("key-unavailable-success".into()), ..StandaloneConfig::default() },
+            unavailable_key_session("key-unavailable-success"),
+        )
+        .expect("observed execution context builds");
 
         let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
 
@@ -654,12 +654,15 @@ mod tests {
         let plan = literal_plan();
         let cancellation = ExecutionCancellation::new();
         cancellation.cancel();
-        let observed = ExecutionContext::builder()
-            .with_query_id("key-unavailable-cancelled")
-            .with_cancellation(cancellation)
-            .with_runtime_observation_session(unavailable_key_session("key-unavailable-cancelled"))
-            .build_with_runtime_observation()
-            .expect("cancelled observed execution context builds");
+        let observed = RuntimeObservedExecutionContext::standalone(
+            StandaloneConfig {
+                query_id: Some("key-unavailable-cancelled".into()),
+                cancellation,
+                ..StandaloneConfig::default()
+            },
+            unavailable_key_session("key-unavailable-cancelled"),
+        )
+        .expect("cancelled observed execution context builds");
         let cancelled = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
         assert!(matches!(cancelled.result(), Err(error) if error.code() == QueryErrorCode::Cancelled));
         assert_key_unavailable_evidence(&cancelled, RuntimeTerminalOutcome::Cancelled);

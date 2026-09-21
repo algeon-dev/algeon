@@ -13,18 +13,20 @@ use super::{
     ActivatedDeferredResidentInput, ActivatedDeferredResidentPhase, ExecutionContext,
 };
 use crate::observability::AttemptComposedScheduleProjection;
-#[cfg(test)]
-use crate::runtime::attempt_domain::AttemptAllocationDomain;
 
 impl ExecutionContext {
+    /// The admitted evidence and immutable grant a plan validates against, or
+    /// `None` for a standalone context. The grant, allocation domain, and
+    /// attempt identity come from one admission binding, so only the
+    /// evidence can be missing: a placement-only admission carries none.
     fn validated_admitted_identity(
         &self,
         plan: &QueryPlan,
     ) -> Result<Option<(&AttemptCapabilityEvidence, MemoryGrant)>> {
-        if !self.query_service_admitted {
+        let Some(attempt) = self.admitted() else {
             return Ok(None);
-        }
-        let evidence = self.admitted_capability_evidence.as_ref().ok_or_else(|| {
+        };
+        let evidence = attempt.capability_evidence.as_deref().ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "query_engine.runtime.context",
@@ -33,58 +35,7 @@ impl ExecutionContext {
             .with_fact("reason", "admitted_capability_evidence_missing")
             .with_fact("plan_scope", canonical_execution_scope_fingerprint(plan))
         })?;
-        let runtime_device_ordinal = self.runtime()?.device().ordinal();
-        let immutable_grant = self.memory_grant()?.ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.runtime.context",
-                "an admitted context requires its immutable grant",
-            )
-            .with_fact("reason", "admitted_grant_missing")
-        })?;
-        if immutable_grant.device_ordinal() != runtime_device_ordinal {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.runtime.context",
-                "the immutable grant device differs from the runtime device",
-            )
-            .with_fact("reason", "admitted_grant_device_mismatch")
-            .with_fact("grant_device_ordinal", immutable_grant.device_ordinal())
-            .with_fact("runtime_device_ordinal", runtime_device_ordinal));
-        }
-        if self.attempt_id != Some(immutable_grant.identity().attempt_id) {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.runtime.context",
-                "the context attempt identity differs from the immutable grant",
-            )
-            .with_fact("reason", "admitted_grant_attempt_mismatch")
-            .with_fact(
-                "context_attempt_id",
-                self.attempt_id.map(|attempt_id| attempt_id.to_string()).unwrap_or_default(),
-            )
-            .with_fact("grant_attempt_id", immutable_grant.identity().attempt_id));
-        }
-        let domain = self.attempt_allocation_domain.as_ref().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.runtime.context",
-                "an admitted context requires its allocation domain",
-            )
-            .with_fact("reason", "admitted_allocation_domain_missing")
-        })?;
-        if domain.device_ordinal() != runtime_device_ordinal || domain.grant_identity() != immutable_grant.identity() {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.runtime.context",
-                "the allocation domain identity differs from the immutable grant",
-            )
-            .with_fact("reason", "admitted_allocation_domain_identity_mismatch")
-            .with_fact("domain_device_ordinal", domain.device_ordinal())
-            .with_fact("grant_device_ordinal", immutable_grant.device_ordinal())
-            .with_fact("domain_generation", domain.grant_identity().generation)
-            .with_fact("grant_generation", immutable_grant.identity().generation));
-        }
+        let immutable_grant = self.admitted_memory_grant(attempt, "query_engine.runtime.context.memory_grant")?;
         Ok(Some((evidence, immutable_grant)))
     }
 
@@ -146,7 +97,7 @@ impl ExecutionContext {
         // replaces the submitted evidence with the scope actually proven at
         // activation (`with_admitted_gpu_inputs`); every other plan validates
         // against the evidence submitted at admission.
-        let evidence = match &self.activated_deferred_resident_phase {
+        let evidence = match &self.plan.activated_deferred_resident_phase {
             Some(activated)
                 if activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan) =>
             {
@@ -195,7 +146,7 @@ impl ExecutionContext {
         // real admission violation. Otherwise the phase is re-derived from the
         // frames actually presented: one execution context legitimately runs a
         // plan more than once, and a later round may carry a different frame.
-        if let Some(activated) = &self.activated_deferred_resident_phase
+        if let Some(activated) = &self.plan.activated_deferred_resident_phase
             && activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
             && activated.grant_identity != immutable_grant.identity()
         {
@@ -314,9 +265,7 @@ impl ExecutionContext {
             grant_identity: immutable_grant.identity(),
         };
         activated.validate_inputs(gpu_inputs, &immutable_grant)?;
-        let mut context = self.clone();
-        context.activated_deferred_resident_phase = Some(Arc::new(activated));
-        Ok(context)
+        Ok(self.with_plan(|plan| plan.activated_deferred_resident_phase = Some(Arc::new(activated))))
     }
 
     #[doc(hidden)]
@@ -326,7 +275,7 @@ impl ExecutionContext {
         gpu_inputs: &GpuResidentInputMap,
     ) -> Result<()> {
         self.validate_admitted_plan_capabilities(plan)?;
-        let Some(activated) = self.activated_deferred_resident_phase.as_ref().filter(|activated| {
+        let Some(activated) = self.plan.activated_deferred_resident_phase.as_ref().filter(|activated| {
             activated.consumer_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
         }) else {
             return Ok(());
@@ -351,23 +300,5 @@ impl ExecutionContext {
         occurrence_ids: &[String],
     ) -> Result<Option<AttemptComposedScheduleProjection>> {
         self.validate_admitted_evidence(consumer_plan, Some(occurrence_ids))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replace_attempt_allocation_domain_for_test(&mut self, domain: Option<AttemptAllocationDomain>) {
-        self.attempt_allocation_domain = domain;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn attempt_allocation_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
-        self.attempt_allocation_domain.clone()
-    }
-
-    // Plain `#[cfg(test)]` would keep this invisible to downstream test
-    // targets, which need it to cover the adapter fail-closed admission guard.
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn replace_query_service_admitted_for_test(&mut self, admitted: bool) {
-        self.query_service_admitted = admitted;
     }
 }

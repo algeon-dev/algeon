@@ -336,10 +336,7 @@ impl QueryHandle {
             StreamPermitClass::Auxiliary,
         )?;
         validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
-        Ok(template
-            .with_owned_stream_lease(stream_lease)?
-            .into_context()
-            .with_auxiliary_stream_permit_guard(attempt_auxiliary_permit))
+        template.with_owned_auxiliary_stream(stream_lease, attempt_auxiliary_permit)
     }
 
     /// Binds the attempt's root execution context. Only the root setup claim
@@ -355,8 +352,8 @@ impl QueryHandle {
         service: &QueryServiceInner,
         resources: &QueryServiceResources,
     ) -> Result<ExecutionContext> {
-        let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
-        let (binding, memory_grant, attempt_allocation_domain, observation_owner) =
+        let device_runtime = resources.device_runtime(self.device_ordinal)?;
+        let (binding, memory_grant, allocation_domain, observation_owner) =
             self.lifetime.with_resources(|lifetime| {
                 let envelope = &lifetime.envelope;
                 // The envelope's worker scope is the admission-time identity
@@ -365,81 +362,62 @@ impl QueryHandle {
                 if let Some(scope) = envelope.worker_scope() {
                     debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
                     debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
-                    debug_assert_eq!(scope.pool_id(), gpu_execution_pool.snapshot().pool_id);
+                    debug_assert_eq!(scope.pool_id(), device_runtime.gpu_execution_pool.snapshot().pool_id);
                 }
                 let binding = envelope.take_root_binding()?;
                 let memory_grant = envelope.memory_grant().clone();
-                let attempt_allocation_domain =
-                    envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
-                Ok((binding, memory_grant, attempt_allocation_domain, lifetime.observation_owner()))
+                let allocation_domain = envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
+                Ok((binding, memory_grant, allocation_domain, lifetime.observation_owner()))
             })?;
         #[cfg(test)]
         self.lifetime.wait_at_root_context_binding_gate();
         validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
-        let stream_lease_guard = Arc::new(binding.stream_lease);
-        let runtime = stream_lease_guard.shared_runtime()?;
-        let attempt_member_lease = binding.member_lease;
-        let attempt_stream_provider_route = Arc::new(
-            attempt_allocation_domain
+        // The grant, its allocation domain, and the attempt identity come from
+        // one admission envelope, so plan validation does not re-check them.
+        debug_assert_eq!(allocation_domain.grant_identity(), memory_grant.identity());
+        debug_assert_eq!(memory_grant.identity().attempt_id, self.lifetime.attempt_id);
+        debug_assert_eq!(memory_grant.device_ordinal(), binding.stream_lease.device().ordinal());
+        let runtime = binding.stream_lease.shared_runtime()?;
+        let stream_provider_route = Arc::new(
+            allocation_domain
                 .create_stream_provider_route(runtime.stream(), self.lifetime.attempt_auxiliary_slots.capacity())?,
         );
-        // The root execution stream binds the attempt's root domain member
-        // once for the whole attempt lifetime.
         let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
         let trace_id = self.lifetime.observation.trace_id().map(|trace_id| TraceId::new(trace_id.as_str()));
-        let runtime_observation = self.lifetime.observation.clone();
-        let context = ExecutionContext::from_parts(ExecutionContextParts {
-            service_epoch: Some(service.service_epoch.clone()),
-            query_epoch: Some(self.lifetime.query_epoch.clone()),
-            query_anchor: None,
-            io_lifecycle: None,
-            query_id,
-            trace_id,
-            attempt_id: Some(self.lifetime.attempt_id),
-            cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
-            runtime_observation,
-            runtime_observation_owner: observation_owner,
-            runtime_execution_scope: None,
-            runtime_stream_lease_scope: stream_scope,
-            runtime,
-            gpu_execution_pool,
-            memory_control_policy: self.memory_control_policy(),
-            memory_grant: Some(memory_grant),
-            grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
-            attempt_allocation_domain: Some(attempt_allocation_domain),
-            attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
-            admitted_capability_evidence: self.lifetime.admitted_capability_evidence.clone(),
-            activated_deferred_resident_phase: None,
-            attempt_member_lease: Some(attempt_member_lease),
-            attempt_stream_provider_route: Some(Arc::clone(&attempt_stream_provider_route)),
-            attempt_stream_provider_alias: None,
-            source_scheduler_policy: service.config.source_scheduler_policy,
-            source_chunk_planning_mode: service.config.source_chunk_planning_mode,
-            resident_source_cache: resources.resident_caches.source_for_device(self.device_ordinal),
-            #[cfg(feature = "cugraph")]
-            resident_graph_cache: resources.resident_caches.graph_for_device(self.device_ordinal),
-            lakehouse_cache_fill_config: service.config.lakehouse_cache_fill.clone(),
-            service_stream_pool: device.stream_pool().clone(),
-            lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
-            lakehouse_cache_fill_concurrency: resources.lakehouse_cache_fill_concurrency.clone(),
-            lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
-            object_store_control_runtime: Arc::clone(&resources.object_store_control_runtime),
-            source_object_stores: Arc::clone(&resources.source_object_stores),
+        let attempt = AdmittedAttempt {
+            attempt_id: self.lifetime.attempt_id,
+            service_epoch: service.service_epoch.clone(),
+            query_epoch: self.lifetime.query_epoch.clone(),
             cancellation,
-            statistical_aggregate_execution_mode: service.config.statistical_aggregate_execution_mode,
-            datafusion_order_tracking: false,
-            aggregate_strategy_execution_options: service.config.aggregate_strategy_execution_options,
-            source_chunk_planning_options: service.config.source_chunk_planning_options,
-            stream_lease_guard: Some(stream_lease_guard),
-            auxiliary_stream_permit_guard: None,
-            query_service_admitted: true,
-        });
+            observation_owner,
+            #[cfg(feature = "cugraph")]
+            cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
+            lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
+            capability_evidence: self.lifetime.admitted_capability_evidence.clone(),
+            memory_control_policy: memory_control_policy_for_grant(self.memory_control_policy(), &memory_grant),
+            auxiliary_slots: Arc::clone(&self.lifetime.attempt_auxiliary_slots),
+            allocation_domain,
+            memory_grant,
+        };
+        // The root execution stream binds the attempt's root domain member
+        // once for the whole attempt lifetime.
+        let context = ExecutionContext::admitted_root(
+            device_runtime,
+            attempt,
+            StreamBinding::AttemptRoot {
+                runtime,
+                member: binding.member_lease,
+                route: Arc::clone(&stream_provider_route),
+                lease: binding.stream_lease,
+            },
+            PlanScope::root(query_id, trace_id, self.lifetime.observation.clone(), stream_scope),
+        );
         self.lifetime.with_resources(|lifetime| {
             debug_assert!(
                 lifetime.attempt_stream_provider_route.is_none(),
                 "an admitted attempt can install only one stream-provider route"
             );
-            lifetime.attempt_stream_provider_route = Some(Arc::clone(&attempt_stream_provider_route));
+            lifetime.attempt_stream_provider_route = Some(Arc::clone(&stream_provider_route));
             lifetime.root_context = Some(context.clone());
             Ok(())
         })?;

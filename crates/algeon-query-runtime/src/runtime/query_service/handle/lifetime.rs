@@ -256,6 +256,7 @@ impl QueryHandleLifetime {
         matches!(*self.lock_state(), LifetimeState::Active(_))
     }
 
+    #[cfg(feature = "cugraph")]
     pub(super) fn cache_scope_allocator_correlation(&self) -> AttemptCacheScopeAllocatorCorrelation {
         self.cache_scope_allocator_correlation.lock().unwrap_or_else(sync::PoisonError::into_inner).clone()
     }

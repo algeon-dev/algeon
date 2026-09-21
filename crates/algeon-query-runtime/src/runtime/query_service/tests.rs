@@ -38,7 +38,7 @@ use crate::{
     },
     runtime::{
         BackendLifecycle, DeviceResourceEnvelope, DeviceResourceProfile, GpuBackendDeviceInstallationBounds,
-        GpuBackendDeviceProfile, LakehouseCacheFillEvent, LakehouseCacheFillOutcome,
+        GpuBackendDeviceProfile, LakehouseCacheFillEvent, LakehouseCacheFillOutcome, StandaloneConfig,
         gpu::DeviceAdmissionHealth,
         resident::{GpuDataFrame, GpuResultHandle},
         service_stream::{StreamCleanupOutcome, block_stream_cleanup_thread_for_test},

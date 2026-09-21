@@ -1763,13 +1763,11 @@ pub fn query_runtime::runtime::ExecutionContext::aggregate_strategy_execution_op
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_id(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> query_planning::error::Result<core::option::Option<cudf::core::memory::usage::QueryMemoryDomainUsage>>
 pub fn query_runtime::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
-pub fn query_runtime::runtime::ExecutionContext::builder() -> query_runtime::runtime::context::builder::ExecutionContextBuilder
 pub fn query_runtime::runtime::ExecutionContext::cancellation(&self) -> &query_runtime::runtime::ExecutionCancellation
 pub fn query_runtime::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::datafusion_order_tracking(&self) -> bool
 pub fn query_runtime::runtime::ExecutionContext::device(&self) -> cudf::runtime::device::DeviceId
 pub fn query_runtime::runtime::ExecutionContext::execution_budget_token(&self, cudf::runtime::budget::ExecutionBudgetRequest) -> query_planning::error::Result<cudf::runtime::budget::ExecutionBudgetToken>
-pub fn query_runtime::runtime::ExecutionContext::from_shared_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> query_planning::error::Result<Self>
 pub fn query_runtime::runtime::ExecutionContext::gpu_executor(&self) -> query_planning::error::Result<query_runtime::runtime::GpuExecutorLease>
 pub fn query_runtime::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
 pub fn query_runtime::runtime::ExecutionContext::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
@@ -1794,6 +1792,8 @@ pub fn query_runtime::runtime::ExecutionContext::drain_lakehouse_cache_fill_even
 pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_acquire_timeout(&self) -> core::time::Duration
 pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_budget(&self) -> query_runtime::runtime::cache_fill::CacheFillByteBudget
 pub fn query_runtime::runtime::ExecutionContext::service_stream_pool(&self) -> query_runtime::runtime::context::stream_pool::QueryServiceStreamPool
+impl query_runtime::runtime::ExecutionContext
+pub fn query_runtime::runtime::ExecutionContext::standalone(query_runtime::runtime::StandaloneConfig) -> query_planning::error::Result<Self>
 impl query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &query_planning::plan::core::QueryPlan, &[alloc::string::String]) -> query_planning::error::Result<core::option::Option<query_planning::schedule_projection::AttemptComposedScheduleProjection>>
 pub fn query_runtime::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
@@ -2063,10 +2063,7 @@ impl query_runtime::runtime::RuntimeObservedExecutionContext
 pub fn query_runtime::runtime::RuntimeObservedExecutionContext::context(&self) -> &query_runtime::runtime::ExecutionContext
 pub fn query_runtime::runtime::RuntimeObservedExecutionContext::into_parts(self) -> (query_runtime::runtime::ExecutionContext, query_runtime::observability::RuntimeObservationOwner)
 pub fn query_runtime::runtime::RuntimeObservedExecutionContext::observation(&self) -> &query_runtime::observability::RuntimeObservationOwner
-pub struct query_runtime::runtime::RuntimeObservedExecutionContextBuilder
-impl query_runtime::runtime::RuntimeObservedExecutionContextBuilder
-pub fn query_runtime::runtime::RuntimeObservedExecutionContextBuilder::build(self) -> core::result::Result<query_runtime::runtime::ExecutionContext, query_runtime::runtime::RuntimeObservationBuildError>
-pub fn query_runtime::runtime::RuntimeObservedExecutionContextBuilder::build_with_runtime_observation(self) -> core::result::Result<query_runtime::runtime::RuntimeObservedExecutionContext, query_runtime::runtime::RuntimeObservationBuildError>
+pub fn query_runtime::runtime::RuntimeObservedExecutionContext::standalone(query_runtime::runtime::StandaloneConfig, query_runtime::observability::RuntimeObservationSession) -> core::result::Result<Self, query_runtime::runtime::RuntimeObservationBuildError>
 pub struct query_runtime::runtime::S3SourceStorageProfile
 pub query_runtime::runtime::S3SourceStorageProfile::credential: query_runtime::runtime::S3SourceStorageCredential
 pub query_runtime::runtime::S3SourceStorageProfile::endpoint: core::option::Option<alloc::string::String>
@@ -2091,6 +2088,20 @@ pub fn query_runtime::runtime::SourceStorageProfile::s3(impl core::convert::Into
 pub fn query_runtime::runtime::SourceStorageProfile::s3_profile(&self) -> &query_runtime::runtime::S3SourceStorageProfile
 impl core::fmt::Debug for query_runtime::runtime::SourceStorageProfile
 pub fn query_runtime::runtime::SourceStorageProfile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_runtime::runtime::StandaloneConfig
+pub query_runtime::runtime::StandaloneConfig::cancellation: query_runtime::runtime::ExecutionCancellation
+pub query_runtime::runtime::StandaloneConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig
+pub query_runtime::runtime::StandaloneConfig::memory_control_policy: query_planning::execution_contracts::MemoryControlPolicy
+pub query_runtime::runtime::StandaloneConfig::memory_policy: query_planning::execution_contracts::MemoryResourcePolicy
+pub query_runtime::runtime::StandaloneConfig::query_id: core::option::Option<query_planning::correlation::QueryId>
+pub query_runtime::runtime::StandaloneConfig::runtime: core::option::Option<alloc::sync::Arc<cudf::runtime::owner::Runtime>>
+pub query_runtime::runtime::StandaloneConfig::service_stream_pool: core::option::Option<service_stream::ServiceStreamPool>
+pub query_runtime::runtime::StandaloneConfig::service_stream_pool_size: core::option::Option<usize>
+pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_mode: query_planning::execution_contracts::SourceChunkPlanningMode
+pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_options: query_planning::chunk::policy::SourceChunkPlanningOptions
+pub query_runtime::runtime::StandaloneConfig::source_scheduler_policy: query_planning::execution_contracts::SourceSchedulerPolicy
+pub query_runtime::runtime::StandaloneConfig::source_storage_profiles: alloc::vec::Vec<query_runtime::runtime::SourceStorageProfile>
+pub query_runtime::runtime::StandaloneConfig::trace_id: core::option::Option<query_planning::correlation::TraceId>
 pub const query_runtime::runtime::BACKEND_ATTEMPT_DURATION_BUCKET_COUNT: usize
 pub const query_runtime::runtime::BACKEND_METRIC_DEVICE_CAPACITY: usize
 pub fn query_runtime::runtime::probe_device_capacity(usize, query_runtime::runtime::GpuMemoryOwnership, u64) -> query_planning::error::Result<query_runtime::runtime::GpuDeviceCapacityProbe>

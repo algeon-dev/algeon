@@ -36,7 +36,7 @@ mod enabled {
             ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
         },
         runtime::{
-            ExecutionContext, MemoryControlPolicy,
+            ExecutionContext, MemoryControlPolicy, StandaloneConfig,
             resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
         },
         source::{GpuResidentSource, LocalParquetSource, SourceNode},
@@ -876,11 +876,12 @@ mod enabled {
             vector_pca_output_schema(DataType::Int64, 1),
         ));
         let plan = builder.finish_with_host_sink(root);
-        let context = ExecutionContext::builder()
-            .with_runtime(cudf::Runtime::new().unwrap())
-            .with_memory_control_policy(MemoryControlPolicy::Unbounded)
-            .build()
-            .unwrap();
+        let context = ExecutionContext::standalone(StandaloneConfig {
+            runtime: Some(Arc::new(cudf::Runtime::new().unwrap())),
+            memory_control_policy: MemoryControlPolicy::Unbounded,
+            ..StandaloneConfig::default()
+        })
+        .unwrap();
         let (result, metrics, _) = execute_query_plan_direct(&context, QueryExecutionRequest::new(&plan)).into_parts();
         let error = result.err().expect("unbounded ML request");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);

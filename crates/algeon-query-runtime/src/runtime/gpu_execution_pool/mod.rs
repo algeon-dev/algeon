@@ -7,15 +7,19 @@
 
 use std::{
     cell::Cell,
-    collections::HashMap,
     future::Future,
     panic::AssertUnwindSafe,
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     time::Instant,
+};
+#[cfg(any(test, feature = "test-hooks"))]
+use std::{
+    collections::HashMap,
+    sync::{OnceLock, Weak},
 };
 
 use futures::FutureExt;
@@ -49,6 +53,7 @@ use supervisor::{SUPERVISOR_JOINED, SUPERVISOR_NOT_JOINED};
 
 const BUILD_OPERATION: &str = "query_engine.gpu_execution_pool.build";
 const RUN_OPERATION: &str = "query_engine.gpu_execution_pool.run";
+#[cfg(any(test, feature = "test-hooks"))]
 const SHARED_OPERATION: &str = "query_engine.gpu_execution_pool.shared";
 const SHUTDOWN_OPERATION: &str = "query_engine.gpu_execution_pool.shutdown";
 
@@ -210,6 +215,7 @@ pub(crate) struct GpuExecutionPool {
 
 impl GpuExecutionPool {
     /// Creates a pool with an independent query-concurrency tracker.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn new(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         Self::new_with_tracker(device_ordinal, worker_count, GpuExecutionQueryTracker::new())
     }
@@ -220,6 +226,7 @@ impl GpuExecutionPool {
     /// `worker_count` lifecycle job slots and `worker_count` execution job slots.
     /// Backend-owned pools pass explicit `A_d`/`A_d * S_d` capacities from
     /// the device resource profile via [`Self::new_with_tracker_and_classes`].
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn new_with_tracker(
         device_ordinal: usize,
         worker_count: usize,
@@ -332,6 +339,7 @@ impl GpuExecutionPool {
     /// different width is rejected rather than silently constructing another
     /// executor for the same device. Once the last clone is dropped, a later
     /// call may install a new width.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn shared_for_device(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         validate_worker_count(device_ordinal, worker_count)?;
 
