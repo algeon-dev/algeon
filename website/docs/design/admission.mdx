@@ -74,6 +74,30 @@ peak memory. Admission commits the configured query cap when ledger capacity
 and an attempt slot are available. The grant does not grow, shrink, borrow, or
 move to another device during the attempt.
 
+## Execution lanes and width
+
+One admitted attempt executes its compiled pipeline on execution lanes.
+Each lane holds one auxiliary permit of the attempt envelope, one service
+stream lease, and one auxiliary fork of the native fork-stream route for the
+whole run. Fork subsets never overlap between live lanes. The coordinator
+claims runnable tasks, resolves each claim into owned scratch state, and
+commits lane outputs in claim order. Lanes never borrow coordinator state.
+
+Width comes from the service profile and ready work, in that order. The
+attempt envelope caps lanes at `source_work_per_attempt` auxiliary permits;
+the device pool caps concurrent execution jobs across attempts with typed
+saturation instead of an unbounded queue. Materialized tasks additionally
+cap lanes at the compiled graph's independent leaves. Aggregate source
+chunks and fused top-k sort candidates expand inside those bounds; full
+sorts without a limit stay serial on the coordinator. Lane acquisition never
+waits: a saturated envelope narrows the run to width 1 instead of
+deadlocking, so a light query keeps progressing beside a wide one.
+
+`grant / lane_count` is not a per-lane allocator quota. All lanes allocate
+against the one query domain under the immutable grant. A retryable resource
+failure retries with less simultaneous live work: sort candidates retry
+serially while the merge loop reduces its fan-in.
+
 ## Allocation enforcement
 
 The query allocation domain is the single arbiter of the attempt's allocation

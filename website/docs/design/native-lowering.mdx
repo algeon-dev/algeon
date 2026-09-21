@@ -163,6 +163,15 @@ DataFusion metrics, and native report projections. Once native execution has
 started, a failure is returned as a structured error; the query is not replayed
 through the retained CPU plan.
 
+Inside the wrapper, the engine may execute independent work on multiple
+lanes of the one admitted attempt: task claims, aggregate source chunks,
+and fused top-k sort candidates. The wrapper boundary is unchanged by this:
+one output partition, declared ordering preserved, `Final` emission. A
+global top-k merges per-chunk candidates with the same comparator and
+applies the offset once at the end; concatenated sorted chunks are never
+presented as a global sort. GPU-resident sinks adopt lane-produced frames
+onto the root runtime before the lane leases release.
+
 ## Baseline preservation and final-plan requirements
 
 `NotSupported` and `NotSelectedByCost` are planning outcomes, not errors. The

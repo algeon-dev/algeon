@@ -143,7 +143,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let ResidentGpuFrame { frame, .. } = *frame;
         let frame = if self.aggregate_dispatch.is_some() {
             // Lane leases remain live through this handoff; the resident result
-            // must not retain columns backed by a leased worker stream.
+            // must not retain columns backed by a leased worker stream. The
+            // adoption runs whenever the run owns a dispatcher, even if this
+            // task fell back to serial work: lane-backed content can reach
+            // the sink through sibling tasks sharing the same run (join probe
+            // chunks, aggregate source chunks), and tracking every producer
+            // is more coupling than one output-sized copy.
             let root_runtime = self.execution.context().runtime()?;
             let adopted = frame.frame().copy_into_runtime(&root_runtime).map_err(|error| {
                 cudf_query_error(

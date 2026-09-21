@@ -9,7 +9,12 @@
 //! outputs return to the coordinator, which commits them in claim order.
 //! An aggregate claim stays on the coordinator and expands its source into
 //! bounded chunk work on these same lanes; chunk completion order never
-//! changes its stable input or merge order.
+//! changes its stable input or merge order. A final-sort claim with a fused
+//! limit stays on the coordinator the same way and expands its independent
+//! local top-k candidates onto these lanes; the bounded hierarchical merge
+//! stays on the coordinator behind the existing sort retry contract. Full
+//! sorts without a limit stay serial: chunk-local sorts cannot replace a
+//! global sort.
 //!
 //! Join build/probe/materialize, graph, and edge-normalize tasks
 //! always run inline on the coordinator: they own cross-task native state
@@ -47,7 +52,7 @@ use crate::{
     observability::{
         CleanupFailurePhase, RuntimeExecutionObservationScope, RuntimeSpanId, RuntimeTaskLifecycle, task_attempt_id,
     },
-    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, SinkBoundaryKind},
+    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, SinkBoundaryKind, SortStrategy},
     plan::QueryPlan,
     runtime::{
         AttemptStreamProviderRoute, AttemptWorkLease, ExecutionContext, GpuExecutionJobKind, PoolBlockingWork,
@@ -68,23 +73,46 @@ const OPERATION: &str = "query_engine.exec.bounded.compiled.lane";
 /// admitted attempt's fork pool through
 /// [`AttemptStreamProviderRoute::lane_capacity`].
 ///
-/// GPU-resident sinks keep the serial task scheduler. Only their aggregate's
-/// private source chunks may use lanes, and the sink adopts its frame onto
-/// the root runtime before those lanes are released.
+/// GPU-resident sinks never take the lane-dispatched scheduler: they borrow
+/// lanes inside aggregate source work and fused top-k sort candidates while
+/// the serial coordinator runs the DAG, and the sink adopts lane-backed
+/// frames onto the root runtime before those lanes are released.
 #[doc(hidden)]
 pub fn is_lane_family_pipeline(pipeline: &CompiledPipeline) -> bool {
     pipeline.sink().kind() == SinkBoundaryKind::HostArrowMaterialization
         && pipeline_tasks_within_migrated_contract(pipeline)
 }
 
-/// A resident pipeline may borrow lanes only inside aggregate source work;
-/// the compiled DAG and sink still execute on the root coordinator.
+/// The aggregate half of resident lane borrowing: a resident pipeline whose
+/// aggregate source chunks may use lanes; the compiled DAG and sink still
+/// execute on the root coordinator. Sort borrowing has its own predicate
+/// below.
 #[doc(hidden)]
 pub fn is_resident_aggregate_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
     pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput
         && pipeline_tasks_within_migrated_contract(pipeline)
         && pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Aggregate)
         && pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::SourceRead)
+        && !pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::GpuResidentSource)
+}
+
+/// A resident pipeline whose fused top-k may borrow lanes for its local
+/// sort candidates; the compiled DAG, the bounded merge, and the sink still
+/// execute on the root coordinator, and the sink adopts lane-backed frames
+/// onto the root runtime with lane leases held through the handoff.
+///
+/// Full sorts never borrow lanes: chunk-local sorts cannot replace a global
+/// sort, so they keep the pure serial path without the adoption copy.
+/// Already-resident inputs are one frame with no chunk expansion behind
+/// them, so they stay out for the same reason.
+#[doc(hidden)]
+pub fn is_resident_sort_lane_pipeline(pipeline: &CompiledPipeline) -> bool {
+    pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput
+        && pipeline_tasks_within_migrated_contract(pipeline)
+        && pipeline.tasks().iter().any(|task| {
+            task.kind() == PipelineTaskKind::FinalSort
+                && matches!(task.sort_strategy(), Some(SortStrategy::FusedTopK { .. }))
+        })
         && !pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::GpuResidentSource)
 }
 
@@ -135,7 +163,9 @@ pub struct LaneDispatchSupport {
 impl LaneDispatchSupport {
     /// Builds dispatch support from the attempt's fork capacity. Materialized
     /// task pipelines are additionally capped by their independent leaves;
-    /// aggregate tasks can expand one leaf into several chunk instances.
+    /// aggregate tasks can expand one leaf into several chunk instances, and
+    /// fused top-k sorts can expand one frame or stream into several local
+    /// candidates.
     pub fn new(
         route: Arc<AttemptStreamProviderRoute>,
         context: ExecutionContext,
@@ -145,8 +175,15 @@ impl LaneDispatchSupport {
         metrics: ExecutionMetrics,
     ) -> Self {
         // Aggregate tasks expand their deferred source into independently runnable
-        // chunks; unlike materialized tasks, their width is not the DAG leaf count.
-        let requested_lanes = if pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Aggregate) {
+        // chunks, and fused top-k sorts expand their input into independently
+        // runnable local candidates; unlike materialized tasks, their width is
+        // not the DAG leaf count. Full sorts never expand, so they keep the
+        // leaf cap instead of charging permits for lanes that stay idle.
+        let requested_lanes = if pipeline
+            .tasks()
+            .iter()
+            .any(|task| task.kind() == PipelineTaskKind::Aggregate || is_fused_topk_sort(task))
+        {
             route.lane_capacity()
         } else {
             route.lane_capacity().min(lane_family_concurrent_task_count(&pipeline))
@@ -248,10 +285,15 @@ impl LaneWorkLease {
     }
 }
 
+/// Runs a resident-sink pipeline on the serial coordinator while aggregate
+/// source chunks and fused top-k sort candidates borrow the run's lanes.
+/// Only tasks that expand owned lane work use the dispatcher; every other
+/// task runs the same interpreter on the coordinator.
+///
 /// Keep lane leases through the resident sink handoff so any lane-backed
 /// columns can be copied to the root runtime while their producer streams
 /// are still alive.
-pub(super) fn run_resident_aggregate_chunks(
+pub(super) fn run_resident_lane_borrow(
     scheduler: &CompiledPipelineScheduler,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
     support: &LaneDispatchSupport,
@@ -319,6 +361,15 @@ struct LaneClaim {
 struct CoordinatorClaim {
     task: PipelineTask,
     lifecycle: Option<RuntimeTaskLifecycle>,
+}
+
+/// Whether a final-sort task can expand local top-k candidates onto lanes.
+///
+/// Only the fused top-k strategy fans out; a full sort runs whole-input on
+/// whichever executor claims it, so it never justifies coordinator-inline
+/// scheduling or a leaf-count exemption by itself.
+fn is_fused_topk_sort(task: &PipelineTask) -> bool {
+    task.kind() == PipelineTaskKind::FinalSort && matches!(task.sort_strategy(), Some(SortStrategy::FusedTopK { .. }))
 }
 
 /// Whether a task must run inline on the coordinator instead of a lane.
@@ -739,13 +790,24 @@ fn run_lane_claims(
     // committed; lane work never produces filters the coordinator needs in
     // the same round, keeping the handoff one-way.
     let dynamic_filter_snapshot = executor.dynamic_filters.clone();
-    if width <= 1 || claims.iter().any(|claim| claim.task.kind() == PipelineTaskKind::Aggregate) {
+    if width <= 1
+        || claims
+            .iter()
+            .any(|claim| claim.task.kind() == PipelineTaskKind::Aggregate || is_fused_topk_sort(&claim.task))
+    {
         let dispatch = AggregateLaneDispatch::new(support, lane_leases, observation_scope);
         return Ok(claims
             .iter_mut()
             .map(|claim| {
-                // A symbolic aggregate coordinates its chunk instances. It cannot
+                // A symbolic aggregate coordinates its chunk instances, and a
+                // fused top-k coordinates its local candidates. Neither can
                 // occupy a pool worker while waiting for those same workers.
+                // Full sorts coordinate nothing across lanes, so they stay on
+                // pool workers with the round's other claims. Inline
+                // round-mates run on the root context while the run holds its
+                // lane permits, so they must never block on an attempt work
+                // lease; source prefetch stays behind its own policy for the
+                // same reason.
                 run_lane_claim_inline(support, claim, Some(&dispatch), &dynamic_filter_snapshot)
             })
             .collect());

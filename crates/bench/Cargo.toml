@@ -106,6 +106,10 @@ test = false
 name = "tpcds_three_way_bench"
 test = false
 
+[[bin]]
+name = "sort_lane_sweep"
+test = false
+
 [build-dependencies]
 rapids-build-support = { workspace = true }
 

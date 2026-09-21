@@ -149,7 +149,14 @@ pub struct DeviceResourceEnvelope {
     pub default_query_limit_bytes: u64,
     /// Maximum simultaneously admitted attempts.
     pub max_active_attempts: usize,
-    /// Auxiliary source-work slots granted per attempt.
+    /// Auxiliary slots granted per attempt.
+    ///
+    /// Each slot backs one auxiliary permit holder of the attempt: an
+    /// execution lane, a source worker, or an auxiliary fragment context.
+    /// The native route serves one disjoint fork subset per live holder, so
+    /// this count sizes the attempt's fork pool, not its operator width.
+    /// Execution width is the minimum of this envelope, the free permits,
+    /// the device execution-job capacity, and the ready work.
     pub source_work_per_attempt: usize,
     /// Installed stream-pool size; must cover root and auxiliary work.
     pub stream_pool_size: usize,

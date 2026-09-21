@@ -10,6 +10,7 @@ mod limit;
 mod reservation;
 mod retry;
 mod sizing;
+mod sort_lane;
 mod topk_candidate;
 mod topk_level;
 
@@ -20,8 +21,11 @@ use sizing::{
     estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes, final_sort_retained_bytes,
     final_sort_rows_per_chunk,
 };
+use sort_lane::*;
 use topk_candidate::*;
 use topk_level::*;
+
+use super::compiled::lanes::AggregateLaneDispatch;
 
 pub(super) fn execute_final_sort_limit_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -37,6 +41,7 @@ pub(super) fn execute_final_sort_limit_with_retry(
         sort,
         bounded.limit.map(|(_, limit)| limit),
         input,
+        None,
     )
 }
 
@@ -46,13 +51,14 @@ pub(super) fn execute_final_sort_node_with_retry(
     sort: &SortNode,
     limit: Option<&LimitNode>,
     input: CommittedPartial,
+    dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<CommittedPartial> {
     let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
         unreachable!("execute_final_sort_limit_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
+    let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
     let input_rows = input.frame.num_rows() as u64;
     let (observation, plan_execution_id, parent_span_id) =
         crate::observability::stage_context_from_execution(final_sort.execution.context());
@@ -145,8 +151,9 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_committed_with_retr
     sort: &SortNode,
     limit: Option<&LimitNode>,
     input: ResidentGpuFrame,
+    dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<ResidentGpuFrame> {
-    execute_final_sort_node_with_retry(execution, node_id, sort, limit, input)
+    execute_final_sort_node_with_retry(execution, node_id, sort, limit, input, dispatch)
 }
 
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
@@ -160,7 +167,9 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
+    // Full sorts without a limit stay serial on the coordinator: chunk-local
+    // sorts cannot replace a global sort, so no lane fan-out applies here.
+    let mut final_sort = FinalSortExecutor { execution, dispatch: None, node_id, sort, max_attempts };
     let result = final_sort.full_sort_limit_attempt_from_frame(None, &input_frame, 1);
 
     match result {
@@ -187,21 +196,23 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     sort: &SortNode,
     limit: &LimitNode,
     mut input_stream: ResidentFrameStreamPayload,
+    dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<ResidentGpuFrame> {
     let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
         unreachable!("execute_final_sort_node_from_stream_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
+    let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
     let result = final_sort.hierarchical_topk_stream(limit, &mut input_stream, 1);
     input_stream.release_producer(final_sort.execution);
     final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
     result
 }
 
-struct FinalSortExecutor<'a, 'e> {
+struct FinalSortExecutor<'a, 'e, 'd> {
     execution: &'a mut BoundedExecutionAttempt<'e>,
+    dispatch: Option<&'d AggregateLaneDispatch>,
     node_id: NodeId,
     sort: &'a SortNode,
     max_attempts: usize,
@@ -227,7 +238,7 @@ fn final_sort_runtime_facts(
     .attach_to(error)
 }
 
-impl FinalSortExecutor<'_, '_> {
+impl FinalSortExecutor<'_, '_, '_> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
         self.final_sort_budget_token_for_bytes(boundary, attempt, self.execution.device_budget_bytes())
     }

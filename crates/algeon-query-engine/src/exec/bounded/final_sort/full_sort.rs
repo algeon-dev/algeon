@@ -6,7 +6,7 @@ use super::{
     execution_overrides, final_sort_retained_bytes, limit_keeps_all_rows, lower_sort_spec,
 };
 
-impl FinalSortExecutor<'_, '_> {
+impl FinalSortExecutor<'_, '_, '_> {
     pub(super) fn full_sort_limit_attempt(
         &mut self,
         limit: Option<&LimitNode>,
