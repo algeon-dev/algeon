@@ -68,8 +68,73 @@ pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
 }
 
 struct ScheduledLocalParquetReadResult {
-    frame: Result<GpuDataFrame>,
+    frame: Result<(GpuDataFrame, Option<ReadinessEvent>)>,
     observed_row_group_count: Option<u64>,
+}
+
+/// Device-side readiness for one decoded source chunk.
+///
+/// The worker records this on its own stream after the last decode enqueue instead of
+/// host-synchronizing, so the worker thread recycles while decode drains. The consumer
+/// synchronizes the event at its join point before committing the chunk; cross-stream
+/// consumers additionally order device-side through the retained provenance fences, and
+/// host-visible uses (D2H, scalars) keep their own stream synchronizes.
+struct ReadinessEvent {
+    event: cudf::runtime::event::CudaEvent,
+}
+
+impl ReadinessEvent {
+    fn record_on_worker_stream(context: &ExecutionContext) -> Result<Self> {
+        let event = context.runtime()?.record_completion_event().map_err(|error| {
+            cudf_query_error(
+                "query_engine.source_scheduler.readiness_record",
+                "failed to record scheduled source read readiness on the worker stream",
+                error,
+            )
+        })?;
+        Ok(Self { event })
+    }
+
+    fn synchronize_for_commit(self, chunk: &SourceChunk) -> Result<()> {
+        self.event.synchronize().map_err(|error| {
+            attach_row_group_facts(
+                cudf_query_error(
+                    "query_engine.source_scheduler.readiness_sync",
+                    "scheduled source read readiness failed before consumer commit",
+                    error,
+                )
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("path", parquet_chunk_path_fact(chunk)),
+                chunk,
+            )
+        })
+    }
+}
+
+/// Observes one discarded read's readiness without consuming its frame.
+///
+/// Abandonment releases the frame, but a late decode failure must still be attributed to its
+/// chunk instead of surfacing at an unrelated later fence. Failures are secondary to the
+/// abandonment itself, so they are recorded as cleanup failures, never raised.
+fn observe_abandoned_readiness(
+    result: Result<(GpuDataFrame, Option<ReadinessEvent>)>,
+    chunk: &SourceChunk,
+    execution: &BoundedExecutionAttempt<'_>,
+) {
+    let Ok((_, readiness)) = result else { return };
+    let Some(readiness) = readiness else { return };
+    if let Err(error) = readiness.synchronize_for_commit(chunk) {
+        if let Some(scope) = execution.context().runtime_execution_scope() {
+            let summary = crate::observability::CleanupFailureSummary::from_native_error(
+                crate::observability::CleanupFailurePhase::TaskExecution,
+                &error,
+            );
+            scope.observation().record_attempt_cleanup_failure(summary);
+        } else {
+            eprintln!("[query_engine::source_scheduler] warning: abandoned source read readiness failed: {error}");
+        }
+    }
 }
 
 struct SourceReadObservation {
@@ -289,14 +354,31 @@ fn read_local_parquet_chunk_worker(
         let mut observation_guard = SourceReadWorkerGuard::new(observation);
         let frame = read_local_parquet_chunk(&context, &source, &chunk, budget_bytes, budget_boundary, &metrics)
             .and_then(|frame| {
-                context.runtime()?.synchronize().map_err(|error| {
-                    cudf_query_error(
-                        "query_engine.source_scheduler.worker_sync",
-                        "failed to synchronize scheduled source read worker stream",
-                        error,
-                    )
-                })?;
-                Ok(frame)
+                // Device-side consumers order through the frame's retained provenance fences;
+                // the worker records readiness instead of blocking on its stream so the pool
+                // slot recycles while decode drains. A record failure is never silently dropped:
+                // like the fence fallback warnings it is reported, then the previous host fence
+                // verifies the frame before it ships. Without a readiness event the worker
+                // falls back to that host fence rather than shipping unverified success.
+                match ReadinessEvent::record_on_worker_stream(&context) {
+                    Ok(readiness) => Ok((frame, Some(readiness))),
+                    Err(record_error) => {
+                        eprintln!(
+                            "[query_engine::source_scheduler] warning: failed to record source read readiness on the worker stream, falling back to host synchronization: {record_error}"
+                        );
+                        context.runtime()?.synchronize().map_err(|error| {
+                            attach_row_group_facts(
+                                cudf_query_error(
+                                    "query_engine.source_scheduler.worker_sync",
+                                    "failed to synchronize scheduled source read worker stream",
+                                    error,
+                                ),
+                                &chunk,
+                            )
+                        })?;
+                        Ok((frame, None))
+                    },
+                }
             });
         // A pure function of the chunk's own metadata, not a metrics counter
         // delta: the read succeeded only when `frame` is `Ok`.
@@ -516,12 +598,20 @@ impl ScheduledLocalParquetRead {
             },
         };
         match result.frame {
-            Ok(frame) => Ok(ScheduledLocalParquetReadOutput {
-                chunk,
-                frame,
-                observed_bytes: 0,
-                observed_row_group_count: result.observed_row_group_count,
-            }),
+            Ok((frame, readiness)) => {
+                // The commit point observes the same completion the worker fence used to.
+                // Late decode failures surface here with this chunk's facts instead of
+                // silently deferring to an unrelated later host synchronize.
+                if let Some(readiness) = readiness {
+                    readiness.synchronize_for_commit(&chunk)?;
+                }
+                Ok(ScheduledLocalParquetReadOutput {
+                    chunk,
+                    frame,
+                    observed_bytes: 0,
+                    observed_row_group_count: result.observed_row_group_count,
+                })
+            },
             Err(error) => {
                 if let Some((source, attempt, max_attempts)) = retry_context
                     && let Some(retry) = try_finish_scheduled_source_read_with_corrected_budget(
@@ -547,11 +637,12 @@ impl ScheduledLocalParquetRead {
     }
 
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
-        let ScheduledLocalParquetRead { state, .. } = self;
+        let ScheduledLocalParquetRead { chunk, state, .. } = self;
         match state {
             // The inline read already completed and reported itself; an
             // abandoned read's frame is discarded unconsumed.
-            ScheduledLocalParquetReadState::Inline { observation, .. } => {
+            ScheduledLocalParquetReadState::Inline { result, observation, .. } => {
+                observe_abandoned_readiness(result.frame, &chunk, execution);
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns: 0 });
@@ -563,8 +654,12 @@ impl ScheduledLocalParquetRead {
                 }
                 let join_started_at = Instant::now();
                 // The worker already reported its read to the plan execution;
-                // an abandoned read's frame is discarded unconsumed.
-                let _abandoned = worker.join();
+                // an abandoned read's frame is discarded unconsumed, but its
+                // readiness is still observed so a late decode failure is
+                // attributed instead of leaking to an unrelated later fence.
+                if let Some(SupervisedWorkerJoin::Completed(result)) = worker.join() {
+                    observe_abandoned_readiness(result.frame, &chunk, execution);
+                }
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
                         join_duration_ns: join_started_at.elapsed().as_nanos() as u64,

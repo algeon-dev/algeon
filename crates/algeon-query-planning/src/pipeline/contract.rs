@@ -207,6 +207,20 @@ impl ContractGraph<'_> {
                     ResidentDataForm::Frame
                 }
             },
+            // A union of fully materialized branch frames carries no wider contract than its
+            // branches: when its single consumer pulls chunk by chunk (unary maps, partial
+            // aggregates, stream probes, fused top-k), chaining the branch frames avoids a full
+            // concat copy and its peak. Frame-only consumers (sink, limit, full sort, window,
+            // join strategies that concatenate first) keep the concat. Exact-order downstream
+            // consumers drain the stream in branch order before their own required concat, so
+            // summation order and branch order are preserved.
+            PipelineTaskKind::Union => {
+                if resource.consumers().len() == 1 && self.consumers_accept_frame_stream(resource) {
+                    ResidentDataForm::FrameStream
+                } else {
+                    ResidentDataForm::Frame
+                }
+            },
             _ => ResidentDataForm::Frame,
         }
     }

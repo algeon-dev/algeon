@@ -5,7 +5,10 @@
 //! executed once in deterministic partition/batch order and staged in the
 //! DataFusion memory pool until one shared native context is available.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
@@ -16,7 +19,7 @@ use datafusion::{
     },
     physical_plan::ExecutionPlan,
 };
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use query_engine::runtime::{
     ExecutionCancellation, ExecutionContext,
     resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
@@ -32,6 +35,16 @@ const MULTI_CHILD_HOST_INPUT_MEMORY_CONSUMER: &str = "NativeMultiChild[host-inpu
 /// Default cumulative Arrow staging ceiling for one multi-child accelerator
 /// operation.
 pub(crate) const DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES: usize = 1024 * 1024 * 1024;
+
+/// How many partitions of one ordinary child stage concurrently.
+///
+/// Bounds open partition streams and transient pre-reservation batches while overlapping
+/// async partition open and poll latency. Retained staging still passes the same
+/// reserve-before-push accounting under `max_staging_bytes` and the DataFusion pool, in
+/// stable partition and batch order; this only sizes the in-flight window, never the cap.
+/// Ready-order merging would reorder `LIMIT`/`OFFSET` rows and exact statistical summation,
+/// so the buffered (order-preserving) window is required rather than an unordered one.
+const HOST_STAGING_PARTITION_POLL_DEPTH: usize = 4;
 
 #[derive(Clone)]
 pub(crate) struct NativeChildInputSpec {
@@ -99,10 +112,13 @@ pub(crate) async fn stage_native_children(
     max_staging_bytes: usize,
 ) -> Result<StagedNativeChildren> {
     check_cancellation(cancellation)?;
-    let mut reservation = MemoryConsumer::new(MULTI_CHILD_HOST_INPUT_MEMORY_CONSUMER)
+    let reservation = MemoryConsumer::new(MULTI_CHILD_HOST_INPUT_MEMORY_CONSUMER)
         .with_can_spill(false)
         .register(task_context.memory_pool());
-    let mut staged_bytes = 0usize;
+    // Claimed before any retained batch through compare-exchange, so interleaved partition
+    // polls cannot jointly overshoot `max_staging_bytes`; the pool reservation below stays the
+    // authoritative per-byte enforcement and is released with `reservation` on every path.
+    let staged_bytes = AtomicUsize::new(0);
     let mut children = Vec::with_capacity(specs.len());
 
     for spec in specs {
@@ -128,17 +144,16 @@ pub(crate) async fn stage_native_children(
         }
         let schema = Arc::new(spec.plan.schema().project(&spec.projection).map_err(DataFusionError::from)?);
         let partition_count = spec.plan.properties().output_partitioning().partition_count();
-        let mut batches = Vec::new();
-        for partition in 0..partition_count {
-            check_cancellation(cancellation)?;
-            let mut stream = spec.plan.execute(partition, Arc::clone(&task_context))?;
-            while let Some(batch) = stream.try_next().await? {
-                check_cancellation(cancellation)?;
-                let batch = batch.project(&spec.projection).map_err(DataFusionError::from)?;
-                reserve_batch(&spec, &batch, max_staging_bytes, &mut staged_bytes, &mut reservation)?;
-                batches.push(batch);
-            }
-        }
+        let batches = stage_child_partitions_bounded(
+            &spec,
+            Arc::clone(&task_context),
+            cancellation,
+            partition_count,
+            max_staging_bytes,
+            &staged_bytes,
+            &reservation,
+        )
+        .await?;
         children.push(StagedNativeChild::Host { spec, schema, batches });
     }
 
@@ -253,21 +268,90 @@ fn check_cancellation(cancellation: &ExecutionCancellation) -> Result<()> {
     })
 }
 
+/// Stages one ordinary child's partitions with a bounded order-preserving poll window.
+///
+/// `buffered` overlaps partition open and poll latency while yielding partitions in stable
+/// ordinal order regardless of completion order, so ordered output and exact statistical
+/// inputs keep deterministic partition and batch order. Bytes are claimed against
+/// `max_staging_bytes` before the pool reservation grows, in first-seen order; the retained
+/// total therefore never exceeds the cap even with several partitions in flight. Any error
+/// or cancellation drops the in-flight partitions and returns every claimed byte with
+/// `reservation`.
+async fn stage_child_partitions_bounded(
+    spec: &NativeChildInputSpec,
+    task_context: Arc<TaskContext>,
+    cancellation: &ExecutionCancellation,
+    partition_count: usize,
+    max_staging_bytes: usize,
+    staged_bytes: &AtomicUsize,
+    reservation: &MemoryReservation,
+) -> Result<Vec<RecordBatch>> {
+    let depth = HOST_STAGING_PARTITION_POLL_DEPTH.clamp(1, partition_count.max(1));
+    let partitions = futures::stream::iter(0..partition_count)
+        .map(|partition| {
+            stage_child_partition(
+                spec,
+                Arc::clone(&task_context),
+                cancellation,
+                partition,
+                max_staging_bytes,
+                staged_bytes,
+                reservation,
+            )
+        })
+        .buffered(depth)
+        .try_collect::<Vec<Vec<RecordBatch>>>()
+        .await?;
+    check_cancellation(cancellation)?;
+    Ok(partitions.into_iter().flatten().collect())
+}
+
+/// Executes one partition's stream to completion, projecting and reserving each batch.
+async fn stage_child_partition(
+    spec: &NativeChildInputSpec,
+    task_context: Arc<TaskContext>,
+    cancellation: &ExecutionCancellation,
+    partition: usize,
+    max_staging_bytes: usize,
+    staged_bytes: &AtomicUsize,
+    reservation: &MemoryReservation,
+) -> Result<Vec<RecordBatch>> {
+    check_cancellation(cancellation)?;
+    let mut stream = spec.plan.execute(partition, task_context)?;
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.try_next().await? {
+        check_cancellation(cancellation)?;
+        let batch = batch.project(&spec.projection).map_err(DataFusionError::from)?;
+        reserve_batch(spec, &batch, max_staging_bytes, staged_bytes, reservation)?;
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
 fn reserve_batch(
     spec: &NativeChildInputSpec,
     batch: &RecordBatch,
     max_staging_bytes: usize,
-    staged_bytes: &mut usize,
-    reservation: &mut MemoryReservation,
+    staged_bytes: &AtomicUsize,
+    reservation: &MemoryReservation,
 ) -> Result<()> {
     let batch_bytes = get_record_batch_memory_size(batch);
-    let next = staged_bytes
-        .checked_add(batch_bytes)
-        .ok_or_else(|| host_staging_limit_error(spec, *staged_bytes, batch_bytes, max_staging_bytes))?;
-    if next > max_staging_bytes {
-        return Err(host_staging_limit_error(spec, *staged_bytes, batch_bytes, max_staging_bytes));
-    }
+    // Claim first through compare-exchange so interleaved partition polls cannot jointly
+    // overshoot the cumulative cap; a denied pool reservation below releases the claim.
+    let staged = loop {
+        let staged = staged_bytes.load(Ordering::Relaxed);
+        let next = staged
+            .checked_add(batch_bytes)
+            .ok_or_else(|| host_staging_limit_error(spec, staged, batch_bytes, max_staging_bytes))?;
+        if next > max_staging_bytes {
+            return Err(host_staging_limit_error(spec, staged, batch_bytes, max_staging_bytes));
+        }
+        if staged_bytes.compare_exchange(staged, next, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            break staged;
+        }
+    };
     reservation.try_grow(batch_bytes).map_err(|source| {
+        staged_bytes.fetch_sub(batch_bytes, Ordering::Relaxed);
         DataFusionError::from(
             Error::new(
                 ErrorCode::MemoryReservationFailed,
@@ -276,11 +360,10 @@ fn reserve_batch(
             )
             .with_fact("input_role", spec.role)
             .with_fact("requested_bytes", batch_bytes)
-            .with_fact("staged_bytes", *staged_bytes)
+            .with_fact("staged_bytes", staged)
             .with_source(source),
         )
     })?;
-    *staged_bytes = next;
     Ok(())
 }
 
@@ -425,6 +508,156 @@ mod tests {
                 .ok_or_else(|| DataFusionError::Execution(format!("missing test partition {partition}")))?;
             let stream = futures::stream::once(async move { Ok(batch) });
             Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
+        }
+    }
+
+    /// Partitions with staggered open latency still stage in stable ordinal order, each
+    /// executed exactly once, so ordered output and exact statistical inputs never observe
+    /// ready order. The async open delay models remote partition latency; overlap happens
+    /// only inside the bounded poll window.
+    #[derive(Debug)]
+    struct DelayedExec {
+        inner: CountingExec,
+        open_delays_ms: Vec<u64>,
+        live: Arc<AtomicUsize>,
+        max_live: Arc<AtomicUsize>,
+    }
+
+    impl DelayedExec {
+        fn wrap(
+            partitions: Vec<RecordBatch>,
+            open_delays_ms: Vec<u64>,
+        ) -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            let execute_count = Arc::new(AtomicUsize::new(0));
+            let live = Arc::new(AtomicUsize::new(0));
+            let max_live = Arc::new(AtomicUsize::new(0));
+            let exec = Self {
+                inner: CountingExec::new(partitions, Arc::clone(&execute_count)),
+                open_delays_ms,
+                live: Arc::clone(&live),
+                max_live: Arc::clone(&max_live),
+            };
+            (exec, execute_count, live, max_live)
+        }
+    }
+
+    impl DisplayAs for DelayedExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DelayedExec")
+        }
+    }
+
+    impl ExecutionPlan for DelayedExec {
+        fn name(&self) -> &str {
+            "DelayedExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.inner.properties()
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            Vec::new()
+        }
+
+        fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+            assert!(children.is_empty());
+            Ok(self)
+        }
+
+        fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+            let live_back = Arc::clone(&self.live);
+            let max_live = Arc::clone(&self.max_live);
+            let delay_ms = self.open_delays_ms[partition];
+            let current = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            max_live.fetch_max(current, Ordering::SeqCst);
+            let stream = self.inner.execute(partition, context)?;
+            let opener = async move {
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                live_back.fetch_sub(1, Ordering::SeqCst);
+            };
+            let delayed = futures::stream::once(opener)
+                .filter_map(|()| async { None::<Result<RecordBatch, DataFusionError>> })
+                .chain(stream);
+            Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.inner.schema), delayed)))
+        }
+    }
+
+    #[derive(Debug)]
+    struct SlowDripExec {
+        schema: SchemaRef,
+        batches: Vec<RecordBatch>,
+        delay_ms: u64,
+        cache: Arc<PlanProperties>,
+    }
+
+    impl SlowDripExec {
+        /// One partition dripping `batches` in order with `delay_ms` between them. A zero
+        /// delay keeps serial reservation order deterministic for cumulative-cap tests; a
+        /// long drip makes mid-flight cancellation deterministic for cancel tests.
+        fn wrap(batches: Vec<RecordBatch>, delay_ms: u64) -> Self {
+            let schema = batches[0].schema();
+            let cache = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(Arc::clone(&schema)),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self { schema, batches, delay_ms, cache }
+        }
+    }
+
+    impl DisplayAs for SlowDripExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("SlowDripExec")
+        }
+    }
+
+    impl ExecutionPlan for SlowDripExec {
+        fn name(&self) -> &str {
+            "SlowDripExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.cache
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            Vec::new()
+        }
+
+        fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+            assert!(children.is_empty());
+            Ok(self)
+        }
+
+        fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+            assert_eq!(partition, 0);
+            let batches = self.batches.clone();
+            let delay_ms = self.delay_ms;
+            let drip = futures::stream::iter(batches.into_iter().map(Ok)).then(move |batch| async move {
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                batch
+            });
+            Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), drip)))
         }
     }
 
@@ -638,5 +871,130 @@ mod tests {
         .unwrap_err();
         let typed = error.find_algeon_error().expect("structured wrapper rejection");
         assert_eq!(typed.facts().get("reason"), Some("host_wrapped_gpu_occurrence_manifest_missing"));
+    }
+
+    fn delayed_child(
+        values: Vec<(i64, f32, i64)>,
+        open_delays_ms: Vec<u64>,
+    ) -> (Arc<dyn ExecutionPlan>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let partitions = values.into_iter().map(|(id, feature, unused)| batch(id, feature, unused)).collect();
+        let (exec, execute_count, _live, max_live) = DelayedExec::wrap(partitions, open_delays_ms);
+        (Arc::new(exec) as Arc<dyn ExecutionPlan>, execute_count, max_live)
+    }
+
+    #[tokio::test]
+    async fn bounded_polling_stages_partitions_in_stable_order_not_ready_order() {
+        // Partition 0 opens slowly and partition 1 instantly: ready order is inverted, but
+        // staged order must stay ordinal so ordered output and exact statistics never shift.
+        let (plan, execute_count, _max_live) = delayed_child(vec![(10, 1.0, 100), (20, 2.0, 200)], vec![150, 0]);
+        let staged = stage_native_children(
+            vec![NativeChildInputSpec { input_name: "input".to_string(), role: "input", plan, projection: vec![0, 1] }],
+            Arc::new(TaskContext::default()),
+            &ExecutionCancellation::new(),
+            DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(execute_count.load(Ordering::SeqCst), 2, "every partition executes exactly once");
+        let StagedNativeChild::Host { batches, .. } = &staged.children[0] else {
+            panic!("ordinary child must be host staged")
+        };
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 10);
+        assert_eq!(batches[1].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 20);
+    }
+
+    #[tokio::test]
+    async fn bounded_polling_overlaps_partition_open_latency_within_a_capped_window() {
+        // Four partitions with 100ms open latency each: a serial poller needs at least 400ms.
+        // The bounded window overlaps the opens; the bound below stays far under the serial
+        // sum while leaving wide margin for loaded CI runners.
+        let (plan, execute_count, max_live) =
+            delayed_child(vec![(1, 1.0, 1), (2, 2.0, 2), (3, 3.0, 3), (4, 4.0, 4)], vec![100, 100, 100, 100]);
+        let started = std::time::Instant::now();
+        let staged = stage_native_children(
+            vec![NativeChildInputSpec { input_name: "input".to_string(), role: "input", plan, projection: vec![0] }],
+            Arc::new(TaskContext::default()),
+            &ExecutionCancellation::new(),
+            DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
+        )
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(execute_count.load(Ordering::SeqCst), 4);
+        assert_eq!(max_live.load(Ordering::SeqCst), 4, "the window polls every partition at once");
+        let StagedNativeChild::Host { batches, .. } = &staged.children[0] else {
+            panic!("ordinary child must be host staged")
+        };
+        assert_eq!(batches.len(), 4);
+        assert!(
+            elapsed < std::time::Duration::from_millis(350),
+            "four overlapped 100ms opens must stage well under the 400ms serial sum, took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_polling_enforces_the_cumulative_cap_and_releases_the_pool() {
+        // One partition drips two batches serially, so reservation order is deterministic: the
+        // cap fits the first batch but rejects the second, exercising cumulative contention
+        // (not just a first-batch rejection) and the release of the claimed first batch.
+        let task_context = Arc::new(TaskContext::default());
+        // Sizes are measured after projection, matching the reserve-before-push accounting.
+        let projected = batch(10, 1.0, 100).project(&[0, 1]).expect("test projection applies");
+        let projected_bytes = get_record_batch_memory_size(&projected);
+        let plan =
+            Arc::new(SlowDripExec::wrap(vec![batch(10, 1.0, 100), batch(20, 2.0, 200)], 0)) as Arc<dyn ExecutionPlan>;
+        let error = stage_native_children(
+            vec![NativeChildInputSpec { input_name: "input".to_string(), role: "input", plan, projection: vec![0, 1] }],
+            Arc::clone(&task_context),
+            &ExecutionCancellation::new(),
+            projected_bytes + projected_bytes / 2,
+        )
+        .await
+        .unwrap_err();
+        let typed = error.find_algeon_error().expect("structured staging cap rejection");
+        assert_eq!(
+            typed.facts().get("staged_bytes"),
+            Some(projected_bytes.to_string().as_str()),
+            "the second batch contends against the retained first batch"
+        );
+        assert_eq!(task_context.memory_pool().reserved(), 0, "a capped run returns every pool byte");
+    }
+
+    #[tokio::test]
+    async fn cancelled_bounded_polling_releases_every_claimed_reservation() {
+        // One partition drips many small batches with sleeps between them: cancellation
+        // requested mid-drip fires at the next cooperative batch boundary, deterministically
+        // long before the stream could finish.
+        let task_context = Arc::new(TaskContext::default());
+        let batches = (0..20).map(|id| batch(id, id as f32, id)).collect::<Vec<_>>();
+        let plan = Arc::new(SlowDripExec::wrap(batches, 50)) as Arc<dyn ExecutionPlan>;
+        let cancellation = ExecutionCancellation::new();
+        let staging = tokio::spawn({
+            let task_context = Arc::clone(&task_context);
+            let cancellation = cancellation.clone();
+            async move {
+                stage_native_children(
+                    vec![NativeChildInputSpec {
+                        input_name: "input".to_string(),
+                        role: "input",
+                        plan,
+                        projection: vec![0, 1],
+                    }],
+                    task_context,
+                    &cancellation,
+                    DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
+                )
+                .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        cancellation.cancel();
+        let error = staging.await.expect("staging task joins").unwrap_err();
+        let typed = error.find_algeon_error().expect("structured staging cancellation");
+        assert!(typed.message().contains("cancelled"), "mid-flight cancellation, not completion, ends the run");
+        assert_eq!(task_context.memory_pool().reserved(), 0, "cancellation returns every claimed byte");
     }
 }

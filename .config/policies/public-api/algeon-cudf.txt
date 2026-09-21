@@ -6866,6 +6866,7 @@ pub fn cudf::Runtime::nulls(&self, impl core::convert::Into<cudf::core::types::D
 pub fn cudf::Runtime::nulls_with_budget(&self, impl core::convert::Into<cudf::core::types::DataType>, usize, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::Series>>
 pub fn cudf::Runtime::order_after_execution_binding(&self, rapids_interop::types::ExecutionBinding<'_>, &'static str) -> core::result::Result<cudf::StreamDependencyOutcome, rapids_interop::types::InteropError>
 pub fn cudf::Runtime::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::Runtime::record_completion_event(&self) -> cudf::core::error::Result<cudf::runtime::event::CudaEvent>
 pub fn cudf::Runtime::scalar<T: cudf::core::types::CudfType>(&self, T) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 pub fn cudf::Runtime::sequence<T: cudf::core::types::CudfType>(&self, T, T, usize) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Runtime::series<T: cudf::frame::HostColumnData>(&self, &[T]) -> cudf::core::error::Result<cudf::Series>
@@ -8535,6 +8536,7 @@ pub fn cudf::Runtime::nulls(&self, impl core::convert::Into<cudf::core::types::D
 pub fn cudf::Runtime::nulls_with_budget(&self, impl core::convert::Into<cudf::core::types::DataType>, usize, &cudf::ExecutionBudgetToken) -> cudf::core::error::Result<cudf::BudgetedExecutionOutcome<cudf::Series>>
 pub fn cudf::Runtime::order_after_execution_binding(&self, rapids_interop::types::ExecutionBinding<'_>, &'static str) -> core::result::Result<cudf::StreamDependencyOutcome, rapids_interop::types::InteropError>
 pub fn cudf::Runtime::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::Runtime::record_completion_event(&self) -> cudf::core::error::Result<cudf::runtime::event::CudaEvent>
 pub fn cudf::Runtime::scalar<T: cudf::core::types::CudfType>(&self, T) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 pub fn cudf::Runtime::sequence<T: cudf::core::types::CudfType>(&self, T, T, usize) -> cudf::core::error::Result<cudf::Series>
 pub fn cudf::Runtime::series<T: cudf::frame::HostColumnData>(&self, &[T]) -> cudf::core::error::Result<cudf::Series>

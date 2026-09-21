@@ -1196,3 +1196,478 @@ fn every_live_attempt_caller_holds_a_distinct_fork_including_the_root() {
     drop(replacement);
     drop(source_worker_lease);
 }
+
+/// RAII restore for CUDA test-support fault hooks: the fault clears even when the test
+/// panics, so the serial exclusive binary never leaks a global hook into the next test.
+struct EventSyncFaultGuard;
+
+impl EventSyncFaultGuard {
+    fn fail() -> Self {
+        unsafe { cudf_sys::test_support::cudf_test_event_fail_synchronize() };
+        Self
+    }
+}
+
+impl Drop for EventSyncFaultGuard {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::test_support::cudf_test_event_allow_synchronize() };
+    }
+}
+
+struct StreamSyncBlockGuard;
+
+impl StreamSyncBlockGuard {
+    fn block() -> Self {
+        unsafe { cudf_sys::test_support::cudf_test_stream_block_synchronize() };
+        Self
+    }
+}
+
+impl Drop for StreamSyncBlockGuard {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::test_support::cudf_test_stream_unblock_synchronize() };
+    }
+}
+
+fn union_output_data_form(
+    pipeline: &query_engine::pipeline::CompiledPipeline,
+    task_kind: query_engine::pipeline::PipelineTaskKind,
+) -> query_engine::pipeline::ResidentDataForm {
+    use query_engine::pipeline::ResidentDataForm;
+    let producer = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == task_kind)
+        .expect("pipeline contains the asserted task")
+        .id();
+    let outputs = pipeline
+        .resources()
+        .iter()
+        .filter(|resource| resource.producer() == producer)
+        .map(|resource| resource.data_form())
+        .collect::<Vec<ResidentDataForm>>();
+    assert_eq!(outputs.len(), 1, "the asserted task produces exactly one resource");
+    outputs[0]
+}
+
+fn literal_union_count_plan() -> QueryPlan {
+    use query_engine::expr::{AggregateExpr, AggregateFunction, AggregateSpec};
+    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
+    let left_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
+            .expect("left literal batch");
+    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3])) as ArrayRef])
+        .expect("right literal batch");
+    let count_schema = Arc::new(Schema::new(vec![Field::new("rows", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
+    let right =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let aggregate = builder.add_aggregate(
+        union,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_key"), "rows")],
+        ),
+        count_schema,
+    );
+    builder.finish_with_host_sink(aggregate)
+}
+
+/// E2: a union feeding a stream consumer chains branch frames instead of a full concat copy,
+/// while a union feeding a frame-only consumer keeps the concat. The contract assertion pins
+/// the planning decision (it fails when the union declaration is reverted); serial, inline,
+/// and lane widths agree on the rows end to end. Byte accounting for the streamed path: the
+/// payload retains exactly the branch frames (no output copy is allocated and no concat
+/// kernel runs), and the downstream partial aggregate consumes them frame by frame through
+/// the existing incremental merge. The executor deliberately stays compatible by producing
+/// a frame where the contract requires one, so behavior parity — not a peak counter — is
+/// what this test observes.
+#[test]
+fn union_streaming_output_contract_matches_its_consumer_form() {
+    use query_engine::pipeline::{PipelineTaskKind, ResidentDataForm};
+
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let plan = literal_union_count_plan();
+    let pipeline = admitted_pipeline(&plan);
+    assert!(is_lane_family_pipeline(&pipeline));
+    assert_eq!(
+        union_output_data_form(&pipeline, PipelineTaskKind::Union),
+        ResidentDataForm::FrameStream,
+        "a union with one stream-consuming aggregate must not declare a full concat output"
+    );
+
+    let limited = {
+        let dir = unique_temp_dir("query-engine-union-frame-contract");
+        let left_path = dir.join("left.parquet");
+        let right_path = dir.join("right.parquet");
+        write_key_value_parquet(&left_path, &[1, 2], &[10, 20]);
+        write_key_value_parquet(&right_path, &[3, 4], &[30, 40]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, false),
+            Field::new("v", DataType::Int64, true),
+        ]));
+        parquet_union_plan(&left_path, &right_path, &schema)
+    };
+    assert_eq!(
+        union_output_data_form(&admitted_pipeline(&limited), PipelineTaskKind::Union),
+        ResidentDataForm::Frame,
+        "a union feeding a frame-only limit keeps the concat output"
+    );
+
+    let test_context = backend.admit(&plan, None).expect("lane union aggregate admits");
+    let context: &ExecutionContext = test_context.context.context();
+    let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+    let run = |requested_lanes: Option<usize>| {
+        let metrics = ExecutionMetrics::detached("lane-union-stream");
+        let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        match requested_lanes {
+            None => {
+                let state = scheduler.run(&mut executor).expect("serial union aggregate should execute");
+                assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
+            },
+            Some(width) => {
+                let support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                    .expect("lane-dispatched union aggregate should execute");
+                assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
+            },
+        }
+        let batch = executor.take_host_output().expect("compiled host sink should materialize");
+        int64_values(&batch, 0)
+    };
+    let expected = vec![Some(3)];
+    assert_eq!(run(None), expected, "serial baseline counts every branch row once");
+    assert_eq!(run(Some(1)), expected, "width 1 streams through the same protocol");
+    assert_eq!(run(Some(2)), expected, "width 2 agrees without a concat copy");
+}
+
+fn row_grouped_count_plan(path: &Path, schema: &Arc<Schema>) -> QueryPlan {
+    use query_engine::expr::{AggregateExpr, AggregateFunction, AggregateSpec};
+    let count_schema = Arc::new(Schema::new(vec![Field::new("rows", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let scan = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        path,
+        Arc::clone(schema),
+        vec!["k".into(), "v".into()],
+    )));
+    let aggregate = builder.add_aggregate(
+        scan,
+        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "rows")]),
+        count_schema,
+    );
+    builder.finish_with_host_sink(aggregate)
+}
+
+/// E5: a union of wide branches feeding a narrow aggregate streams the branch frames without
+/// a full-width concat copy. Unused wide columns ride the stream payloads and are dropped by
+/// the downstream partial aggregate per frame; no second materialization is created and every
+/// row counts exactly once at every width.
+#[test]
+fn wide_union_branches_stream_into_narrow_aggregate_without_concat() {
+    use arrow::array::StringArray;
+    use query_engine::{
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec},
+        pipeline::{PipelineTaskKind, ResidentDataForm},
+    };
+
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("w1", DataType::Int64, true),
+        Field::new("w2", DataType::Int64, true),
+        Field::new("w3", DataType::Utf8, true),
+        Field::new("w4", DataType::Int64, true),
+        Field::new("w5", DataType::Int64, true),
+        Field::new("w6", DataType::Utf8, true),
+        Field::new("w7", DataType::Int64, true),
+    ]));
+    let branch = |keys: Vec<i32>| {
+        let n = keys.len();
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(keys)) as ArrayRef,
+                Arc::new(Int64Array::from(vec![1_i64; n])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![2_i64; n])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["wide-unused-column-payload"; n])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![3_i64; n])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![4_i64; n])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["another-unused-wide-payload"; n])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![5_i64; n])) as ArrayRef,
+            ],
+        )
+        .expect("wide literal branch")
+    };
+    let count_schema = Arc::new(Schema::new(vec![Field::new("rows", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![branch(vec![1, 2])])));
+    let right = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![branch(vec![3, 4])])));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let aggregate = builder.add_aggregate(
+        union,
+        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "rows")]),
+        count_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+    let pipeline = admitted_pipeline(&plan);
+    assert!(is_lane_family_pipeline(&pipeline));
+    assert_eq!(
+        union_output_data_form(&pipeline, PipelineTaskKind::Union),
+        ResidentDataForm::FrameStream,
+        "wide union branches must chain, not concat, for a stream consumer"
+    );
+
+    let test_context = backend.admit(&plan, None).expect("wide union aggregate admits");
+    let context: &ExecutionContext = test_context.context.context();
+    let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+    let run = |requested_lanes: Option<usize>| {
+        let metrics = ExecutionMetrics::detached("lane-wide-union-stream");
+        let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        match requested_lanes {
+            None => {
+                scheduler.run(&mut executor).expect("serial wide union aggregate should execute");
+            },
+            Some(width) => {
+                let support = LaneDispatchSupport::new(
+                    Arc::clone(&route),
+                    metrics_context.clone(),
+                    plan.clone(),
+                    pipeline.clone(),
+                    gpu_inputs.clone(),
+                    metrics.clone(),
+                )
+                .with_requested_lanes(width);
+                run_lane_dispatched(&scheduler, &mut executor, None, &support)
+                    .expect("lane wide union aggregate should execute");
+            },
+        }
+        let batch = executor.take_host_output().expect("compiled host sink should materialize");
+        int64_values(&batch, 0)
+    };
+    let expected = vec![Some(4)];
+    assert_eq!(run(None), expected);
+    assert_eq!(run(Some(1)), expected);
+    assert_eq!(run(Some(2)), expected);
+}
+
+/// E1: failing the head chunk's readiness event aborts the run before any commit, with the
+/// chunk ordinal and lane attached. No partial enters coordinator state and no host output
+/// is produced.
+#[test]
+fn chunk_readiness_sync_failure_attributes_head_ordinal_and_commits_nothing() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let dir = unique_temp_dir("query-engine-chunk-readiness-failure");
+    let path = dir.join("input.parquet");
+    write_row_grouped_key_value_parquet(
+        &path,
+        &(0..800).collect::<Vec<i32>>(),
+        &(0..800).map(i64::from).collect::<Vec<i64>>(),
+        200,
+    );
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, true)]));
+    let plan = row_grouped_count_plan(&path, &schema);
+    let pipeline = admitted_pipeline(&plan);
+    assert!(is_lane_family_pipeline(&pipeline));
+
+    let error = {
+        let test_context = backend.admit(&plan, None).expect("lane aggregate admits");
+        let context: ExecutionContext = test_context.context.context().clone();
+        let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+        assert_eq!(route.lane_capacity(), 2);
+
+        let metrics = ExecutionMetrics::detached("lane-readiness-failure");
+        let metrics_context = metrics.scope_context(&context).expect("metrics scope applies");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let support = LaneDispatchSupport::new(
+            Arc::clone(&route),
+            metrics_context.clone(),
+            plan.clone(),
+            pipeline.clone(),
+            gpu_inputs.clone(),
+            metrics.clone(),
+        )
+        .with_requested_lanes(2);
+        let _fault = EventSyncFaultGuard::fail();
+        let error = match run_lane_dispatched(&scheduler, &mut executor, None, &support) {
+            Ok(_) => panic!("a failed head readiness must abort the lane run"),
+            Err(error) => error,
+        };
+        assert!(executor.take_host_output().is_err(), "no host output is produced when readiness fails before commit");
+        error
+    };
+    // The failed attempt's grant releases with its handle, so the next admission proves the
+    // failure left nothing held.
+    assert_eq!(
+        error.operation(),
+        "query_engine.compiled.chunk_readiness_sync",
+        "late lane failure is attributed at completion, got {}",
+        error.operation()
+    );
+    assert_eq!(error.fact_value("chunk_ordinal"), Some("0"), "the head ordinal fails first");
+    assert!(error.fact_value("execution_lane").is_some(), "the failing lane is attached");
+
+    // The failure neither commits partials nor poisons the backend: the next admission runs.
+    let healthy = backend.admit(&plan, None).expect("next query still admits after a readiness failure");
+    let output = query_engine::exec::execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
+        .into_parts()
+        .0
+        .expect("next query executes after a readiness failure");
+    let QueryOutput::HostArrow(batch) = output else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int64_values(&batch, 0), vec![Some(800)]);
+}
+
+/// E1: lane workers finish chunk work without host-synchronizing their streams. With every
+/// stream synchronize blocked, both lane workers still reach completion (they only record
+/// readiness); the coordinator's device-side commit and the terminal D2H proceed after
+/// unblock. On the old worker-sync protocol neither worker could complete while blocked.
+#[test]
+fn lane_workers_complete_chunks_without_stream_synchronize() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let dir = unique_temp_dir("query-engine-lane-no-worker-sync");
+    let path = dir.join("input.parquet");
+    write_row_grouped_key_value_parquet(
+        &path,
+        &(0..800).collect::<Vec<i32>>(),
+        &(0..800).map(i64::from).collect::<Vec<i64>>(),
+        200,
+    );
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, true)]));
+    let plan = row_grouped_count_plan(&path, &schema);
+    let pipeline = admitted_pipeline(&plan);
+    assert!(is_lane_family_pipeline(&pipeline));
+
+    let test_context = backend.admit(&plan, None).expect("lane aggregate admits");
+    let owned_context: ExecutionContext = test_context.context.context().clone();
+    let route = owned_context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let arrivals_in = Arc::clone(&arrivals);
+    let support_route = Arc::clone(&route);
+    let _block = StreamSyncBlockGuard::block();
+    let worker = std::thread::spawn(move || {
+        let metrics = ExecutionMetrics::detached("lane-no-worker-sync");
+        let metrics_context = metrics.scope_context(&owned_context).expect("metrics scope applies");
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+        let gpu_inputs = GpuResidentInputMap::new();
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let support = LaneDispatchSupport::new(
+            support_route,
+            metrics_context.clone(),
+            plan.clone(),
+            pipeline.clone(),
+            GpuResidentInputMap::new(),
+            metrics.clone(),
+        )
+        .with_requested_lanes(2)
+        .with_aggregate_chunk_completion_gate(Arc::new(move |ordinal, lane, fork| {
+            arrivals_in.lock().expect("arrival mutex").push((ordinal, lane, fork));
+        }));
+        let state =
+            run_lane_dispatched(&scheduler, &mut executor, None, &support).expect("lane run completes after unblock");
+        let batch = executor.take_host_output().expect("host sink materializes");
+        (state.live_resource_count(), int64_values(&batch, 0))
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        {
+            let observed = arrivals.lock().expect("arrival mutex");
+            if observed.len() >= 2 {
+                break;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!(
+                "both lane workers must record readiness while stream synchronize is blocked; \
+                 a worker stuck in a stream synchronize means the old host-fence protocol is back"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    drop(_block);
+    let (live_resources, rows) = worker.join().expect("lane run thread joins");
+    assert_eq!(live_resources, 0, "lane run releases every resource");
+    assert_eq!(rows, vec![Some(800)], "every source row counts exactly once");
+    let observed = arrivals.lock().expect("arrival mutex");
+    assert!(observed.len() >= 2);
+    assert_ne!(observed[0].0, observed[1].0, "completions carry distinct chunk ordinals");
+}
+
+/// E3: the host sink never reports success early and never releases its grant before the
+/// device-to-host copy finishes. This is a prohibition pin, not an overlap proof: host output
+/// is absent until the sink task commits it, and the attempt's full lane capacity is reusable
+/// only after the run returns its leases, so a future change that emits rows early or drops
+/// the grant at sink entry fails here.
+#[test]
+fn host_sink_handoff_never_reports_success_early_or_releases_its_grant() {
+    let backend = LaneBackendGuard::acquire().expect("lane backend lock acquires");
+    let plan = literal_union_count_plan();
+    let pipeline = admitted_pipeline(&plan);
+    assert!(is_lane_family_pipeline(&pipeline));
+
+    let test_context = backend.admit(&plan, None).expect("lane union aggregate admits");
+    let context: &ExecutionContext = test_context.context.context();
+    let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
+    let capacity = route.lane_capacity();
+    assert_eq!(capacity, 2);
+
+    let metrics = ExecutionMetrics::detached("lane-sink-handoff");
+    let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
+    let gpu_inputs = GpuResidentInputMap::new();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    assert!(executor.take_host_output().is_err(), "host output is absent before the sink task commits it");
+    let support = LaneDispatchSupport::new(
+        Arc::clone(&route),
+        metrics_context.clone(),
+        plan.clone(),
+        pipeline.clone(),
+        gpu_inputs.clone(),
+        metrics.clone(),
+    )
+    .with_requested_lanes(2);
+    let state = run_lane_dispatched(&scheduler, &mut executor, None, &support).expect("lane run should execute");
+    assert_eq!(state.live_resource_count(), 0);
+    let batch = executor.take_host_output().expect("host output exists only after the sink commits");
+    assert_eq!(int64_values(&batch, 0), vec![Some(3)]);
+    drop(executor);
+    drop(state);
+    // Every lane lease returned with the run: the attempt serves its full capacity again.
+    let mut reacquired = Vec::new();
+    for _ in 0..capacity {
+        reacquired.push(
+            context
+                .try_acquire_attempt_work_lease()
+                .expect("lease reacquire reports no error")
+                .expect("a released lane permit is reusable"),
+        );
+    }
+    assert_eq!(reacquired.len(), capacity);
+}

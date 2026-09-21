@@ -11,7 +11,7 @@ use super::{
     boundary::{BoundaryObserver, BoundaryObserverRef},
     budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
-    device_guard::DeviceGuard,
+    device_guard::{DeviceEntryGuard, DeviceGuard},
     event::CudaEvent,
     execution_domain::ExecutionDomain,
     placement::ExecutionPlacement,
@@ -234,6 +234,22 @@ impl Runtime {
     /// Synchronize the runtime's default stream.
     pub fn synchronize(&self) -> Result<()> {
         self.stream().synchronize()
+    }
+
+    /// Record a completion event on the runtime's default stream without blocking the host.
+    ///
+    /// The event orders after every operation already enqueued on this stream, including the
+    /// reverse completion fences held across FFI calls by resolved executions. Synchronizing the
+    /// event later observes the same completion as [`synchronize`](Self::synchronize), but the
+    /// producing thread is free to return first while device-side consumers order through the
+    /// retained provenance fences. A late GPU failure surfaces at the next synchronizing
+    /// observation of the event rather than here; the committer attributes it with its own
+    /// task facts instead of the producer's worker facts.
+    pub fn record_completion_event(&self) -> Result<CudaEvent> {
+        let _entry = DeviceEntryGuard::enter(self.device(), "runtime::record_completion_event")?;
+        let event = CudaEvent::new()?;
+        event.record(self.stream())?;
+        Ok(event)
     }
 
     /// Access the runtime's owned CUDA stream.

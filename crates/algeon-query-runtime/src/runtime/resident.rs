@@ -1476,6 +1476,67 @@ mod tests {
         assert!(cursor.next_batch().unwrap().is_none());
     }
 
+    /// E3: the deferred host cursor prepares each bounded chunk inside the existing sink
+    /// contract without declaring success early. Every prepared chunk materializes exactly
+    /// once, the cursor reports more work until the final chunk drains, and dropping the
+    /// cursor after a partial drain releases its retained owners instead of leaking a grant.
+    #[test]
+    fn host_batch_cursor_prepares_each_chunk_without_early_success() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_cancellation(cancellation.clone())
+            .build()
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1, 2, 3]));
+        let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
+        let mut cursor = handle
+            .into_host_batch_cursor(
+                cancellation,
+                HostBatchCursorConfig { target_materialization_bytes: 1024, max_rows: 1, ..Default::default() },
+            )
+            .unwrap();
+
+        let mut rows = Vec::new();
+        for expected in [1, 2, 3] {
+            assert_eq!(cursor.remaining_rows(), 4 - expected, "unprepared chunks are not success");
+            let prepared = cursor.prepare_next_batch().expect("chunk prepares").expect("chunk remains");
+            assert_eq!(prepared.num_rows(), 1);
+            let batch = cursor.materialize_prepared_batch(prepared).expect("prepared chunk materializes");
+            assert_eq!(batch.num_rows(), 1);
+            rows.push(batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap().value(0));
+        }
+        assert!(cursor.prepare_next_batch().expect("final prepare observes").is_none());
+        assert_eq!(cursor.remaining_rows(), 0);
+        rows.sort();
+        assert_eq!(rows, vec![1, 2, 3], "every chunk materializes exactly once");
+    }
+
+    #[test]
+    fn host_batch_cursor_prepare_reports_cancellation_before_any_copy() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_cancellation(cancellation.clone())
+            .build()
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let frame = GpuDataFrame::new(single_i32_frame(&runtime, "id", vec![1, 2, 3]));
+        let handle = GpuResultHandle::new(&context, frame, schema).unwrap();
+        let cursor = handle
+            .into_host_batch_cursor(
+                cancellation.clone(),
+                HostBatchCursorConfig { target_materialization_bytes: 1024, max_rows: 1, ..Default::default() },
+            )
+            .unwrap();
+        cancellation.cancel();
+        let error = cursor.prepare_next_batch().expect_err("cancelled prepare must not size a chunk");
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    }
+
     #[test]
     fn source_residency_clones_owner_for_pure_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());

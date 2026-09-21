@@ -39,22 +39,101 @@ pub(in crate::exec::bounded) struct AggregateLaneDispatch {
 #[derive(Default)]
 struct ChunkFlights<O> {
     observation_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
-    jobs: BTreeMap<usize, (usize, PoolBlockingWork<Result<O>>)>,
+    jobs: BTreeMap<usize, ChunkFlight<O>>,
+}
+
+/// One dispatched lane job: its lane and fork facts travel with the handle so the
+/// coordinator attributes the head ordinal's readiness without borrowing lane leases.
+struct ChunkFlight<O> {
+    lane: usize,
+    fork: Option<usize>,
+    handle: PoolBlockingWork<Result<LaneWorkOutput<O>>>,
+}
+
+/// One lane worker's private output with its device-side readiness.
+///
+/// The worker records `readiness` on its lane stream after the last work enqueue instead of
+/// host-synchronizing, so the pool slot recycles while the lane's work drains. The coordinator
+/// synchronizes the head ordinal's event before commit, which observes the same completion
+/// the worker fence used to. `readiness` is `None` only when the worker already fell back to
+/// a host fence because the event itself could not be recorded; that output is verified.
+struct LaneWorkOutput<O> {
+    output: O,
+    readiness: Option<cudf::runtime::event::CudaEvent>,
+}
+
+/// A completed lane output waiting for its stable ordinal commit.
+struct ReadyLaneOutput<O> {
+    lane: usize,
+    fork: Option<usize>,
+    output: LaneWorkOutput<O>,
 }
 
 impl<O> Drop for ChunkFlights<O> {
     fn drop(&mut self) {
         // A panic or early error must drain before the enclosing run returns
-        // its lane leases. Uncommitted outputs are released after each join.
-        while let Some((_, (_, handle))) = self.jobs.pop_first() {
-            let result = handle.join().and_then(|result| result);
-            if let Err(error) = result {
-                super::super::scheduler::record_cleanup_failure(
-                    self.observation_scope.as_ref(),
-                    crate::observability::CleanupFailurePhase::TaskExecution,
-                    &error,
-                );
+        // its lane leases. Joined outputs are completion-observed before release so a late
+        // lane failure is still attributed instead of surfacing at an unrelated later fence;
+        // uncommitted outputs are released after each join.
+        while let Some((ordinal, flight)) = self.jobs.pop_first() {
+            let result = flight.handle.join().and_then(|result| result);
+            match result {
+                Ok(completed) => {
+                    if let Some(readiness) = completed.readiness
+                        && let Err(sync_error) = readiness.synchronize()
+                    {
+                        super::super::scheduler::record_cleanup_failure(
+                            self.observation_scope.as_ref(),
+                            crate::observability::CleanupFailurePhase::TaskExecution,
+                            &chunk_readiness_error(ordinal, flight.lane, flight.fork, sync_error),
+                        );
+                    }
+                },
+                Err(error) => {
+                    super::super::scheduler::record_cleanup_failure(
+                        self.observation_scope.as_ref(),
+                        crate::observability::CleanupFailurePhase::TaskExecution,
+                        &error,
+                    );
+                },
             }
+        }
+    }
+}
+
+/// Attributes one chunk's readiness observation with its stable dispatch facts.
+fn chunk_readiness_error(ordinal: usize, lane: usize, fork: Option<usize>, sync_error: cudf::Error) -> QueryError {
+    let mut error = cudf_query_error(
+        "query_engine.compiled.chunk_readiness_sync",
+        "aggregate chunk readiness failed before coordinator commit",
+        sync_error,
+    )
+    .with_fact("chunk_ordinal", ordinal)
+    .with_fact("execution_lane", lane);
+    if let Some(fork) = fork {
+        error = error.with_fact("attempt_fork_index", fork);
+    }
+    error
+}
+
+/// Observes every completed-but-uncommitted output during an abort without committing any.
+///
+/// Cancellation and commit failures drop the reorder buffer; each entry's readiness is still
+/// synchronized first so late lane failures are attributed to their ordinal instead of
+/// leaking to an unrelated later fence. Outputs release with their entries.
+fn drain_ready_on_abort<O>(
+    ready: BTreeMap<usize, ReadyLaneOutput<O>>,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+) {
+    for (ordinal, entry) in ready {
+        if let Some(readiness) = entry.output.readiness
+            && let Err(sync_error) = readiness.synchronize()
+        {
+            super::super::scheduler::record_cleanup_failure(
+                observation_scope,
+                crate::observability::CleanupFailurePhase::TaskExecution,
+                &chunk_readiness_error(ordinal, entry.lane, entry.fork, sync_error),
+            );
         }
     }
 }
@@ -187,13 +266,16 @@ impl AggregateLaneDispatch {
         let work = Arc::new(work);
         let (completed, completions) = mpsc::channel();
         let mut flights = ChunkFlights { observation_scope: self.observation_scope.clone(), jobs: BTreeMap::new() };
-        let mut ready = BTreeMap::new();
+        let mut ready: BTreeMap<usize, ReadyLaneOutput<O>> = BTreeMap::new();
         let mut free_lanes = (0..self.lanes.len()).collect::<Vec<_>>();
         let mut dispatched = 0;
         let mut committed = 0;
         let mut exhausted = false;
         loop {
-            execution.context().check_cancellation(OPERATION)?;
+            if let Err(error) = execution.context().check_cancellation(OPERATION) {
+                drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                return Err(error);
+            }
             while !exhausted && flights.jobs.len() + ready.len() < self.lanes.len() {
                 let Some(input) = next(state, execution)? else {
                     exhausted = true;
@@ -202,6 +284,7 @@ impl AggregateLaneDispatch {
                 let lane = free_lanes.pop().expect("an available window slot owns a free lane");
                 let ordinal = dispatched;
                 let lease = Arc::clone(&self.lanes[lane].lease);
+                let fork = lease.context().attempt_claimed_fork_index();
                 let work = Arc::clone(&work);
                 let metrics = Arc::clone(&self.metrics);
                 let observation_scope = self.observation_scope.clone();
@@ -216,7 +299,7 @@ impl AggregateLaneDispatch {
                         let budget = context.bounded_device_budget_bytes().expect("compiled work is bounded");
                         let mut execution = BoundedExecutionAttempt::new(context, budget, &metrics)?;
                         let result = work(&mut execution, input);
-                        let output = finish_chunk_work(&execution, result, observation_scope.as_ref())?;
+                        let output = finish_lane_work(&execution, result, observation_scope.as_ref())?;
                         #[cfg(any(test, feature = "test-hooks"))]
                         if let Some(gate) = gate {
                             gate(ordinal, lane, context.attempt_claimed_fork_index());
@@ -227,7 +310,7 @@ impl AggregateLaneDispatch {
                         let _ = notification.send(ordinal);
                     },
                 )?;
-                flights.jobs.insert(ordinal, (lane, handle));
+                flights.jobs.insert(ordinal, ChunkFlight { lane, fork, handle });
                 dispatched += 1;
             }
             if flights.jobs.is_empty() {
@@ -237,17 +320,47 @@ impl AggregateLaneDispatch {
             }
             // Runtime guarantees one notification for every accepted handle,
             // including work discarded before starting during pool shutdown.
-            let ordinal = completions.recv().map_err(|_| {
-                QueryError::new(QueryErrorCode::Cancelled, OPERATION, "aggregate chunk completion channel closed")
-            })?;
-            let (lane, handle) = flights.jobs.remove(&ordinal).expect("completion belongs to in-flight chunk");
-            free_lanes.push(lane);
-            ready.insert(ordinal, handle.join()??);
-            execution.context().check_cancellation(OPERATION)?;
-            while let Some(output) = ready.remove(&committed) {
-                // A failed commit aborts the run. Source retry cannot replay
-                // input after any of its partials entered coordinator state.
-                commit(state, execution, output)?;
+            let ordinal = match completions.recv() {
+                Ok(ordinal) => ordinal,
+                Err(_) => {
+                    drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                    return Err(QueryError::new(
+                        QueryErrorCode::Cancelled,
+                        OPERATION,
+                        "aggregate chunk completion channel closed",
+                    ));
+                },
+            };
+            let flight = flights.jobs.remove(&ordinal).expect("completion belongs to in-flight chunk");
+            free_lanes.push(flight.lane);
+            let completed = match flight.handle.join() {
+                Ok(Ok(completed)) => completed,
+                Ok(Err(error)) | Err(error) => {
+                    drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                    return Err(error);
+                },
+            };
+            ready.insert(ordinal, ReadyLaneOutput { lane: flight.lane, fork: flight.fork, output: completed });
+            if let Err(error) = execution.context().check_cancellation(OPERATION) {
+                drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                return Err(error);
+            }
+            while let Some(ready_output) = ready.remove(&committed) {
+                // The head ordinal's readiness observes the same completion the worker fence
+                // used to; a late lane failure surfaces here with its ordinal facts and the
+                // run aborts without committing this or any later ordinal. Source retry cannot
+                // replay input after any of its partials entered coordinator state.
+                if let Some(readiness) = ready_output.output.readiness
+                    && let Err(sync_error) = readiness.synchronize()
+                {
+                    let error = chunk_readiness_error(committed, ready_output.lane, ready_output.fork, sync_error);
+                    drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                    return Err(error);
+                }
+                if let Err(error) = commit(state, execution, ready_output.output.output) {
+                    drain_ready_on_abort(ready, self.observation_scope.as_ref());
+                    return Err(error);
+                }
                 committed += 1;
             }
         }
@@ -255,6 +368,75 @@ impl AggregateLaneDispatch {
 
     fn finish_work<O>(&self, execution: &BoundedExecutionAttempt<'_>, result: Result<O>) -> Result<O> {
         finish_chunk_work(execution, result, self.observation_scope.as_ref())
+    }
+}
+
+/// Completes one lane worker's chunk without host-synchronizing.
+///
+/// On success the worker records a readiness event on its lane stream after the last work
+/// enqueue; the coordinator synchronizes the head ordinal before commit. Cross-stream
+/// consumers order device-side through the retained provenance fences, so no lane blocks on
+/// its own stream. When the event itself cannot be recorded the worker falls back to the
+/// previous host fence rather than shipping unverified success. Work failures keep the
+/// previous host fence as well, preserving the exact error-surfacing behavior on the rare
+/// path while the steady-state success path never blocks a pool slot on GPU drain.
+fn finish_lane_work<O>(
+    execution: &BoundedExecutionAttempt<'_>,
+    result: Result<O>,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
+) -> Result<LaneWorkOutput<O>> {
+    match result {
+        Ok(output) => {
+            let readiness = match execution.context().runtime().and_then(|runtime| {
+                runtime.record_completion_event().map_err(|error| {
+                    cudf_query_error(
+                        "query_engine.compiled.chunk_readiness_record",
+                        "failed to record aggregate chunk readiness on the lane stream",
+                        error,
+                    )
+                })
+            }) {
+                Ok(event) => Some(event),
+                Err(record_error) => {
+                    // Event creation or recording can report a prior asynchronous error, so the
+                    // record failure is never silently dropped: it is reported like the fence
+                    // fallback warnings, then the previous host fence verifies the output before
+                    // it ships. A failed fallback fails the chunk with the fence error.
+                    eprintln!(
+                        "[query_engine::finish_lane_work] warning: failed to record chunk readiness on the lane stream, falling back to host synchronization: {record_error}"
+                    );
+                    execution.context().runtime().and_then(|runtime| {
+                        runtime.synchronize().map_err(|error| {
+                            cudf_query_error(
+                                "query_engine.compiled.aggregate_chunk_sync",
+                                "failed to synchronize aggregate chunk work",
+                                error,
+                            )
+                        })
+                    })?;
+                    None
+                },
+            };
+            Ok(LaneWorkOutput { output, readiness })
+        },
+        Err(error) => {
+            if let Err(sync_error) = execution.context().runtime().and_then(|runtime| {
+                runtime.synchronize().map_err(|error| {
+                    cudf_query_error(
+                        "query_engine.compiled.aggregate_chunk_sync",
+                        "failed to synchronize failed aggregate chunk work",
+                        error,
+                    )
+                })
+            }) {
+                super::super::scheduler::record_cleanup_failure(
+                    observation_scope,
+                    crate::observability::CleanupFailurePhase::TaskExecution,
+                    &sync_error,
+                );
+            }
+            Err(error)
+        },
     }
 }
 
