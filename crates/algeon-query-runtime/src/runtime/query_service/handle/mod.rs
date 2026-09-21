@@ -101,16 +101,10 @@ impl QueryHandle {
         self.config.statistical_aggregate_execution_mode
     }
 
-    /// Dynamic-filter execution policy assigned to this admitted query.
+    /// Join and dynamic-filter thresholds assigned to this admitted query.
     #[cfg(test)]
-    pub(crate) fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
-        self.config.dynamic_filter_execution_options
-    }
-
-    /// Keyed-hash join strategy policy assigned to this admitted query.
-    #[cfg(test)]
-    pub(crate) fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
-        self.config.keyed_hash_join_strategy_options
+    pub(crate) fn planning_policy(&self) -> PlanningPolicy {
+        self.config.planning_policy
     }
 
     /// Grouped aggregate strategy execution policy assigned to this admitted query.

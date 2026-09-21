@@ -952,15 +952,14 @@ pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_B
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::bounded(u64, u64, usize, usize, usize) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::bounded_default() -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::dynamic_filter_execution_options(&self) -> query_planning::dynamic_filter::DynamicFilterExecutionOptions
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::keyed_hash_join_strategy_options(&self) -> query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &query_runtime::runtime::cache_fill::LakehouseCacheFillConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_retry_attempts(&self) -> usize
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_row_groups_per_chunk(&self) -> usize
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_source_chunk_bytes(&self) -> u64
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_source_reads_in_flight(&self) -> usize
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::planning_policy(&self) -> query_planning::policy::PlanningPolicy
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::runtime_observation_config(&self) -> query_runtime::observability::recorder::RuntimeObservationConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode

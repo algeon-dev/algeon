@@ -8,8 +8,8 @@ use crate::{
                 helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
                 resource::CompiledGpuResourcePayload,
             },
-            execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame,
-            execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
+            execute_bounded_projection, execute_bounded_projection_from_frame, execute_bounded_unary,
+            execute_bounded_unary_from_frame,
         },
         operators::execute_filter_with_budget,
     },
@@ -47,7 +47,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         },
                         CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
                             let frame = self.apply_dynamic_filters_to_filter_frame(node_id, filter, *frame)?;
-                            execute_bounded_generic_unary(
+                            execute_bounded_unary(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
@@ -113,7 +113,7 @@ impl CompiledGpuTaskExecutor<'_> {
                             filter,
                             input_payload.clone_frame(),
                         )? {
-                            execute_bounded_generic_unary(
+                            execute_bounded_unary(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
@@ -131,7 +131,7 @@ impl CompiledGpuTaskExecutor<'_> {
                             )
                             .map(CompiledGpuResource::new)
                         } else {
-                            execute_bounded_generic_unary_from_frame(
+                            execute_bounded_unary_from_frame(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
@@ -161,7 +161,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 stream.with_projection_stage(node_id, projection.clone()),
                             ))
                         },
-                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_projection(
+                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_projection(
                             &mut self.execution,
                             node_id,
                             "compiled_projection",
@@ -210,7 +210,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     } else {
                         self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                         let input_payload = state.resource_payload(input)?;
-                        execute_bounded_generic_projection_from_frame(
+                        execute_bounded_projection_from_frame(
                             &mut self.execution,
                             node_id,
                             "compiled_projection",

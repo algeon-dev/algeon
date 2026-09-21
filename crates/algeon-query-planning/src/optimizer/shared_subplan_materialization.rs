@@ -11,7 +11,7 @@ use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
     plan::{
         AggregateNode, FilterNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
+        ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior,
     },
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,

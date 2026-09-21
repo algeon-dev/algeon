@@ -16,9 +16,10 @@ fn query_service_admission_test_config_can_record_non_default_device_without_run
 }
 #[test]
 fn query_service_handle_exposes_configured_execution_policies() {
-    let dynamic_filter_execution_options = DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
-    let keyed_hash_join_strategy_options =
-        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
+    let planning_policy = PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11),
+        dynamic_filter: DynamicFilterExecutionOptions::default().with_max_build_rows(10_000),
+    };
     let aggregate_strategy_execution_options =
         AggregateStrategyExecutionOptions::default().with_encoded_key_partial_min_input_rows(22);
     let source_chunk_planning_options =
@@ -27,8 +28,7 @@ fn query_service_handle_exposes_configured_execution_policies() {
         source_scheduler_policy: SourceSchedulerPolicy::new(4),
         source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
         statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::GpuNativeTolerant,
-        dynamic_filter_execution_options,
-        keyed_hash_join_strategy_options,
+        planning_policy,
         aggregate_strategy_execution_options,
         source_chunk_planning_options,
         ..QueryExecutionConfig::default()
@@ -40,17 +40,19 @@ fn query_service_handle_exposes_configured_execution_policies() {
     assert_eq!(handle.source_scheduler_policy(), SourceSchedulerPolicy::new(4));
     assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(handle.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
-    assert_eq!(handle.dynamic_filter_execution_options(), dynamic_filter_execution_options);
-    assert_eq!(handle.keyed_hash_join_strategy_options(), keyed_hash_join_strategy_options);
+    assert_eq!(handle.planning_policy(), planning_policy);
     assert_eq!(handle.aggregate_strategy_execution_options(), aggregate_strategy_execution_options);
     assert_eq!(handle.source_chunk_planning_options(), source_chunk_planning_options);
 }
 #[test]
 fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
     let config = QueryExecutionConfig {
-        dynamic_filter_execution_options: DynamicFilterExecutionOptions::default()
-            .with_max_build_rows(10)
-            .with_large_local_parquet_range_producer_rows(11),
+        planning_policy: PlanningPolicy {
+            dynamic_filter: DynamicFilterExecutionOptions::default()
+                .with_max_build_rows(10)
+                .with_large_local_parquet_range_producer_rows(11),
+            ..PlanningPolicy::default()
+        },
         ..QueryExecutionConfig::default()
     };
 
@@ -64,8 +66,10 @@ fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
 #[test]
 fn query_service_rejects_inconsistent_keyed_hash_join_strategy_policy() {
     let config = QueryExecutionConfig {
-        keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default()
-            .with_large_keyed_hash_build_row_threshold(10),
+        planning_policy: PlanningPolicy {
+            keyed_hash_join: KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(10),
+            ..PlanningPolicy::default()
+        },
         ..QueryExecutionConfig::default()
     };
 

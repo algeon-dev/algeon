@@ -20,12 +20,12 @@ impl fmt::Display for QueryPlan {
             "QueryPlan root={} sink={} dynamic_filter_routes={}",
             self.root,
             self.sink.kind_name(),
-            self.dynamic_filter_routes.len()
+            self.annotations.dynamic_filter_routes.len()
         )?;
         for node in &self.nodes {
             node.fmt_with_indent(f, 1)?;
         }
-        for route in &self.dynamic_filter_routes {
+        for route in &self.annotations.dynamic_filter_routes {
             format_dynamic_filter_route(route, f, 1)?;
         }
         match &self.sink {
@@ -35,6 +35,11 @@ impl fmt::Display for QueryPlan {
             ResultSink::HostArrow { input, schema } => writeln!(
                 f,
                 "  Sink id=sink input={input} mode=host_arrow materialization=device_to_host schema_fields={}",
+                schema.fields().len()
+            ),
+            ResultSink::DeferredHostArrow { input, schema } => writeln!(
+                f,
+                "  Sink id=sink input={input} mode=deferred_host_arrow materialization=frontend schema_fields={}",
                 schema.fields().len()
             ),
         }

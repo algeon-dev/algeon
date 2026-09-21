@@ -13,9 +13,8 @@ use query_engine::{
         MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision,
         MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding,
         MlRelationRole, MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder,
-        VectorElementType, VectorRowIdBinding, canonical_execution_scope_fingerprint, canonicalize_cuml_options,
-        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema,
-        vector_pca_output_schema,
+        VectorElementType, VectorRowIdBinding, canonicalize_cuml_options, ml_embedding_output_schema,
+        ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
     },
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
@@ -713,11 +712,10 @@ fn forest_plan_identity_tracks_model_bytes_without_embedding_them() {
         forest_plan(4, forest_snapshot(source, 1, output), ml_forest_output_schema(DataType::Int64, output))
     };
     let original = plan_for(b"model bytes v1");
-    let fingerprint = canonical_execution_scope_fingerprint(&original);
-    assert_eq!(fingerprint, canonical_execution_scope_fingerprint(&plan_for(b"model bytes v1")));
-    assert_ne!(fingerprint, canonical_execution_scope_fingerprint(&plan_for(b"model bytes v2")));
+    let fingerprint = original.execution_fingerprint();
+    assert_eq!(fingerprint, plan_for(b"model bytes v1").execution_fingerprint());
+    assert_ne!(fingerprint, plan_for(b"model bytes v2").execution_fingerprint());
     let PlanNode::MlAlgorithm(node) = &original.root_node().kind else { panic!("forest root") };
     let MlAlgorithmParams::ForestPredict(params) = &node.spec.params else { panic!("forest params") };
-    assert!(fingerprint.contains(&params.model.digest().to_hex()), "{fingerprint}");
     assert!(original.to_string().contains(&format!("model=sha256:{} ", params.model.digest().short_hex())));
 }

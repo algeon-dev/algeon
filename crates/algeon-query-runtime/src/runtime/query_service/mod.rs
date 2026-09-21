@@ -2,6 +2,8 @@
 
 use std::sync::Mutex;
 
+#[cfg(test)]
+use query_planning::policy::PlanningPolicy;
 use query_planning::{
     admission::AttemptRequirement,
     capability::AggregateStrategyExecutionOptions,
@@ -9,8 +11,6 @@ use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     mode::StatisticalAggregateExecutionMode,
 };
-#[cfg(test)]
-use query_planning::{capability::KeyedHashJoinStrategyOptions, dynamic_filter::DynamicFilterExecutionOptions};
 #[cfg(test)]
 use tokio::time;
 

@@ -11,8 +11,8 @@ use crate::{
     mode::StatisticalAggregateExecutionMode,
     plan::{
         FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
-        PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes,
-        estimated_output_rows,
+        PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior,
+        estimated_output_bytes, estimated_output_rows,
     },
     source::SourceNode,
 };
@@ -295,9 +295,7 @@ pub fn optimize_semijoin_reduction(
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-        .with_keyed_hash_join_strategy_options_from(&plan)
-        .with_advisory_outputs_from(&plan);
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
         reject_applied_candidates(&mut diagnostics, reason, None, None, None);
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };

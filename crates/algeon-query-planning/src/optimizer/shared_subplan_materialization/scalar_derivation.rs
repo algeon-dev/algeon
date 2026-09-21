@@ -16,12 +16,9 @@ pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) 
     }
 
     let root = plan.root_id();
-    let sink = plan.sink().clone();
     let mut rewriter = ScalarAggregateDerivationRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(root);
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, &sink)
-        .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from(&plan);
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
     SharedSubplanMaterializationResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,

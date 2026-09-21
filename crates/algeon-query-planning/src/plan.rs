@@ -32,6 +32,7 @@ mod sink;
 mod uniqueness;
 mod vector_algorithm;
 
+pub(crate) use core::{Annotations, RewrittenNodes};
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
 pub use advisory::{AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason};
@@ -65,7 +66,9 @@ pub use graph_algorithm::{
     graph_result_schema_for_vertex_type, planned_resident_graph_key, stable_graph_result_schema,
 };
 #[doc(hidden)]
-pub use identity::{DeferredGraphExecutionScopeIdentity, canonical_execution_scope_fingerprint};
+pub use identity::DeferredGraphExecutionScopeIdentity;
+pub(crate) use identity::stable_hash_fields;
+pub use identity::{PlanFingerprint, SchemaFingerprint};
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
 };
@@ -89,7 +92,9 @@ pub use nodes::{
 pub use preference::{
     NativePlanCostDecision, NativePlanCostFacts, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
 };
-pub(crate) use remap::{NodeRemap, clone_plan_node_with_inputs, remap_plan_node_inputs};
+#[cfg(test)]
+pub(crate) use remap::remap_plan_node_inputs;
+pub(crate) use remap::{NodeRemap, clone_plan_node_with_inputs, compact_reachable_nodes};
 pub use sink::ResultSink;
 pub(crate) use uniqueness::plan_node_is_unique_on;
 pub use vector_algorithm::{

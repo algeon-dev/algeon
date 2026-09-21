@@ -624,7 +624,7 @@ pub(in crate::capability::admission) fn root_full_sort_unsupported_subcontract_r
 
 pub(in crate::capability::admission) fn root_full_sort_sink_kind_fact(sink: &ResultSink) -> &'static str {
     match sink {
-        ResultSink::GpuResident { .. } => "gpu_resident",
+        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => "gpu_resident",
         ResultSink::HostArrow { .. } => "host_arrow",
     }
 }

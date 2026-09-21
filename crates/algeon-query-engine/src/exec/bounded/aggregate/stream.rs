@@ -5,8 +5,8 @@ use super::{
     CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
-    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget, execute_bounded_generic_unary,
-    execute_bounded_generic_unary_from_frame, execute_bounded_generic_union, execute_bounded_raw_source_chunk,
+    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget,
+    execute_bounded_raw_source_chunk, execute_bounded_unary, execute_bounded_unary_from_frame, execute_bounded_union,
     execute_compiled_bounded_aggregate_consuming_frame, execute_compiled_bounded_aggregate_from_empty_input,
     execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
     execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
@@ -79,7 +79,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 )
                 .map(CompiledGpuResource::new);
             }
-            let input = execute_bounded_generic_union(execution, node_id, frames)?;
+            let input = execute_bounded_union(execution, node_id, frames)?;
             return execute_compiled_bounded_aggregate_consuming_frame(
                 execution,
                 node_id,
@@ -185,7 +185,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
             )
             .map(CompiledGpuResource::new);
         }
-        let input = execute_bounded_generic_union(execution, node_id, inputs)?;
+        let input = execute_bounded_union(execution, node_id, inputs)?;
         return execute_compiled_bounded_aggregate_consuming_frame(
             execution,
             node_id,
@@ -600,8 +600,8 @@ fn execute_compiled_bounded_statistical_final_merge_from_partials(
     output_schema: &ArrowSchemaRef,
     partials: Vec<CommittedPartial>,
 ) -> Result<ResidentGpuFrame> {
-    let merged = execute_bounded_generic_union(execution, node_id, partials)?;
-    execute_bounded_generic_unary_from_frame(
+    let merged = execute_bounded_union(execution, node_id, partials)?;
+    execute_bounded_unary_from_frame(
         execution,
         node_id,
         "compiled_statistical_aggregate_final_merge",
@@ -722,7 +722,7 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     drop(frames);
     let concatenated = concatenated.map(GpuDataFrame::new)?;
     let concatenated_bytes = observe_device_memory_bytes(&concatenated, execution.metrics())?;
-    execute_bounded_generic_unary(
+    execute_bounded_unary(
         execution,
         node_id,
         "compiled_aggregate_distinct",

@@ -20,10 +20,9 @@ use cudf::{
     },
 };
 use query_planning::{
-    admission::canonical_execution_scope_fingerprint,
     error::{QueryError, QueryErrorCode, Result},
     naming::is_datafusion_order_column_name,
-    plan::{GraphResidencyDescriptor, JoinNullEquality, QueryPlan},
+    plan::{GraphResidencyDescriptor, JoinNullEquality, PlanFingerprint, QueryPlan},
 };
 
 use crate::{
@@ -55,7 +54,7 @@ pub struct GpuDataFrame {
     retained_normalization_source: Option<ResidentOwnerLease>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
-    producer_execution_scope: Option<Arc<str>>,
+    producer_execution_scope: Option<PlanFingerprint>,
 }
 
 struct GpuDataFrameParts {
@@ -64,7 +63,7 @@ struct GpuDataFrameParts {
     retained_source_owners: Vec<RetainedSourceOwner>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
-    producer_execution_scope: Option<Arc<str>>,
+    producer_execution_scope: Option<PlanFingerprint>,
 }
 
 // A transitive lease follows only aliases of the columns it protects. Keeping
@@ -201,8 +200,8 @@ impl GpuDataFrame {
     }
 
     #[doc(hidden)]
-    pub fn with_producer_execution_scope(mut self, scope: impl Into<Arc<str>>) -> Self {
-        self.producer_execution_scope = Some(scope.into());
+    pub fn with_producer_execution_scope(mut self, scope: PlanFingerprint) -> Self {
+        self.producer_execution_scope = Some(scope);
         self
     }
 
@@ -293,7 +292,7 @@ pub struct GpuResultHandle {
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct ProducerExecutionIdentity {
-    scope: Arc<str>,
+    scope: PlanFingerprint,
     plan: Option<Arc<QueryPlan>>,
 }
 
@@ -502,7 +501,7 @@ impl GpuResultHandle {
         let mut frame = GpuDataFrame::new_with_residency(batch.into_frame(), resident_owner, source_cache_pin);
         frame.retained_source_owners = retained_source_owners;
         frame.graph_residency = graph_residency;
-        frame.producer_execution_scope = producer_execution.map(|identity| Arc::clone(&identity.scope));
+        frame.producer_execution_scope = producer_execution.map(|identity| identity.scope);
         frame
     }
 
@@ -546,7 +545,7 @@ impl GpuResultHandle {
 
     #[doc(hidden)]
     pub fn with_producer_execution_plan(mut self, plan: QueryPlan) -> Self {
-        let scope = canonical_execution_scope_fingerprint(&plan).into();
+        let scope = plan.execution_fingerprint();
         self.producer_execution = Some(Arc::new(ProducerExecutionIdentity { scope, plan: Some(Arc::new(plan)) }));
         self
     }
@@ -565,8 +564,8 @@ impl GpuResultHandle {
         self
     }
 
-    pub(crate) fn producer_execution_scope(&self) -> Option<&str> {
-        self.producer_execution.as_ref().map(|identity| identity.scope.as_ref())
+    pub(crate) fn producer_execution_scope(&self) -> Option<PlanFingerprint> {
+        self.producer_execution.as_ref().map(|identity| identity.scope)
     }
 
     pub(crate) fn producer_execution_plan(&self) -> Option<&QueryPlan> {

@@ -1,7 +1,7 @@
 use super::{
     AggregateNode, AnalysisContext, BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource,
-    NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, SourceColumnRef, SourceNode, mutable_local_parquet_source,
-    predicate_columns, rewrite,
+    NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes, SourceColumnRef, SourceNode,
+    mutable_local_parquet_source, predicate_columns, rewrite,
 };
 
 pub(super) fn seed_reader_predicates_from_group_key_filters(
@@ -34,7 +34,7 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(
         return (plan, false);
     }
     let root = plan.root_id();
-    (rewrite::finish_rewritten_plan(nodes, root, plan.sink()).with_rewrite_state_from(&plan), true)
+    (plan.rewrite(RewrittenNodes::refined_sources(nodes, root)), true)
 }
 
 /// Returns a copy of `plan` with eligible post-aggregate group-key filters

@@ -53,12 +53,14 @@ use crate::{
     },
     pipeline::{CompiledPipeline, PipelineTaskId, PipelineTaskKind, ResidentLifetime},
     plan::{JoinType, PlanNode, QueryPlan, ResultSink},
+    policy::PlanningPolicy,
     runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
 
 pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    policy: PlanningPolicy,
     pipeline: &CompiledPipeline,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
@@ -72,7 +74,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
         prioritized_join_build_tasks(plan, pipeline),
     )?;
     metrics.record_compiled_pipeline_attempt();
-    let lane_support = lane_dispatch_support(context, plan, pipeline, gpu_inputs, metrics);
+    let lane_support = lane_dispatch_support(context, plan, policy, pipeline, gpu_inputs, metrics);
     let (completed_task_count, output, host_sink) = if let Some(support) = lane_support
         .as_ref()
         .filter(|_| is_resident_aggregate_lane_pipeline(pipeline) || is_resident_sort_lane_pipeline(pipeline))
@@ -80,7 +82,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
         let (completed, output) = run_resident_lane_borrow(&scheduler, observation_scope, support)?;
         (completed, QueryOutput::GpuResident(output), false)
     } else {
-        let mut executor = CompiledGpuTaskExecutor::new(context, plan, pipeline, gpu_inputs, metrics)?;
+        let mut executor = CompiledGpuTaskExecutor::new(context, plan, policy, pipeline, gpu_inputs, metrics)?;
         // Fork scarcity shrinks the assignment inside the dispatcher; route
         // registration already guarantees a non-empty fork pool.
         let mut state = match lane_support {
@@ -92,7 +94,9 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
         };
         let (output, host_sink) = match plan.sink() {
             ResultSink::HostArrow { .. } => (QueryOutput::HostArrow(executor.take_host_output()?), true),
-            ResultSink::GpuResident { .. } => (QueryOutput::GpuResident(executor.take_gpu_output(&mut state)?), false),
+            ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => {
+                (QueryOutput::GpuResident(executor.take_gpu_output(&mut state)?), false)
+            },
         };
         let completed_task_count = state.completed_task_count();
         (completed_task_count, output, host_sink)
@@ -110,6 +114,7 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
 fn lane_dispatch_support(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    policy: PlanningPolicy,
     pipeline: &CompiledPipeline,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
@@ -125,6 +130,7 @@ fn lane_dispatch_support(
         route,
         context.clone(),
         plan.clone(),
+        policy,
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),

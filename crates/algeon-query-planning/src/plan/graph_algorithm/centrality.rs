@@ -38,6 +38,11 @@ impl GraphPersonalizedPageRankParams {
     pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         std::iter::once(self.personalization.input)
     }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        self.personalization.input = remap(self.personalization.input);
+    }
 }
 
 impl Default for GraphPersonalizedPageRankParams {
@@ -194,6 +199,13 @@ impl GraphBetweennessSeeds {
         }
         .into_iter()
     }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        if let Self::Input { input, .. } = self {
+            input.input = remap(input.input);
+        }
+    }
 }
 
 /// Parameters for vertex betweenness centrality.
@@ -219,6 +231,13 @@ impl GraphBetweennessCentralityParams {
     /// Visits explicit seed side-input nodes in stable role order.
     pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
+    }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        if let Some(seeds) = &mut self.seeds {
+            seeds.remap_side_inputs(remap);
+        }
     }
 }
 
@@ -255,6 +274,13 @@ impl GraphEdgeBetweennessCentralityParams {
     /// Visits explicit seed side-input nodes in stable role order.
     pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
+    }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        if let Some(seeds) = &mut self.seeds {
+            seeds.remap_side_inputs(remap);
+        }
     }
 }
 

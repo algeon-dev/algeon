@@ -46,8 +46,9 @@ impl CompiledJoinExecutionStrategy {
         plan: &QueryPlan,
         node_id: NodeId,
         join: &JoinNode,
+        options: &KeyedHashJoinStrategyOptions,
     ) -> std::result::Result<Option<Self>, KeyedHashJoinStrategyDecision> {
-        match keyed_hash_join_strategy_decision_for_plan(plan, node_id, join) {
+        match keyed_hash_join_strategy_decision_for_plan(plan, node_id, join, options) {
             Some(decision) => Self::from_keyed_hash_strategy_decision(decision).map(Some),
             None => Ok(Self::from_non_keyed_hash_join_node(join)),
         }

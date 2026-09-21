@@ -133,6 +133,20 @@ impl GraphAlgorithmParams {
             _ => Box::new(std::iter::empty()),
         }
     }
+
+    /// Rewrites every node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
+        match self {
+            Self::Bfs(params) => params.remap_side_inputs(&mut remap),
+            Self::PersonalizedPageRank(params) => params.remap_side_inputs(&mut remap),
+            Self::Similarity(params) => params.remap_side_inputs(&mut remap),
+            Self::Sssp(params) => params.remap_side_inputs(&mut remap),
+            Self::BetweennessCentrality(params) => params.remap_side_inputs(&mut remap),
+            Self::EdgeBetweennessCentrality(params) => params.remap_side_inputs(&mut remap),
+            Self::ForceAtlas2(params) => params.remap_side_inputs(&mut remap),
+            _ => {},
+        }
+    }
 }
 
 /// Native graph algorithm specification.

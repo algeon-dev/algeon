@@ -107,7 +107,12 @@ pub fn compiled_bounded_query_plan_support(
                 [("plan_node_id", join_node.to_string())],
             ));
         };
-        match CompiledJoinExecutionStrategy::from_plan_join_node(plan, join_node, join) {
+        match CompiledJoinExecutionStrategy::from_plan_join_node(
+            plan,
+            join_node,
+            join,
+            &analysis.policy.keyed_hash_join,
+        ) {
             Ok(Some(_)) => {},
             Ok(None) | Err(KeyedHashJoinStrategyDecision::Selected { .. }) => {
                 return Ok(node_rejection(

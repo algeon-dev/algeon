@@ -18,6 +18,7 @@ use query_engine::{
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
+    policy::PlanningPolicy,
     runtime::{
         AdmittedQueryContext, ExecutionCancellation, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig,
         MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
@@ -50,8 +51,7 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) cancellation: ExecutionCancellation,
     pub(super) io_lifecycle: Option<IoLifecycle>,
     pub(super) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-    pub(super) dynamic_filter_execution_options: DynamicFilterExecutionOptions,
-    pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
+    pub(super) planning_policy: PlanningPolicy,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) source_storage_profiles: Vec<SourceStorageProfile>,
@@ -143,8 +143,7 @@ impl AlgeonNativeExecutionConfig {
             cancellation: ExecutionCancellation::new(),
             io_lifecycle: None,
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
-            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
-            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
+            planning_policy: PlanningPolicy::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             source_storage_profiles: Vec::new(),
@@ -314,22 +313,22 @@ impl AlgeonNativeExecutionConfig {
 
     /// Set native dynamic-filter execution policy.
     ///
-    /// This policy is copied into native optimizer options so route discovery
-    /// and runtime payload handling share one threshold set. It is intentionally
+    /// Route discovery, admission, and runtime payload handling read one
+    /// threshold set through [`Self::planning_policy`]. It is intentionally
     /// not exposed as a session/server knob until the expert surface is reviewed.
     pub fn with_dynamic_filter_execution_options(mut self, options: DynamicFilterExecutionOptions) -> Self {
-        self.dynamic_filter_execution_options = options;
+        self.planning_policy.dynamic_filter = options;
         self
     }
 
     /// Set native keyed-hash join strategy policy.
     ///
-    /// This policy is copied into optimized native plans so capability
-    /// admission, admission reports, and runtime observed-build strategy selection
-    /// share one threshold set. It is intentionally not exposed as a
+    /// Capability admission, admission reports, and runtime observed-build
+    /// strategy selection read one threshold set through
+    /// [`Self::planning_policy`]. It is intentionally not exposed as a
     /// session/server knob until the expert surface is reviewed.
     pub fn with_keyed_hash_join_strategy_options(mut self, options: KeyedHashJoinStrategyOptions) -> Self {
-        self.keyed_hash_join_strategy_options = options;
+        self.planning_policy.keyed_hash_join = options;
         self
     }
 
@@ -442,14 +441,10 @@ impl AlgeonNativeExecutionConfig {
         self.statistical_aggregate_execution_mode
     }
 
-    /// Dynamic-filter execution policy copied into optimized native plans.
-    pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
-        self.dynamic_filter_execution_options
-    }
-
-    /// Keyed-hash join strategy policy copied into optimized native plans.
-    pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
-        self.keyed_hash_join_strategy_options
+    /// Join and dynamic-filter thresholds native plans are optimized,
+    /// admitted, and executed under.
+    pub fn planning_policy(&self) -> PlanningPolicy {
+        self.planning_policy
     }
 
     /// Grouped aggregate strategy execution policy copied into native contexts.
@@ -464,14 +459,14 @@ impl AlgeonNativeExecutionConfig {
 
     /// Validate internal expert query policies before planning or execution.
     pub(crate) fn validate_query_policies(&self) -> Result<()> {
-        self.dynamic_filter_execution_options.validate().map_err(|error| {
+        self.planning_policy.dynamic_filter.validate().map_err(|error| {
             Error::from_native(
                 "algeon_datafusion.native_exec.config.validate",
                 "invalid native dynamic-filter execution policy",
                 self.stamp_native_error_correlation(error),
             )
         })?;
-        self.keyed_hash_join_strategy_options.validate().map_err(|error| {
+        self.planning_policy.keyed_hash_join.validate().map_err(|error| {
             Error::from_native(
                 "algeon_datafusion.native_exec.config.validate",
                 "invalid native keyed hash-join strategy policy",

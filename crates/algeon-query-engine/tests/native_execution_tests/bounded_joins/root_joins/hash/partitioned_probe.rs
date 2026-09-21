@@ -43,8 +43,16 @@ fn partitioned_probe_retry_plan(runtime: &cudf::Runtime, dir: &Path, rows_per_ch
         Arc::clone(&probe_schema),
     );
     let limited = builder.add_limit(sorted, LimitSpec::fetch(2), probe_schema);
-    let strategy = KeyedHashJoinStrategyOptions::default().with_large_keyed_hash_build_row_threshold(1);
-    builder.finish_with_host_sink(limited).with_keyed_hash_join_strategy_options(strategy)
+    builder.finish_with_host_sink(limited)
+}
+
+fn partitioned_probe_context(cap: u64, min_units: usize) -> BackendQueryContext {
+    backend_context_with_memory_control_and_planning_policy(partitioned_probe_retry_policy(cap, min_units), PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_row_threshold(1)
+            .with_large_keyed_hash_build_row_threshold(1),
+        ..PlanningPolicy::default()
+    })
 }
 
 fn partitioned_probe_retry_policy(cap: u64, min_units: usize) -> MemoryControlPolicy {
@@ -60,12 +68,10 @@ fn partitioned_probe_retry_policy(cap: u64, min_units: usize) -> MemoryControlPo
 #[test]
 fn bounded_native_partitioned_probe_recovers_hash_partition_cap_rejections() {
     let dir = unique_temp_dir("algeon-partitioned-probe-retry");
-    let fixture_context =
-        backend_context_with_memory_control_policy(partitioned_probe_retry_policy(128 * 1024 * 1024, 1));
+    let fixture_context = partitioned_probe_context(128 * 1024 * 1024, 1);
     let plan = partitioned_probe_retry_plan(&fixture_context.runtime().unwrap(), &dir, 1 << 20);
     for (cap_mb, should_retry) in [(128, false), (28, true)] {
-        let context =
-            backend_context_with_memory_control_policy(partitioned_probe_retry_policy(cap_mb * 1024 * 1024, 1));
+        let context = partitioned_probe_context(cap_mb * 1024 * 1024, 1);
         let admitted = context.admit_plan(&plan).unwrap();
         let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::new(&plan));
         let (result, metrics, _) = outcome.into_parts();
@@ -102,7 +108,7 @@ fn bounded_native_partitioned_probe_recovers_hash_partition_cap_rejections() {
 #[test]
 fn bounded_native_partitioned_probe_reports_indivisible_cap_failure_and_cleans_up() {
     let dir = unique_temp_dir("algeon-partitioned-probe-minimum");
-    let context = backend_context_with_memory_control_policy(partitioned_probe_retry_policy(28 * 1024 * 1024, 2048));
+    let context = partitioned_probe_context(28 * 1024 * 1024, 2048);
     let plan = partitioned_probe_retry_plan(&context.runtime().unwrap(), &dir, 1 << 20);
     let admitted = context.admit_plan(&plan).unwrap();
     let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::new(&plan));

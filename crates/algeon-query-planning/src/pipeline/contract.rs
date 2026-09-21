@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     capability::{
         CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
-        CompiledJoinExecutionStrategy, EdgeConsumer, keyed_hash_join_capable, keyed_residual_left_match_join_capable,
+        CompiledJoinExecutionStrategy, EdgeConsumer, KeyedHashJoinStrategyOptions, keyed_hash_join_capable,
+        keyed_residual_left_match_join_capable,
     },
     expr::{Expr, SortExpr},
     pipeline::model::{
@@ -27,11 +28,12 @@ use crate::{
 /// its producer writes.
 pub(super) fn resolve_task_and_resource_contracts(
     plan: &QueryPlan,
+    keyed_hash_join: &KeyedHashJoinStrategyOptions,
     tasks: Vec<PipelineTask>,
     resources: Vec<ResidentResource>,
     edges: &[PipelineEdge],
 ) -> Result<(Vec<PipelineTask>, Vec<ResidentResource>), CapabilityRejectionProjection> {
-    let graph = ContractGraph { plan, tasks, resources, edges };
+    let graph = ContractGraph { plan, keyed_hash_join, tasks, resources, edges };
     let graph = graph.with_task_contracts();
     let graph = graph.with_resource_contracts();
     graph.into_parts()
@@ -39,6 +41,7 @@ pub(super) fn resolve_task_and_resource_contracts(
 
 struct ContractGraph<'a> {
     plan: &'a QueryPlan,
+    keyed_hash_join: &'a KeyedHashJoinStrategyOptions,
     tasks: Vec<PipelineTask>,
     resources: Vec<ResidentResource>,
     edges: &'a [PipelineEdge],
@@ -420,7 +423,9 @@ impl ContractGraph<'_> {
         let task = &self.tasks[index];
         let node_id = task.plan_node()?;
         let join = self.join_node(task)?;
-        CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join).ok().flatten()
+        CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join, self.keyed_hash_join)
+            .ok()
+            .flatten()
     }
 
     /// A unary stage re-stages whatever its input carries, so its output can

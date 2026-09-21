@@ -94,6 +94,16 @@ impl GraphForceAtlas2Params {
             .map(|input| input.input)
             .chain(self.initial_positions.iter().map(|input| input.input))
     }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        if let Some(input) = &mut self.vertex_attributes {
+            input.input = remap(input.input);
+        }
+        if let Some(input) = &mut self.initial_positions {
+            input.input = remap(input.input);
+        }
+    }
 }
 
 /// Optional per-vertex ForceAtlas2 attributes produced by another plan node.

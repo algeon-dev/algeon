@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{CompiledPipeline, ResidentLifetime};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    plan::{QueryPlan, canonical_execution_scope_fingerprint},
-    util::log_safe_fingerprint,
+    plan::QueryPlan,
 };
 
 /// A modelled allocation quantity. Unknown never contributes an invented zero.
@@ -162,7 +161,7 @@ impl CompiledPipeline {
         }
         Ok(ShadowPipelineEstimate {
             schema: "algeon.shadow_pipeline_estimate.v1".to_owned(),
-            execution_scope: log_safe_fingerprint(&canonical_execution_scope_fingerprint(plan)),
+            execution_scope: format!("blake3:{}", plan.execution_fingerprint()),
             query_owned_peak: maximum(envelopes.iter().map(|envelope| &envelope.query_owned_bytes)),
             borrowed_resident_peak: maximum(envelopes.iter().map(|envelope| &envelope.borrowed_resident_bytes)),
             task_workspace: models.task_workspace,

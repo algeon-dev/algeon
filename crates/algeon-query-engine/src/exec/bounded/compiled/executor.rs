@@ -11,7 +11,6 @@ use super::{
     state::CompiledPipelineState,
 };
 use crate::{
-    admission::canonical_execution_scope_fingerprint,
     dynamic_filter::{DynamicFilterId, DynamicFilterSet},
     error::{QueryError, QueryErrorCode, Result},
     exec::{
@@ -24,6 +23,7 @@ use crate::{
     native_error::cudf_query_error,
     pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
     plan::{NodeId, QueryPlan},
+    policy::PlanningPolicy,
     runtime::{
         ExecutionContext,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
@@ -59,6 +59,7 @@ pub struct CompiledGpuTaskExecutor<'a> {
     pub(super) execution: BoundedExecutionAttempt<'a>,
     pub(super) aggregate_dispatch: Option<super::lanes::AggregateLaneDispatch>,
     pub(super) plan: &'a QueryPlan,
+    pub(super) policy: PlanningPolicy,
     pub(super) pipeline: &'a CompiledPipeline,
     pub(super) gpu_inputs: GpuResidentInputMap,
     pub(super) dynamic_filters: DynamicFilterSet,
@@ -72,6 +73,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     pub fn new(
         context: &'a ExecutionContext,
         plan: &'a QueryPlan,
+        policy: PlanningPolicy,
         pipeline: &'a CompiledPipeline,
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'a ExecutionMetrics,
@@ -86,6 +88,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             execution,
             aggregate_dispatch: None,
             plan,
+            policy,
             pipeline,
             gpu_inputs,
             dynamic_filters: DynamicFilterSet::new(),
@@ -206,7 +209,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         };
         let output_bytes = frame.device_allocated_size_bytes()?;
         let resident_owner = self.execution.context().retain_resident_output_owner(output_bytes)?;
-        let frame = frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(self.plan));
+        let frame = frame.with_producer_execution_scope(self.plan.execution_fingerprint());
         let handle = match GpuResultHandle::new_with_resident_owner(
             self.execution.context(),
             frame,

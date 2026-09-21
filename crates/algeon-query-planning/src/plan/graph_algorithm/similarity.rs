@@ -46,6 +46,11 @@ impl GraphSimilarityParams {
     pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         std::iter::once(self.vertex_pairs.input)
     }
+
+    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
+    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
+        self.vertex_pairs.input = remap(self.vertex_pairs.input);
+    }
 }
 
 impl Default for GraphSimilarityParams {

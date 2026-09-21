@@ -352,19 +352,6 @@ pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
     plan: &QueryPlan,
     node_id: NodeId,
     join: &JoinNode,
-) -> Option<KeyedHashJoinStrategyDecision> {
-    keyed_hash_join_strategy_decision_for_plan_with_options(
-        plan,
-        node_id,
-        join,
-        &plan.keyed_hash_join_strategy_options(),
-    )
-}
-
-pub(crate) fn keyed_hash_join_strategy_decision_for_plan_with_options(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    join: &JoinNode,
     options: &KeyedHashJoinStrategyOptions,
 ) -> Option<KeyedHashJoinStrategyDecision> {
     if join_residual_requires_post_join_filter(join) {

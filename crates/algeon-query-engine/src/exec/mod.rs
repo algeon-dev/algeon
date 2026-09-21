@@ -99,7 +99,7 @@ use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
 #[cfg(feature = "cugraph")]
 use crate::plan::GraphAlgorithmNode;
 use crate::{
-    admission::{BoundedPipelineAdmission, canonical_execution_scope_fingerprint},
+    admission::BoundedPipelineAdmission,
     chunk::{
         SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
         annotate_source_chunk_batching_reasons, plan_local_parquet_source_chunks_with_execution_context,
@@ -122,6 +122,7 @@ use crate::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
         PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
     },
+    policy::PlanningPolicy,
     prepared::*,
     rapids_backend::rapids_analysis_context,
     runtime::{
@@ -157,9 +158,10 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
 pub fn preflight_bounded_query_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    policy: PlanningPolicy,
 ) -> Result<Option<BoundedPipelineAdmission>> {
     preflight_query_plan(plan)?;
-    bounded::preflight_bounded_join_plan(plan, statistical_aggregate_execution_mode)
+    bounded::preflight_bounded_join_plan(plan, statistical_aggregate_execution_mode, policy)
 }
 
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
@@ -414,7 +416,9 @@ fn execute_query_plan_output(
         let mut scratch = ExecutionScratch::new();
         let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
         match plan.sink() {
-            ResultSink::GpuResident { .. } => Output::GpuResident(gpu_result_handle(context, plan, frame)?),
+            ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => {
+                Output::GpuResident(gpu_result_handle(context, plan, frame)?)
+            },
             ResultSink::HostArrow { schema, .. } => {
                 let executable_schema =
                     Arc::clone(plan.node(plan.sink().input()).expect("validated sink input exists").output_schema());
@@ -442,7 +446,7 @@ pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut Que
 fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDataFrame) -> Result<GpuResultHandle> {
     GpuResultHandle::new(
         context,
-        frame.with_producer_execution_scope(canonical_execution_scope_fingerprint(plan)),
+        frame.with_producer_execution_scope(plan.execution_fingerprint()),
         Arc::clone(plan.output_schema()),
     )
     .map(|handle| handle.with_producer_execution_plan(plan.clone()))

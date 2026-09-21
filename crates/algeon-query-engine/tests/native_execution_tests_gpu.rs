@@ -45,6 +45,7 @@ use query_engine::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
+    policy::PlanningPolicy,
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
@@ -81,6 +82,7 @@ struct BackendTestPolicy {
     source_work_per_attempt: usize,
     source_scheduler_policy: SourceSchedulerPolicy,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    planning_policy: PlanningPolicy,
 }
 
 impl Default for BackendTestPolicy {
@@ -93,6 +95,7 @@ impl Default for BackendTestPolicy {
             source_work_per_attempt: 1,
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
+            planning_policy: PlanningPolicy::default(),
         }
     }
 }
@@ -118,6 +121,7 @@ impl BackendTestPolicy {
                 source_work_per_attempt: 1,
                 source_scheduler_policy: SourceSchedulerPolicy::default(),
                 statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
+                planning_policy: PlanningPolicy::default(),
             },
             device_budget_bytes,
         )
@@ -135,6 +139,11 @@ impl BackendTestPolicy {
         self.statistical_aggregate_execution_mode = statistical_aggregate_execution_mode;
         self
     }
+
+    fn with_planning_policy(mut self, planning_policy: PlanningPolicy) -> Self {
+        self.planning_policy = planning_policy;
+        self
+    }
 }
 
 fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCore {
@@ -148,6 +157,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
                 min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
                 source_scheduler_policy: policy.source_scheduler_policy,
                 statistical_aggregate_execution_mode: policy.statistical_aggregate_execution_mode,
+                planning_policy: policy.planning_policy,
                 ..QueryExecutionConfig::default()
             },
             QueueBounds::default(),
@@ -256,6 +266,24 @@ fn backend_context_with_memory_and_scheduler_policy(
     )
 }
 
+fn backend_context_with_grant_and_planning_policy(
+    requested_bytes: u64,
+    planning_policy: PlanningPolicy,
+) -> BackendQueryContext {
+    backend_context_with_policy_and_grant(
+        BackendTestPolicy::default().with_planning_policy(planning_policy),
+        Some(requested_bytes),
+    )
+}
+
+fn backend_context_with_memory_control_and_planning_policy(
+    memory_control_policy: MemoryControlPolicy,
+    planning_policy: PlanningPolicy,
+) -> BackendQueryContext {
+    let (policy, device_budget_bytes) = BackendTestPolicy::from_memory_control_policy(memory_control_policy);
+    backend_context_with_policy_and_grant(policy.with_planning_policy(planning_policy), Some(device_budget_bytes))
+}
+
 fn backend_context_with_policy_and_grant(
     policy: BackendTestPolicy,
     requested_bytes: Option<u64>,
@@ -287,7 +315,11 @@ impl BackendQueryContext {
     }
 
     fn admit_plan(&self, plan: &QueryPlan) -> QueryEngineResult<AdmittedPlanContext> {
-        preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
+        preflight_bounded_query_plan(
+            plan,
+            self.policy.statistical_aggregate_execution_mode,
+            self.policy.planning_policy,
+        )?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         self.admit_evidence(evidence)
     }
@@ -323,7 +355,11 @@ impl BackendQueryContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> QueryEngineResult<QueryExecutionResult> {
-        preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
+        preflight_bounded_query_plan(
+            plan,
+            self.policy.statistical_aggregate_execution_mode,
+            self.policy.planning_policy,
+        )?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         let admitted = self.admit_evidence_with_observation(evidence, Some(RuntimeObservationOwner::disabled()))?;
         let outcome = execute_query_plan_direct(

@@ -6,9 +6,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{AggregateFunction, GraphAlgorithm, JoinSide, JoinType, NodeId, aggregate::AggregateStateContract};
-use crate::plan::{
-    EdgeDedupStrategy, EdgeWeightCombiner, MlAlgorithm, MlRelationRole, VectorAlgorithm, VectorAlgorithmNode,
-    VectorAlgorithmParams,
+use crate::{
+    plan::{
+        EdgeDedupStrategy, EdgeWeightCombiner, MlAlgorithm, MlRelationRole, VectorAlgorithm, VectorAlgorithmNode,
+        VectorAlgorithmParams,
+    },
+    policy::PlanningPolicy,
 };
 
 /// The most local graph scope that owns a capability decision.
@@ -693,6 +696,9 @@ pub struct CapabilityAnalysis {
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
     /// Capability union compiled-envelope admission.
     pub(crate) union_pipeline_admission: CapabilityDecision,
+    /// Execution policy the plan was analyzed under; compile and the compiled
+    /// contracts read the join strategy thresholds from it.
+    pub(crate) policy: PlanningPolicy,
     /// Sink-reachable node ids of the analyzed plan.
     ///
     /// Local rejections on nodes, edges, and invariants outside this set never

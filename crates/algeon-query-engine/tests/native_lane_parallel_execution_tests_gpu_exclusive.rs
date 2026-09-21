@@ -43,6 +43,7 @@ use query_engine::{
     },
     pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
     plan::{ProjectionOutput, QueryPlan, QueryPlanBuilder},
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     runtime::{
         AdmittedQueryContext, AttemptWorkLease, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore,
@@ -95,7 +96,7 @@ impl LaneBackendGuard {
     }
 
     fn admit(&self, plan: &QueryPlan, cap_bytes: Option<u64>) -> Result<LaneTestContext> {
-        preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+        preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
         let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
         let mut backend = self.backend.borrow_mut();
         ensure_lane_backend(&mut backend)?;
@@ -292,8 +293,15 @@ fn lane_width_2_agrees_with_serial_and_inline_on_union_branches() {
         let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            &plan,
+            PlanningPolicy::default(),
+            &pipeline,
+            &gpu_inputs,
+            &metrics,
+        )
+        .unwrap();
         match requested_lanes {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial union branches should execute");
@@ -304,6 +312,7 @@ fn lane_width_2_agrees_with_serial_and_inline_on_union_branches() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    PlanningPolicy::default(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -504,11 +513,20 @@ fn lane_released_attempt_refuses_dispatch() {
     let metrics_context = metrics.scope_context(&context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &metrics_context,
+        &plan,
+        PlanningPolicy::default(),
+        &pipeline,
+        &gpu_inputs,
+        &metrics,
+    )
+    .unwrap();
     let support = LaneDispatchSupport::new(
         route,
         metrics_context.clone(),
         plan.clone(),
+        PlanningPolicy::default(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),
@@ -536,12 +554,21 @@ fn lane_cancelled_attempt_stops_dispatch_before_any_task_runs() {
     let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &metrics_context,
+        &plan,
+        PlanningPolicy::default(),
+        &pipeline,
+        &gpu_inputs,
+        &metrics,
+    )
+    .unwrap();
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     let support = LaneDispatchSupport::new(
         route,
         metrics_context.clone(),
         plan.clone(),
+        PlanningPolicy::default(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),
@@ -788,7 +815,15 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
     let metrics_context = metrics.scope_context(&observed_context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &metrics_context,
+        &plan,
+        PlanningPolicy::default(),
+        &pipeline,
+        &gpu_inputs,
+        &metrics,
+    )
+    .unwrap();
 
     let probed_context = context.clone();
     let observed_available = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -797,6 +832,7 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
         route,
         metrics_context.clone(),
         plan.clone(),
+        PlanningPolicy::default(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),
@@ -860,7 +896,15 @@ fn a_full_width_run_serves_every_lane_a_distinct_fork() {
     let metrics_context = metrics.scope_context(&observed_context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &metrics_context,
+        &plan,
+        PlanningPolicy::default(),
+        &pipeline,
+        &gpu_inputs,
+        &metrics,
+    )
+    .unwrap();
 
     let observed_forks = Arc::new(std::sync::Mutex::new(Vec::<(usize, Option<usize>)>::new()));
     let gate_forks = Arc::clone(&observed_forks);
@@ -868,6 +912,7 @@ fn a_full_width_run_serves_every_lane_a_distinct_fork() {
         route,
         metrics_context.clone(),
         plan.clone(),
+        PlanningPolicy::default(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),
@@ -925,7 +970,15 @@ fn lane_cancellation_while_workers_run_drains_without_committing() {
     let metrics_context = metrics.scope_context(&observed_context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &metrics_context,
+        &plan,
+        PlanningPolicy::default(),
+        &pipeline,
+        &gpu_inputs,
+        &metrics,
+    )
+    .unwrap();
 
     // Both lane workers of the first round park on the barrier after their
     // task has produced its output, so the attempt is provably cancelled
@@ -942,6 +995,7 @@ fn lane_cancellation_while_workers_run_drains_without_committing() {
         route,
         metrics_context.clone(),
         plan.clone(),
+        PlanningPolicy::default(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),
@@ -1302,8 +1356,15 @@ fn union_streaming_output_contract_matches_its_consumer_form() {
         let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            &plan,
+            PlanningPolicy::default(),
+            &pipeline,
+            &gpu_inputs,
+            &metrics,
+        )
+        .unwrap();
         match requested_lanes {
             None => {
                 let state = scheduler.run(&mut executor).expect("serial union aggregate should execute");
@@ -1314,6 +1375,7 @@ fn union_streaming_output_contract_matches_its_consumer_form() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    PlanningPolicy::default(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -1419,8 +1481,15 @@ fn wide_union_branches_stream_into_narrow_aggregate_without_concat() {
         let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            &plan,
+            PlanningPolicy::default(),
+            &pipeline,
+            &gpu_inputs,
+            &metrics,
+        )
+        .unwrap();
         match requested_lanes {
             None => {
                 scheduler.run(&mut executor).expect("serial wide union aggregate should execute");
@@ -1430,6 +1499,7 @@ fn wide_union_branches_stream_into_narrow_aggregate_without_concat() {
                     Arc::clone(&route),
                     metrics_context.clone(),
                     plan.clone(),
+                    PlanningPolicy::default(),
                     pipeline.clone(),
                     gpu_inputs.clone(),
                     metrics.clone(),
@@ -1478,12 +1548,20 @@ fn chunk_readiness_sync_failure_attributes_head_ordinal_and_commits_nothing() {
         let metrics_context = metrics.scope_context(&context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            &plan,
+            PlanningPolicy::default(),
+            &pipeline,
+            &gpu_inputs,
+            &metrics,
+        )
+        .unwrap();
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),
             metrics_context.clone(),
             plan.clone(),
+            PlanningPolicy::default(),
             pipeline.clone(),
             gpu_inputs.clone(),
             metrics.clone(),
@@ -1553,12 +1631,20 @@ fn lane_workers_complete_chunks_without_stream_synchronize() {
         let metrics_context = metrics.scope_context(&owned_context).expect("metrics scope applies");
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
         let gpu_inputs = GpuResidentInputMap::new();
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &metrics_context,
+            &plan,
+            PlanningPolicy::default(),
+            &pipeline,
+            &gpu_inputs,
+            &metrics,
+        )
+        .unwrap();
         let support = LaneDispatchSupport::new(
             support_route,
             metrics_context.clone(),
             plan.clone(),
+            PlanningPolicy::default(),
             pipeline.clone(),
             GpuResidentInputMap::new(),
             metrics.clone(),
@@ -1619,12 +1705,21 @@ fn host_sink_handoff_never_reports_success_early_or_releases_its_grant() {
     let metrics_context = metrics.scope_context(context).expect("metrics scope applies");
     let gpu_inputs = GpuResidentInputMap::new();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics).unwrap();
+    let mut executor = CompiledGpuTaskExecutor::new(
+        &metrics_context,
+        &plan,
+        PlanningPolicy::default(),
+        &pipeline,
+        &gpu_inputs,
+        &metrics,
+    )
+    .unwrap();
     assert!(executor.take_host_output().is_err(), "host output is absent before the sink task commits it");
     let support = LaneDispatchSupport::new(
         Arc::clone(&route),
         metrics_context.clone(),
         plan.clone(),
+        PlanningPolicy::default(),
         pipeline.clone(),
         gpu_inputs.clone(),
         metrics.clone(),

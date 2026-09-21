@@ -14,7 +14,7 @@ use crate::{
                 },
                 resource::CompiledGpuResourcePayload,
             },
-            execute_bounded_generic_unary_from_frame, execute_compiled_bounded_aggregate_from_frame,
+            execute_bounded_unary_from_frame, execute_compiled_bounded_aggregate_from_frame,
             execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
             execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
             execute_final_sort_node_from_stream_with_retry,
@@ -229,7 +229,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .output_schema(),
         );
         let output_schema = Arc::clone(node.output_schema());
-        let frame = execute_bounded_generic_unary_from_frame(
+        let frame = execute_bounded_unary_from_frame(
             &mut self.execution,
             node_id,
             "compiled_window",

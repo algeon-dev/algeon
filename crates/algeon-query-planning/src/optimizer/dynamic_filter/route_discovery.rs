@@ -97,7 +97,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     )
                 });
             let producer_dependency_root = aggregate_group_key_producer.unwrap_or(orientation.producer_input);
-            if producer_keyset_exceeds_runtime_limit(&plan, producer_dependency_root, options.execution) {
+            if producer_keyset_exceeds_runtime_limit(&plan, producer_dependency_root, ctx.policy().dynamic_filter) {
                 candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit);
                 diagnostics.candidates.push(candidate);
                 continue;
@@ -300,7 +300,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                                 &plan,
                                 orientation.producer_input,
                                 consumer_source,
-                                options.execution,
+                                ctx.policy().dynamic_filter,
                             )
                         {
                             candidate.rejected_reason =
@@ -497,7 +497,11 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
             candidate.selected_source_bytes = stats.and_then(|stats| stats.selected_source_bytes());
             candidate.total_source_bytes = stats.and_then(|stats| stats.total_source_bytes());
 
-            if producer_keyset_exceeds_runtime_limit(&plan, residual_candidate.producer_input, options.execution) {
+            if producer_keyset_exceeds_runtime_limit(
+                &plan,
+                residual_candidate.producer_input,
+                ctx.policy().dynamic_filter,
+            ) {
                 candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit);
                 diagnostics.candidates.push(candidate);
                 continue;
@@ -546,7 +550,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     &plan,
                     residual_candidate.producer_input,
                     consumer_source,
-                    options.execution,
+                    ctx.policy().dynamic_filter,
                 )
             {
                 candidate.rejected_reason =
@@ -592,6 +596,6 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
     }
 
     let change = if routes.is_empty() { NativeOptimizerChange::Unchanged } else { NativeOptimizerChange::Changed };
-    let plan = plan.with_dynamic_filter_execution_options(options.execution).with_dynamic_filter_routes(routes);
+    let plan = plan.with_dynamic_filter_routes(routes);
     DynamicFilterRouteDiscoveryResult { plan, change, diagnostics }
 }

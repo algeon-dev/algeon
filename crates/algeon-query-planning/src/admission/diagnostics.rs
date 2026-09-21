@@ -44,7 +44,7 @@ pub fn bounded_join_modeled_facts(
         super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx),
         Ok(decision) if decision.admission().is_some()
     )
-    .then(|| bounded_join_modeled_facts_unchecked(plan))
+    .then(|| bounded_join_modeled_facts_unchecked(plan, ctx))
 }
 
 #[doc(hidden)]
@@ -54,14 +54,14 @@ pub fn bounded_join_unsupported_shape_facts_with_projection(
     ctx: AnalysisContext<'_>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::new();
-    insert_join_strategy_facts(&mut facts, plan);
+    insert_join_strategy_facts(&mut facts, plan, ctx);
     insert_local_rejection_facts(&mut facts, plan, rejection_projection, ctx);
     facts
 }
 
-fn bounded_join_modeled_facts_unchecked(plan: &QueryPlan) -> BTreeMap<&'static str, String> {
+fn bounded_join_modeled_facts_unchecked(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::new();
-    insert_join_strategy_facts(&mut facts, plan);
+    insert_join_strategy_facts(&mut facts, plan, ctx);
     facts
 }
 
@@ -75,7 +75,7 @@ pub fn insert_bounded_join_rejection_projection_error_facts(
     facts.insert("bounded_join_rejection_projection_error_message", error.message().to_string());
 }
 
-fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: &QueryPlan) {
+fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: &QueryPlan, ctx: AnalysisContext<'_>) {
     let mut join_strategy = Vec::new();
     let mut reusable_rejections = Vec::new();
     let mut partitioned_rejections = Vec::new();
@@ -92,7 +92,9 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        let Some(decision) = keyed_hash_join_strategy_decision_for_plan(plan, node.id, join) else {
+        let Some(decision) =
+            keyed_hash_join_strategy_decision_for_plan(plan, node.id, join, &ctx.policy().keyed_hash_join)
+        else {
             continue;
         };
         let node_label = node.id.to_string();

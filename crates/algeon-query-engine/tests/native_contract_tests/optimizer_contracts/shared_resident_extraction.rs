@@ -89,7 +89,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
     assert_eq!(extracted.reason, SharedResidentExtractionReason::Extracted);
     assert_eq!(extracted.consumer_occurrences.len(), 2);
     assert_eq!(extracted.resident_input_name.as_deref(), Some(split.producers[0].input_name.as_str()));
-    assert!(!extracted.subplan_fingerprint.is_empty());
+    assert_eq!(extracted.subplan_fingerprint, split.producers[0].plan.execution_fingerprint());
     assert_eq!(split.producers[0].plan.root_node().output_schema(), &schema);
     let resident_sources = split
         .consumer

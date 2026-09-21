@@ -3,9 +3,8 @@ use crate::{
     error::Result,
     exec::bounded::{
         compiled::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
-        execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
-        execute_bounded_generic_local_parquet_source, execute_bounded_join_leaf_source,
-        materialize_bounded_join_leaf_local_parquet_source_stream,
+        execute_bounded_gpu_resident_source, execute_bounded_join_leaf_source, execute_bounded_literal_batch_source,
+        execute_bounded_local_parquet_source, materialize_bounded_join_leaf_local_parquet_source_stream,
         plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
         plan_bounded_shared_join_aggregate_local_parquet_source_stream,
         try_start_bounded_join_leaf_local_parquet_source_prefetch,
@@ -62,7 +61,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)
                             .map(CompiledGpuResource::new)
                     } else if !can_defer_source || (!feeds_join && !feeds_aggregate && !has_dynamic_filter_routes) {
-                        execute_bounded_generic_local_parquet_source(&mut self.execution, source, node_id)
+                        execute_bounded_local_parquet_source(&mut self.execution, source, node_id)
                             .map(CompiledGpuResource::new)
                     } else {
                         let has_source_adjacent_stages =
@@ -124,12 +123,11 @@ impl CompiledGpuTaskExecutor<'_> {
                         .map(CompiledGpuResource::new)
                 },
                 SourceNode::GpuResident(source) => {
-                    execute_bounded_generic_gpu_resident_source(&mut self.execution, source, &self.gpu_inputs)
+                    execute_bounded_gpu_resident_source(&mut self.execution, source, &self.gpu_inputs)
                         .map(CompiledGpuResource::new)
                 },
                 SourceNode::LiteralBatch(source) => {
-                    execute_bounded_generic_literal_batch_source(&mut self.execution, source)
-                        .map(CompiledGpuResource::new)
+                    execute_bounded_literal_batch_source(&mut self.execution, source).map(CompiledGpuResource::new)
                 },
             },
             _ => Err(invalid("compiled source task does not reference a source plan node")

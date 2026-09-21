@@ -20,6 +20,7 @@ use crate::{
     error::Result,
     expr::{AggregateSpec, BinaryOp, Expr},
     plan::ProjectionOutput,
+    policy::PlanningPolicy,
 };
 
 /// How a plan evaluates an expression, where the backend binding differs.
@@ -88,16 +89,31 @@ pub trait BackendCapabilities: fmt::Debug + Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub struct AnalysisContext<'a> {
     backend: &'a dyn BackendCapabilities,
+    policy: PlanningPolicy,
 }
 
 impl<'a> AnalysisContext<'a> {
-    /// Binds an analysis pass to one backend implementation.
-    pub const fn new(backend: &'a dyn BackendCapabilities) -> Self {
-        Self { backend }
+    /// Binds an analysis pass to one backend implementation under the default
+    /// [`PlanningPolicy`].
+    pub fn new(backend: &'a dyn BackendCapabilities) -> Self {
+        Self { backend, policy: PlanningPolicy::default() }
+    }
+
+    /// The same pass under the execution policy the plan is optimized,
+    /// admitted, and executed with.
+    #[must_use]
+    pub const fn with_policy(mut self, policy: PlanningPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// The backend answering this pass's capability questions.
     pub(crate) const fn backend(&self) -> &'a dyn BackendCapabilities {
         self.backend
+    }
+
+    /// The execution policy this pass analyzes the plan under.
+    pub const fn policy(&self) -> PlanningPolicy {
+        self.policy
     }
 }

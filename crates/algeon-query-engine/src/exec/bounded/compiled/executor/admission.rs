@@ -2,7 +2,8 @@ use super::{CompiledGpuTaskExecutor, join_build_key_uniqueness_probe_can_fallbac
 use crate::{
     admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     capability::{
-        KeyedHashJoinStrategyInputFacts, keyed_hash_join_build_is_large, keyed_hash_join_strategy_input_facts_for_plan,
+        KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions, keyed_hash_join_build_is_large,
+        keyed_hash_join_strategy_input_facts_for_plan,
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
         partitioned_equi_join_supported,
     },
@@ -10,7 +11,7 @@ use crate::{
     exec::bounded::{
         BoundedExecutionAttempt, BoundedJoinBuildStreamObservation, PartitionedJoinBuildCommitment,
         compiled::helpers::{
-            join_strategy, join_strategy_from_facts, join_strategy_needs_build_key_uniqueness_probe,
+            join_node, join_strategy_from_facts, join_strategy_needs_build_key_uniqueness_probe,
             measure_join_build_key_unique,
         },
         partitioned_join_build_commitment, stateless_streaming_probe_supported,
@@ -39,13 +40,14 @@ pub(super) struct JoinBuildStreamEstimate {
 /// such evidence the caller keeps accumulating and selects on observed facts.
 pub(super) fn settle_partitioned_join_build(
     plan: &QueryPlan,
+    options: KeyedHashJoinStrategyOptions,
     task: &PipelineTask,
     node_id: NodeId,
-    node: &JoinNode,
     estimate: JoinBuildStreamEstimate,
     execution: &mut BoundedExecutionAttempt<'_>,
     observation: Option<BoundedJoinBuildStreamObservation>,
 ) -> Result<Option<PartitionedJoinBuildCommitment>> {
+    let node = join_node(plan, task, node_id)?;
     if node.spec.residual_predicate.is_some()
         || !partitioned_equi_join_supported(node)
         || !stateless_streaming_probe_supported(node)
@@ -63,13 +65,12 @@ pub(super) fn settle_partitioned_join_build(
         build_key_unique: None,
         ..plan_facts
     };
-    let options = plan.keyed_hash_join_strategy_options();
     if !keyed_hash_join_build_is_large(&facts, &options)
         || keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options(node, facts, &options)
     {
         return Ok(None);
     }
-    let selection = join_strategy_from_facts(plan, node, task, node_id, facts)?;
+    let selection = join_strategy_from_facts(&options, node, task, node_id, facts)?;
     if selection.strategy != CompiledJoinExecutionStrategy::PartitionedHashEqui {
         return Ok(None);
     }
@@ -111,6 +112,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let mut build_key_uniqueness_probe_error_code = None;
         let build_key_unique = if join_strategy_needs_build_key_uniqueness_probe(
             self.plan,
+            &self.policy.keyed_hash_join,
             node,
             node_id,
             observed_build_rows,
@@ -131,8 +133,13 @@ impl CompiledGpuTaskExecutor<'_> {
         } else {
             None
         };
-        let mut strategy =
-            join_strategy(self.plan, node, task, node_id, observed_build_rows, build_side_bytes, build_key_unique)?;
+        let strategy_facts = KeyedHashJoinStrategyInputFacts {
+            observed_build_rows: Some(observed_build_rows),
+            build_side_bytes: Some(build_side_bytes),
+            build_key_unique,
+            ..keyed_hash_join_strategy_input_facts_for_plan(self.plan, node_id, node)
+        };
+        let mut strategy = join_strategy_from_facts(&self.policy.keyed_hash_join, node, task, node_id, strategy_facts)?;
         if let Some(facts) = strategy.facts.as_mut() {
             facts.insert(
                 "build_key_unique",

@@ -16,20 +16,20 @@ fn large_keyed_inner_build_selects_partitioned_strategy() {
 }
 
 #[test]
-fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
-    let strategy_options = KeyedHashJoinStrategyOptions::default()
-        .with_large_keyed_hash_build_row_threshold(200_000_000)
-        .with_large_keyed_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024)
-        .with_small_reusable_hash_build_row_threshold(200_000_000)
-        .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024);
-    let optimized = optimize_query_plan(
-        large_keyed_join_strategy_plan(JoinType::Inner),
-        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() }, rapids_analysis_context(),local_dimension_pruning_resolver());
-    let plan = optimized.plan;
+fn planning_policy_keyed_hash_join_thresholds_drive_admission_facts() {
+    let policy = PlanningPolicy {
+        keyed_hash_join: KeyedHashJoinStrategyOptions::default()
+            .with_large_keyed_hash_build_row_threshold(200_000_000)
+            .with_large_keyed_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024)
+            .with_small_reusable_hash_build_row_threshold(200_000_000)
+            .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024),
+        ..PlanningPolicy::default()
+    };
+    let plan = large_keyed_join_strategy_plan(JoinType::Inner);
 
-    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("custom strategy thresholds should keep the join admitted");
+    let facts = modeled_facts(&plan, rapids_analysis_context().with_policy(policy))
+        .expect("custom strategy thresholds should keep the join admitted");
 
-    assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
 }
 
@@ -269,7 +269,12 @@ fn left_build_keyed_residual_semi_anti_stays_on_stateful_mixed_strategy() {
             "{join_type} should expose the stateful mixed capability"
         );
         assert!(matches!(
-            CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
+            CompiledJoinExecutionStrategy::from_plan_join_node(
+                &plan,
+                node_id,
+                join,
+                &KeyedHashJoinStrategyOptions::default()
+            ),
             Ok(Some(CompiledJoinExecutionStrategy::MixedKeyedResidual))
         ));
     }
@@ -295,7 +300,12 @@ fn right_build_keyed_residual_semi_anti_remains_partitioned_mixed_when_large() {
         assert!(keyed_residual_mixed_join_capable(join), "{join_type}");
         assert!(partitioned_keyed_residual_join_supported(join), "{join_type}");
         assert!(matches!(
-            CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
+            CompiledJoinExecutionStrategy::from_plan_join_node(
+                &plan,
+                node_id,
+                join,
+                &KeyedHashJoinStrategyOptions::default()
+            ),
             Ok(Some(CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual))
         ));
     }

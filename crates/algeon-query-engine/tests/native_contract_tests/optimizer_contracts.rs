@@ -33,14 +33,15 @@ use query_engine::{
         SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics,
         StreamFanoutReplayOptions, apply_dimension_derived_pruning_with_stats,
         discover_dimension_derived_pruning_requests, local_parquet_source,
-        optimize_dimension_derived_row_group_pruning, optimize_query_plan, optimize_semijoin_reduction,
-        optimize_shared_resident_extraction, seed_dimension_derived_reader_predicates,
+        optimize_dimension_derived_row_group_pruning, optimize_query_plan, optimize_shared_resident_extraction,
+        seed_dimension_derived_reader_predicates,
     },
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
         GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
         GraphEdgeColumnBindings, GraphPredicateInput, NodeId, QueryPlan,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     source::LocalParquetSource,
 };

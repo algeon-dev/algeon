@@ -258,7 +258,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
         );
     }
 
-    execute_bounded_generic_unary_from_frame(
+    execute_bounded_unary_from_frame(
         execution,
         node_id,
         "compiled_aggregate",

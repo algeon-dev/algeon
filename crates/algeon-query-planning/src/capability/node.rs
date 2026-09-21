@@ -597,7 +597,9 @@ fn join_node_executable_decision(
             ],
         );
     }
-    if let Some(decision) = keyed_hash_join_strategy_decision_for_plan(plan, node_id, join) {
+    if let Some(decision) =
+        keyed_hash_join_strategy_decision_for_plan(plan, node_id, join, &ctx.policy().keyed_hash_join)
+    {
         match decision {
             KeyedHashJoinStrategyDecision::Rejected { reason, facts } => {
                 let mut facts = facts;

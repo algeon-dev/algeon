@@ -290,7 +290,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
     let optimizer_result = optimize_query_plan(
         lowering.plans[0].clone(),
         &optimizer_options,
-        rapids_analysis_context(),
+        rapids_analysis_context().with_policy(native_execution_config.planning_policy()),
         local_dimension_pruning_resolver(),
     );
     let native_optimizer = optimizer_result.diagnostics;
@@ -444,8 +444,6 @@ fn native_optimizer_options_for_execution(
     native_execution_config.validate_query_policies()?;
     let mut options = options.clone();
     options.semijoin_reduction.admission_mode = SemijoinReductionAdmissionMode::Bounded;
-    options.dynamic_filter_route_discovery.execution = native_execution_config.dynamic_filter_execution_options();
-    options.keyed_hash_join_strategy = native_execution_config.keyed_hash_join_strategy_options();
     options.validate().map_err(|error| {
         Error::from_native(
             "algeon_datafusion.native_exec.config.validate",
@@ -757,19 +755,12 @@ mod tests {
     }
 
     #[test]
-    fn optimizer_options_for_execution_copy_dynamic_filter_policy_from_execution_config() {
-        let dynamic_filter_options = DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
-        let keyed_hash_join_strategy_options =
-            KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
-        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-            .with_dynamic_filter_execution_options(dynamic_filter_options)
-            .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options);
+    fn optimizer_options_for_execution_use_bounded_semijoin_admission() {
+        let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1);
 
         let options = native_optimizer_options_for_execution(&NativeOptimizerOptions::disabled(), &execution_config)
             .expect("valid execution policy should produce optimizer options");
 
-        assert_eq!(options.dynamic_filter_route_discovery.execution, dynamic_filter_options);
-        assert_eq!(options.keyed_hash_join_strategy, keyed_hash_join_strategy_options);
         assert_eq!(options.semijoin_reduction.admission_mode, SemijoinReductionAdmissionMode::Bounded);
     }
 

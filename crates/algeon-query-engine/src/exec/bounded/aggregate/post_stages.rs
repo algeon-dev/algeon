@@ -4,7 +4,7 @@ use super::{
     AggregateFunction, AggregateSpec, BoundedExecutionAttempt, BoundedPlan, BoundedUnaryStage, CommittedPartial,
     ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame, NodeId, Result, RuntimeResourceFacts,
     aggregate_spec_has_avg, cast_count_output_columns_with_budget, cudf_query_error, execute_aggregate_with_budget,
-    execute_bounded_generic_unary_consuming_input, execute_filter_with_budget, execute_global_aggregate_with_budget,
+    execute_bounded_unary, execute_filter_with_budget, execute_global_aggregate_with_budget,
     execute_groupby_aggregate_with_budget_observed, execute_limit, execute_projection_with_budget,
     execution_budget_token_for_boundary, execution_overrides, final_global_aggregate_spec,
     final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, lower_final_aggregate_spec,
@@ -109,7 +109,7 @@ fn execute_post_final_stage(
     ) -> Result<GpuDataFrame>,
     use_budget_token: bool,
 ) -> Result<CommittedPartial> {
-    execute_bounded_generic_unary_consuming_input(execution, node_id, stage, input, use_budget_token, execute)
+    execute_bounded_unary(execution, node_id, stage, input, use_budget_token, execute)
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(

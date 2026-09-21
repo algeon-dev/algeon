@@ -10,8 +10,7 @@
 use crate::{
     admission::scope::{AttemptExecutionManifest, AttemptExecutionScope, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result},
-    plan::{DeferredGraphExecutionScopeIdentity, QueryPlan, canonical_execution_scope_fingerprint},
-    util::log_safe_fingerprint,
+    plan::{DeferredGraphExecutionScopeIdentity, PlanFingerprint, QueryPlan, SchemaFingerprint},
 };
 
 /// Immutable device execution capability required by an attempt.
@@ -41,20 +40,17 @@ pub const CUGRAPH_GRAPH_EXECUTION_CAPABILITY: ExecutionCapability = ExecutionCap
 /// let evidence issued for one graph plan authorize an unrelated one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttestedCugraphGraphExecutionScope {
-    pub(crate) execution_scope_fingerprint: String,
+    pub(crate) execution_scope_fingerprint: PlanFingerprint,
     pub(crate) deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
 }
 
 impl AttestedCugraphGraphExecutionScope {
     pub(crate) fn for_plan(plan: &QueryPlan) -> Self {
-        Self {
-            execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
-            deferred_execution_scope_identity: None,
-        }
+        Self { execution_scope_fingerprint: plan.execution_fingerprint(), deferred_execution_scope_identity: None }
     }
 
     pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
-        self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+        self.execution_scope_fingerprint == plan.execution_fingerprint()
             || self.deferred_execution_scope_identity.as_ref().is_some_and(|scope| scope.matches(plan))
     }
 }
@@ -122,7 +118,7 @@ impl AttemptCapabilityEvidence {
     #[doc(hidden)]
     pub fn deferred_graph_identity_for_scope(
         &self,
-        execution_scope_fingerprint: &str,
+        execution_scope_fingerprint: PlanFingerprint,
     ) -> Option<DeferredGraphExecutionScopeIdentity> {
         self.attested_cugraph_graph_execution_scopes
             .iter()
@@ -168,7 +164,7 @@ impl AttemptCapabilityEvidence {
     #[doc(hidden)]
     pub fn attest_deferred_cugraph_graph_execution_scope(&mut self, plan: &QueryPlan) {
         self.attest_cugraph_graph_execution_scope(plan);
-        let exact = canonical_execution_scope_fingerprint(plan);
+        let exact = plan.execution_fingerprint();
         if let Some(scope) = self
             .attested_cugraph_graph_execution_scopes
             .iter_mut()
@@ -231,15 +227,14 @@ impl AttemptCapabilityEvidence {
 
     #[doc(hidden)]
     pub fn producer_occurrence_scope_count_for_plan(&self, plan: &QueryPlan) -> usize {
-        let execution_scope = canonical_execution_scope_fingerprint(plan);
-        self.execution_scopes.iter().map(|scope| scope.producer_occurrence_scope_count(&execution_scope)).sum()
+        let execution_scope = plan.execution_fingerprint();
+        self.execution_scopes.iter().map(|scope| scope.producer_occurrence_scope_count(execution_scope)).sum()
     }
 
     /// Validates the ordered producer occurrences of one composed native plan.
     #[doc(hidden)]
     pub fn validate_composed_occurrences(&self, plan: &QueryPlan, occurrence_ids: &[String]) -> Result<()> {
-        let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
-        let expected_schema = log_safe_fingerprint(&format!("{:?}", caller_visible_plan.output_schema()));
+        let expected_schema = SchemaFingerprint::of(plan.caller_visible_output_schema());
         let matching = self
             .execution_scopes
             .iter()
@@ -306,16 +301,16 @@ impl AttemptCapabilityEvidence {
             .with_fact("required_capability", CUGRAPH_GRAPH_EXECUTION_CAPABILITY.as_str())
             .with_fact("admitted_capabilities", capability_labels(&self.required_capabilities)));
         }
-        let execution_scope = canonical_execution_scope_fingerprint(plan);
+        let execution_scope = plan.execution_fingerprint();
         let scope_matches = self
             .execution_scopes
             .iter()
-            .filter(|scope| scope.matches_execution_scope_fingerprint(&execution_scope))
+            .filter(|scope| scope.matches_execution_scope_fingerprint(execution_scope))
             .count();
         let occurrence_matches = self
             .execution_scopes
             .iter()
-            .map(|scope| scope.producer_occurrence_scope_count(&execution_scope))
+            .map(|scope| scope.producer_occurrence_scope_count(execution_scope))
             .sum::<usize>();
         let manifest_matches = self.execution_manifest.as_ref().and_then(|manifest| manifest.occurrence_for_plan(plan));
         if scope_matches > 0 || occurrence_matches > 0 || manifest_matches.is_some() {

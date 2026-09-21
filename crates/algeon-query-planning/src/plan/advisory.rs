@@ -102,7 +102,7 @@ mod tests {
     use super::*;
     use crate::{
         expr::{Expr, LimitSpec},
-        plan::{PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, canonical_execution_scope_fingerprint},
+        plan::{PlanNode, ProjectionOutput, QueryPlanBuilder, RewrittenNodes},
         source::{GpuResidentSource, SourceNode},
     };
 
@@ -126,9 +126,8 @@ mod tests {
             unknown_reason: None,
         });
         let plan = builder.clone().finish_gpu_resident(root);
-        assert_eq!(canonical_execution_scope_fingerprint(&plain), canonical_execution_scope_fingerprint(&plan));
-        let unchanged = QueryPlan::from_rewritten_parts(plan.nodes().to_vec(), root, plan.sink().clone())
-            .with_rewrite_state_from(&plan);
+        assert_eq!(plain.execution_fingerprint(), plan.execution_fingerprint());
+        let unchanged = plan.rewrite(RewrittenNodes::in_place(plan.nodes().to_vec(), root));
         assert_eq!(unchanged.advisory_outputs(), plan.advisory_outputs());
 
         let mut nodes = plan.nodes().to_vec();
@@ -136,8 +135,7 @@ mod tests {
             "different input",
             Arc::clone(&schema),
         ))));
-        let rewritten =
-            QueryPlan::from_rewritten_parts(nodes, root, plan.sink().clone()).with_rewrite_state_from(&plan);
+        let rewritten = plan.rewrite(RewrittenNodes::in_place(nodes, root));
         assert!(rewritten.advisory_outputs()[0].statistics.is_absent());
         assert_eq!(rewritten.advisory_outputs()[0].unknown_reason, Some(AdvisoryUnknownReason::RewrittenSubtree));
 

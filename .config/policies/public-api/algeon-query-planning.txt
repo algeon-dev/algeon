@@ -5,6 +5,7 @@ impl query_planning::admission::BoundedPipelineAdmission
 pub const fn query_planning::admission::BoundedPipelineAdmission::envelope(&self) -> query_planning::capability::CapabilityEnvelope
 pub fn query_planning::admission::BoundedPipelineAdmission::matches(&self, &query_planning::plan::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode) -> bool
 pub fn query_planning::admission::BoundedPipelineAdmission::pipeline(&self) -> &query_planning::pipeline::CompiledPipeline
+pub const fn query_planning::admission::BoundedPipelineAdmission::policy(&self) -> query_planning::policy::PlanningPolicy
 pub fn query_planning::admission::BoundedPipelineAdmission::scope(&self) -> &AttemptExecutionScope
 pub const fn query_planning::admission::BoundedPipelineAdmission::sink_kind(&self) -> query_planning::pipeline::SinkBoundaryKind
 pub const fn query_planning::admission::BoundedPipelineAdmission::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
@@ -25,7 +26,9 @@ pub query_planning::backend::ExpressionUse::FilterPredicate
 pub query_planning::backend::ExpressionUse::Value
 pub struct query_planning::backend::AnalysisContext<'a>
 impl<'a> query_planning::backend::AnalysisContext<'a>
-pub const fn query_planning::backend::AnalysisContext<'a>::new(&'a dyn query_planning::backend::BackendCapabilities) -> Self
+pub fn query_planning::backend::AnalysisContext<'a>::new(&'a dyn query_planning::backend::BackendCapabilities) -> Self
+pub const fn query_planning::backend::AnalysisContext<'a>::policy(&self) -> query_planning::policy::PlanningPolicy
+pub const fn query_planning::backend::AnalysisContext<'a>::with_policy(self, query_planning::policy::PlanningPolicy) -> Self
 pub trait query_planning::backend::BackendCapabilities: core::fmt::Debug + core::marker::Send + core::marker::Sync
 pub fn query_planning::backend::BackendCapabilities::aggregate_output_names(&self, &query_planning::expr::AggregateSpec, query_planning::backend::AggregateBinding) -> query_planning::error::Result<alloc::vec::Vec<alloc::string::String>>
 pub fn query_planning::backend::BackendCapabilities::binary_output_type(&self, query_planning::expr::BinaryOp, &arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> query_planning::error::Result<arrow_schema::datatype::DataType>
@@ -1283,7 +1286,6 @@ pub query_planning::optimizer::DynamicFilterRouteDiscoveryDiagnostics::considere
 pub query_planning::optimizer::DynamicFilterRouteDiscoveryDiagnostics::route_count: usize
 pub struct query_planning::optimizer::DynamicFilterRouteDiscoveryOptions
 pub query_planning::optimizer::DynamicFilterRouteDiscoveryOptions::enabled: bool
-pub query_planning::optimizer::DynamicFilterRouteDiscoveryOptions::execution: query_planning::dynamic_filter::DynamicFilterExecutionOptions
 impl query_planning::optimizer::DynamicFilterRouteDiscoveryOptions
 pub fn query_planning::optimizer::DynamicFilterRouteDiscoveryOptions::disabled() -> Self
 impl core::default::Default for query_planning::optimizer::DynamicFilterRouteDiscoveryOptions
@@ -1399,7 +1401,6 @@ pub query_planning::optimizer::NativeOptimizerOptions::dimension_derived_row_gro
 pub query_planning::optimizer::NativeOptimizerOptions::dynamic_filter_route_discovery: query_planning::optimizer::DynamicFilterRouteDiscoveryOptions
 pub query_planning::optimizer::NativeOptimizerOptions::join_build_side_selection: query_planning::optimizer::JoinBuildSideSelectionOptions
 pub query_planning::optimizer::NativeOptimizerOptions::join_filter_reassociation: query_planning::optimizer::JoinFilterReassociationOptions
-pub query_planning::optimizer::NativeOptimizerOptions::keyed_hash_join_strategy: query_planning::capability::KeyedHashJoinStrategyOptions
 pub query_planning::optimizer::NativeOptimizerOptions::local_parquet_source_reuse: query_planning::optimizer::LocalParquetSourceReuseOptions
 pub query_planning::optimizer::NativeOptimizerOptions::outer_join_null_rejection: query_planning::optimizer::OuterJoinNullRejectionOptions
 pub query_planning::optimizer::NativeOptimizerOptions::projection_simplification: query_planning::optimizer::ProjectionSimplificationOptions
@@ -2181,12 +2182,16 @@ pub query_planning::plan::RelationIdType::Utf8View
 impl query_planning::plan::RelationIdType
 pub fn query_planning::plan::RelationIdType::from_data_type(&arrow_schema::datatype::DataType) -> core::option::Option<Self>
 pub enum query_planning::plan::ResultSink
+pub query_planning::plan::ResultSink::DeferredHostArrow
+pub query_planning::plan::ResultSink::DeferredHostArrow::input: query_planning::plan::NodeId
+pub query_planning::plan::ResultSink::DeferredHostArrow::schema: arrow_schema::schema::SchemaRef
 pub query_planning::plan::ResultSink::GpuResident
 pub query_planning::plan::ResultSink::GpuResident::input: query_planning::plan::NodeId
 pub query_planning::plan::ResultSink::HostArrow
 pub query_planning::plan::ResultSink::HostArrow::input: query_planning::plan::NodeId
 pub query_planning::plan::ResultSink::HostArrow::schema: arrow_schema::schema::SchemaRef
 impl query_planning::plan::ResultSink
+pub fn query_planning::plan::ResultSink::caller_visible_host_schema(&self) -> core::option::Option<&arrow_schema::schema::SchemaRef>
 pub fn query_planning::plan::ResultSink::input(&self) -> query_planning::plan::NodeId
 pub fn query_planning::plan::ResultSink::materializes_host_boundary(&self) -> bool
 pub enum query_planning::plan::SchemaBehavior
@@ -2838,6 +2843,11 @@ pub query_planning::plan::PlanFacts::output_ordering: alloc::vec::Vec<query_plan
 pub query_planning::plan::PlanFacts::output_schema: arrow_schema::schema::SchemaRef
 pub query_planning::plan::PlanFacts::placement: query_planning::plan::DataPlacement
 pub query_planning::plan::PlanFacts::schema_behavior: query_planning::plan::SchemaBehavior
+pub struct query_planning::plan::PlanFingerprint(_)
+impl core::fmt::Debug for query_planning::plan::PlanFingerprint
+pub fn query_planning::plan::PlanFingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for query_planning::plan::PlanFingerprint
+pub fn query_planning::plan::PlanFingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::plan::ProjectionNode
 pub query_planning::plan::ProjectionNode::input: query_planning::plan::NodeId
 pub query_planning::plan::ProjectionNode::outputs: alloc::vec::Vec<query_planning::plan::ProjectionOutput>
@@ -2860,15 +2870,14 @@ pub fn query_planning::plan::QueryNode::output_schema(&self) -> &arrow_schema::s
 pub struct query_planning::plan::QueryPlan
 impl query_planning::plan::QueryPlan
 pub fn query_planning::plan::QueryPlan::advisory_outputs(&self) -> &[query_planning::plan::AdvisoryOutputBinding]
+pub fn query_planning::plan::QueryPlan::caller_visible_output_schema(&self) -> &arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::QueryPlan::clone_with_deferred_host_materialization_sink(&self) -> Self
 pub fn query_planning::plan::QueryPlan::clone_with_gpu_resident_sink(&self) -> Self
 pub fn query_planning::plan::QueryPlan::contains_edge_normalize(&self) -> bool
 pub fn query_planning::plan::QueryPlan::contains_join(&self) -> bool
 pub fn query_planning::plan::QueryPlan::contains_ml_algorithm(&self) -> bool
 pub fn query_planning::plan::QueryPlan::contains_vector_algorithm(&self) -> bool
-pub fn query_planning::plan::QueryPlan::dynamic_filter_execution_options(&self) -> query_planning::dynamic_filter::DynamicFilterExecutionOptions
 pub fn query_planning::plan::QueryPlan::dynamic_filter_routes(&self) -> &[query_planning::dynamic_filter::DynamicFilterRoute]
-pub fn query_planning::plan::QueryPlan::keyed_hash_join_strategy_options(&self) -> query_planning::capability::KeyedHashJoinStrategyOptions
 pub fn query_planning::plan::QueryPlan::node(&self, query_planning::plan::NodeId) -> core::option::Option<&query_planning::plan::QueryNode>
 pub fn query_planning::plan::QueryPlan::node_count(&self) -> usize
 pub fn query_planning::plan::QueryPlan::nodes(&self) -> &[query_planning::plan::QueryNode]
@@ -2881,6 +2890,8 @@ pub fn query_planning::plan::QueryPlan::with_appended_sort(self, query_planning:
 pub fn query_planning::plan::QueryPlan::with_host_sink_schema(self, arrow_schema::schema::SchemaRef) -> Self
 impl query_planning::plan::QueryPlan
 pub fn query_planning::plan::QueryPlan::capability_analysis(&self, query_planning::backend::AnalysisContext<'_>) -> query_planning::capability::CapabilityAnalysis
+impl query_planning::plan::QueryPlan
+pub fn query_planning::plan::QueryPlan::execution_fingerprint(&self) -> query_planning::plan::PlanFingerprint
 impl core::fmt::Display for query_planning::plan::QueryPlan
 pub fn query_planning::plan::QueryPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::plan::QueryPlanBuilder
@@ -2910,6 +2921,13 @@ pub fn query_planning::plan::QueryPlanBuilder::try_add_vector_algorithm(&mut sel
 pub struct query_planning::plan::ResidentGraphKey
 pub query_planning::plan::ResidentGraphKey::orientation: query_planning::plan::GraphResidencyOrientation
 pub query_planning::plan::ResidentGraphKey::weight_column: core::option::Option<alloc::string::String>
+pub struct query_planning::plan::SchemaFingerprint(_)
+impl query_planning::plan::SchemaFingerprint
+pub fn query_planning::plan::SchemaFingerprint::of(&arrow_schema::schema::Schema) -> Self
+impl core::fmt::Debug for query_planning::plan::SchemaFingerprint
+pub fn query_planning::plan::SchemaFingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for query_planning::plan::SchemaFingerprint
+pub fn query_planning::plan::SchemaFingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::plan::SortNode
 pub query_planning::plan::SortNode::input: query_planning::plan::NodeId
 pub query_planning::plan::SortNode::spec: query_planning::expr::SortSpec
@@ -3057,6 +3075,12 @@ pub fn query_planning::plan::vector_knn_output_schema(arrow_schema::datatype::Da
 pub fn query_planning::plan::vector_pairwise_distance_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_pca_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_top_k_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub mod query_planning::policy
+pub struct query_planning::policy::PlanningPolicy
+pub query_planning::policy::PlanningPolicy::dynamic_filter: query_planning::dynamic_filter::DynamicFilterExecutionOptions
+pub query_planning::policy::PlanningPolicy::keyed_hash_join: query_planning::capability::KeyedHashJoinStrategyOptions
+impl query_planning::policy::PlanningPolicy
+pub fn query_planning::policy::PlanningPolicy::validate(&self) -> query_planning::error::Result<()>
 pub mod query_planning::source
 pub enum query_planning::source::ByteRangeDisposition
 pub query_planning::source::ByteRangeDisposition::CoalescedFullFiles

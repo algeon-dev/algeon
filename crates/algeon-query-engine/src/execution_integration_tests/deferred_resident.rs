@@ -196,7 +196,7 @@ fn empty_resident_handle(
     );
     if let Some(producer_plan) = producer_plan {
         frame =
-            frame.with_producer_execution_scope(admission::canonical_execution_scope_fingerprint(producer_plan));
+            frame.with_producer_execution_scope(producer_plan.execution_fingerprint());
     }
     runtime::resident::GpuResultHandle::new(context, frame, Arc::clone(schema))
         .expect("resident handle")
@@ -216,7 +216,7 @@ fn resident_handle_with_rows(
     );
     if let Some(producer_plan) = producer_plan {
         frame =
-            frame.with_producer_execution_scope(admission::canonical_execution_scope_fingerprint(producer_plan));
+            frame.with_producer_execution_scope(producer_plan.execution_fingerprint());
     }
     runtime::resident::GpuResultHandle::new(context, frame, Arc::clone(schema))
         .expect("resident handle")
@@ -389,7 +389,7 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
     let similarity_frame = runtime::resident::GpuDataFrame::new(
         CudfDataFrame::from_record_batch(&runtime, &similarity_batch).expect("similarity upload"),
     )
-    .with_producer_execution_scope(admission::canonical_execution_scope_fingerprint(&similarity_plan));
+    .with_producer_execution_scope(similarity_plan.execution_fingerprint());
     let similarity_reservation = grant
         .retain_resident_owner(similarity_frame.device_allocated_size_bytes().unwrap())
         .expect("similarity retention fits the immutable grant");
@@ -403,7 +403,7 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
     let roles_frame = runtime::resident::GpuDataFrame::new(
         CudfDataFrame::from_record_batch(&runtime, &roles_batch).expect("roles upload"),
     )
-    .with_producer_execution_scope(admission::canonical_execution_scope_fingerprint(&roles_plan));
+    .with_producer_execution_scope(roles_plan.execution_fingerprint());
     let roles_reservation = grant
         .retain_resident_owner(roles_frame.device_allocated_size_bytes().unwrap())
         .expect("roles retention fits the immutable grant");

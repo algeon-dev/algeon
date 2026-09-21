@@ -2,17 +2,14 @@
 //! [`PlanNode`]. The DAG is append-only and ends at an explicit
 //! [`ResultSink`]; native execution is GPU-resident until the sink chooses
 //! otherwise.
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use super::{
     AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, MlAlgorithmNode, NodeRemap,
     PlanFacts, ProjectionNode, ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode,
-    VectorAlgorithmNode, WindowNode,
+    VectorAlgorithmNode, WindowNode, compact_reachable_nodes,
 };
-use crate::{
-    capability::KeyedHashJoinStrategyOptions,
-    dynamic_filter::{DynamicFilterConsumer, DynamicFilterExecutionOptions, DynamicFilterProducer, DynamicFilterRoute},
-};
+use crate::dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute};
 
 /// Query plan consumed by the native cuDF execution engine.
 ///
@@ -27,44 +24,66 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryPlan {
     pub(super) nodes: Vec<QueryNode>,
-    pub(super) advisory_outputs: Vec<super::AdvisoryOutputBinding>,
     pub(super) root: NodeId,
     pub(super) sink: ResultSink,
-    /// Caller-visible host boundary retained when an embedding frontend takes
-    /// ownership of incremental host materialization after native execution.
-    ///
-    /// `sink` remains the physical GPU-resident execution boundary. This
-    /// contract is consulted only when projecting caller-visible runtime
-    /// rejection diagnostics, so a rejected plan does not silently lose its
-    /// modeled host-materialization boundary merely because the copy is
-    /// deferred to the frontend.
-    pub(super) deferred_host_sink_schema: Option<SchemaRef>,
-    pub(super) dynamic_filter_routes: Vec<DynamicFilterRoute>,
-    pub(super) dynamic_filter_execution_options: DynamicFilterExecutionOptions,
-    pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
+    pub(super) annotations: Annotations,
+}
+
+/// Facts bound to node ids that follow the plan through
+/// [`QueryPlan::rewrite`] without taking part in execution.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Annotations {
+    /// Dynamic-filter producer/consumer routes between plan nodes.
+    pub(crate) dynamic_filter_routes: Vec<DynamicFilterRoute>,
+    /// Frontend volume signals for plan output occurrences.
+    pub(crate) advisory: Vec<super::AdvisoryOutputBinding>,
+}
+
+/// One optimizer rule's output: the new node list and how its nodes relate to
+/// the nodes of the plan it rewrote.
+pub(crate) struct RewrittenNodes {
+    nodes: Vec<QueryNode>,
+    root: NodeId,
+    origin: RewriteOrigin,
+}
+
+enum RewriteOrigin {
+    /// Every source node kept its id; new nodes may be appended.
+    InPlace,
+    /// Every source node kept its id and operator; only what source nodes
+    /// read (row-group selection, reader predicate) was narrowed.
+    RefinedSources,
+    /// Source node id to the id of its image in the new list.
+    Rebuilt(NodeRemap),
+}
+
+impl RewrittenNodes {
+    /// Source nodes of a copy of the source node list narrowed to read fewer
+    /// rows. The plan keeps its structure, so dynamic-filter routes keep their
+    /// endpoints.
+    pub(crate) fn refined_sources(nodes: Vec<QueryNode>, root: NodeId) -> Self {
+        Self { nodes, root, origin: RewriteOrigin::RefinedSources }
+    }
+
+    /// Nodes edited in place in a copy of the source node list.
+    pub(crate) fn in_place(nodes: Vec<QueryNode>, root: NodeId) -> Self {
+        Self { nodes, root, origin: RewriteOrigin::InPlace }
+    }
+
+    /// Nodes rebuilt into a new list; `origin` maps each carried-over source
+    /// node to its image. A source node without an entry has no image, and
+    /// source nodes that share one image (a merge) have none either.
+    pub(crate) fn rebuilt(nodes: Vec<QueryNode>, root: NodeId, origin: BTreeMap<NodeId, NodeId>) -> Self {
+        let mut sources_per_image = BTreeMap::<NodeId, usize>::new();
+        for image in origin.values() {
+            *sources_per_image.entry(*image).or_default() += 1;
+        }
+        let origin = origin.into_iter().filter(|(_, image)| sources_per_image[image] == 1).collect();
+        Self { nodes, root, origin: RewriteOrigin::Rebuilt(NodeRemap::new(origin)) }
+    }
 }
 
 impl QueryPlan {
-    /// Rebuilds a plan from already-validated nodes after an internal IR rewrite.
-    ///
-    /// Optimizers use this instead of [`QueryPlanBuilder`] when they need to
-    /// clone an existing DAG while preserving node facts from lowered IR.
-    #[doc(hidden)]
-    pub fn from_rewritten_parts(nodes: Vec<QueryNode>, root: NodeId, sink: ResultSink) -> Self {
-        assert!(nodes.get(root.index()).is_some(), "query plan root node must exist");
-        assert_eq!(sink.input(), root, "query plan sink must consume the root node");
-        Self {
-            nodes,
-            advisory_outputs: Vec::new(),
-            root,
-            sink,
-            deferred_host_sink_schema: None,
-            dynamic_filter_routes: Vec::new(),
-            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
-            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
-        }
-    }
-
     /// Returns the node consumed by the plan sink.
     pub fn root_id(&self) -> NodeId {
         self.root
@@ -84,112 +103,90 @@ impl QueryPlan {
 
     /// Dynamic-filter producer/consumer routes attached to this plan.
     pub fn dynamic_filter_routes(&self) -> &[DynamicFilterRoute] {
-        &self.dynamic_filter_routes
-    }
-
-    /// Dynamic-filter execution policy captured when routes were discovered.
-    pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
-        self.dynamic_filter_execution_options
-    }
-
-    /// Keyed-hash join strategy policy used by capability admission and runtime
-    /// strategy selection.
-    pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
-        self.keyed_hash_join_strategy_options
+        &self.annotations.dynamic_filter_routes
     }
 
     /// Returns this plan with a replacement dynamic-filter route list.
     #[doc(hidden)]
     pub fn with_dynamic_filter_routes(mut self, routes: Vec<DynamicFilterRoute>) -> Self {
-        self.dynamic_filter_routes = routes;
+        self.annotations.dynamic_filter_routes = routes;
         self
     }
 
-    /// Returns this plan with replacement dynamic-filter execution options.
-    #[doc(hidden)]
-    pub fn with_dynamic_filter_execution_options(mut self, options: DynamicFilterExecutionOptions) -> Self {
-        self.dynamic_filter_execution_options = options;
-        self
-    }
-
-    /// Returns this plan with replacement keyed-hash join strategy options.
-    #[doc(hidden)]
-    pub fn with_keyed_hash_join_strategy_options(mut self, options: KeyedHashJoinStrategyOptions) -> Self {
-        self.keyed_hash_join_strategy_options = options;
-        self
-    }
-
-    /// Returns this plan with dynamic-filter routes and execution options copied
-    /// from another plan.
-    pub(crate) fn with_dynamic_filter_state_from(mut self, source: &Self) -> Self {
-        self.dynamic_filter_routes = source.dynamic_filter_routes.clone();
-        self.dynamic_filter_execution_options = source.dynamic_filter_execution_options;
-        self
-    }
-
-    /// Returns this plan with the source plan's dynamic-filter routes,
-    /// translated through a renumbering rewrite.
+    /// The only way an optimizer rule produces a new plan from this one.
     ///
-    /// A route survives only when every endpoint node is kept and still
-    /// matches its source occurrence; removed or rewritten endpoints drop the
-    /// route so compilation never wires a filter to the wrong join.
-    pub(crate) fn with_dynamic_filter_state_from_remapped(mut self, source: &Self, remap: &NodeRemap) -> Self {
-        self.dynamic_filter_routes = source
+    /// Nodes the new root cannot reach are dropped and the rest renumbered.
+    /// Side state follows the composed source-to-result node mapping: a
+    /// dynamic-filter route survives only when every endpoint maps to an
+    /// unchanged node (route discovery runs late and finds rewritten ones
+    /// again), except that narrowing what a source reads keeps its routes; an
+    /// advisory binding moves with its node and is invalidated when that node
+    /// or any dependency changed. The sink keeps its kind and host contract at
+    /// the new root.
+    pub(crate) fn rewrite(&self, rewritten: RewrittenNodes) -> Self {
+        let RewrittenNodes { nodes, root, origin } = rewritten;
+        let sink = |root| self.sink.with_input(root);
+        match origin {
+            RewriteOrigin::InPlace => self.rebuilt(nodes, root, &NodeRemap::identity(self.node_count()), sink),
+            RewriteOrigin::RefinedSources => {
+                debug_assert_eq!(nodes.len(), self.node_count(), "refining sources keeps every node");
+                let mut refined = self.rebuilt(nodes, root, &NodeRemap::identity(self.node_count()), sink);
+                refined.annotations.dynamic_filter_routes.clone_from(&self.annotations.dynamic_filter_routes);
+                refined
+            },
+            RewriteOrigin::Rebuilt(origin) => self.rebuilt(nodes, root, &origin, sink),
+        }
+    }
+
+    /// The subplan rooted at `root`, ending at a GPU-resident sink, with the
+    /// side state of the nodes it keeps.
+    pub(crate) fn resident_subplan(&self, root: NodeId) -> Self {
+        let origin = NodeRemap::identity(self.node_count());
+        self.rebuilt(self.nodes.clone(), root, &origin, |input| ResultSink::GpuResident { input })
+    }
+
+    fn rebuilt(
+        &self,
+        nodes: Vec<QueryNode>,
+        root: NodeId,
+        origin: &NodeRemap,
+        sink: impl FnOnce(NodeId) -> ResultSink,
+    ) -> Self {
+        let (nodes, root, compaction) = compact_reachable_nodes(nodes, root);
+        let remap = origin.then(&compaction);
+        let mut rewritten = Self { nodes, root, sink: sink(root), annotations: Annotations::default() };
+        rewritten.annotations.dynamic_filter_routes = self
+            .annotations
             .dynamic_filter_routes
             .iter()
             .filter_map(|route| {
-                let producer = remap_route_producer(&route.producer, remap, source, &self)?;
-                let consumer = remap_route_consumer(&route.consumer, remap, source, &self)?;
+                let producer = remap_route_producer(&route.producer, &remap, self, &rewritten)?;
+                let consumer = remap_route_consumer(&route.consumer, &remap, self, &rewritten)?;
                 Some(DynamicFilterRoute { producer, consumer, ..route.clone() })
             })
             .collect();
-        self.dynamic_filter_execution_options = source.dynamic_filter_execution_options;
-        self
+        rewritten.annotations.advisory = self.remapped_advisory_outputs(&rewritten, &remap);
+        rewritten
     }
 
-    /// Returns this plan with rewrite-preserved execution policy state copied
-    /// from another plan.
-    #[doc(hidden)]
-    pub fn with_rewrite_state_from(self, source: &Self) -> Self {
-        let mut rewritten = self
-            .with_dynamic_filter_state_from(source)
-            .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options);
-        rewritten.deferred_host_sink_schema = source.deferred_host_sink_schema.clone();
-        rewritten.with_advisory_outputs_from(source)
-    }
-
-    /// Returns this plan with rewrite-preserved execution policy state
-    /// translated through a renumbering rewrite.
-    pub(crate) fn with_rewrite_state_from_remapped(self, source: &Self, remap: &NodeRemap) -> Self {
-        let mut rewritten = self
-            .with_dynamic_filter_state_from_remapped(source, remap)
-            .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options);
-        rewritten.deferred_host_sink_schema = source.deferred_host_sink_schema.clone();
-        rewritten.with_advisory_outputs_from_remapped(source, remap)
-    }
-
-    /// Returns this plan with the source plan's frontend advisory volumes,
-    /// translated through a renumbering rewrite and invalidating every binding
-    /// whose node or dependency changed.
-    ///
-    /// Bindings whose node was removed are dropped; the survivors keep their
-    /// statistics only when the renumbered node and its subtree still match
-    /// the source occurrence.
-    pub(crate) fn with_advisory_outputs_from_remapped(mut self, source: &Self, remap: &NodeRemap) -> Self {
-        let mut unchanged = vec![false; self.node_count()];
-        for node in self.nodes() {
+    /// Moves each advisory binding to its node's image and invalidates it
+    /// when that node or any dependency changed. A binding whose node has no
+    /// image is dropped.
+    fn remapped_advisory_outputs(&self, rewritten: &Self, remap: &NodeRemap) -> Vec<super::AdvisoryOutputBinding> {
+        let mut unchanged = vec![false; rewritten.node_count()];
+        for node in rewritten.nodes() {
             unchanged[node.id.index()] =
-                remap.old_id(node.id).and_then(|old_id| source.node(old_id)).is_some_and(|old_node| {
+                remap.old_id(node.id).and_then(|old_id| self.node(old_id)).is_some_and(|old_node| {
                     remap.try_translate_inputs(&old_node.kind).as_ref() == Some(&node.kind)
                         && old_node.facts == node.facts
                         && node.input_ids().iter().all(|input| unchanged[input.index()])
                 });
         }
-        self.advisory_outputs = source
-            .advisory_outputs
+        self.annotations
+            .advisory
             .iter()
             .filter_map(|binding| {
-                let node = self.node(remap.remap(binding.node)?)?;
+                let node = rewritten.node(remap.remap(binding.node)?)?;
                 let mut binding = binding.clone();
                 binding.node = node.id;
                 if !unchanged[node.id.index()] {
@@ -198,41 +195,15 @@ impl QueryPlan {
                 }
                 Some(binding)
             })
-            .collect();
-        self
+            .collect()
     }
 
-    /// Returns this plan with the source plan's frontend advisory volumes,
-    /// invalidating every binding whose node or dependency changed.
-    ///
-    /// These records are diagnostic input only; build-side selection reads a
-    /// join's own `JoinSpec::advisory_output_statistics`, not these bindings.
-    pub(crate) fn with_advisory_outputs_from(mut self, source: &Self) -> Self {
-        let mut unchanged = vec![false; self.node_count()];
-        for node in self.nodes() {
-            unchanged[node.id.index()] =
-                source.node(node.id) == Some(node) && node.input_ids().iter().all(|input| unchanged[input.index()]);
-        }
-        self.advisory_outputs = source
-            .advisory_outputs
-            .iter()
-            .filter_map(|binding| {
-                let node = self.node(binding.node)?;
-                let mut binding = binding.clone();
-                if !unchanged[node.id.index()] {
-                    binding.invalidate(super::AdvisoryUnknownReason::RewrittenSubtree);
-                    binding.schema = Arc::clone(node.output_schema());
-                }
-                Some(binding)
-            })
-            .collect();
-        self
-    }
-
-    /// Returns this plan with keyed-hash join strategy options copied from
-    /// another plan.
-    pub(crate) fn with_keyed_hash_join_strategy_options_from(self, source: &Self) -> Self {
-        self.with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options)
+    /// Replaces this plan's nodes with an in-place edit of them, keeping its
+    /// side state through [`Self::rewrite`].
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn with_nodes_for_test(&self, nodes: Vec<QueryNode>) -> Self {
+        self.rewrite(RewrittenNodes::in_place(nodes, self.root))
     }
 
     /// Return a copy of this plan with the same root and a GPU-resident sink.
@@ -241,20 +212,14 @@ impl QueryPlan {
     /// output into another GPU consumer instead of materializing the existing
     /// host-arrow boundary.
     pub fn clone_with_gpu_resident_sink(&self) -> Self {
-        Self {
-            nodes: self.nodes.clone(),
-            advisory_outputs: self.advisory_outputs.clone(),
-            root: self.root,
-            sink: ResultSink::GpuResident { input: self.root },
-            deferred_host_sink_schema: None,
-            dynamic_filter_routes: self.dynamic_filter_routes.clone(),
-            dynamic_filter_execution_options: self.dynamic_filter_execution_options,
-            keyed_hash_join_strategy_options: self.keyed_hash_join_strategy_options,
-        }
+        let mut plan = self.clone();
+        plan.sink = ResultSink::GpuResident { input: self.root };
+        plan
     }
 
-    /// Return a copy that executes to a GPU-resident result while retaining
-    /// the existing host sink as the caller-visible result contract.
+    /// Return a copy that executes to a GPU-resident result while keeping the
+    /// host sink as the caller-visible result contract
+    /// ([`ResultSink::DeferredHostArrow`]).
     ///
     /// Embedding frontends use this when they implement bounded incremental
     /// device-to-host materialization themselves. Keeping this distinct from
@@ -262,29 +227,9 @@ impl QueryPlan {
     /// consumer from acquiring a host-materialization contract it does not
     /// own.
     pub fn clone_with_deferred_host_materialization_sink(&self) -> Self {
-        let deferred_host_sink_schema = match (&self.deferred_host_sink_schema, &self.sink) {
-            (Some(schema), _) | (None, ResultSink::HostArrow { schema, .. }) => Some(Arc::clone(schema)),
-            (None, ResultSink::GpuResident { .. }) => None,
-        };
-        Self {
-            nodes: self.nodes.clone(),
-            advisory_outputs: self.advisory_outputs.clone(),
-            root: self.root,
-            sink: ResultSink::GpuResident { input: self.root },
-            deferred_host_sink_schema,
-            dynamic_filter_routes: self.dynamic_filter_routes.clone(),
-            dynamic_filter_execution_options: self.dynamic_filter_execution_options,
-            keyed_hash_join_strategy_options: self.keyed_hash_join_strategy_options,
-        }
-    }
-
-    /// Reconstruct the caller-visible sink view used by runtime rejection
-    /// diagnostics. Successful execution continues to use the physical sink.
-    #[doc(hidden)]
-    pub fn clone_with_caller_visible_sink_contract(&self) -> Self {
         let mut plan = self.clone();
-        if let Some(schema) = plan.deferred_host_sink_schema.take() {
-            plan.sink = ResultSink::HostArrow { input: plan.root, schema };
+        if let ResultSink::HostArrow { input, schema } = &plan.sink {
+            plan.sink = ResultSink::DeferredHostArrow { input: *input, schema: Arc::clone(schema) };
         }
         plan
     }
@@ -304,7 +249,8 @@ impl QueryPlan {
     /// [`QueryPlanBuilder::finish_with_host_sink_schema`]: crate::plan::QueryPlanBuilder::finish_with_host_sink_schema
     pub fn with_host_sink_schema(mut self, schema: SchemaRef) -> Self {
         match &mut self.sink {
-            ResultSink::HostArrow { schema: host_schema, .. } => {
+            ResultSink::HostArrow { schema: host_schema, .. }
+            | ResultSink::DeferredHostArrow { schema: host_schema, .. } => {
                 assert_eq!(
                     host_schema.fields(),
                     schema.fields(),
@@ -336,16 +282,13 @@ impl QueryPlan {
                 .with_output_ordering(output_ordering),
         });
         self.root = root;
-        self.sink = match self.sink {
-            ResultSink::GpuResident { .. } => ResultSink::GpuResident { input: root },
-            ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input: root, schema },
-        };
+        self.sink = self.sink.with_input(root);
         self
     }
 
     /// Frontend volume signals scoped to this plan's native output occurrences.
     pub fn advisory_outputs(&self) -> &[super::AdvisoryOutputBinding] {
-        &self.advisory_outputs
+        &self.annotations.advisory
     }
 
     /// Returns all nodes in append order.
@@ -367,11 +310,17 @@ impl QueryPlan {
     /// explicit schema because materialization is a boundary contract.
     pub fn output_schema(&self) -> &SchemaRef {
         match &self.sink {
-            ResultSink::GpuResident { input } => {
+            ResultSink::GpuResident { input } | ResultSink::DeferredHostArrow { input, .. } => {
                 self.node(*input).expect("query plan sink input must exist").output_schema()
             },
             ResultSink::HostArrow { schema, .. } => schema,
         }
+    }
+
+    /// Returns the schema the caller receives: the host schema of a host or
+    /// deferred host sink, otherwise the GPU-resident output schema.
+    pub fn caller_visible_output_schema(&self) -> &SchemaRef {
+        self.sink.caller_visible_host_schema().unwrap_or_else(|| self.output_schema())
     }
 
     pub fn node_count(&self) -> usize {
