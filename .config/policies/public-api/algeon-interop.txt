@@ -1,0 +1,444 @@
+pub mod rapids_interop
+pub enum rapids_interop::ColumnLayout
+pub rapids_interop::ColumnLayout::BinaryLike
+pub rapids_interop::ColumnLayout::BinaryLike::data: rapids_interop::BufferId
+pub rapids_interop::ColumnLayout::BinaryLike::offsets: rapids_interop::BufferId
+pub rapids_interop::ColumnLayout::Dictionary
+pub rapids_interop::ColumnLayout::Dictionary::indices: rapids_interop::BufferId
+pub rapids_interop::ColumnLayout::Dictionary::keys: rapids_interop::ColumnId
+pub rapids_interop::ColumnLayout::FixedWidth
+pub rapids_interop::ColumnLayout::FixedWidth::values: rapids_interop::BufferId
+pub rapids_interop::ColumnLayout::List
+pub rapids_interop::ColumnLayout::List::child: rapids_interop::ColumnId
+pub rapids_interop::ColumnLayout::List::offsets: rapids_interop::BufferId
+pub rapids_interop::ColumnLayout::Struct
+pub rapids_interop::ColumnLayout::Struct::children: alloc::vec::Vec<rapids_interop::ColumnId>
+pub enum rapids_interop::CompletionAuthority<'a>
+pub rapids_interop::CompletionAuthority::CrossDeviceEvent
+pub rapids_interop::CompletionAuthority::CrossDeviceEvent::event: rapids_interop::CudaEventHandle<'a>
+pub rapids_interop::CompletionAuthority::SameDeviceStream
+pub rapids_interop::CompletionAuthority::SameDeviceStream::stream: rapids_interop::CudaStreamHandle<'a>
+pub rapids_interop::CompletionAuthority::SynchronousByReturn
+pub enum rapids_interop::CompletionBinding
+pub rapids_interop::CompletionBinding::CrossDeviceEvent
+pub rapids_interop::CompletionBinding::CrossDeviceEvent::device: i32
+pub rapids_interop::CompletionBinding::CrossDeviceEvent::raw: *mut core::ffi::c_void
+pub rapids_interop::CompletionBinding::SameDeviceStream
+pub rapids_interop::CompletionBinding::SameDeviceStream::device: i32
+pub rapids_interop::CompletionBinding::SameDeviceStream::raw: *mut core::ffi::c_void
+pub rapids_interop::CompletionBinding::SynchronousByReturn
+pub enum rapids_interop::CompletionWitnessKind
+pub rapids_interop::CompletionWitnessKind::ConsumerEvent
+pub rapids_interop::CompletionWitnessKind::ConsumerStream
+pub enum rapids_interop::ExportProfile
+pub rapids_interop::ExportProfile::BorrowedDeviceCompatibility
+pub rapids_interop::ExportProfile::OwnedDeviceTransfer
+pub rapids_interop::ExportProfile::PreparedDeviceExport
+pub rapids_interop::ExportProfile::PreparedHostExport
+impl core::convert::From<rapids_interop::PreparedExportProfile> for rapids_interop::ExportProfile
+pub fn rapids_interop::ExportProfile::from(rapids_interop::PreparedExportProfile) -> Self
+pub enum rapids_interop::IncompleteDropBehavior
+pub rapids_interop::IncompleteDropBehavior::ExplicitCompletionRequired
+pub rapids_interop::IncompleteDropBehavior::GuaranteedFallback
+pub enum rapids_interop::InteropErrorKind
+pub rapids_interop::InteropErrorKind::ExecutionBindingMismatch
+pub rapids_interop::InteropErrorKind::ExecutionBindingUnavailable
+pub rapids_interop::InteropErrorKind::InvalidView
+pub rapids_interop::InteropErrorKind::LeaseAlreadyActive
+pub rapids_interop::InteropErrorKind::MixedDeviceUnsupported
+pub rapids_interop::InteropErrorKind::NotFound
+pub rapids_interop::InteropErrorKind::NullMaskUnsupported
+pub rapids_interop::InteropErrorKind::PlacementUnsupported
+pub rapids_interop::InteropErrorKind::ProfileUnsupported
+pub rapids_interop::InteropErrorKind::ReadinessMismatch
+pub rapids_interop::InteropErrorKind::ReadinessUnavailable
+pub rapids_interop::InteropErrorKind::UnsupportedLayout
+pub rapids_interop::InteropErrorKind::UnsupportedType
+pub enum rapids_interop::LeaseCompletionResult
+pub rapids_interop::LeaseCompletionResult::Completed(rapids_interop::CompletionWitness)
+pub rapids_interop::LeaseCompletionResult::FallbackSynchronized
+pub enum rapids_interop::LeaseReadiness
+pub rapids_interop::LeaseReadiness::DeviceEventOrdered
+pub rapids_interop::LeaseReadiness::DeviceEventOrdered::device: i32
+pub rapids_interop::LeaseReadiness::DeviceEventOrdered::raw: *mut core::ffi::c_void
+pub rapids_interop::LeaseReadiness::DeviceStreamOrdered
+pub rapids_interop::LeaseReadiness::DeviceStreamOrdered::device: i32
+pub rapids_interop::LeaseReadiness::DeviceStreamOrdered::raw: *mut core::ffi::c_void
+pub rapids_interop::LeaseReadiness::HostVisible
+pub enum rapids_interop::NullMaskKind
+pub rapids_interop::NullMaskKind::Absent
+pub rapids_interop::NullMaskKind::Present
+pub rapids_interop::NullMaskKind::Present::bit_len: usize
+pub rapids_interop::NullMaskKind::Present::null_count: usize
+pub rapids_interop::NullMaskKind::Present::ptr: core::ptr::non_null::NonNull<core::ffi::c_void>
+pub enum rapids_interop::PhysicalValidity
+pub rapids_interop::PhysicalValidity::NoValidityBuffer
+pub rapids_interop::PhysicalValidity::ValidityMask
+pub rapids_interop::PhysicalValidity::ValidityMask::mask: rapids_interop::BufferId
+pub rapids_interop::PhysicalValidity::ValidityMask::null_count: core::option::Option<usize>
+pub enum rapids_interop::Placement
+pub rapids_interop::Placement::CudaDevice
+pub rapids_interop::Placement::CudaDevice::device: i32
+pub rapids_interop::Placement::Host
+pub enum rapids_interop::PreparedExportProfile
+pub rapids_interop::PreparedExportProfile::Device
+pub rapids_interop::PreparedExportProfile::Host
+impl rapids_interop::PreparedExportProfile
+pub fn rapids_interop::PreparedExportProfile::diagnostics(self) -> rapids_interop::ExportDiagnostics
+impl core::convert::From<rapids_interop::PreparedExportProfile> for rapids_interop::ExportProfile
+pub fn rapids_interop::ExportProfile::from(rapids_interop::PreparedExportProfile) -> Self
+pub enum rapids_interop::ProducerReadiness<'a>
+pub rapids_interop::ProducerReadiness::DeviceEventOrdered
+pub rapids_interop::ProducerReadiness::DeviceEventOrdered::event: rapids_interop::CudaEventHandle<'a>
+pub rapids_interop::ProducerReadiness::DeviceStreamOrdered
+pub rapids_interop::ProducerReadiness::DeviceStreamOrdered::stream: rapids_interop::CudaStreamHandle<'a>
+pub rapids_interop::ProducerReadiness::HostVisible
+pub enum rapids_interop::ReadStartAuthority<'a>
+pub rapids_interop::ReadStartAuthority::ConsumerStream
+pub rapids_interop::ReadStartAuthority::ConsumerStream::stream: rapids_interop::CudaStreamHandle<'a>
+pub rapids_interop::ReadStartAuthority::SynchronousByReturn
+pub enum rapids_interop::ReadStartBinding
+pub rapids_interop::ReadStartBinding::ConsumerStream
+pub rapids_interop::ReadStartBinding::ConsumerStream::device: i32
+pub rapids_interop::ReadStartBinding::ConsumerStream::raw: *mut core::ffi::c_void
+pub rapids_interop::ReadStartBinding::SynchronousByReturn
+pub enum rapids_interop::ReleaseSynchronization
+pub rapids_interop::ReleaseSynchronization::Asynchronous
+pub rapids_interop::ReleaseSynchronization::MaySynchronizeInternally
+pub rapids_interop::ReleaseSynchronization::RequiresCallerSynchronization
+pub enum rapids_interop::SchemaNullability
+pub rapids_interop::SchemaNullability::NonNullable
+pub rapids_interop::SchemaNullability::Nullable
+pub rapids_interop::SchemaNullability::Unknown
+pub enum rapids_interop::TransferCompletionRule
+pub rapids_interop::TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes
+pub rapids_interop::TransferCompletionRule::ReleaseWaitsOnConsumerSignal
+#[repr(i32)] pub enum rapids_interop::TypeId
+pub rapids_interop::TypeId::Bool8
+pub rapids_interop::TypeId::Decimal128
+pub rapids_interop::TypeId::Decimal32
+pub rapids_interop::TypeId::Decimal64
+pub rapids_interop::TypeId::Dictionary32
+pub rapids_interop::TypeId::DurationDays
+pub rapids_interop::TypeId::DurationMicroseconds
+pub rapids_interop::TypeId::DurationMilliseconds
+pub rapids_interop::TypeId::DurationNanoseconds
+pub rapids_interop::TypeId::DurationSeconds
+pub rapids_interop::TypeId::Empty = 0
+pub rapids_interop::TypeId::Float32
+pub rapids_interop::TypeId::Float64
+pub rapids_interop::TypeId::Int16
+pub rapids_interop::TypeId::Int32
+pub rapids_interop::TypeId::Int64
+pub rapids_interop::TypeId::Int8
+pub rapids_interop::TypeId::List
+pub rapids_interop::TypeId::String
+pub rapids_interop::TypeId::Struct
+pub rapids_interop::TypeId::TimestampDays
+pub rapids_interop::TypeId::TimestampMicroseconds
+pub rapids_interop::TypeId::TimestampMilliseconds
+pub rapids_interop::TypeId::TimestampNanoseconds
+pub rapids_interop::TypeId::TimestampSeconds
+pub rapids_interop::TypeId::UInt16
+pub rapids_interop::TypeId::UInt32
+pub rapids_interop::TypeId::UInt64
+pub rapids_interop::TypeId::UInt8
+impl rapids_interop::TypeId
+pub fn rapids_interop::TypeId::fixed_width_size_bytes(self) -> core::option::Option<usize>
+pub struct rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>
+impl<'export, 'producer, 'consumer> rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>
+pub fn rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>::complete(self) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult>
+pub fn rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>::completion(&self) -> rapids_interop::CompletionAuthority<'consumer>
+pub fn rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>::export(&self) -> &'export rapids_interop::PreparedColumnExport<'producer>
+pub fn rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub fn rapids_interop::ActiveColumnReadLease<'export, 'producer, 'consumer>::read_start(&self) -> rapids_interop::ReadStartAuthority<'consumer>
+impl core::ops::drop::Drop for rapids_interop::ActiveColumnReadLease<'_, '_, '_>
+pub fn rapids_interop::ActiveColumnReadLease<'_, '_, '_>::drop(&mut self)
+pub struct rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>
+impl<'export, 'producer, 'consumer> rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>
+pub fn rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>::complete(self) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult>
+pub fn rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>::completion(&self) -> rapids_interop::CompletionAuthority<'consumer>
+pub fn rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>::export(&self) -> &'export rapids_interop::PreparedTableExport<'producer>
+pub fn rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub fn rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>::read_start(&self) -> rapids_interop::ReadStartAuthority<'consumer>
+pub fn rapids_interop::ActivePartitionedTableReadLease<'export, 'producer, 'consumer>::top_level_column_indices(&self) -> &[usize]
+pub struct rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>
+impl<'export, 'producer, 'consumer> rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>
+pub fn rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>::complete(self) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult>
+pub fn rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>::completion(&self) -> rapids_interop::CompletionAuthority<'consumer>
+pub fn rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>::export(&self) -> &'export rapids_interop::PreparedTableExport<'producer>
+pub fn rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub fn rapids_interop::ActiveTableReadLease<'export, 'producer, 'consumer>::read_start(&self) -> rapids_interop::ReadStartAuthority<'consumer>
+impl core::ops::drop::Drop for rapids_interop::ActiveTableReadLease<'_, '_, '_>
+pub fn rapids_interop::ActiveTableReadLease<'_, '_, '_>::drop(&mut self)
+pub struct rapids_interop::BorrowedColumnView<'a>
+impl<'a> rapids_interop::BorrowedColumnView<'a>
+pub fn rapids_interop::BorrowedColumnView<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'a>]
+pub fn rapids_interop::BorrowedColumnView<'a>::column(&self) -> core::option::Option<&rapids_interop::SemanticColumn>
+pub fn rapids_interop::BorrowedColumnView<'a>::data_ptr(&self) -> *const core::ffi::c_void
+pub fn rapids_interop::BorrowedColumnView<'a>::data_type(&self) -> rapids_interop::DataType
+pub fn rapids_interop::BorrowedColumnView<'a>::element_size_bytes(&self) -> core::option::Option<usize>
+pub fn rapids_interop::BorrowedColumnView<'a>::execution(&self) -> rapids_interop::ExecutionBinding<'a>
+pub fn rapids_interop::BorrowedColumnView<'a>::is_empty(&self) -> bool
+pub fn rapids_interop::BorrowedColumnView<'a>::len(&self) -> usize
+pub fn rapids_interop::BorrowedColumnView<'a>::null_mask(&self) -> &rapids_interop::NullMask<'a>
+pub fn rapids_interop::BorrowedColumnView<'a>::offset(&self) -> usize
+pub fn rapids_interop::BorrowedColumnView<'a>::semantic_columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::BorrowedColumnView<'a>::try_new(rapids_interop::DataType, usize, usize, *const core::ffi::c_void, rapids_interop::NullMask<'a>, rapids_interop::ExecutionBinding<'a>) -> rapids_interop::Result<Self>
+pub fn rapids_interop::BorrowedColumnView<'a>::try_new_with_semantic_columns(rapids_interop::SemanticColumn, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::ExecutionBinding<'a>) -> rapids_interop::Result<Self>
+pub fn rapids_interop::BorrowedColumnView<'a>::type_id(&self) -> rapids_interop::TypeId
+pub struct rapids_interop::BorrowedTableView<'a>
+impl<'a> rapids_interop::BorrowedTableView<'a>
+pub fn rapids_interop::BorrowedTableView<'a>::columns(&self) -> &[rapids_interop::BorrowedColumnView<'a>]
+pub fn rapids_interop::BorrowedTableView<'a>::execution(&self) -> rapids_interop::ExecutionBinding<'a>
+pub fn rapids_interop::BorrowedTableView<'a>::num_columns(&self) -> usize
+pub fn rapids_interop::BorrowedTableView<'a>::num_rows(&self) -> usize
+pub fn rapids_interop::BorrowedTableView<'a>::try_new(usize, alloc::vec::Vec<rapids_interop::BorrowedColumnView<'a>>, rapids_interop::ExecutionBinding<'a>) -> rapids_interop::Result<Self>
+pub struct rapids_interop::BoundBytes<'a>
+impl rapids_interop::BoundBytes<'_>
+pub fn rapids_interop::BoundBytes<'_>::base_mut_ptr(&mut self) -> *mut core::ffi::c_void
+pub fn rapids_interop::BoundBytes<'_>::base_ptr(&self) -> *const core::ffi::c_void
+pub fn rapids_interop::BoundBytes<'_>::byte_len(&self) -> usize
+pub fn rapids_interop::BoundBytes<'_>::from_raw_parts(*mut core::ffi::c_void, usize) -> rapids_interop::Result<Self>
+impl core::marker::Send for rapids_interop::BoundBytes<'_>
+impl core::marker::Sync for rapids_interop::BoundBytes<'_>
+pub struct rapids_interop::BufferBinding<'a>
+impl<'a> rapids_interop::BufferBinding<'a>
+pub fn rapids_interop::BufferBinding<'a>::bytes(&self) -> &rapids_interop::BoundBytes<'a>
+pub fn rapids_interop::BufferBinding<'a>::id(&self) -> rapids_interop::BufferId
+pub fn rapids_interop::BufferBinding<'a>::new(rapids_interop::BufferId, rapids_interop::BoundBytes<'a>, rapids_interop::Placement) -> Self
+pub fn rapids_interop::BufferBinding<'a>::placement(&self) -> &rapids_interop::Placement
+pub struct rapids_interop::BufferId(_)
+impl rapids_interop::BufferId
+pub const fn rapids_interop::BufferId::get(self) -> u32
+pub const fn rapids_interop::BufferId::new(u32) -> Self
+pub struct rapids_interop::ColumnId(_)
+impl rapids_interop::ColumnId
+pub const fn rapids_interop::ColumnId::get(self) -> u32
+pub const fn rapids_interop::ColumnId::new(u32) -> Self
+pub struct rapids_interop::CompletionWitness
+impl rapids_interop::CompletionWitness
+pub fn rapids_interop::CompletionWitness::is_ready(&self) -> rapids_interop::Result<bool>
+pub const fn rapids_interop::CompletionWitness::kind(&self) -> rapids_interop::CompletionWitnessKind
+pub fn rapids_interop::CompletionWitness::new(rapids_interop::CompletionWitnessKind) -> Self
+pub fn rapids_interop::CompletionWitness::synchronize(&self) -> rapids_interop::Result<()>
+pub fn rapids_interop::CompletionWitness::with_backend(rapids_interop::CompletionWitnessKind, alloc::sync::Arc<dyn rapids_interop::CompletionWitnessBackend>) -> Self
+impl core::cmp::Eq for rapids_interop::CompletionWitness
+impl core::cmp::PartialEq for rapids_interop::CompletionWitness
+pub fn rapids_interop::CompletionWitness::eq(&self, &Self) -> bool
+impl core::fmt::Debug for rapids_interop::CompletionWitness
+pub fn rapids_interop::CompletionWitness::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct rapids_interop::CudaEventHandle<'a>
+impl rapids_interop::CudaEventHandle<'_>
+pub fn rapids_interop::CudaEventHandle<'_>::as_raw(&self) -> *mut core::ffi::c_void
+pub fn rapids_interop::CudaEventHandle<'_>::device(&self) -> i32
+pub fn rapids_interop::CudaEventHandle<'_>::from_raw(*mut core::ffi::c_void) -> rapids_interop::Result<Self>
+pub fn rapids_interop::CudaEventHandle<'_>::from_raw_on_device(*mut core::ffi::c_void, i32) -> rapids_interop::Result<Self>
+impl core::marker::Send for rapids_interop::CudaEventHandle<'_>
+impl core::marker::Sync for rapids_interop::CudaEventHandle<'_>
+pub struct rapids_interop::CudaStreamHandle<'a>
+impl rapids_interop::CudaStreamHandle<'_>
+pub fn rapids_interop::CudaStreamHandle<'_>::as_raw(&self) -> *mut core::ffi::c_void
+pub fn rapids_interop::CudaStreamHandle<'_>::device(&self) -> i32
+pub fn rapids_interop::CudaStreamHandle<'_>::from_raw(*mut core::ffi::c_void) -> rapids_interop::Result<Self>
+pub fn rapids_interop::CudaStreamHandle<'_>::from_raw_on_device(*mut core::ffi::c_void, i32) -> rapids_interop::Result<Self>
+impl core::marker::Send for rapids_interop::CudaStreamHandle<'_>
+impl core::marker::Sync for rapids_interop::CudaStreamHandle<'_>
+pub struct rapids_interop::DataType
+impl rapids_interop::DataType
+pub fn rapids_interop::DataType::fixed_point(rapids_interop::TypeId, i32) -> Self
+pub fn rapids_interop::DataType::id(&self) -> rapids_interop::TypeId
+pub fn rapids_interop::DataType::new(rapids_interop::TypeId) -> Self
+pub fn rapids_interop::DataType::scale(&self) -> i32
+pub struct rapids_interop::DeviceMemoryResourceHandle<'a>
+impl rapids_interop::DeviceMemoryResourceHandle<'_>
+pub fn rapids_interop::DeviceMemoryResourceHandle<'_>::as_raw(&self) -> *mut core::ffi::c_void
+pub fn rapids_interop::DeviceMemoryResourceHandle<'_>::from_raw(*mut core::ffi::c_void) -> rapids_interop::Result<Self>
+impl core::marker::Send for rapids_interop::DeviceMemoryResourceHandle<'_>
+impl core::marker::Sync for rapids_interop::DeviceMemoryResourceHandle<'_>
+pub struct rapids_interop::ExecutionBinding<'a>
+impl<'a> rapids_interop::ExecutionBinding<'a>
+pub fn rapids_interop::ExecutionBinding<'a>::cuda_stream(&self) -> rapids_interop::CudaStreamHandle<'a>
+pub fn rapids_interop::ExecutionBinding<'a>::device(&self) -> i32
+pub fn rapids_interop::ExecutionBinding<'a>::explicit(i32, rapids_interop::CudaStreamHandle<'a>, rapids_interop::DeviceMemoryResourceHandle<'a>) -> Self
+pub fn rapids_interop::ExecutionBinding<'a>::memory_resource(&self) -> rapids_interop::DeviceMemoryResourceHandle<'a>
+pub struct rapids_interop::ExportDiagnostics
+impl rapids_interop::ExportDiagnostics
+pub fn rapids_interop::ExportDiagnostics::new(rapids_interop::ExportProfile) -> Self
+pub fn rapids_interop::ExportDiagnostics::prepared_profile(&self) -> core::option::Option<rapids_interop::PreparedExportProfile>
+pub fn rapids_interop::ExportDiagnostics::profile(&self) -> rapids_interop::ExportProfile
+pub struct rapids_interop::InteropError
+impl rapids_interop::InteropError
+pub fn rapids_interop::InteropError::context(&self) -> &[(&'static str, alloc::string::String)]
+pub fn rapids_interop::InteropError::kind(&self) -> rapids_interop::InteropErrorKind
+pub fn rapids_interop::InteropError::message(&self) -> &str
+pub fn rapids_interop::InteropError::new(rapids_interop::InteropErrorKind, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn rapids_interop::InteropError::set_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub fn rapids_interop::InteropError::with_context(self, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::cmp::Eq for rapids_interop::InteropError
+impl core::cmp::PartialEq for rapids_interop::InteropError
+pub fn rapids_interop::InteropError::eq(&self, &Self) -> bool
+impl core::error::Error for rapids_interop::InteropError
+pub fn rapids_interop::InteropError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Display for rapids_interop::InteropError
+pub fn rapids_interop::InteropError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct rapids_interop::LeaseActivation
+impl rapids_interop::LeaseActivation
+pub fn rapids_interop::LeaseActivation::noop() -> Self
+pub fn rapids_interop::LeaseActivation::with_state(alloc::sync::Arc<dyn rapids_interop::ActiveLeaseActivation>) -> Self
+impl core::fmt::Debug for rapids_interop::LeaseActivation
+pub fn rapids_interop::LeaseActivation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct rapids_interop::LeaseBackend
+impl rapids_interop::LeaseBackend
+pub fn rapids_interop::LeaseBackend::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub fn rapids_interop::LeaseBackend::new<B>(B) -> Self where B: rapids_interop::ActiveLeaseBackend + 'static
+pub fn rapids_interop::LeaseBackend::semantic_explicit_completion_required() -> Self
+pub fn rapids_interop::LeaseBackend::semantic_guaranteed_fallback() -> Self
+impl core::fmt::Debug for rapids_interop::LeaseBackend
+pub fn rapids_interop::LeaseBackend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct rapids_interop::LeaseExportContext
+impl rapids_interop::LeaseExportContext
+pub const fn rapids_interop::LeaseExportContext::new(core::option::Option<i32>, rapids_interop::LeaseReadiness) -> Self
+pub fn rapids_interop::LeaseExportContext::producer_device(&self) -> core::option::Option<i32>
+pub fn rapids_interop::LeaseExportContext::readiness(&self) -> rapids_interop::LeaseReadiness
+pub struct rapids_interop::NullMask<'a>
+impl rapids_interop::NullMask<'_>
+pub fn rapids_interop::NullMask<'_>::absent() -> Self
+pub fn rapids_interop::NullMask<'_>::kind(&self) -> &rapids_interop::NullMaskKind
+pub fn rapids_interop::NullMask<'_>::present(*const core::ffi::c_void, usize, usize) -> rapids_interop::Result<Self>
+pub struct rapids_interop::OwnedColumnTransfer
+impl rapids_interop::OwnedColumnTransfer
+pub fn rapids_interop::OwnedColumnTransfer::bindings(&self) -> &[rapids_interop::BufferBinding<'static>]
+pub fn rapids_interop::OwnedColumnTransfer::column(&self) -> &rapids_interop::SemanticColumn
+pub fn rapids_interop::OwnedColumnTransfer::diagnostics(&self) -> &rapids_interop::ExportDiagnostics
+pub fn rapids_interop::OwnedColumnTransfer::readiness(&self) -> &rapids_interop::ProducerReadiness<'static>
+pub fn rapids_interop::OwnedColumnTransfer::release_contract(&self) -> &rapids_interop::ReleaseContract
+pub fn rapids_interop::OwnedColumnTransfer::semantic_columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::OwnedColumnTransfer::try_into_owner<Owner>(self) -> core::result::Result<Owner, rapids_interop::OwnerTypeMismatch<Self>> where Owner: core::marker::Send + core::marker::Sync + 'static
+pub fn rapids_interop::OwnedColumnTransfer::try_new<Owner>(rapids_interop::SemanticColumn, alloc::vec::Vec<rapids_interop::BufferBinding<'static>>, rapids_interop::ProducerReadiness<'static>, rapids_interop::ExportDiagnostics, rapids_interop::ReleaseContract, Owner) -> rapids_interop::Result<Self> where Owner: core::marker::Send + core::marker::Sync + 'static
+pub fn rapids_interop::OwnedColumnTransfer::try_new_with_semantic_columns<Owner>(rapids_interop::SemanticColumn, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'static>>, rapids_interop::ProducerReadiness<'static>, rapids_interop::ExportDiagnostics, rapids_interop::ReleaseContract, Owner) -> rapids_interop::Result<Self> where Owner: core::marker::Send + core::marker::Sync + 'static
+pub struct rapids_interop::OwnedTableTransfer
+impl rapids_interop::OwnedTableTransfer
+pub fn rapids_interop::OwnedTableTransfer::bindings(&self) -> &[rapids_interop::BufferBinding<'static>]
+pub fn rapids_interop::OwnedTableTransfer::columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::OwnedTableTransfer::diagnostics(&self) -> &rapids_interop::ExportDiagnostics
+pub fn rapids_interop::OwnedTableTransfer::readiness(&self) -> &rapids_interop::ProducerReadiness<'static>
+pub fn rapids_interop::OwnedTableTransfer::release_contract(&self) -> &rapids_interop::ReleaseContract
+pub fn rapids_interop::OwnedTableTransfer::semantic_columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::OwnedTableTransfer::table(&self) -> &rapids_interop::SemanticTable
+pub fn rapids_interop::OwnedTableTransfer::try_into_owner<Owner>(self) -> core::result::Result<Owner, rapids_interop::OwnerTypeMismatch<Self>> where Owner: core::marker::Send + core::marker::Sync + 'static
+pub fn rapids_interop::OwnedTableTransfer::try_new<Owner>(rapids_interop::SemanticTable, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'static>>, rapids_interop::ProducerReadiness<'static>, rapids_interop::ExportDiagnostics, rapids_interop::ReleaseContract, Owner) -> rapids_interop::Result<Self> where Owner: core::marker::Send + core::marker::Sync + 'static
+pub fn rapids_interop::OwnedTableTransfer::try_new_with_semantic_columns<Owner>(rapids_interop::OwnedTableTransferParts<Owner>) -> rapids_interop::Result<Self> where Owner: core::marker::Send + core::marker::Sync + 'static
+pub struct rapids_interop::OwnedTableTransferParts<Owner>
+pub rapids_interop::OwnedTableTransferParts::bindings: alloc::vec::Vec<rapids_interop::BufferBinding<'static>>
+pub rapids_interop::OwnedTableTransferParts::columns: alloc::vec::Vec<rapids_interop::SemanticColumn>
+pub rapids_interop::OwnedTableTransferParts::diagnostics: rapids_interop::ExportDiagnostics
+pub rapids_interop::OwnedTableTransferParts::owner: Owner
+pub rapids_interop::OwnedTableTransferParts::readiness: rapids_interop::ProducerReadiness<'static>
+pub rapids_interop::OwnedTableTransferParts::release_contract: rapids_interop::ReleaseContract
+pub rapids_interop::OwnedTableTransferParts::semantic_columns: alloc::vec::Vec<rapids_interop::SemanticColumn>
+pub rapids_interop::OwnedTableTransferParts::table: rapids_interop::SemanticTable
+pub struct rapids_interop::OwnerTypeMismatch<T>
+impl<T> rapids_interop::OwnerTypeMismatch<T>
+pub fn rapids_interop::OwnerTypeMismatch<T>::as_transfer(&self) -> &T
+pub fn rapids_interop::OwnerTypeMismatch<T>::into_transfer(self) -> T
+pub struct rapids_interop::PartitionedOwnedTableTransfer
+impl rapids_interop::PartitionedOwnedTableTransfer
+pub fn rapids_interop::PartitionedOwnedTableTransfer::into_partitions(self) -> alloc::vec::Vec<rapids_interop::PartitionedOwnedTableTransferPartition>
+pub fn rapids_interop::PartitionedOwnedTableTransfer::num_rows(&self) -> usize
+pub fn rapids_interop::PartitionedOwnedTableTransfer::partitions(&self) -> &[rapids_interop::PartitionedOwnedTableTransferPartition]
+pub fn rapids_interop::PartitionedOwnedTableTransfer::schema_names(&self) -> core::option::Option<&[alloc::string::String]>
+pub fn rapids_interop::PartitionedOwnedTableTransfer::try_new(core::option::Option<alloc::vec::Vec<alloc::string::String>>, usize, alloc::vec::Vec<rapids_interop::PartitionedOwnedTableTransferPartition>) -> rapids_interop::Result<Self>
+pub struct rapids_interop::PartitionedOwnedTableTransferPartition
+impl rapids_interop::PartitionedOwnedTableTransferPartition
+pub fn rapids_interop::PartitionedOwnedTableTransferPartition::into_transfer(self) -> rapids_interop::OwnedTableTransfer
+pub fn rapids_interop::PartitionedOwnedTableTransferPartition::new(alloc::vec::Vec<usize>, rapids_interop::OwnedTableTransfer) -> Self
+pub fn rapids_interop::PartitionedOwnedTableTransferPartition::top_level_column_indices(&self) -> &[usize]
+pub fn rapids_interop::PartitionedOwnedTableTransferPartition::transfer(&self) -> &rapids_interop::OwnedTableTransfer
+pub struct rapids_interop::PartitionedPreparedTableExport<'a>
+impl<'a> rapids_interop::PartitionedPreparedTableExport<'a>
+pub fn rapids_interop::PartitionedPreparedTableExport<'a>::num_rows(&self) -> usize
+pub fn rapids_interop::PartitionedPreparedTableExport<'a>::partitions(&self) -> &[rapids_interop::PartitionedPreparedTablePartition<'a>]
+pub fn rapids_interop::PartitionedPreparedTableExport<'a>::schema_names(&self) -> core::option::Option<&[alloc::string::String]>
+pub fn rapids_interop::PartitionedPreparedTableExport<'a>::try_new(core::option::Option<alloc::vec::Vec<alloc::string::String>>, usize, alloc::vec::Vec<rapids_interop::PartitionedPreparedTablePartition<'a>>) -> rapids_interop::Result<Self>
+pub struct rapids_interop::PartitionedPreparedTablePartition<'a>
+impl<'a> rapids_interop::PartitionedPreparedTablePartition<'a>
+pub fn rapids_interop::PartitionedPreparedTablePartition<'a>::export(&self) -> &rapids_interop::PreparedTableExport<'a>
+pub fn rapids_interop::PartitionedPreparedTablePartition<'a>::new(alloc::vec::Vec<usize>, rapids_interop::PreparedTableExport<'a>) -> Self
+pub fn rapids_interop::PartitionedPreparedTablePartition<'a>::top_level_column_indices(&self) -> &[usize]
+pub fn rapids_interop::PartitionedPreparedTablePartition<'a>::try_activate_read_lease<'export, 'consumer>(&'export self, rapids_interop::ReadStartAuthority<'consumer>, rapids_interop::CompletionAuthority<'consumer>) -> rapids_interop::Result<rapids_interop::ActivePartitionedTableReadLease<'export, 'a, 'consumer>>
+pub struct rapids_interop::PreparedColumnExport<'a>
+impl<'a> rapids_interop::PreparedColumnExport<'a>
+pub fn rapids_interop::PreparedColumnExport<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'a>]
+pub fn rapids_interop::PreparedColumnExport<'a>::column(&self) -> &rapids_interop::SemanticColumn
+pub fn rapids_interop::PreparedColumnExport<'a>::diagnostics(&self) -> &rapids_interop::ExportDiagnostics
+pub fn rapids_interop::PreparedColumnExport<'a>::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub fn rapids_interop::PreparedColumnExport<'a>::profile(&self) -> rapids_interop::PreparedExportProfile
+pub fn rapids_interop::PreparedColumnExport<'a>::readiness(&self) -> &rapids_interop::ProducerReadiness<'a>
+pub fn rapids_interop::PreparedColumnExport<'a>::semantic_columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::PreparedColumnExport<'a>::try_activate_read_lease<'export, 'consumer>(&'export self, rapids_interop::ReadStartAuthority<'consumer>, rapids_interop::CompletionAuthority<'consumer>) -> rapids_interop::Result<rapids_interop::ActiveColumnReadLease<'export, 'a, 'consumer>>
+pub fn rapids_interop::PreparedColumnExport<'a>::try_new(rapids_interop::SemanticColumn, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::ProducerReadiness<'a>, rapids_interop::ExportDiagnostics) -> rapids_interop::Result<Self>
+pub fn rapids_interop::PreparedColumnExport<'a>::try_new_with_semantic_columns(rapids_interop::SemanticColumn, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::ProducerReadiness<'a>, rapids_interop::ExportDiagnostics) -> rapids_interop::Result<Self>
+pub fn rapids_interop::PreparedColumnExport<'a>::with_lease_backend(self, rapids_interop::LeaseBackend) -> Self
+impl core::cmp::Eq for rapids_interop::PreparedColumnExport<'_>
+impl core::cmp::PartialEq for rapids_interop::PreparedColumnExport<'_>
+pub fn rapids_interop::PreparedColumnExport<'_>::eq(&self, &Self) -> bool
+pub struct rapids_interop::PreparedTableExport<'a>
+impl<'a> rapids_interop::PreparedTableExport<'a>
+pub fn rapids_interop::PreparedTableExport<'a>::binding(&self, rapids_interop::BufferId) -> core::option::Option<&rapids_interop::BufferBinding<'a>>
+pub fn rapids_interop::PreparedTableExport<'a>::bindings(&self) -> &[rapids_interop::BufferBinding<'a>]
+pub fn rapids_interop::PreparedTableExport<'a>::columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::PreparedTableExport<'a>::diagnostics(&self) -> &rapids_interop::ExportDiagnostics
+pub fn rapids_interop::PreparedTableExport<'a>::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub fn rapids_interop::PreparedTableExport<'a>::profile(&self) -> rapids_interop::PreparedExportProfile
+pub fn rapids_interop::PreparedTableExport<'a>::readiness(&self) -> &rapids_interop::ProducerReadiness<'a>
+pub fn rapids_interop::PreparedTableExport<'a>::semantic_column(&self, rapids_interop::ColumnId) -> core::option::Option<&rapids_interop::SemanticColumn>
+pub fn rapids_interop::PreparedTableExport<'a>::semantic_columns(&self) -> &[rapids_interop::SemanticColumn]
+pub fn rapids_interop::PreparedTableExport<'a>::table(&self) -> &rapids_interop::SemanticTable
+pub fn rapids_interop::PreparedTableExport<'a>::top_level_column(&self, rapids_interop::ColumnId) -> core::option::Option<&rapids_interop::SemanticColumn>
+pub fn rapids_interop::PreparedTableExport<'a>::top_level_column_by_name(&self, &str) -> core::option::Option<&rapids_interop::SemanticColumn>
+pub fn rapids_interop::PreparedTableExport<'a>::try_activate_read_lease<'export, 'consumer>(&'export self, rapids_interop::ReadStartAuthority<'consumer>, rapids_interop::CompletionAuthority<'consumer>) -> rapids_interop::Result<rapids_interop::ActiveTableReadLease<'export, 'a, 'consumer>>
+pub fn rapids_interop::PreparedTableExport<'a>::try_new(rapids_interop::SemanticTable, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::ProducerReadiness<'a>, rapids_interop::ExportDiagnostics) -> rapids_interop::Result<Self>
+pub fn rapids_interop::PreparedTableExport<'a>::try_new_with_semantic_columns(rapids_interop::SemanticTable, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::SemanticColumn>, alloc::vec::Vec<rapids_interop::BufferBinding<'a>>, rapids_interop::ProducerReadiness<'a>, rapids_interop::ExportDiagnostics) -> rapids_interop::Result<Self>
+pub fn rapids_interop::PreparedTableExport<'a>::with_lease_backend(self, rapids_interop::LeaseBackend) -> Self
+impl core::cmp::Eq for rapids_interop::PreparedTableExport<'_>
+impl core::cmp::PartialEq for rapids_interop::PreparedTableExport<'_>
+pub fn rapids_interop::PreparedTableExport<'_>::eq(&self, &Self) -> bool
+pub struct rapids_interop::ReleaseContract
+impl rapids_interop::ReleaseContract
+pub fn rapids_interop::ReleaseContract::completion(&self) -> rapids_interop::TransferCompletionRule
+pub fn rapids_interop::ReleaseContract::new(i32, rapids_interop::TransferCompletionRule, rapids_interop::ReleaseSynchronization) -> Self
+pub fn rapids_interop::ReleaseContract::release_device(&self) -> i32
+pub fn rapids_interop::ReleaseContract::synchronization(&self) -> rapids_interop::ReleaseSynchronization
+pub struct rapids_interop::SemanticColumn
+impl rapids_interop::SemanticColumn
+pub fn rapids_interop::SemanticColumn::data_type(&self) -> rapids_interop::DataType
+pub fn rapids_interop::SemanticColumn::id(&self) -> rapids_interop::ColumnId
+pub fn rapids_interop::SemanticColumn::is_empty(&self) -> bool
+pub fn rapids_interop::SemanticColumn::layout(&self) -> &rapids_interop::ColumnLayout
+pub fn rapids_interop::SemanticColumn::len(&self) -> usize
+pub fn rapids_interop::SemanticColumn::new(rapids_interop::ColumnId, rapids_interop::DataType, usize, usize, rapids_interop::PhysicalValidity, rapids_interop::SchemaNullability, rapids_interop::ColumnLayout) -> Self
+pub fn rapids_interop::SemanticColumn::offset(&self) -> usize
+pub fn rapids_interop::SemanticColumn::schema_nullability(&self) -> rapids_interop::SchemaNullability
+pub fn rapids_interop::SemanticColumn::validity(&self) -> &rapids_interop::PhysicalValidity
+pub struct rapids_interop::SemanticTable
+impl rapids_interop::SemanticTable
+pub fn rapids_interop::SemanticTable::columns(&self) -> &[rapids_interop::ColumnId]
+pub fn rapids_interop::SemanticTable::id(&self) -> rapids_interop::TableId
+pub fn rapids_interop::SemanticTable::names(&self) -> core::option::Option<&[alloc::string::String]>
+pub fn rapids_interop::SemanticTable::new(rapids_interop::TableId, usize, alloc::vec::Vec<rapids_interop::ColumnId>, core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> Self
+pub fn rapids_interop::SemanticTable::num_rows(&self) -> usize
+pub struct rapids_interop::TableId(_)
+impl rapids_interop::TableId
+pub const fn rapids_interop::TableId::get(self) -> u32
+pub const fn rapids_interop::TableId::new(u32) -> Self
+pub trait rapids_interop::ActiveLeaseActivation: core::marker::Send + core::marker::Sync
+pub trait rapids_interop::ActiveLeaseBackend: core::marker::Send + core::marker::Sync
+pub fn rapids_interop::ActiveLeaseBackend::activate(&self, &rapids_interop::LeaseExportContext, rapids_interop::ReadStartBinding, rapids_interop::CompletionBinding) -> rapids_interop::Result<rapids_interop::LeaseActivation>
+pub fn rapids_interop::ActiveLeaseBackend::complete(&self, &rapids_interop::LeaseExportContext, rapids_interop::CompletionBinding) -> rapids_interop::Result<rapids_interop::LeaseCompletionResult>
+pub fn rapids_interop::ActiveLeaseBackend::drop_incomplete(&self, &rapids_interop::LeaseExportContext, rapids_interop::CompletionBinding) -> rapids_interop::Result<()>
+pub fn rapids_interop::ActiveLeaseBackend::incomplete_drop_behavior(&self) -> rapids_interop::IncompleteDropBehavior
+pub trait rapids_interop::CompletionWitnessBackend: core::marker::Send + core::marker::Sync
+pub fn rapids_interop::CompletionWitnessBackend::is_ready(&self) -> rapids_interop::Result<bool>
+pub fn rapids_interop::CompletionWitnessBackend::synchronize(&self) -> rapids_interop::Result<()>
+pub type rapids_interop::Result<T> = core::result::Result<T, rapids_interop::InteropError>

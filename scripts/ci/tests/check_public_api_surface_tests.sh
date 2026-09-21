@@ -22,6 +22,7 @@ pub struct algeon_datafusion::backend::AlgeonGpuBackend'
 baseline_query_engine='pub fn query_engine::runtime::GpuBackendSession::admit_query(&self) -> query_engine::error::Result<query_engine::runtime::QueryHandle>'
 baseline_query_planning='pub struct query_planning::plan::QueryPlan'
 baseline_query_runtime='pub struct query_runtime::runtime::GpuBackendSession'
+baseline_interop='pub struct rapids_interop::PreparedTableExport'
 baseline_bench='pub mod bench::tpch_benchmark'
 baseline_cudf='pub mod cudf'
 baseline_cugraph='pub mod cugraph'
@@ -83,6 +84,7 @@ case "\${crate}" in
   algeon-query-engine) printf '%s\n' "\${FAKE_ALGEON_QUERY_ENGINE:-${baseline_query_engine}}" ;;
   algeon-query-planning) printf '%s\n' "\${FAKE_ALGEON_QUERY_PLANNING:-${baseline_query_planning}}" ;;
   algeon-query-runtime) printf '%s\n' "\${FAKE_ALGEON_QUERY_RUNTIME:-${baseline_query_runtime}}" ;;
+  algeon-interop) printf '%s\n' "\${FAKE_ALGEON_INTEROP:-${baseline_interop}}" ;;
   bench) printf '%s\n' "\${FAKE_ALGEON_BENCH:-${baseline_bench}}" ;;
   algeon-cudf) printf '%s\n' "\${FAKE_CUDF_ALGEON:-${baseline_cudf}}" ;;
   algeon-cugraph) printf '%s\n' "\${FAKE_CUGRAPH_ALGEON:-${baseline_cugraph}}" ;;
@@ -102,6 +104,7 @@ write_clean_snapshots() {
   printf '%s\n' "${baseline_query_engine}" >"${dir}/algeon-query-engine.txt"
   printf '%s\n' "${baseline_query_planning}" >"${dir}/algeon-query-planning.txt"
   printf '%s\n' "${baseline_query_runtime}" >"${dir}/algeon-query-runtime.txt"
+  printf '%s\n' "${baseline_interop}" >"${dir}/algeon-interop.txt"
   printf '%s\n' "${baseline_bench}" >"${dir}/bench.txt"
   printf '%s\n' "${baseline_cudf}" >"${dir}/algeon-cudf.txt"
   printf '%s\n' "${baseline_cugraph}" >"${dir}/algeon-cugraph.txt"
@@ -156,7 +159,7 @@ assert_not_contains() {
 
 CHECK_SCRIPT=scripts/ci/check_public_api_surface.sh
 
-# 1. Clean baseline: check passes for all seven independently snapshotted crates.
+# 1. Clean baseline: check passes for all eight independently snapshotted crates.
 clean_dir="${tmp_dir}/snapshots/clean"
 write_clean_snapshots "${clean_dir}"
 run_check clean "${clean_dir}" "${CHECK_SCRIPT}" check --all-features
@@ -165,10 +168,11 @@ assert_contains "${tmp_dir}/clean.output" "PASS: algeon-datafusion public API ma
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-query-engine public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-query-planning public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-query-runtime public API matches"
+assert_contains "${tmp_dir}/clean.output" "PASS: algeon-interop public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: bench public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cudf public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: algeon-cugraph public API matches"
-echo "PASS: clean snapshot matches for all seven independently snapshotted crates"
+echo "PASS: clean snapshot matches for all eight independently snapshotted crates"
 
 # 2. Fault injection: a forbidden item reappears in one crate's public API.
 # This is the regression this whole check exists to catch, and it must fail
@@ -176,15 +180,15 @@ echo "PASS: clean snapshot matches for all seven independently snapshotted crate
 drift_dir="${tmp_dir}/snapshots/drift"
 write_clean_snapshots "${drift_dir}"
 run_check drift "${drift_dir}" env \
-  FAKE_ALGEON_BENCH="${baseline_bench}
-pub fn bench::workload::forbidden_reintroduced_facade()" \
+  FAKE_ALGEON_INTEROP="${baseline_interop}
+pub fn rapids_interop::forbidden_reintroduced_contract()" \
   bash "${CHECK_SCRIPT}" check --all-features
 assert_status drift 1
-assert_contains "${tmp_dir}/drift.output" "ERROR: public API of 'bench' drifted from the checked-in snapshot"
-assert_contains "${tmp_dir}/drift.output" "+pub fn bench::workload::forbidden_reintroduced_facade()"
+assert_contains "${tmp_dir}/drift.output" "ERROR: public API of 'algeon-interop' drifted from the checked-in snapshot"
+assert_contains "${tmp_dir}/drift.output" "+pub fn rapids_interop::forbidden_reintroduced_contract()"
 assert_contains "${tmp_dir}/drift.output" "bash scripts/ci/check_public_api_surface.sh write --all-features"
 assert_contains "${tmp_dir}/drift.output" "PASS: algeon-datafusion public API matches"
-echo "PASS: a reintroduced forbidden item fails closed with a useful diagnostic, without masking other crates' results"
+echo "PASS: a reintroduced interop item fails closed with a useful diagnostic, without masking other crates' results"
 
 # 3. Missing snapshot file: fails closed with instructions, not a silent skip.
 missing_dir="${tmp_dir}/snapshots/missing"
@@ -215,8 +219,10 @@ cp .config/policies/public-api/algeon-datafusion-hidden.tsv "${write_dir}/"
 run_check write_mode "${write_dir}" "${CHECK_SCRIPT}" write --all-features
 assert_status write_mode 0
 assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/algeon-datafusion.txt"
+assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/algeon-interop.txt"
 assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/TOOLCHAIN.txt"
 diff -u "${write_dir}/bench.txt" <(printf '%s\n' "${baseline_bench}")
+diff -u "${write_dir}/algeon-interop.txt" <(printf '%s\n' "${baseline_interop}")
 diff -u "${write_dir}/TOOLCHAIN.txt" <(printf '%s\n' "${baseline_toolchain_file}")
 run_check write_roundtrip_check "${write_dir}" "${CHECK_SCRIPT}" check --all-features
 assert_status write_roundtrip_check 0

@@ -27,7 +27,6 @@ name = "cuvs"
 [dependencies]
 cudf.workspace = true
 cuvs-sys.workspace = true
-rapids-interop.workspace = true
 
 [build-dependencies]
 

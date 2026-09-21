@@ -1,6 +1,6 @@
 use std::error::Error as StdError;
 
-use rapids_interop::{InteropError, InteropErrorKind};
+use cudf::interop::contract::{InteropError, InteropErrorKind};
 
 use crate::error::{Error, ErrorKind, ErrorStatus};
 
@@ -264,7 +264,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rapids_interop::{InteropError, InteropErrorKind};
+    use cudf::interop::contract::{InteropError, InteropErrorKind};
 
     use super::*;
     use crate::error::ErrorKind;

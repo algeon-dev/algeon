@@ -4,8 +4,8 @@
 
 - Fix the owning runtime, interop, FFI, or native-discovery contract instead of
   hiding a failure in an algorithm wrapper. Extend `cudf` or
-  `rapids-interop` when the missing ownership or execution primitive belongs
-  there.
+  `components/algeon-interop` when the missing ownership or execution
+  primitive belongs there.
 - Keep changes scoped. Preserve unrelated worktree edits and avoid
   opportunistic cleanup, generated-file churn, or native rebuilds outside the
   task.
@@ -19,8 +19,9 @@ execution follow the root `algeon-datafusion` ownership map.
 - Safe algorithm, tensor, ownership, and completion APIs belong in
   `cuvs/`; raw generated C bindings and native discovery belong in
   `cuvs-sys/`.
-- `cudf` and `rapids-interop` are root-workspace component dependencies.
-  The pinned official cuVS source is `components/cuvs/cuvs`.
+- `cudf` is a root-workspace component dependency, and the interop contract
+  types are imported through `cudf::interop::contract`. The pinned official
+  cuVS source is `components/cuvs/cuvs`.
 - The canonical install defaults are `target/native/cuvs-install` and the
   shared `target/native/cudf-install`; override them only with explicit
   selectors such as `CUVS_ROOT` and `CUVS_INSTALL_DIR`.

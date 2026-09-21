@@ -4402,6 +4402,7 @@ pub type cudf::hash::FastHashMap<K, V> = ahash::HashMap<K, V>
 pub type cudf::hash::FastHashSet<T> = ahash::HashSet<T>
 pub type cudf::hash::FastIndexMap<K, V> = indexmap::map::IndexMap<K, V, ahash::random_state::RandomState>
 pub mod cudf::interop
+pub use cudf::interop::contract
 pub mod cudf::interop::arrow_device
 pub enum cudf::interop::arrow_device::DeviceArrowDeviceType
 pub cudf::interop::arrow_device::DeviceArrowDeviceType::Cuda

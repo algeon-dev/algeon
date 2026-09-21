@@ -15,7 +15,8 @@ over libcudf. Query planning and runtime ownership follow the root
 
 - Safe APIs belong in `cudf/`; the C++ shim and raw FFI belong in
   `cudf-sys/`; cross-library ownership and synchronization vocabulary
-  belongs in `rapids-interop/`.
+  belongs in `rapids-interop/`. The public `cudf::interop::contract` entry
+  re-exports that owner crate for consumers that already depend on `cudf`.
 - `components/cudf/cudf/` is the pinned Algeon cuDF fork used for
   native builds.
 - The three component crates are members of the root workspace; preserve their
@@ -68,6 +69,8 @@ native work.
 - Preserve package/import identities: `cudf` imports as `cudf`,
   `cudf-sys` imports as `cudf_sys`, `rapids-interop` imports as
   `rapids_interop`, and the sys crate keeps `links = "cudf_rust"`.
+- Keep shared interop types owned by `rapids-interop`; expose them to `cudf`
+  consumers through `cudf::interop::contract` without wrappers or copies.
 - Preserve `DEP_CUDF_RUST_*` native metadata and exact libcudf/RMM runtime
   identity for downstream consumers.
 - Keep structured errors, execution-boundary evidence, ownership state

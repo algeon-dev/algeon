@@ -87,20 +87,23 @@
 //! - [`interop::arrow_host`]: Arrow `RecordBatch` conversion through host memory.
 //! - [`interop`]: `cudf`-specific interop adapters, runtime-backed
 //!   release helpers, CUDA handle projection, and Arrow C Device ABI glue.
-//!   Import shared contract nouns from [`rapids_interop`].
+//!   `cudf` users can import their shared contract types from
+//!   [`interop::contract`].
 //! - For lower-level CUDA stream and event management, see the [`runtime`] module.
 //!
 //! If you need to hand device-backed cudf data to another Rust GPU library,
 //! prefer the shared descriptors and prepared export types in
-//! [`rapids_interop`] plus the adapter methods in [`interop`] over
+//! [`interop::contract`] plus the adapter methods in [`interop`] over
 //! [`core::DeviceSlice`]. `core::DeviceSlice` is only a raw pointer + length
 //! helper and does not carry null-mask, offset-base, readiness, completion,
 //! or execution-provenance semantics.
 //!
-//! Interop activation uses the shared names in [`rapids_interop`]. If you
+//! Interop activation uses the shared names in [`interop::contract`]. If you
 //! already have `cudf` runtime handles, use [`interop::cuda_stream_handle`]
 //! and [`interop::cuda_event_handle`] to project them into the shared contract
-//! explicitly.
+//! explicitly. Independent producers and consumers can depend on
+//! `algeon-interop` and import the same contracts from `rapids_interop`
+//! without depending on `cudf`.
 //!
 //! Arrow naming can be easy to misread here:
 //! [`interop::arrow_host`] is the host-copy `RecordBatch` path, while

@@ -1,10 +1,12 @@
 use std::{any::Any, marker::PhantomData, mem, sync::Arc};
 
-use cudf::frame::dataframe::{ValidatedFixedSizeListFloat32Export, ValidatedUniformListFloat32Export};
-use rapids_interop::{
-    ActiveColumnReadLease, ColumnLayout, CompletionAuthority, CompletionWitness, IncompleteDropBehavior,
-    LeaseCompletionResult, PhysicalValidity, PreparedColumnExport, PreparedExportProfile, PreparedTableExport,
-    ReadStartAuthority,
+use cudf::{
+    frame::dataframe::{ValidatedFixedSizeListFloat32Export, ValidatedUniformListFloat32Export},
+    interop::contract::{
+        ActiveColumnReadLease, ColumnLayout, CompletionAuthority, CompletionWitness, IncompleteDropBehavior,
+        LeaseCompletionResult, PhysicalValidity, PreparedColumnExport, PreparedExportProfile, PreparedTableExport,
+        ReadStartAuthority,
+    },
 };
 
 use crate::{
@@ -429,13 +431,13 @@ fn require_device_export(export: &PreparedColumnExport<'_>, operation: &'static 
 }
 
 fn require_binding_device(
-    binding: &rapids_interop::BufferBinding<'_>,
+    binding: &cudf::interop::contract::BufferBinding<'_>,
     expected_device: i32,
     operation: &'static str,
 ) -> Result<i32> {
     let device = match binding.placement() {
-        rapids_interop::Placement::CudaDevice { device } => *device,
-        rapids_interop::Placement::Host => {
+        cudf::interop::contract::Placement::CudaDevice { device } => *device,
+        cudf::interop::contract::Placement::Host => {
             return Err(invalid_input(operation, "cuVS prepared tensor binding must be CUDA device memory"));
         },
     };

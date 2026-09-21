@@ -1,5 +1,9 @@
-use cudf::{DuplicateKeepOption, Runtime, SortOptions, core::Table, frame::dataframe::DropDuplicatesOptions};
-use rapids_interop::{PreparedColumnExport, PreparedTableExport};
+use cudf::{
+    DuplicateKeepOption, Runtime, SortOptions,
+    core::Table,
+    frame::dataframe::DropDuplicatesOptions,
+    interop::contract::{PreparedColumnExport, PreparedTableExport},
+};
 
 use super::{
     egress::dataframe_from_named_series,

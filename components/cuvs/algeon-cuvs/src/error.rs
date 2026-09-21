@@ -270,8 +270,8 @@ pub(crate) fn from_cudf(operation: &'static str, error: cudf::Error) -> Error {
     mapped.set_source(error)
 }
 
-pub(crate) fn from_interop(operation: &'static str, error: rapids_interop::InteropError) -> Error {
-    use rapids_interop::InteropErrorKind;
+pub(crate) fn from_interop(operation: &'static str, error: cudf::interop::contract::InteropError) -> Error {
+    use cudf::interop::contract::InteropErrorKind;
 
     let kind = match error.kind() {
         InteropErrorKind::UnsupportedType

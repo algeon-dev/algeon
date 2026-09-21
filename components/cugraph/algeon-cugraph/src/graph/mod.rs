@@ -49,8 +49,8 @@ use std::{
     sync::Arc,
 };
 
+use cudf::interop::contract::{CompletionWitness, InteropError};
 use cugraph_sys::{cugraph_decompress_to_edgelist, cugraph_edgelist_t, cugraph_error_t, cugraph_graph_t};
-use rapids_interop::{CompletionWitness, InteropError};
 
 use crate::{
     array::{DeviceArray, DeviceArrayView},

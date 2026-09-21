@@ -22,6 +22,23 @@ semantic-versioning or publication promise.
 - `components/algeon-interop/` - shared RAPIDS Rust interop contract types and traits.
 - `components/cudf/cudf/` - the pinned **[forked cuDF](https://github.com/algeon-dev/cudf)** source submodule used to build `libcudf`.
 
+Code that already depends on `algeon-cudf` can import the shared contract types
+through the `cudf` entry point:
+
+```rust
+use cudf::{
+    Series,
+    interop::contract::{InteropError, PreparedColumnExport},
+};
+
+fn prepare(series: &Series) -> Result<PreparedColumnExport<'_>, InteropError> {
+    series.try_prepare_device_column_export()
+}
+```
+
+Independent producers and consumers can depend on `algeon-interop` directly
+and import the same types from `rapids_interop` without linking `cudf`.
+
 Native build defaults are repo-relative: `target/native/cudf-build` for the
 cuDF CMake cache and `target/native/cudf-install` for the installed cuDF/RMM
 prefix. From the monorepo root, use `scripts/build/build_libcudf.sh`; it drives
