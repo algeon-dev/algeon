@@ -28,6 +28,7 @@ mod placement;
 mod queue;
 mod reporting;
 mod requests;
+mod shutdown;
 pub(in crate::runtime::query_service) mod transaction;
 #[cfg(feature = "qualification")]
 pub use api::DeviceQuarantineInjection;

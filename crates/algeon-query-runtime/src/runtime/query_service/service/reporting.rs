@@ -366,3 +366,61 @@ impl QueryService {
         Ok(())
     }
 }
+
+impl QueryService {
+    /// Largest device managed capacity represented by this query service.
+    pub fn max_device_capacity_bytes(&self) -> u64 {
+        self.inner.resources.as_ref().map_or_else(
+            || {
+                self.inner
+                    .fallback_device_ledger
+                    .as_ref()
+                    .expect("admission-only service has a fallback device ledger")
+                    .managed_capacity_bytes()
+            },
+            |resources| {
+                resources
+                    .devices
+                    .contexts()
+                    .map(|context| context.capacity_bytes())
+                    .max()
+                    .expect("runtime service has an installed device")
+            },
+        )
+    }
+
+    /// Largest physical device-total byte count represented by this query service.
+    ///
+    /// Admission-only services have no CUDA inventory, so they fall back to the
+    /// configured synthetic-ledger capacity used by deterministic CPU-only tests.
+    pub fn max_device_total_memory_bytes(&self) -> u64 {
+        self.inner.resources.as_ref().map_or_else(
+            || self.max_device_capacity_bytes(),
+            |resources| {
+                resources
+                    .devices
+                    .contexts()
+                    .map(|context| context.facts().total_bytes)
+                    .max()
+                    .expect("runtime service has an installed device")
+            },
+        )
+    }
+
+    /// One atomic snapshot per device ledger, for placement, reports, and
+    /// metrics. Admission-only services expose their synthetic ledger.
+    pub(in crate::runtime::query_service) fn device_ledger_snapshots(
+        &self,
+    ) -> Result<Vec<crate::runtime::gpu::LedgerSnapshot>> {
+        let Some(resources) = &self.inner.resources else {
+            return self
+                .inner
+                .fallback_device_ledger
+                .as_ref()
+                .map(|ledger| ledger.snapshot())
+                .transpose()
+                .map(|snapshot| snapshot.into_iter().collect());
+        };
+        resources.devices.contexts().map(|context| context.ledger().snapshot()).collect()
+    }
+}

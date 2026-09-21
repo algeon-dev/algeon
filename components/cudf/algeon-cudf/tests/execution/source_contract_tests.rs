@@ -16,7 +16,13 @@ const GROUPBY_SHIFT_RS: &str = include_str!("../../src/ops/groupby/shift.rs");
 const HASHING_RS: &str = include_str!("../../src/ops/hashing.rs");
 const IO_MOD_RS: &str = include_str!("../../src/io/mod.rs");
 const IO_JSON_RS: &str = include_str!("../../src/io/json.rs");
-const IO_PARQUET_RS: &str = include_str!("../../src/io/parquet.rs");
+const IO_PARQUET_EVIDENCE_RS: &str = include_str!("../../src/io/parquet/evidence.rs");
+const IO_PARQUET_MOD_RS: &str = include_str!("../../src/io/parquet/mod.rs");
+const IO_PARQUET_OPTIONS_RS: &str = include_str!("../../src/io/parquet/options.rs");
+const IO_PARQUET_READ_RS: &str = include_str!("../../src/io/parquet/read.rs");
+const IO_PARQUET_REMOTE_RS: &str = include_str!("../../src/io/parquet/remote.rs");
+const IO_PARQUET_TESTS_RS: &str = include_str!("../../src/io/parquet/tests.rs");
+const IO_PARQUET_WRITE_RS: &str = include_str!("../../src/io/parquet/write.rs");
 const IO_SOURCE_MOD_RS: &str = include_str!("../../src/io/source/mod.rs");
 const IO_SOURCE_CHUNK_RS: &str = include_str!("../../src/io/source/chunk.rs");
 const IO_SOURCE_DIAGNOSTICS_RS: &str = include_str!("../../src/io/source/diagnostics.rs");
@@ -34,7 +40,7 @@ const PARTITIONING_RS: &str = include_str!("../../src/ops/partitioning.rs");
 const REPLACE_RS: &str = include_str!("../../src/ops/replace.rs");
 const REDUCTION_RS: &str = include_str!("../../src/ops/reduction.rs");
 const SEARCH_RS: &str = include_str!("../../src/ops/search.rs");
-const GPU_RECORD_BATCH_RS: &str = include_str!("../../src/frame/dataframe/gpu_record_batch.rs");
+const GPU_RECORD_BATCH_RS: &str = include_str!("../../src/frame/dataframe/gpu_record_batch/list_float32_validation.rs");
 const DATAFRAME_ROW_OPS_RS: &str = include_str!("../../src/frame/dataframe/row_ops.rs");
 const EXECUTION_DOMAIN_RS: &str = include_str!("../../src/runtime/execution_domain.rs");
 const EXPR_RS: &str = include_str!("../../src/ops/expr.rs");
@@ -1012,7 +1018,7 @@ fn io_write_helpers_require_explicit_execution_options() {
     for (source, function, ex_call, ambient_call) in [
         (IO_JSON_RS, "write_json_with_exec", "cudf_sys::cudf_io_write_json_ex", "cudf_sys::cudf_io_write_json("),
         (
-            IO_PARQUET_RS,
+            IO_PARQUET_WRITE_RS,
             "write_parquet_with_exec",
             "cudf_sys::cudf_io_write_parquet_ex",
             "cudf_sys::cudf_io_write_parquet(",
@@ -1035,7 +1041,13 @@ fn safe_io_layer_contains_no_process_global_libcudf_lock() {
     let scanned_sources = [
         ("io/mod.rs", IO_MOD_RS),
         ("io/json.rs", IO_JSON_RS),
-        ("io/parquet.rs", IO_PARQUET_RS),
+        ("io/parquet/evidence.rs", IO_PARQUET_EVIDENCE_RS),
+        ("io/parquet/mod.rs", IO_PARQUET_MOD_RS),
+        ("io/parquet/options.rs", IO_PARQUET_OPTIONS_RS),
+        ("io/parquet/read.rs", IO_PARQUET_READ_RS),
+        ("io/parquet/remote.rs", IO_PARQUET_REMOTE_RS),
+        ("io/parquet/tests.rs", IO_PARQUET_TESTS_RS),
+        ("io/parquet/write.rs", IO_PARQUET_WRITE_RS),
         ("io/source/mod.rs", IO_SOURCE_MOD_RS),
         ("io/source/chunk.rs", IO_SOURCE_CHUNK_RS),
         ("io/source/diagnostics.rs", IO_SOURCE_DIAGNOSTICS_RS),
