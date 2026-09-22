@@ -70,8 +70,11 @@ FROM gpu_validate_call(
 This is static validation: it checks the named tables' or views' schemas and
 the options, reads no data, and runs nothing on the GPU (no rows scanned, no
 subquery run, no device memory allocated, no kernel launched). Only registered
-tables or views resolve; register a derived relation as a temporary view when
-it needs validation.
+tables or views resolve, and each one must already expose the role's canonical
+columns (`src`/`dst` for cuGraph edges, `id` plus feature columns for cuVS
+relations). A call whose relation aliases, filters, joins, or reads a CTE is
+not represented by this envelope; run `EXPLAIN GPU` on the final SQL instead,
+or register that derived relation as a view and validate the view.
 
 ## 4. Execute with the provider's relation syntax
 

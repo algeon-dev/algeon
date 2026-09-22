@@ -306,7 +306,7 @@ workspace. For example:
 ```bash
 printf '%s\n' \
   "SELECT count(*) FROM papers" \
-  "SELECT vertex, value FROM cugraph_pagerank('citation_edges', 'src', 'dst', 'weight') ORDER BY value DESC LIMIT 5" |
+  "SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM citation_edges)) ORDER BY value DESC LIMIT 5" |
   arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output table
 ```
 

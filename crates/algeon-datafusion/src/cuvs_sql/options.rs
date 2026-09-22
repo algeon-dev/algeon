@@ -3,7 +3,8 @@ use serde_json::{Map, Value, json};
 
 use super::{
     CuvsDenseVectorBinding, CuvsOperation, CuvsOptionKind, CuvsOutputContract, CuvsRelationRole,
-    canonicalize_cuvs_options, error::invalid_call,
+    canonicalize_cuvs_options,
+    error::{invalid_call, invalid_option},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,7 +74,7 @@ impl CuvsValidatedOptions {
 
 pub(super) fn validate_options(operation: CuvsOperation, raw: &str) -> Result<CuvsValidatedOptions> {
     let canonical = canonicalize_cuvs_options(operation, raw)
-        .map_err(|error| invalid_call(operation, error.code(), error.message()))?;
+        .map_err(|error| invalid_option(operation, error.code(), error.argument(), error.message()))?;
     let object = canonical.as_object().expect("canonical cuVS options are always a JSON object");
     let bindings =
         operation.descriptor().relation_roles.iter().copied().map(|role| binding(object, role)).collect::<Vec<_>>();

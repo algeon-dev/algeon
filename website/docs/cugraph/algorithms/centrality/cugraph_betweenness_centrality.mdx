@@ -54,9 +54,9 @@ Logical string side-input limitations:
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `exact_vertex_threshold` | `integer` | `100000` | min 0 | vertex count threshold for exact betweenness |
+| `exact_vertex_threshold` | `integer` | `100000` | min 0; max 18446744073709552000 | vertex count threshold for exact betweenness |
 | `include_endpoints` | `boolean` | `false` |  | whether betweenness includes endpoints |
-| `k` | `integer\|null` | `null` | min 1 | optional sample count, at least 1 |
+| `k` | `integer\|null` | `null` | min 1; max 18446744073709552000 | optional sample count, at least 1 |
 | `normalized` | `boolean` | `true` |  | whether centrality scores are normalized |
 | `seeds` | `array\|null` | `null` |  | optional non-empty homogeneous seed vertex array |
 

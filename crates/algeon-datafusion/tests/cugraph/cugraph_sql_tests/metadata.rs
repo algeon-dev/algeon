@@ -349,6 +349,151 @@ async fn cugraph_validation_keeps_relation_aware_errors_structured() {
 }
 
 #[tokio::test]
+async fn cugraph_validation_details_name_the_offending_argument_or_relation() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "vertex_only", "vertex", DataType::Int64, false);
+
+    let alpha = validate(&ctx, "cugraph_pagerank", "edges", serde_json::json!({"alpha": 2.0})).await;
+    assert!(!bool_value(&alpha, 0, 0));
+    assert!(bool_value(&alpha, 4, 0), "relation resolution precedes value validation");
+    let details = json_value(string_value(&alpha, 8, 0));
+    assert_eq!(details["path"], "options.alpha");
+    assert_eq!(details["argument"], "alpha");
+
+    let directed =
+        validate(&ctx, "cugraph_weakly_connected_components", "edges", serde_json::json!({"directed": true})).await;
+    assert_eq!(string_value(&directed, 1, 0), "unsupported_option");
+    assert_eq!(json_value(string_value(&directed, 8, 0))["path"], "options.directed");
+
+    let personalization = validate_with_relations(
+        &ctx,
+        "cugraph_personalized_pagerank",
+        "edges",
+        serde_json::json!({"personalization": {"table": "vertex_only"}}),
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(!bool_value(&personalization, 0, 0));
+    assert!(string_value(&personalization, 2, 0).contains("'value'"));
+    let details = json_value(string_value(&personalization, 8, 0));
+    assert_eq!(details["path"], "relations.personalization");
+    assert_eq!(details["relation_role"], "personalization");
+    assert!(details["personalization"]["resolved"].as_bool().unwrap());
+}
+
+#[tokio::test]
+async fn cugraph_force_atlas2_validation_resolves_every_optional_relation_role() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    for ddl in [
+        "CREATE VIEW attributes AS SELECT CAST(1 AS BIGINT) AS vertex, CAST(0.5 AS FLOAT) AS radius",
+        "CREATE VIEW positions AS SELECT CAST(1 AS BIGINT) AS vertex, CAST(0.0 AS FLOAT) AS x, CAST(1.0 AS FLOAT) AS y",
+    ] {
+        ctx.sql(ddl).await.unwrap().collect().await.unwrap();
+    }
+
+    let valid = validate_with_relations(
+        &ctx,
+        "cugraph_force_atlas2",
+        "edges",
+        serde_json::json!({"vertex_attributes": {"table": "attributes"}, "initial_positions": {"table": "positions"}}),
+        serde_json::json!({"prevent_overlapping": true}),
+    )
+    .await;
+    assert!(bool_value(&valid, 0, 0), "{}", string_value(&valid, 2, 0));
+    assert!(bool_value(&valid, 4, 0));
+    let details = json_value(string_value(&valid, 8, 0));
+    for role in ["edges", "vertex_attributes", "initial_positions"] {
+        assert_eq!(details[role]["resolved"], true, "{role}");
+    }
+    let normalized = json_value(string_value(&valid, 5, 0));
+    assert_eq!(normalized["relations"]["initial_positions"]["table"], "positions");
+
+    let missing_x = validate_with_relations(
+        &ctx,
+        "cugraph_force_atlas2",
+        "edges",
+        serde_json::json!({"initial_positions": {"table": "attributes"}}),
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(!bool_value(&missing_x, 0, 0));
+    assert_eq!(json_value(string_value(&missing_x, 8, 0))["path"], "relations.initial_positions");
+}
+
+#[tokio::test]
+async fn cugraph_normalized_calls_revalidate_and_schemas_project_group_constraints() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    for function in ["cugraph_betweenness_centrality", "cugraph_edge_betweenness_centrality"] {
+        let first = validate(&ctx, function, "edges", serde_json::json!({})).await;
+        assert!(bool_value(&first, 0, 0), "{}", string_value(&first, 2, 0));
+        let normalized = json_value(string_value(&first, 5, 0));
+        assert!(normalized["options"]["k"].is_null(), "{function}: {normalized}");
+        let second = validate(&ctx, function, "edges", normalized["options"].clone()).await;
+        assert!(bool_value(&second, 0, 0), "{function}: {}", string_value(&second, 2, 0));
+        assert_eq!(string_value(&second, 5, 0), string_value(&first, 5, 0));
+    }
+
+    let batches = ctx
+        .sql(
+            "SELECT options_schema_json, validation_request_schema_json \
+             FROM gpu_describe_function('cugraph_betweenness_centrality')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    let options_schema = json_value(string_value(batch, 0, 0));
+    assert_eq!(options_schema["properties"]["max_iterations"], serde_json::Value::Null);
+    assert_eq!(options_schema["properties"]["exact_vertex_threshold"]["maximum"], u64::MAX);
+    let exclusive = options_schema["allOf"].as_array().expect("betweenness selector group projects allOf");
+    assert!(
+        exclusive.iter().any(|constraint| {
+            let pair = &constraint["not"]["allOf"];
+            pair.is_array() && pair.to_string().contains("seeds") && pair.to_string().contains("\"k\"")
+        }),
+        "{exclusive:?}"
+    );
+    let request_schema = json_value(string_value(batch, 1, 0));
+    assert_eq!(request_schema["properties"]["options"], options_schema);
+
+    let bfs = ctx
+        .sql("SELECT validation_request_schema_json FROM gpu_describe_function('cugraph_bfs')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let bfs = json_value(string_value(single_batch(&bfs), 0, 0));
+    let selector = bfs["allOf"]
+        .as_array()
+        .expect("BFS source selector projects allOf")
+        .iter()
+        .find(|constraint| constraint["anyOf"].is_array())
+        .expect("BFS requires one source selector");
+    let members = selector["anyOf"].as_array().unwrap();
+    assert_eq!(members.len(), 3);
+    assert!(members.iter().any(|member| member["properties"]["relations"]["required"][0] == "sources"), "{members:?}");
+}
+
+#[tokio::test]
 async fn cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsing() {
     let state = SessionStateBuilder::new_with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())

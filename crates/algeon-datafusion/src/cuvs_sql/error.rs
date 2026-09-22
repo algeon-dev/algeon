@@ -8,10 +8,28 @@ pub(super) fn invalid_call(
     reason: &'static str,
     message: impl Into<String>,
 ) -> DataFusionError {
+    invalid_call_error(operation, reason, message).into()
+}
+
+/// Option rejection attributed to one declared value argument, so metadata
+/// validation can report `options.<argument>` as the failing path.
+pub(super) fn invalid_option(
+    operation: CuvsOperation,
+    reason: &'static str,
+    argument: Option<&'static str>,
+    message: impl Into<String>,
+) -> DataFusionError {
+    let error = invalid_call_error(operation, reason, message);
+    match argument {
+        Some(argument) => error.with_log_safe_fact("argument", argument).into(),
+        None => error.into(),
+    }
+}
+
+fn invalid_call_error(operation: CuvsOperation, reason: &'static str, message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.cuvs_sql.validate", message)
         .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
         .with_log_safe_fact("reason", reason)
-        .into()
 }
 
 pub(super) fn field_not_found(operation: CuvsOperation, relation_role: &'static str, field: &str) -> DataFusionError {

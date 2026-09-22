@@ -20,13 +20,13 @@ cuvs_brute_force_knn(dataset => (relation subquery), queries => (relation subque
 
 ## Quickstart
 
-The call below expects the registered relations `dataset_vectors` (the `dataset` role) and `queries_vectors` (the `queries` role), each passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
+The call below expects the registered relations `dataset_vectors` (the `dataset` role) and `query_vectors` (the `queries` role), each passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
 
 ```sql
 SELECT *
 FROM cuvs_brute_force_knn(
-  dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors),
-  queries => (SELECT query_id AS id, d0, d1 FROM query_vectors),
+  dataset => (SELECT id, d0, d1 FROM dataset_vectors),
+  queries => (SELECT id, d0, d1 FROM query_vectors),
   k => 8,
   metric => 'l2_expanded'
 );
@@ -91,7 +91,7 @@ Validation checks registered relation metadata, bindings, dtypes, and options wi
 ```sql
 SELECT * FROM gpu_validate_call(
   'cuvs_brute_force_knn',
-  '{"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"queries_vectors"}},"options":{"k":8,"metric":"l2_expanded"}}'
+  '{"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"query_vectors"}},"options":{"k":8,"metric":"l2_expanded"}}'
 );
 ```
 

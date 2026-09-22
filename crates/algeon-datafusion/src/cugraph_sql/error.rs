@@ -35,3 +35,17 @@ pub(super) fn unsupported_option(message: impl Into<String>) -> DataFusionError 
         .with_fact("reason", "unsupported_option")
         .into()
 }
+
+/// Tags a planning rejection with the named argument or relation role it
+/// concerns so `gpu_validate_call` can report a stable `details_json.path`.
+/// Errors that did not originate from this module's typed constructors are
+/// returned unchanged.
+pub(super) fn with_binding_fact(error: DataFusionError, key: &'static str, value: &str) -> DataFusionError {
+    match error {
+        DataFusionError::External(source) => match source.downcast::<Error>() {
+            Ok(error) => (*error).with_fact(key, value).into(),
+            Err(source) => DataFusionError::External(source),
+        },
+        other => other,
+    }
+}

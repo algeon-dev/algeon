@@ -98,7 +98,7 @@ impl RelationPlanner for CugraphRelationPlanner {
         if matches!(algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp)
             && let Some(expression) = arguments.take_value("source_vertex")
         {
-            let expression = context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?;
+            let expression = fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?)?;
             source = parse_named_source(expression, algorithm)?;
             if source.is_none() {
                 return Err(plan_error(format!(
@@ -118,7 +118,7 @@ impl RelationPlanner for CugraphRelationPlanner {
                     "cugraph_bfs source_vertex, source_vertices, and sources are mutually exclusive",
                 ));
             }
-            let expression = context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?;
+            let expression = fold_literal(context.sql_expr_to_logical_expr(expression, &DFSchema::empty())?)?;
             let parsed = parse_named_source(expression, algorithm)?;
             if !matches!(parsed, Some(CugraphBfsSource::LiteralList(_))) {
                 return Err(plan_error("cugraph_bfs source_vertices must be a non-empty typed array"));
@@ -195,6 +195,27 @@ fn argument_definitions(algorithm: CugraphAlgorithm) -> Vec<NamedArgumentDefinit
             required: definition.required,
         })
         .collect()
+}
+
+/// Reduces `CAST(<literal> AS type)`, negated numeric literals, and
+/// `make_array(...)` of those to plain literals so typed literal arguments bind
+/// like untyped ones.
+fn fold_literal(expression: Expr) -> Result<Expr> {
+    Ok(match expression {
+        Expr::Cast(cast) => match fold_literal(*cast.expr)? {
+            Expr::Literal(value, _) => Expr::Literal(value.cast_to(cast.field.data_type())?, None),
+            _ => return Err(plan_error("cuGraph literal cast must contain a literal")),
+        },
+        Expr::Negative(inner) => match fold_literal(*inner)? {
+            Expr::Literal(value, _) => Expr::Literal(value.arithmetic_negate()?, None),
+            _ => return Err(plan_error("cuGraph negated literal must contain a numeric literal")),
+        },
+        Expr::ScalarFunction(mut function) if function.name().eq_ignore_ascii_case("make_array") => {
+            function.args = function.args.into_iter().map(fold_literal).collect::<Result<Vec<_>>>()?;
+            Expr::ScalarFunction(function)
+        },
+        other => other,
+    })
 }
 
 fn literal_json(expression: Expr, name: &str) -> Result<Value> {

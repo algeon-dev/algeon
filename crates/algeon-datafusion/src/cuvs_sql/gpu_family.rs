@@ -98,9 +98,10 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
                     inputs.push(resolved.plan);
                 },
                 Err(message) => {
+                    relation_details.insert(role_name.to_string(), json!({"table": relation.table, "resolved": false}));
                     let mut details = base_details(operation, relation_details);
-                    details["failed_relation_role"] = Value::String(role_name.to_string());
-                    details["failed_relation_table"] = Value::String(relation.table.clone());
+                    details["path"] = Value::String(format!("relations.{role_name}"));
+                    details["relation_role"] = Value::String(role_name.to_string());
                     return GpuCallValidation {
                         valid: false,
                         error_code: Some("table_not_found".to_string()),
@@ -121,8 +122,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             Ok(options_json) => options_json,
             Err(error) => {
                 let mut details = base_details(operation, relation_details);
-                let (error_code, message) = validation_error(&error);
-                details["validation_error_code"] = Value::String(error_code.clone());
+                let (error_code, message) = validation_error(&error, &mut details);
                 return GpuCallValidation {
                     valid: false,
                     error_code: Some(error_code),
@@ -160,8 +160,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
             },
             Err(error) => {
                 let mut details = base_details(operation, relation_details);
-                let (error_code, message) = validation_error(&error);
-                details["validation_error_code"] = Value::String(error_code.clone());
+                let (error_code, message) = validation_error(&error, &mut details);
                 GpuCallValidation {
                     valid: false,
                     error_code: Some(error_code),
@@ -213,6 +212,7 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
         })
         .collect::<Vec<_>>();
     let options_schema = value_options_schema(operation);
+    let validation_request_schema = validation_request_schema(descriptor.relation_roles, &options_schema);
     GpuFunctionDescriptor {
         function_name: descriptor.sql_function_name.to_string(),
         provider: CUVS_PROVIDER.to_string(),
@@ -222,7 +222,7 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
         argument_descriptions: argument_descriptions(operation),
         options_schema,
         result_schemas: result_schemas(operation),
-        validation_request_schema: validation_request_schema(descriptor.relation_roles),
+        validation_request_schema,
         examples: examples(operation),
         limitations: limitations(operation),
         availability,
@@ -321,7 +321,7 @@ fn result_schemas(operation: CuvsOperation) -> Value {
     })
 }
 
-fn validation_request_schema(roles: &[CuvsRelationRole]) -> Value {
+fn validation_request_schema(roles: &[CuvsRelationRole], options_schema: &Value) -> Value {
     let relation_properties = roles
         .iter()
         .map(|role| {
@@ -348,10 +348,7 @@ fn validation_request_schema(roles: &[CuvsRelationRole]) -> Value {
                 "required": roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
                 "properties": relation_properties,
             },
-            "options": {
-                "type": "object",
-                "description": "Named cuVS value arguments. Relation bindings are derived from the resolved relation schemas."
-            },
+            "options": options_schema,
         }
     })
 }
@@ -370,12 +367,17 @@ fn examples(operation: CuvsOperation) -> Value {
             "n_components": 2
         }),
     };
+    // The quickstart SQL and the validation envelope read the same tables, so
+    // a validated call is the call the quickstart executes.
     let relations = operation
         .descriptor()
         .relation_roles
         .iter()
-        .map(|role| (role.as_str().to_string(), json!({"table": format!("{}_vectors", role.as_str())})))
+        .map(|role| (role.as_str().to_string(), json!({"table": example_table(*role)})))
         .collect::<Map<_, _>>();
+    debug_assert!(
+        relations.values().all(|relation| descriptor.quickstart_sql.contains(relation["table"].as_str().unwrap()))
+    );
     json!([{
         "quickstart": {
             "display_name": descriptor.display_name,
@@ -387,6 +389,14 @@ fn examples(operation: CuvsOperation) -> Value {
             "call": {"relations": relations, "options": options}
         }
     }])
+}
+
+fn example_table(role: CuvsRelationRole) -> &'static str {
+    match role {
+        CuvsRelationRole::Dataset => "dataset_vectors",
+        CuvsRelationRole::Queries => "query_vectors",
+        CuvsRelationRole::Input => "input_vectors",
+    }
 }
 
 fn limitations(operation: CuvsOperation) -> Value {
@@ -462,16 +472,35 @@ fn unavailable_validation(
     }
 }
 
-fn validation_error(error: &DataFusionError) -> (String, String) {
-    if let Some(error) = error.find_algeon_error() {
-        let code = match error.code() {
-            ErrorCode::FieldNotFound => "column_not_found",
-            ErrorCode::UnsupportedType => "unsupported_type",
-            _ => error.facts().get("reason").unwrap_or("cuvs_validation_failed"),
-        };
-        return (code.to_string(), error.message().to_string());
+/// Projects a typed validation rejection into the stable error code plus the
+/// `details_json` locator: `path` names `options.<argument>` or
+/// `relations.<role>[.fields.<field>]`, and the typed facts that located the
+/// failure (`argument`, `relation_role`, `field`, `actual_type`,
+/// `expected_type`) are copied alongside it.
+fn validation_error(error: &DataFusionError, details: &mut Value) -> (String, String) {
+    let Some(error) = error.find_algeon_error() else {
+        details["path"] = Value::String("options".to_string());
+        return ("cuvs_validation_failed".to_string(), error.to_string());
+    };
+    let code = match error.code() {
+        ErrorCode::FieldNotFound => "column_not_found",
+        ErrorCode::UnsupportedType => "unsupported_type",
+        _ => error.facts().get("reason").unwrap_or("cuvs_validation_failed"),
+    };
+    let facts = error.facts();
+    let path = match (facts.get("argument"), facts.get("relation_role"), facts.get("field")) {
+        (Some(argument), _, _) => format!("options.{argument}"),
+        (None, Some(role), Some(field)) => format!("relations.{role}.fields.{field}"),
+        (None, Some(role), None) => format!("relations.{role}"),
+        (None, None, _) => "options".to_string(),
+    };
+    details["path"] = Value::String(path);
+    for key in ["argument", "relation_role", "field", "actual_type", "expected_type"] {
+        if let Some(value) = facts.get(key) {
+            details[key] = Value::String(value.to_string());
+        }
     }
-    ("cuvs_validation_failed".to_string(), error.to_string())
+    (code.to_string(), error.message().to_string())
 }
 
 fn base_details(operation: CuvsOperation, relations: Map<String, Value>) -> Value {

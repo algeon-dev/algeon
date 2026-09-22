@@ -108,7 +108,7 @@ FROM gpu_validate_call(
   'cuvs_kmeans',
   '{
     "relations":{"input":{"table":"embedding_vectors"}},
-    "options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}
+    "options":{"n_clusters":8}
   }'
 );
 ```

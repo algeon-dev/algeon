@@ -47,12 +47,7 @@ __pycache__/
 # is versioned; generated and host-provisioned data is not.
 /fixture/tpc-h/data
 /fixture/tpc-ds/data
-/fixture/clickbench/data
-/fixture/graph/demo
-/fixture/graph/synthetic
-/fixture/graph/dblp.v12.json
-/fixture/graph/cugraph/bfs_predicate_numeric/
-/fixture/graph/cugraph/bfs_predicate_utf8/
+fixture/graph/citation_network
 /crates/bench/calibration/*.tsv
 
 # agent config
