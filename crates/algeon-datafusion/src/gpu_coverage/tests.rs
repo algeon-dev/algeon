@@ -15,10 +15,12 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 #[cfg(feature = "cugraph")]
+use query_engine::source::GpuResidentSource;
+#[cfg(feature = "cugraph")]
 use query_engine::{expr::Expr, plan::ProjectionOutput};
 use query_engine::{
     plan::{NativePlanCostReason, QueryPlanBuilder},
-    source::{GpuResidentSource, LocalParquetSource, SourceNode},
+    source::{LocalParquetSource, SourceNode},
 };
 
 use super::{physical::candidate_outcomes_from_report, *};

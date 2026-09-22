@@ -132,7 +132,7 @@ impl SourceAccessPolicy {
     /// Applies this source policy to an Iceberg catalog/FileIO property map.
     /// Callers must not log the returned map because it can hold static S3
     /// credentials.
-    #[cfg_attr(not(feature = "catalog"), allow(dead_code))]
+    #[cfg(any(feature = "catalog", test))]
     pub(crate) fn apply_catalog_properties(&self, properties: &mut HashMap<String, String>) {
         match self {
             Self::S3(policy) => policy.apply_catalog_properties(properties),
@@ -142,7 +142,7 @@ impl SourceAccessPolicy {
     /// Returns exactly the properties that construct this policy's FileIO.
     /// Catalog credentials are deliberately excluded: Glue metadata and table
     /// data can be authorized independently.
-    #[cfg(feature = "catalog")]
+    #[cfg(feature = "glue")]
     pub(crate) fn file_io_properties(&self) -> HashMap<String, String> {
         let mut properties = HashMap::new();
         self.apply_catalog_properties(&mut properties);
@@ -277,7 +277,6 @@ impl S3SourceAccessPolicy {
         }
     }
 
-    #[cfg_attr(not(feature = "catalog"), allow(dead_code))]
     fn apply_catalog_properties(&self, properties: &mut HashMap<String, String>) {
         if let Some(endpoint) = &self.endpoint {
             properties.insert("s3.endpoint".to_string(), endpoint.clone());
@@ -362,6 +361,7 @@ enum GlueCatalogCredentials {
 }
 
 impl GlueCatalogCredentials {
+    #[cfg(any(feature = "glue", test))]
     fn apply_catalog_properties(&self, properties: &mut HashMap<String, String>) {
         let Self::ExplicitStatic(credentials) = self else {
             return;
@@ -443,7 +443,7 @@ impl GlueCatalogConfig {
         &self.source_access
     }
 
-    #[cfg_attr(not(feature = "catalog"), allow(dead_code))]
+    #[cfg(any(feature = "glue", test))]
     pub(crate) fn catalog_properties(&self) -> HashMap<String, String> {
         let mut properties = HashMap::from([
             ("warehouse".to_string(), self.warehouse.clone()),
@@ -532,7 +532,7 @@ impl RestCatalogConfig {
         &self.source_access
     }
 
-    #[cfg_attr(not(feature = "catalog"), allow(dead_code))]
+    #[cfg(any(feature = "rest", test))]
     pub(crate) fn catalog_properties(&self) -> HashMap<String, String> {
         let mut properties =
             HashMap::from([("uri".to_string(), self.uri.clone()), ("warehouse".to_string(), self.warehouse.clone())]);

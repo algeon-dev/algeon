@@ -1,6 +1,6 @@
 //! Native query execution.
 //!
-//! Entrypoints validate local source contracts, derive output mode from the
+//! Entrypoint validate local source contracts, derive output mode from the
 //! plan sink, and dispatch according to the bounded execution contract in the
 //! [`ExecutionContext`].
 //! GPU-resident input lookup is by plan-local names supplied in
@@ -129,7 +129,7 @@ use crate::{
 /// GPU resources.
 ///
 /// Frontends use this capability-first boundary before host work or native
-/// admission. Execution entrypoints call the same validation internally.
+/// admission. Execution entrypoint call the same validation internally.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_query_plan(plan, rapids_analysis_context())
 }
@@ -154,13 +154,13 @@ static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Per-query execution state for unbounded native execution.
 ///
-/// `node_results` memoizes every materialized node output for the duration of
+/// `node_results` memorizes every materialized node output for the duration of
 /// one query so DAG-shaped plans reuse device-resident frames instead of
 /// re-reading or recomputing shared subplans. Entries are released together when
 /// `execute_query_plan` returns; there is intentionally no intra-query eviction
 /// policy yet.
 ///
-/// `hash_join_builds` memoizes reusable cuDF hash-join artifacts for repeated
+/// `hash_join_builds` memorizes reusable cuDF hash-join artifacts for repeated
 /// probes against the same build node, build keys, and null-equality contract.
 /// The repository retains the query runtime and device placement that produced
 /// the artifacts, and is released with this scratch object at query end. It is

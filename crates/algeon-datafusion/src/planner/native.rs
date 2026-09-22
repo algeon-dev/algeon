@@ -785,9 +785,11 @@ mod tests {
     #[cfg(feature = "cugraph")]
     use datafusion::physical_plan::coop::CooperativeExec;
     use datafusion::physical_plan::empty::EmptyExec;
+    #[cfg(feature = "cugraph")]
+    use query_engine::source::GpuResidentSource;
     use query_engine::{
         plan::{QueryPlan, QueryPlanBuilder},
-        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+        source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     use super::*;
@@ -941,6 +943,7 @@ mod tests {
         ) as Arc<dyn ExecutionPlan>
     }
 
+    #[cfg(feature = "cugraph")]
     #[test]
     fn planner_ticket_aggregates_scopes_from_composed_native_fragments() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);

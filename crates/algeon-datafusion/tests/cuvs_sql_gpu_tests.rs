@@ -2,17 +2,20 @@
 
 use std::{fs::File, sync::Arc, time::Duration};
 
-#[cfg(feature = "cugraph")]
-use algeon_datafusion::cugraph_sql::CugraphSqlConfig;
 use algeon_datafusion::{
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     cuvs_sql::CuvsAlgoExec,
     native_exec::AlgeonNativeExecutionConfig,
-    native_report::NativeDataFusionExecutionMetrics,
-    planner::{AlgeonGpuExecutionMode, FinalPlanDisposition, classify_final_plan},
+    planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
+};
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::{
+    cugraph_sql::CugraphSqlConfig,
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::{FinalPlanDisposition, classify_final_plan},
 };
 use arrow::{
     array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray},
@@ -24,14 +27,18 @@ use cudf::testing::arrow::{
     arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
     reset_arrow_host_interop_observation_for_test,
 };
+#[cfg(feature = "cugraph")]
+use datafusion::physical_plan::{execute_stream, metrics::MetricsSet};
 use datafusion::{
     datasource::MemTable,
     execution::SessionStateBuilder,
-    physical_plan::{ExecutionPlan, collect, displayable, execute_stream, metrics::MetricsSet},
+    physical_plan::{ExecutionPlan, collect, displayable},
     prelude::{ParquetReadOptions, SessionContext},
 };
+#[cfg(feature = "cugraph")]
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
+#[cfg(feature = "cugraph")]
 use tokio::{task::yield_now, time::timeout};
 
 const KNN_OPTIONS: &str = r#"{
@@ -771,24 +778,26 @@ async fn assert_cuvs_results(plan: Arc<dyn ExecutionPlan>, ctx: &SessionContext)
     assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "cuVS execution must return rows");
 }
 
-#[cfg(feature = "cugraph")]
 fn register_tables(ctx: &SessionContext) {
-    let edges_schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, false),
-        Field::new("dst", DataType::Int64, false),
-        Field::new("weight", DataType::Float32, false),
-    ]));
-    let edges = RecordBatch::try_new(
-        Arc::clone(&edges_schema),
-        vec![
-            Arc::new(Int64Array::from(vec![0_i64, 1, 2, 2])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1_i64, 2, 0, 3])) as ArrayRef,
-            Arc::new(Float32Array::from(vec![1.0_f32, 1.5, 1.0, 0.5])) as ArrayRef,
-        ],
-    )
-    .expect("edge fixture");
-    ctx.register_table("edges", Arc::new(MemTable::try_new(edges_schema, vec![vec![edges]]).expect("edge table")))
-        .expect("register edge table");
+    #[cfg(feature = "cugraph")]
+    {
+        let edges_schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+            Field::new("weight", DataType::Float32, false),
+        ]));
+        let edges = RecordBatch::try_new(
+            Arc::clone(&edges_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![0_i64, 1, 2, 2])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![1_i64, 2, 0, 3])) as ArrayRef,
+                Arc::new(Float32Array::from(vec![1.0_f32, 1.5, 1.0, 0.5])) as ArrayRef,
+            ],
+        )
+        .expect("edge fixture");
+        ctx.register_table("edges", Arc::new(MemTable::try_new(edges_schema, vec![vec![edges]]).expect("edge table")))
+            .expect("register edge table");
+    }
 
     let dataset_schema = Arc::new(Schema::new(vec![
         Field::new("item_id", DataType::Int64, false),
@@ -838,6 +847,7 @@ fn find_cuvs_exec(plan: &dyn ExecutionPlan) -> Option<&CuvsAlgoExec> {
     plan.children().into_iter().find_map(|child| find_cuvs_exec(child.as_ref()))
 }
 
+#[cfg(feature = "cugraph")]
 fn recursive_plan_metrics(plan: &dyn ExecutionPlan) -> MetricsSet {
     fn append(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
         if let Some(plan_metrics) = plan.metrics() {

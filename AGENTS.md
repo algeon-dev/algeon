@@ -125,7 +125,7 @@ Use `--workspace --all-features` in every Cargo build, check, lint, and test
 command and select tests with nextest filtersets, never `-p`: one build
 configuration keeps every command warm. The only exception is the
 feature-isolation command
-`cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going`,
+`cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked --keep-going`,
 which `scripts/check_all.sh` runs as package shards and fail-closes unless their
 union matches that command's `--print-command-list` output.
 

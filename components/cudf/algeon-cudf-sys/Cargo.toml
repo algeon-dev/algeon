@@ -43,6 +43,7 @@ name = "native_abi_contract_cpu"
 
 [[test]]
 name = "stream_provider_contract_cpu"
+required-features = ["test-hooks"]
 
 [[test]]
 name = "bindings_contract_cpu"

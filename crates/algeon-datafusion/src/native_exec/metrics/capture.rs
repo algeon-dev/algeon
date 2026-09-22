@@ -42,7 +42,7 @@ impl From<RuntimeObservationOwner> for NativeRuntimeObservation {
 /// Cloneable config-time observation wiring.
 #[derive(Clone)]
 pub struct NativeMetricsCapture {
-    #[cfg(feature = "server")]
+    #[cfg(any(test, feature = "server"))]
     query_id: Option<Arc<str>>,
     coordinated_observation: Option<RuntimeObservationHandle>,
     coordinated_activity: Option<NativeObservationActivityFactory>,
@@ -54,7 +54,7 @@ impl NativeMetricsCapture {
     pub fn standalone() -> Self {
         let observation_config = RuntimeObservationConfig::native_execution();
         Self {
-            #[cfg(feature = "server")]
+            #[cfg(any(test, feature = "server"))]
             query_id: None,
             coordinated_observation: None,
             coordinated_activity: None,
@@ -75,7 +75,7 @@ impl NativeMetricsCapture {
         }
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(test, feature = "server"))]
     pub fn query_id(&self) -> Option<&str> {
         self.query_id.as_deref()
     }
@@ -132,7 +132,7 @@ impl NativeExecutionMetricsCapture {
         let metric_capture_limits = observation.config().limits();
         Self {
             wiring: NativeMetricsCapture {
-                #[cfg(feature = "server")]
+                #[cfg(any(test, feature = "server"))]
                 query_id: None,
                 coordinated_observation: Some(observation),
                 coordinated_activity: None,

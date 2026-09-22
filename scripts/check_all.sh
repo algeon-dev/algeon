@@ -125,8 +125,9 @@ doctests() {
 
 # The canonical feature-isolation matrix
 # (cargo hack check --workspace --each-feature --exclude-features default
-# --locked --keep-going) split into package shards with their own target
-# directories. The union check fails closed when a workspace member has no shard.
+# --all-targets --locked --keep-going) split into package shards with their own
+# target directories. The union check fails closed when a workspace member has
+# no shard.
 FEATURE_ISOLATION_SHARDS=(
   "tools"
   "algeon-datafusion workloads datafusion-facade-consumer algeon-interop"
@@ -144,7 +145,7 @@ feature_isolation() {
     args=()
     for pkg in ${FEATURE_ISOLATION_SHARDS[index]}; do args+=(-p "${pkg}"); done
     CARGO_TARGET_DIR="${ROOT}/target/check-all/feature-isolation-shard-${index}" CARGO_BUILD_JOBS=6 \
-      cargo hack check "${args[@]}" --each-feature --exclude-features default --locked --keep-going \
+      cargo hack check "${args[@]}" --each-feature --exclude-features default --all-targets --locked --keep-going \
       >"${shards}/shard-${index}.log" 2>&1 &
     pids+=($!)
   done
@@ -156,8 +157,8 @@ feature_isolation() {
   done
   # Compare command lists in cargo-hack's own format: the shards' union must
   # equal what the workspace-wide command would run.
-  expected=$(cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going \
-    --print-command-list 2>/dev/null | LC_ALL=C sort)
+  expected=$(cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked \
+    --keep-going --print-command-list 2>/dev/null | LC_ALL=C sort)
   if [[ -z "${expected}" ]]; then
     echo "FAIL: cannot enumerate the canonical feature-isolation checks"
     return 1
@@ -165,7 +166,8 @@ feature_isolation() {
   for index in "${!FEATURE_ISOLATION_SHARDS[@]}"; do
     args=()
     for pkg in ${FEATURE_ISOLATION_SHARDS[index]}; do args+=(-p "${pkg}"); done
-    cargo hack check "${args[@]}" --each-feature --exclude-features default --locked --keep-going --print-command-list
+    cargo hack check "${args[@]}" --each-feature --exclude-features default --all-targets --locked --keep-going \
+      --print-command-list
   done 2>/dev/null | LC_ALL=C sort >"${shards}/union.txt"
   if ! diff <(printf '%s\n' "${expected}") "${shards}/union.txt"; then
     echo "FAIL: sharded feature-isolation checks differ from the canonical command list"

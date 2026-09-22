@@ -272,6 +272,7 @@ fn classify_error_message_for_test(message: &str, retryable: bool) -> ErrorCode 
 
 /// Authentication, access, and not-found markers: an explicit leaf condition
 /// that a generic timeout or cancellation wrapper must not override.
+#[cfg(any(feature = "catalog", test))]
 fn classify_specific_message(message: &str) -> Option<ErrorCode> {
     let text = message.to_ascii_lowercase();
     if contains_any(
@@ -317,6 +318,7 @@ fn classify_specific_message(message: &str) -> Option<ErrorCode> {
 
 /// Generic cancellation and timeout wrappers, consulted only after the whole
 /// bounded chain has been scanned for a more specific leaf condition.
+#[cfg(any(feature = "catalog", test))]
 fn classify_transient_message(message: &str) -> Option<ErrorCode> {
     let text = message.to_ascii_lowercase();
     if contains_any(&text, &["cancelled", "canceled", "request aborted", "operation aborted"]) {
@@ -340,6 +342,7 @@ fn status_for(code: ErrorCode, retryable: bool) -> ErrorStatus {
 /// Maximum source-chain layers consulted by [`classify_iceberg_error`].
 /// Matches the adapter's foreign-error traversal budget so a classification
 /// made here can be reproduced at the DataFusion boundary.
+#[cfg(feature = "catalog")]
 const MAX_CLASSIFICATION_CHAIN_DEPTH: usize = 32;
 
 #[cfg(feature = "catalog")]

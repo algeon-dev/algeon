@@ -740,7 +740,7 @@ impl QueryError {
     /// This is an explicit overwrite path owned by the cuGraph boundary: the
     /// mirrored fact always tracks the typed field, so a second call replaces
     /// both together instead of recording a collision.
-    #[cfg(any(feature = "cugraph", test))]
+    #[cfg(any(feature = "cugraph", feature = "test-hooks", test))]
     #[must_use]
     #[doc(hidden)]
     pub fn with_cugraph_allocation_source(mut self, source: CugraphAllocationSource) -> Self {
