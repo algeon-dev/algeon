@@ -5,7 +5,9 @@ use crate::{
     runtime::Runtime,
 };
 
-pub(crate) fn trigger_factorize_empty_row_code_dtype_error_for_test() -> Result<()> {
+/// Trigger the factorization empty-row-code dtype invariant path used by
+/// integration tests.
+pub fn trigger_factorize_empty_row_code_dtype_error_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     let output_domain = Arc::clone(runtime.execution_domain());
     let row_codes = Column::from_slice_in_domain::<f64>(&[], &output_domain)?;

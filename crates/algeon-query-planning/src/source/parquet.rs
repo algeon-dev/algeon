@@ -787,7 +787,8 @@ pub struct LocalParquetFile {
     /// Selected Parquet row-group indices.
     ///
     /// `None` means no explicit row-group selection was represented. `Some`
-    /// limits the scan to the listed row groups.
+    /// limits the scan to the listed row groups, so `Some(vec![])` selects
+    /// zero row groups (a source proven empty), never every row group.
     pub row_groups: Option<Vec<usize>>,
     /// Estimated or known byte sizes for selected row groups.
     pub row_group_bytes: Option<Vec<u64>>,
@@ -1064,7 +1065,7 @@ impl LocalParquetFile {
         let Some(null_counts) = self.row_group_null_counts.get(&file_column_index) else {
             return false;
         };
-        let selected = self.row_groups.clone().unwrap_or_else(|| (0..null_counts.len()).collect::<Vec<_>>());
+        let selected = self.selected_or_all_row_groups(null_counts.len());
         selected.iter().all(|row_group| null_counts.get(*row_group).and_then(|count| *count) == Some(0))
     }
 
@@ -1116,6 +1117,14 @@ impl LocalParquetFile {
     pub fn with_partition_values(mut self, partition_values: Vec<LiteralValue>) -> Self {
         self.partition_values = partition_values;
         self
+    }
+
+    /// Returns the selected row-group indices, or every index below
+    /// `row_group_count` when no selection is represented.
+    ///
+    /// An explicit empty selection stays empty; see [`Self::row_groups`].
+    pub fn selected_or_all_row_groups(&self, row_group_count: usize) -> Vec<usize> {
+        self.row_groups.clone().unwrap_or_else(|| (0..row_group_count).collect())
     }
 
     /// Returns the represented selected row-group count, or zero if unknown.

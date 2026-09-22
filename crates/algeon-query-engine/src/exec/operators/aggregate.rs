@@ -4,6 +4,7 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use query_planning::util::fnv1a64;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CaseWhen,
@@ -14,13 +15,14 @@ use super::{
     aggregate_spec_has_floating_statistical_aggregate, attach_budget_token_failure_facts, avg_sum_state_data_type,
     budgeted_value, cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, execute_global_aggregate, execute_global_aggregate_with_budget,
-    execution_overrides, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
-    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, global_count_star_expr,
-    global_valid_count_state_alias, lit, lit_null, lower_aggregate_function, lower_aggregate_spec_keys,
-    lower_column_expr, lower_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
-    lower_single_stage_grouped_aggregate_spec, partial_global_aggregate_output_schema, partial_global_aggregate_spec,
-    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
+    cudf_query_error_with_budget_details, cudf_unsupported_type_error, execute_global_aggregate,
+    execute_global_aggregate_with_budget, execution_overrides, final_global_aggregate_spec,
+    final_global_aggregate_state_output_schema, finalize_avg_output_columns, finalize_avg_output_columns_with_budget,
+    global_count_star_expr, global_valid_count_state_alias, lit, lit_null, lower_aggregate_function,
+    lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_final_aggregate_spec, lower_named_column_expr,
+    lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec, partial_global_aggregate_output_schema,
+    partial_global_aggregate_spec, schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present,
+    validate_avg_output_fields,
 };
 use crate::{
     capability::{
@@ -80,7 +82,7 @@ use partial_strategy::{
     prepared_sort_groupby_should_select_for_runtime_facts, reject_prepared_sort_groupby_for_exact_cardinality,
     reject_prepared_sort_groupby_for_runtime_facts, select_partial_aggregate_strategy_decision_with_options,
     select_prepared_sort_groupby_for_exact_cardinality, select_prepared_sort_groupby_for_runtime_facts,
-    source_adjacent_prepared_sort_groupby_runtime_candidate, source_chunk_structural_part, stable_fnv1a64,
+    source_adjacent_prepared_sort_groupby_runtime_candidate, source_chunk_structural_part,
 };
 pub(in crate::exec) use partial_strategy::{
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
@@ -129,7 +131,7 @@ pub(in crate::exec) fn partial_aggregate_source_chunk_fingerprint(chunks: &[Sour
         return None;
     }
     let signature = chunks.iter().map(source_chunk_structural_part).collect::<Vec<_>>().join("|");
-    Some(stable_fnv1a64(signature.as_bytes()))
+    Some(fnv1a64(signature.as_bytes()))
 }
 
 pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_contract_facts(

@@ -32,7 +32,7 @@ use super::CugraphAlgorithm;
 use super::{
     CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
     CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphVertexIdDomain, PredicateSourceColumnRole,
-    PredicateSourceSpec, plan_error, validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
+    PredicateSourceSpec, plan, validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
     vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
@@ -76,9 +76,11 @@ impl CugraphFeatureDisabledExec {
                 projection
                     .iter()
                     .map(|index| {
-                        schema.fields().get(*index).cloned().ok_or_else(|| {
-                            plan_error(format!("cuGraph output projection index {index} is out of range"))
-                        })
+                        schema
+                            .fields()
+                            .get(*index)
+                            .cloned()
+                            .ok_or_else(|| plan(format!("cuGraph output projection index {index} is out of range")))
                     })
                     .collect::<Result<Vec<_>>>()?,
             )),
@@ -132,7 +134,7 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
         if children.is_empty() {
             Ok(self)
         } else {
-            Err(plan_error("feature-disabled cuGraph SQL execution must not have input children"))
+            Err(plan("feature-disabled cuGraph SQL execution must not have input children"))
         }
     }
 
@@ -142,7 +144,7 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
         // rather than rejecting stream construction, while still performing
         // no source scan, staging, or GPU work.
         let schema = self.schema();
-        let error = super::cugraph_feature_disabled(self.algorithm);
+        let error = super::feature_disabled(self.algorithm);
         let stream = futures::stream::once(async move { Err(error) });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
@@ -167,7 +169,7 @@ pub(super) async fn literal_bfs_source_plan(
         .iter()
         .map(|value| match value {
             CugraphBfsSourceVertex::Int64(value) => Ok(*value),
-            CugraphBfsSourceVertex::Utf8(_) => Err(plan_error("numeric BFS source list contained a string value")),
+            CugraphBfsSourceVertex::Utf8(_) => Err(plan("numeric BFS source list contained a string value")),
         })
         .collect::<Result<Vec<_>>>()?;
     let (data_type, array): (DataType, ArrayRef) = match vertex_domain {
@@ -176,7 +178,7 @@ pub(super) async fn literal_bfs_source_plan(
                 .into_iter()
                 .map(|value| {
                     i32::try_from(value)
-                        .map_err(|_| plan_error(format!("BFS source vertex {value} does not fit Int32 edge domain")))
+                        .map_err(|_| plan(format!("BFS source vertex {value} does not fit Int32 edge domain")))
                 })
                 .collect::<Result<Vec<_>>>()?;
             (DataType::Int32, Arc::new(Int32Array::from(values)) as ArrayRef)
@@ -235,7 +237,7 @@ pub(super) fn validate_edge_source_schema(
             ))
         })?;
         if !domain.accepts(edge_id.data_type()) {
-            return Err(plan_error(format!("cuGraph edge-id column 'edge_id' must have dtype {}", domain.label())));
+            return Err(plan(format!("cuGraph edge-id column 'edge_id' must have dtype {}", domain.label())));
         }
     }
     spec.validate_logical_edge_id_capability(domain.is_string_logical())?;
@@ -255,13 +257,13 @@ pub(super) fn validate_predicate_source_schema(
         let name = role.canonical_name();
         let field = schema
             .field_with_name(name)
-            .map_err(|_| plan_error(format!("cuGraph side-input child is missing canonical column '{name}'")))?;
+            .map_err(|_| plan(format!("cuGraph side-input child is missing canonical column '{name}'")))?;
         match role {
             PredicateSourceColumnRole::Vertex
             | PredicateSourceColumnRole::Source
             | PredicateSourceColumnRole::Destination => {
                 if !vertex_domain.accepts(field.data_type()) {
-                    return Err(plan_error(format!(
+                    return Err(plan(format!(
                         "cuGraph side-input vertex column '{name}' must have dtype {}",
                         vertex_domain.label()
                     )));
@@ -269,21 +271,21 @@ pub(super) fn validate_predicate_source_schema(
             },
             PredicateSourceColumnRole::EdgeId => {
                 if vertex_domain.is_string_logical() || !vertex_domain.accepts(field.data_type()) {
-                    return Err(plan_error(format!(
+                    return Err(plan(format!(
                         "cuGraph side-input edge-id column '{name}' requires the numeric edge-id domain"
                     )));
                 }
             },
             PredicateSourceColumnRole::FloatValue => {
                 if !matches!(field.data_type(), DataType::Float32 | DataType::Float64) {
-                    return Err(plan_error(format!(
+                    return Err(plan(format!(
                         "cuGraph side-input value column '{name}' must have dtype Float32 or Float64"
                     )));
                 }
             },
             PredicateSourceColumnRole::FirstVertex | PredicateSourceColumnRole::SecondVertex => {
                 if !vertex_domain.accepts(field.data_type()) {
-                    return Err(plan_error(format!(
+                    return Err(plan(format!(
                         "cuGraph side-input vertex column '{name}' must have dtype {}",
                         vertex_domain.label()
                     )));
@@ -295,9 +297,7 @@ pub(super) fn validate_predicate_source_schema(
             | PredicateSourceColumnRole::X
             | PredicateSourceColumnRole::Y => {
                 if field.data_type() != &DataType::Float32 {
-                    return Err(plan_error(format!(
-                        "cuGraph side-input value column '{name}' must have dtype Float32"
-                    )));
+                    return Err(plan(format!("cuGraph side-input value column '{name}' must have dtype Float32")));
                 }
             },
         }

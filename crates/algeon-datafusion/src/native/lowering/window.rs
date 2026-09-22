@@ -12,7 +12,7 @@ use datafusion::{
     physical_plan::windows::WindowUDFExpr,
 };
 use query_engine::{
-    datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
+    datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{
         Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
         SortExpr as NativeSortExpr,
@@ -34,7 +34,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::{is_supported_native_type, validate_physical_expr},
+        expression_contract::validate_physical_expr_contract,
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeSort, NormalizedNativeWindow},
         validate::{validate_schema, validate_sort_ordering},
@@ -123,9 +123,9 @@ fn validate_window_exprs(
 }
 
 fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
-    validate_physical_expr(expr, input_schema)?;
+    validate_physical_expr_contract(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if is_supported_native_type(&data_type)
+    if is_supported_arrow_type(&data_type)
         && !is_timestamp_with_timezone(&data_type)
         && !is_supported_list_carry_type(&data_type)
     {
@@ -234,10 +234,10 @@ fn parse_lag_lead_args(
         return Err(CapabilityReason::UnsupportedExpression);
     }
     let value_expr = Arc::clone(&args[0]);
-    validate_physical_expr(&value_expr, input_schema)?;
+    validate_physical_expr_contract(&value_expr, input_schema)?;
     let value_type =
         value_expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if !is_supported_native_type(&value_type)
+    if !is_supported_arrow_type(&value_type)
         || is_timestamp_with_timezone(&value_type)
         || is_supported_list_carry_type(&value_type)
     {
@@ -255,9 +255,9 @@ fn parse_lag_lead_args(
 }
 
 fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
-    validate_physical_expr(expr, input_schema)?;
+    validate_physical_expr_contract(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if is_supported_native_type(&data_type)
+    if is_supported_arrow_type(&data_type)
         && !is_timestamp_with_timezone(&data_type)
         && !is_supported_list_carry_type(&data_type)
     {

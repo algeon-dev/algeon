@@ -9,7 +9,7 @@ use query_engine::plan::{
     GraphSsspSource as NativeGraphSsspSource,
 };
 
-use super::{plan_error, registry::CugraphAlgorithm};
+use super::{plan, registry::CugraphAlgorithm};
 use crate::error::{Error, ErrorCode};
 
 pub(crate) const CUGRAPH_EDGE_SOURCE_COLUMN: &str = "src";
@@ -46,9 +46,9 @@ impl GpuIslandHostBoundaryConfig {
     /// Creates finite non-zero cumulative input and output staging limits.
     pub fn try_new(max_input_staging_bytes: usize, max_output_staging_bytes: usize) -> Result<Self> {
         let max_input_staging_bytes = NonZeroUsize::new(max_input_staging_bytes)
-            .ok_or_else(|| plan_error("cuGraph GPU-island input staging limit must be non-zero"))?;
+            .ok_or_else(|| plan("cuGraph GPU-island input staging limit must be non-zero"))?;
         let max_output_staging_bytes = NonZeroUsize::new(max_output_staging_bytes)
-            .ok_or_else(|| plan_error("cuGraph GPU-island output staging limit must be non-zero"))?;
+            .ok_or_else(|| plan("cuGraph GPU-island output staging limit must be non-zero"))?;
         Ok(Self { max_input_staging_bytes, max_output_staging_bytes })
     }
 

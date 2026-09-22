@@ -31,7 +31,7 @@ use super::{
     NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput, NativeGraphPredicateInput,
     ProjectionOutput, QueryExecutionRequest, QueryOutput, QueryPlanBuilder, Result, SchemaRef, SortExpr, SortSpec,
     SourceNode, add_logical_mapping_plan, decode_logical_graph_result, execute_query_plan,
-    finalize_graph_query_outcome, graph_uses_logical_mapping, node::projected_schema, plan_error,
+    finalize_graph_query_outcome, graph_uses_logical_mapping, node::projected_schema, plan,
 };
 
 /// The graph-fragment definition shared by preflight, plan construction, and
@@ -263,10 +263,12 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
         let outputs = projection
             .iter()
             .map(|index| {
-                let field =
-                    spec.output_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
-                        plan_error(format!("cuGraph output projection index {index} is out of range"))
-                    })?;
+                let field = spec
+                    .output_schema
+                    .fields()
+                    .get(*index)
+                    .map(|field| field.as_ref().clone())
+                    .ok_or_else(|| plan(format!("cuGraph output projection index {index} is out of range")))?;
                 Ok(ProjectionOutput::new(Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -382,14 +384,14 @@ fn bfs_path_output_row_bound(
         return Ok(None);
     }
     if let Some(depth) = params.depth_limit {
-        let depth = u64::try_from(depth).map_err(|_| plan_error("BFS path depth_limit must be non-negative"))?;
-        return depth.checked_add(1).map(Some).ok_or_else(|| plan_error("BFS path output row bound overflowed u64"));
+        let depth = u64::try_from(depth).map_err(|_| plan("BFS path depth_limit must be non-negative"))?;
+        return depth.checked_add(1).map(Some).ok_or_else(|| plan("BFS path output row bound overflowed u64"));
     }
     edge_vertex_upper_bound
         .or_else(|| edge_row_upper_bound.and_then(|rows| rows.checked_mul(2)))
         .map(|rows| rows.max(1))
         .map(Some)
-        .ok_or_else(|| plan_error("BFS path output requires a depth or graph vertex row bound"))
+        .ok_or_else(|| plan("BFS path output requires a depth or graph vertex row bound"))
 }
 
 pub(super) fn bfs_normalized_output_projection(
@@ -408,7 +410,7 @@ pub(super) fn bfs_normalized_output_projection(
     let predecessor_absent = match &predecessor_type {
         DataType::Int32 => LiteralValue::Int32(-1),
         DataType::Int64 => LiteralValue::Int64(-1),
-        ref other => return Err(plan_error(format!("cuGraph BFS predecessor has unsupported type {other:?}"))),
+        ref other => return Err(plan(format!("cuGraph BFS predecessor has unsupported type {other:?}"))),
     };
     let distance_is_unreachable = NativeExpr::binary(
         NativeExpr::column("distance"),
@@ -453,12 +455,12 @@ pub(super) fn bfs_normalized_output_projection(
 
 pub(super) fn bfs_unreachable_distance_sentinel(_spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<i64> {
     let source_field = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).map_err(|_| {
-        plan_error("cuGraph BFS output normalization could not find canonical source column 'src' in edge schema")
+        plan("cuGraph BFS output normalization could not find canonical source column 'src' in edge schema")
     })?;
     match source_field.data_type() {
         DataType::Int32 => Ok(i64::from(i32::MAX)),
         DataType::Int64 => Ok(i64::MAX),
-        other => Err(plan_error(format!(
+        other => Err(plan(format!(
             "cuGraph BFS output normalization requires Int32 or Int64 source vertices, found {other:?}"
         ))),
     }

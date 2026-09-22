@@ -10,7 +10,7 @@ use algeon_datafusion::{
     server::Result as ServerResult,
 };
 use tempfile::Builder as AdmissionTempfileBuilder;
-use tokio::{task::JoinHandle, time::timeout as admission_timeout};
+use tokio::task::JoinHandle;
 
 /// Occupies the backend's one active slot until the returned holder is
 /// dropped.
@@ -81,7 +81,7 @@ async fn shutdown_admission_test_server(
     server: JoinHandle<ServerResult<()>>,
 ) {
     shutdown.cancel();
-    admission_timeout(Duration::from_secs(10), server)
+    timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic")
@@ -115,7 +115,7 @@ async fn flight_do_get_rejects_a_full_admission_queue_as_resource_exhausted() {
     assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
 
     drop(holder);
-    let batches = admission_timeout(Duration::from_secs(60), first)
+    let batches = timeout(Duration::from_secs(60), first)
         .await
         .expect("the queued DoGet should finish once the holder releases")
         .expect("queued DoGet task should not panic")
@@ -187,7 +187,7 @@ async fn disconnecting_a_queued_flight_client_releases_the_waiter_for_the_next_q
     }
 
     drop(holder);
-    let batches = admission_timeout(Duration::from_secs(60), execute_batches(&mut client, ADMISSION_SQL))
+    let batches = timeout(Duration::from_secs(60), execute_batches(&mut client, ADMISSION_SQL))
         .await
         .expect("the freed slot should admit the next query");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
@@ -206,7 +206,7 @@ async fn a_queued_flight_query_times_out_against_the_configured_queue_wait() {
 
     let (_flight_info, queued) = start_queued_do_get(&mut client).await;
     let status = unwrap_flight_status(
-        admission_timeout(Duration::from_secs(30), queued)
+        timeout(Duration::from_secs(30), queued)
             .await
             .expect("the queued DoGet should expire against the queue wait bound")
             .expect("queued DoGet task should not panic")

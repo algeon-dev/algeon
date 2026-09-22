@@ -12,11 +12,10 @@ fn cudf_allocation_error_for_test(
     failure_source: Option<cudf::CudfErrorFailureSource>,
     with_budget_scope: bool,
 ) -> cudf::Error {
-    use cudf::testing::error as cudf_test_error;
-    let mut error =
-        cudf_test_error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
+    use cudf::testing::error;
+    let mut error = error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
     if let Some(failure_source) = failure_source {
-        error = cudf_test_error::with_ffi_detail_for_test(
+        error = error::with_ffi_detail_for_test(
             error,
             cudf::CudfErrorDetail {
                 status: 0,
@@ -32,9 +31,9 @@ fn cudf_allocation_error_for_test(
         );
     }
     if with_budget_scope {
-        error = cudf_test_error::with_budget_exhaustion_for_test(
+        error = error::with_budget_exhaustion_for_test(
             error,
-            cudf_test_error::budget_exhaustion_detail_for_test(
+            error::budget_exhaustion_detail_for_test(
                 1024,
                 1024,
                 1024,

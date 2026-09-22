@@ -5952,6 +5952,7 @@ pub const fn cudf::ops::materialization::MaterializedTableUpperBoundPreflight::c
 pub const cudf::ops::materialization::PER_COLUMN_ALIGNMENT_PADDING_BYTES: usize
 pub const cudf::ops::materialization::STRING_OFFSET_BYTES_CONSERVATIVE: usize
 pub const cudf::ops::materialization::TABLE_UPPER_BOUND_PREFLIGHT_OPERATION: &str
+pub fn cudf::ops::materialization::null_mask_bytes(usize) -> cudf::core::error::Result<usize>
 pub fn cudf::ops::materialization::table_upper_bound_preflight(usize, &[cudf::ops::materialization::MaterializedColumnUpperBoundInput]) -> cudf::core::error::Result<cudf::ops::materialization::MaterializedTableUpperBoundPreflight>
 pub mod cudf::ops::partitioning
 pub struct cudf::ops::partitioning::HashPartitionedTable

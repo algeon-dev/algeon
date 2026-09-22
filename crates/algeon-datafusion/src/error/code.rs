@@ -455,6 +455,10 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 /// failure that requires escalation or intervention, while
 /// [`ErrorStatus::Permanent`] means the request, input, configuration, or code
 /// must change before the same operation can succeed.
+// Native-to-adapter mapping is intentionally lossy at the top-level code:
+// native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
+// the adapter has no shape-specific code. The exact native code remains
+// available in the `native_code` fact attached by `Error::from_native`.
 pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
     match code {
         QueryErrorCode::Cancelled => ErrorCode::Cancelled,

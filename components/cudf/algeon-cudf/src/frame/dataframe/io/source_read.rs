@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     core::error::{Error, ErrorCode, Result},
-    internal::hash::FastHashSet,
+    hash::FastHashSet,
     io::{
         parquet::{
             self, ParquetMultiTableInput, ParquetMultiTableReadOptions, ParquetReadEvidence, ParquetTableReadOptions,

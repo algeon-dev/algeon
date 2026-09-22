@@ -15,16 +15,19 @@ use datafusion::{
         projection::ProjectionExec,
     },
 };
+use query_engine::{
+    capability::is_cudf_median_input_type,
+    datatypes::{is_supported_arrow_type, is_timestamp_with_timezone},
+};
 
 use super::expression_contract::{
-    is_list_carry_type, is_narrow_decimal_carry, is_supported_native_type, is_timestamp_with_timezone_type,
-    resolve_column, validate_physical_expr,
+    is_list_carry_type, is_narrow_decimal_carry, resolve_column, validate_physical_expr_contract,
 };
 use crate::capability::CapabilityReason;
 
 pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), CapabilityReason> {
     for field in schema.fields() {
-        if !is_supported_native_type(field.data_type()) {
+        if !is_supported_arrow_type(field.data_type()) {
             return Err(CapabilityReason::UnsupportedType);
         }
     }
@@ -67,7 +70,7 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         let [arg] = expressions.as_slice() else {
             return Err(CapabilityReason::UnsupportedExpression);
         };
-        validate_physical_expr(arg, &aggregate.input().schema())?;
+        validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
         if aggregate_expr.fun().name().eq_ignore_ascii_case("median") {
             validate_median_input_type(arg, &aggregate.input().schema())?;
@@ -127,7 +130,7 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         let [arg] = expressions.as_slice() else {
             return Err(CapabilityReason::UnsupportedExpression);
         };
-        validate_physical_expr(arg, &aggregate.input().schema())?;
+        validate_physical_expr_contract(arg, &aggregate.input().schema())?;
         validate_operator_value_expr(arg, &aggregate.input().schema())?;
     }
     validate_aggregate_filters(aggregate)?;
@@ -135,14 +138,14 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
         validate_operator_key_expr(group_expr, &aggregate.input().schema())?;
     }
     for (null_expr, _alias) in group_by.null_expr() {
-        validate_physical_expr(null_expr, &aggregate.input().schema())?;
+        validate_physical_expr_contract(null_expr, &aggregate.input().schema())?;
     }
     Ok(())
 }
 
 fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), CapabilityReason> {
     for filter in aggregate.filter_expr().iter().flatten() {
-        validate_physical_expr(filter, &aggregate.input().schema())?;
+        validate_physical_expr_contract(filter, &aggregate.input().schema())?;
         let data_type = filter
             .data_type(aggregate.input().schema().as_ref())
             .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
@@ -178,7 +181,7 @@ pub(super) fn validate_sort_ordering(ordering: &LexOrdering, input_schema: &Sche
 }
 
 fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
-    validate_physical_expr(expr, input_schema)?;
+    validate_physical_expr_contract(expr, input_schema)?;
     validate_operator_value_expr(expr, input_schema)
 }
 
@@ -187,10 +190,7 @@ fn validate_operator_value_expr(
     input_schema: &SchemaRef,
 ) -> Result<(), CapabilityReason> {
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if is_timestamp_with_timezone_type(&data_type)
-        || is_list_carry_type(&data_type)
-        || is_narrow_decimal_carry(&data_type)
-    {
+    if is_timestamp_with_timezone(&data_type) || is_list_carry_type(&data_type) || is_narrow_decimal_carry(&data_type) {
         Err(CapabilityReason::UnsupportedType)
     } else {
         Ok(())
@@ -200,22 +200,6 @@ fn validate_operator_value_expr(
 fn validate_median_input_type(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_cudf_median_input_type(&data_type) { Ok(()) } else { Err(CapabilityReason::UnsupportedType) }
-}
-
-fn is_cudf_median_input_type(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-    )
 }
 
 pub(super) fn native_zero_column_count_source_is_safe(

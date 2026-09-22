@@ -27,7 +27,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::validate_physical_expr,
+        expression_contract::validate_physical_expr_contract,
         lowering::{
             LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
             expr::lower_physical_expr_with_bindings, projection_outputs,
@@ -68,17 +68,17 @@ pub(super) fn lower_local_parquet_source_input(
         for projection_expr in
             required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns)
         {
-            validate_physical_expr(projection_expr.expr, &table_schema)?;
+            validate_physical_expr_contract(projection_expr.expr, &table_schema)?;
         }
     }
     if let Some(filter) = filter {
-        validate_physical_expr(filter.predicate(), &filter.input().schema())?;
+        validate_physical_expr_contract(filter.predicate(), &filter.input().schema())?;
     }
     if filter.is_none()
         && let Some(predicate) =
             parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
     {
-        validate_physical_expr(&predicate, &table_schema)?;
+        validate_physical_expr_contract(&predicate, &table_schema)?;
     }
     if local_parquet_scan_is_empty(file_scan) {
         if !native_parquet_object_store_scan_is_supported(file_scan) {

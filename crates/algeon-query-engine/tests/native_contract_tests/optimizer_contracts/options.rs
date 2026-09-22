@@ -1,5 +1,4 @@
 use query_engine::{
-    dimension_pruning::local_dimension_pruning_resolver as optimizer_options_local_dimension_pruning_resolver,
     optimizer::{
         DimensionKeyFilter as OptionsDimensionKeyFilter,
         DIMENSION_KEY_FILTER_MAX_RUNS as OPTIONS_DIMENSION_KEY_FILTER_MAX_RUNS,
@@ -16,7 +15,7 @@ fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {
         plan.clone(),
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(),
-        optimizer_options_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.plan, plan);
@@ -47,7 +46,7 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
         plan.clone(),
         &options,
         rapids_analysis_context(),
-        optimizer_options_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert!(!options.projection_simplification.enabled);
@@ -69,7 +68,7 @@ fn native_optimizer_captures_keyed_hash_join_strategy_options_in_plan() {
         single_source_plan(),
         &options,
         rapids_analysis_context(),
-        optimizer_options_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
@@ -95,7 +94,7 @@ fn native_optimizer_preserves_keyed_hash_join_strategy_options_through_projectio
         plan,
         &options,
         rapids_analysis_context(),
-        optimizer_options_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);

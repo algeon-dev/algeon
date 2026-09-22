@@ -1,6 +1,7 @@
 use std::cmp;
 
 use arrow::datatypes::DataType as ArrowDataType;
+use cudf::ops::materialization;
 
 use super::{filtered_segment_policy::FilteredAggregateSegmentationPolicy, *};
 use crate::{datatypes::arrow_fixed_width_byte_size, observability::BudgetWindowPeaks};
@@ -58,6 +59,11 @@ pub(super) fn filtered_inputs_per_segment_for_budget(
     usize::try_from(cmp::max(1, available_for_masked_inputs / per_input_bytes.max(1))).unwrap_or(usize::MAX)
 }
 
+/// cuDF null-mask allocation bytes for `rows`, saturating on overflow like the
+/// other terms of the filtered-aggregate footprint estimate.
 pub(super) fn null_mask_bytes(rows: u64) -> u64 {
-    if rows == 0 { 0 } else { rows.div_ceil(8).div_ceil(64) * 64 }
+    usize::try_from(rows)
+        .ok()
+        .and_then(|rows| materialization::null_mask_bytes(rows).ok())
+        .map_or(u64::MAX, |bytes| bytes as u64)
 }

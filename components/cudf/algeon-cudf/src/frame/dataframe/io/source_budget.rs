@@ -8,7 +8,7 @@ use crate::{
         error::{Error, ErrorCode, Result},
         types::cudf_null_mask_allocation_size_bytes,
     },
-    internal::hash::fast_hash_set_with_capacity,
+    hash::fast_hash_set_with_capacity,
     io::{
         parquet::ParquetReadEvidence,
         source::{

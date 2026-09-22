@@ -4,10 +4,7 @@ use crate::{
     core::{
         Error, ErrorCode, Result,
         column::{
-            adopt_owned_column_view_for_test as adopt_owned_column_view_for_test_inner,
-            column_view_copy_fixed_width_to_host_for_benchmark,
-            column_view_to_fixed_width_host_bytes_for_test as column_view_to_fixed_width_host_bytes_for_test_inner,
-            column_view_to_raw_bytes_for_test as column_view_to_raw_bytes_for_test_inner,
+            self, column_view_copy_fixed_width_to_host_for_benchmark,
             trigger_fixed_width_host_byte_range_overflow_for_test,
         },
         error,
@@ -135,20 +132,20 @@ pub unsafe fn adopt_owned_column_view_for_test(
     raw: cudf_sys::cudf_column_view_handle,
     runtime: &crate::Runtime,
 ) -> Result<ColumnView<'static>> {
-    unsafe { adopt_owned_column_view_for_test_inner(raw, runtime) }
+    unsafe { column::adopt_owned_column_view_for_test(raw, runtime) }
 }
 
 /// Trigger the internal raw-byte materialization helper on a borrowed column
 /// view so integration tests can lock down its downstream error contract.
 pub fn column_view_to_raw_bytes_for_test(view: &ColumnView<'_>) -> Result<Vec<u8>> {
-    column_view_to_raw_bytes_for_test_inner(view)
+    column::column_view_to_raw_bytes_for_test(view)
 }
 
 /// Trigger the internal fixed-width host-byte materialization helper on a
 /// borrowed column view so integration tests can lock down its downstream
 /// error contract.
 pub fn column_view_to_fixed_width_host_bytes_for_test(view: &ColumnView<'_>) -> Result<Vec<u8>> {
-    column_view_to_fixed_width_host_bytes_for_test_inner(view)
+    column::column_view_to_fixed_width_host_bytes_for_test(view)
 }
 
 /// Trigger the fixed-width host-byte materialization overflow contract used by

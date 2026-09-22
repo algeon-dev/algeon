@@ -66,4 +66,6 @@ pub use model::{
     SharedProducerIdentity, SourceFormatCapability, SubgraphInvariant, SubgraphInvariantKind, VectorInputRole,
 };
 #[doc(hidden)]
+pub use node::is_cudf_median_input_type;
+#[doc(hidden)]
 pub use shape::capability_shape_contract_projection_ids;

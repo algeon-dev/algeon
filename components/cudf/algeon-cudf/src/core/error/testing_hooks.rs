@@ -57,11 +57,15 @@ pub(crate) fn ffi_status_error_for_test(
     super::error_for_ffi_status(status, operation, message.into())
 }
 
-pub(crate) fn ffi_io_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
+/// Translate a synthetic FFI status/message pair through the same leaf-code
+/// classifier used by the production status boundary.
+pub fn ffi_io_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
     ffi_status_error_for_test(cudf_sys::CUDF_ERROR_IO, message, operation)
 }
 
-pub(crate) fn ffi_cuda_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
+/// Translate a synthetic CUDA FFI status/message pair through the same
+/// leaf-code classifier used by the production status boundary.
+pub fn ffi_cuda_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
     ffi_status_error_for_test(cudf_sys::CUDF_ERROR_CUDA, message, operation)
 }
 
@@ -95,14 +99,18 @@ pub(crate) fn annotate_foreign_invariant_contract_if_absent_for_test() -> Error 
     )
 }
 
-pub(crate) fn trigger_invariant_violation_for_test() -> Result<()> {
+/// Trigger the shared invariant-violation helper path used by integration
+/// tests.
+pub fn trigger_invariant_violation_for_test() -> Result<()> {
     Err(super::invariant_violation(
         "testing::trigger_invariant_violation_for_test",
         "injected invariant violation for tests",
     ))
 }
 
-pub(crate) fn trigger_null_handle_contract_error_for_test() -> Result<()> {
+/// Trigger the shared null-on-success foreign-handle contract path used by
+/// integration tests.
+pub fn trigger_null_handle_contract_error_for_test() -> Result<()> {
     super::require_non_null::<c_void>(
         std::ptr::null_mut(),
         "testing::trigger_null_handle_contract_error_for_test",
@@ -111,11 +119,14 @@ pub(crate) fn trigger_null_handle_contract_error_for_test() -> Result<()> {
     .map(|_| ())
 }
 
-pub(crate) fn trigger_range_limit_error_for_test() -> Result<()> {
+/// Trigger the shared range-limit helper path used by integration tests.
+pub fn trigger_range_limit_error_for_test() -> Result<()> {
     super::usize_to_i32(usize::MAX, "testing::trigger_range_limit_error_for_test", "row_count").map(|_| ())
 }
 
-pub(crate) fn trigger_truthful_error_contract_for_test() -> Result<()> {
+/// Trigger a synthetic truthful-contract error carrying typed facts,
+/// repeated details, a source chain, and multiple reanchor hops.
+pub fn trigger_truthful_error_contract_for_test() -> Result<()> {
     Err(Error::new_with(
         ErrorCode::ColumnLengthMismatch,
         "testing::truthful_error_contract::inner",
@@ -130,7 +141,9 @@ pub(crate) fn trigger_truthful_error_contract_for_test() -> Result<()> {
     .reanchor("testing::truthful_error_contract::outer"))
 }
 
-pub(crate) fn trigger_same_operation_reanchor_contract_for_test() -> Result<()> {
+/// Trigger a synthetic error that reanchors twice at the same operation so
+/// integration tests can lock the no-deduplication contract.
+pub fn trigger_same_operation_reanchor_contract_for_test() -> Result<()> {
     Err(Error::new_with(
         ErrorCode::InvariantViolation,
         "testing::truthful_error_contract::same",
@@ -140,7 +153,9 @@ pub(crate) fn trigger_same_operation_reanchor_contract_for_test() -> Result<()> 
     .reanchor("testing::truthful_error_contract::same"))
 }
 
-pub(crate) fn trigger_reanchor_if_needed_same_operation_contract_for_test() -> Result<()> {
+/// Trigger a synthetic error that applies `reanchor_if_needed` with the same
+/// operation so integration tests can lock the no-op contract.
+pub fn trigger_reanchor_if_needed_same_operation_contract_for_test() -> Result<()> {
     Err(Error::new_with(
         ErrorCode::InvariantViolation,
         "testing::truthful_error_contract::same_if_needed",
@@ -149,7 +164,10 @@ pub(crate) fn trigger_reanchor_if_needed_same_operation_contract_for_test() -> R
     .reanchor_if_needed("testing::truthful_error_contract::same_if_needed"))
 }
 
-pub(crate) fn trigger_if_absent_error_annotation_contract_for_test() -> Result<()> {
+/// Trigger a synthetic error that exercises the shared `*_if_absent` helpers
+/// so integration tests can lock the preserve-existing-and-fill-missing
+/// contract.
+pub fn trigger_if_absent_error_annotation_contract_for_test() -> Result<()> {
     Err(Error::new_with(
         ErrorCode::InvariantViolation,
         "testing::truthful_error_contract::if_absent",
@@ -163,7 +181,9 @@ pub(crate) fn trigger_if_absent_error_annotation_contract_for_test() -> Result<(
     .with_detail_if_absent("reason", "missing_value"))
 }
 
-pub(crate) fn trigger_with_column_error_annotation_contract_for_test() -> Result<()> {
+/// Trigger a synthetic error that exercises the shared `with_column` helper
+/// so integration tests can lock the canonical `column_name` fact contract.
+pub fn trigger_with_column_error_annotation_contract_for_test() -> Result<()> {
     Err(Error::new_with(
         ErrorCode::InvariantViolation,
         "testing::truthful_error_contract::with_column::inner",
@@ -173,12 +193,11 @@ pub(crate) fn trigger_with_column_error_annotation_contract_for_test() -> Result
     .reanchor("testing::truthful_error_contract::with_column::outer"))
 }
 
-/// Attempt to write a canonical fact snake_case key through the detail path.
-///
-/// The crate-internal writer rejects this structurally and panics. Integration
-/// tests use this hook to lock that behavior without depending on any public
-/// construction API.
-pub(crate) fn trigger_canonical_key_in_detail_path_for_test() {
+/// Attempt to write a canonical fact snake_case key through the crate-internal
+/// detail writer path. The writer rejects the overlap-rule violation
+/// structurally and panics; this hook lets integration tests lock that
+/// behavior without exercising any public construction API.
+pub fn trigger_canonical_key_in_detail_path_for_test() {
     let _ = Error::new_with(
         ErrorCode::InvariantViolation,
         "testing::canonical_key_in_detail_path",

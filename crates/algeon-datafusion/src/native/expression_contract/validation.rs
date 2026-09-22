@@ -12,16 +12,18 @@ use datafusion::{
         },
     },
 };
+use query_engine::{
+    datatypes::{is_supported_arrow_type, is_timestamp_with_timezone},
+    validation::{is_integral_type, is_string_type, substring_stop_position},
+};
 
 use super::{
     ExpressionCapability, ExpressionRejection, ScalarFunctionKind, SupportedBinaryOperator, cast_capability,
-    compatible_types, is_integral_type, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
-    is_string_type, is_supported_native_type, is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair,
-    is_timestamp_with_timezone_type,
+    compatible_types, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
+    is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair,
 };
 use crate::native::literal::{
-    NativeLiteralContext, is_interval_literal_expr, literal_i32 as adapter_literal_i32,
-    literal_string as adapter_literal_string, substring_stop_position, validate_native_literal,
+    NativeLiteralContext, is_interval_literal_expr, literal_i32, literal_string, validate_native_literal,
 };
 
 const fn unsupported_expression() -> ExpressionRejection {
@@ -170,10 +172,7 @@ fn validate_null_predicate_arg(
 ) -> Result<(), ExpressionRejection> {
     validate_physical_expr(expr, input_schema)?;
     let data_type = physical_expr_data_type(expr, input_schema)?;
-    if is_timestamp_with_timezone_type(&data_type)
-        || is_list_carry_type(&data_type)
-        || is_narrow_decimal_carry(&data_type)
-    {
+    if is_timestamp_with_timezone(&data_type) || is_list_carry_type(&data_type) || is_narrow_decimal_carry(&data_type) {
         Err(unsupported_type())
     } else {
         Ok(())
@@ -287,7 +286,7 @@ fn validate_extract_function(
     let [field, expr] = function.args() else {
         return Err(unsupported_expression());
     };
-    match literal_string(field)?.to_ascii_lowercase().as_str() {
+    match literal_string_argument(field)?.to_ascii_lowercase().as_str() {
         "year" | "month" | "day" => {},
         "minute" => {
             validate_physical_expr(expr, input_schema)?;
@@ -306,7 +305,7 @@ fn validate_date_trunc_function(
     let [field, expr] = function.args() else {
         return Err(unsupported_expression());
     };
-    validate_date_trunc_field(&literal_string(field)?.to_ascii_lowercase())?;
+    validate_date_trunc_field(&literal_string_argument(field)?.to_ascii_lowercase())?;
     validate_physical_expr(expr, input_schema)?;
     let input_type = physical_expr_data_type(expr, input_schema)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
@@ -362,11 +361,7 @@ fn validate_trim_function(function: &ScalarFunctionExpr, input_schema: &SchemaRe
         validate_literal_string(&args[1])?;
     }
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if is_supported_native_type(&output_type) && is_string_type(&output_type) {
-        Ok(())
-    } else {
-        Err(unsupported_type())
-    }
+    if is_supported_arrow_type(&output_type) && is_string_type(&output_type) { Ok(()) } else { Err(unsupported_type()) }
 }
 
 fn validate_string_predicate_function(
@@ -393,7 +388,7 @@ fn validate_string_length_function(
     validate_physical_expr(expr, input_schema)?;
     validate_string_expr(expr, input_schema)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if is_supported_native_type(&output_type) && is_integral_type(&output_type) {
+    if is_supported_arrow_type(&output_type) && is_integral_type(&output_type) {
         Ok(())
     } else {
         Err(unsupported_type())
@@ -412,11 +407,7 @@ fn validate_regexp_replace_function(
     validate_literal_string(pattern)?;
     validate_literal_string(replacement)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if is_supported_native_type(&output_type) && is_string_type(&output_type) {
-        Ok(())
-    } else {
-        Err(unsupported_type())
-    }
+    if is_supported_arrow_type(&output_type) && is_string_type(&output_type) { Ok(()) } else { Err(unsupported_type()) }
 }
 
 fn validate_concat_function(
@@ -440,7 +431,7 @@ fn validate_abs_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef
     validate_physical_expr(expr, input_schema)?;
     validate_numeric_or_decimal_expr(expr, input_schema)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if is_supported_native_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
+    if is_supported_arrow_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
         Ok(())
     } else {
         Err(unsupported_type())
@@ -454,7 +445,7 @@ fn validate_sqrt_function(function: &ScalarFunctionExpr, input_schema: &SchemaRe
     validate_physical_expr(expr, input_schema)?;
     validate_numeric_or_decimal_expr(expr, input_schema)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if is_supported_native_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
+    if is_supported_arrow_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
         Ok(())
     } else {
         Err(unsupported_type())
@@ -469,10 +460,10 @@ fn validate_round_function(function: &ScalarFunctionExpr, input_schema: &SchemaR
     validate_physical_expr(&args[0], input_schema)?;
     validate_numeric_or_decimal_expr(&args[0], input_schema)?;
     if args.len() == 2 {
-        literal_i32(&args[1])?;
+        literal_i32_argument(&args[1])?;
     }
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if is_supported_native_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
+    if is_supported_arrow_type(&output_type) && is_numeric_or_decimal_type(&output_type) {
         Ok(())
     } else {
         Err(unsupported_type())
@@ -492,7 +483,7 @@ fn validate_nullif_function(
     let right_type = physical_expr_data_type(right, input_schema)?;
     validate_compatible_expr_types(&left_type, &right_type)?;
     let output_type = function.data_type(input_schema.as_ref()).map_err(|_error| unsupported_expression())?;
-    if !is_supported_native_type(&output_type) {
+    if !is_supported_arrow_type(&output_type) {
         return Err(unsupported_type());
     }
     validate_compatible_expr_types(&left_type, &output_type)
@@ -500,7 +491,7 @@ fn validate_nullif_function(
 
 fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(), ExpressionRejection> {
     let data_type = resolved_column_data_type(column, input_schema)?;
-    if is_supported_native_type(data_type) { Ok(()) } else { Err(unsupported_type()) }
+    if is_supported_arrow_type(data_type) { Ok(()) } else { Err(unsupported_type()) }
 }
 
 fn resolved_column_data_type<'a>(
@@ -518,13 +509,13 @@ fn validate_literal(value: &ScalarValue) -> Result<(), ExpressionRejection> {
         .map_err(|_| ExpressionRejection::unsupported_expression(ExpressionCapability::Literal))
 }
 
-fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, ExpressionRejection> {
-    adapter_literal_string(expr)
+fn literal_string_argument(expr: &Arc<dyn PhysicalExpr>) -> Result<String, ExpressionRejection> {
+    literal_string(expr)
         .map_err(|_| ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunctionArguments))
 }
 
-fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, ExpressionRejection> {
-    adapter_literal_i32(expr)
+fn literal_i32_argument(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, ExpressionRejection> {
+    literal_i32(expr)
         .map_err(|_| ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunctionArguments))
 }
 
@@ -541,7 +532,7 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
     let left_type = physical_expr_data_type(binary.left(), input_schema)?;
     let right_type = physical_expr_data_type(binary.right(), input_schema)?;
     if operator.rejects_timestamp_timezone()
-        && (is_timestamp_with_timezone_type(&left_type) || is_timestamp_with_timezone_type(&right_type))
+        && (is_timestamp_with_timezone(&left_type) || is_timestamp_with_timezone(&right_type))
     {
         return Err(unsupported_type());
     }
@@ -640,7 +631,7 @@ fn validate_integral_operand_type(
 }
 
 pub(super) fn validate_literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<(), ExpressionRejection> {
-    literal_string(expr).map(|_| ())
+    literal_string_argument(expr).map(|_| ())
 }
 
 pub(super) fn validate_substring_arguments_contract(function: &ScalarFunctionExpr) -> Result<(), ExpressionRejection> {
@@ -648,12 +639,12 @@ pub(super) fn validate_substring_arguments_contract(function: &ScalarFunctionExp
     if !(2..=3).contains(&args.len()) {
         return Err(unsupported_expression());
     }
-    let start = literal_i32(&args[1])?;
+    let start = literal_i32_argument(&args[1])?;
     if start < 1 {
         return Err(unsupported_expression());
     }
     if args.len() == 3 {
-        let length = literal_i32(&args[2])?;
+        let length = literal_i32_argument(&args[2])?;
         if length < 0 || substring_stop_position(start, length).is_none() {
             return Err(unsupported_expression());
         }
@@ -775,7 +766,7 @@ pub(in crate::native) fn declared_decimal_divide_output_type(
     if !matches!(declared_type, DataType::Decimal128(_, _)) {
         return Ok(None);
     }
-    if !is_supported_native_type(&declared_type) {
+    if !is_supported_arrow_type(&declared_type) {
         return Err(ExpressionRejection::unsupported_type(ExpressionCapability::BinaryOperandTypes));
     }
     Ok(Some(declared_type))

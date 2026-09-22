@@ -3,7 +3,6 @@
 use std::{
     error::Error as StdError,
     fmt, fs,
-    hash::Hasher,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -11,7 +10,6 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use fnv::FnvHasher;
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
 use parquet::file::{
     FOOTER_SIZE,
@@ -20,7 +18,10 @@ use parquet::file::{
 use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
     source::redacted_object_store_path_diagnostic,
+    util::fnv1a64,
 };
+
+use crate::object_store_error::{object_store_error_detail, object_store_error_kind};
 
 /// Speculative tail size for footer-only object-store metadata reads.
 pub const PARQUET_FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
@@ -155,7 +156,7 @@ pub fn read_parquet_footer_sidecar(
     if data_metadata.len() != file_size {
         return Ok(None);
     }
-    if identity_hash != stable_fnv1a64(expected_content_identity.as_bytes()) {
+    if identity_hash != fnv1a64(expected_content_identity.as_bytes()) {
         return Ok(None);
     }
     if file_modified_nanos(&data_metadata) != Some(modified_nanos) {
@@ -238,7 +239,7 @@ pub fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_identity
     sidecar.write_all(&file_size.to_le_bytes()).map_err(|error| {
         sidecar_temp_io_error("failed to write Parquet footer sidecar file size", error, &sidecar_path, &temp_path)
     })?;
-    sidecar.write_all(&stable_fnv1a64(content_identity.as_bytes()).to_le_bytes()).map_err(|error| {
+    sidecar.write_all(&fnv1a64(content_identity.as_bytes()).to_le_bytes()).map_err(|error| {
         sidecar_temp_io_error(
             "failed to write Parquet footer sidecar content identity",
             error,
@@ -277,12 +278,6 @@ fn parquet_footer_sidecar_temp_path(sidecar_path: &Path) -> PathBuf {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let file_name = sidecar_path.file_name().and_then(|value| value.to_str()).unwrap_or("footer-sidecar");
     sidecar_path.with_file_name(format!(".{file_name}.tmp.{}.{}", std::process::id(), nonce))
-}
-
-fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hasher = FnvHasher::default();
-    hasher.write(bytes);
-    hasher.finish()
 }
 
 fn file_modified_nanos(metadata: &fs::Metadata) -> Option<u64> {
@@ -398,92 +393,6 @@ pub fn query_error_code_for_object_store_error(error: &object_store::Error) -> Q
     }
 }
 
-pub fn object_store_error_kind(error: &object_store::Error) -> &'static str {
-    match error {
-        object_store::Error::PermissionDenied { .. } => "permission_denied",
-        object_store::Error::Unauthenticated { .. } => "unauthenticated",
-        object_store::Error::NotFound { .. } => "not_found",
-        object_store::Error::Generic { .. } => "generic",
-        object_store::Error::InvalidPath { .. } => "invalid_path",
-        object_store::Error::JoinError { .. } => "join_error",
-        object_store::Error::NotSupported { .. } => "not_supported",
-        object_store::Error::AlreadyExists { .. } => "already_exists",
-        object_store::Error::Precondition { .. } => "precondition",
-        object_store::Error::NotModified { .. } => "not_modified",
-        object_store::Error::NotImplemented { .. } => "not_implemented",
-        object_store::Error::UnknownConfigurationKey { .. } => "unknown_configuration_key",
-        _ => "other",
-    }
-}
-
-fn object_store_error_detail(error: &object_store::Error) -> Option<&'static str> {
-    match error {
-        object_store::Error::PermissionDenied { .. } => Some("access_denied"),
-        object_store::Error::Unauthenticated { .. } => Some("unauthenticated"),
-        object_store::Error::NotFound { .. } => Some("not_found"),
-        object_store::Error::Generic { source, .. } => classify_generic_object_store_source(source.as_ref()),
-        _ => None,
-    }
-}
-
-fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Option<&'static str> {
-    let text = error_chain_text(source);
-    let lower = text.to_ascii_lowercase();
-    if contains_any(&lower, &["invalidaccesskeyid", "invalid access key", "invalid_access_key"]) {
-        return Some("invalid_access_key");
-    }
-    if contains_any(&lower, &["expiredtoken", "expired token", "token expired"]) {
-        return Some("expired_token");
-    }
-    if contains_any(&lower, &["signaturedoesnotmatch", "signature mismatch", "signature did not match"]) {
-        return Some("signature_mismatch");
-    }
-    if contains_any(&lower, &["accessdenied", "access denied", "permission denied"]) {
-        return Some("access_denied");
-    }
-    if contains_any(
-        &lower,
-        &[
-            "no credentials",
-            "missing credentials",
-            "credentials not loaded",
-            "credential was not loaded",
-            "could not load credentials",
-            "unable to load credentials",
-        ],
-    ) {
-        return Some("missing_credentials");
-    }
-    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
-        return Some("http_401");
-    }
-    if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
-        return Some("http_403");
-    }
-    if lower.contains("timeout") || lower.contains("timed out") {
-        return Some("timeout");
-    }
-    if lower.contains("error sending request") || lower.contains("transport error") {
-        return Some("transport");
-    }
-    None
-}
-
-fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
-    let mut text = source.to_string();
-    let mut current = source.source();
-    while let Some(source) = current {
-        text.push_str(": ");
-        text.push_str(&source.to_string());
-        current = source.source();
-    }
-    text
-}
-
-fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
-}
-
 fn object_store_path_fact(location: &ObjectStorePath) -> String {
     redacted_object_store_path_diagnostic(location.as_ref())
 }
@@ -504,7 +413,7 @@ fn cache_metadata_path_fact(path: &Path) -> String {
 /// across runs without printing credential-bearing cache paths. The hex value is
 /// not reversible, not a security boundary, and must not be used as a cache key.
 fn stable_cache_metadata_hash(value: &str) -> u64 {
-    stable_fnv1a64(value.as_bytes())
+    fnv1a64(value.as_bytes())
 }
 
 #[cfg(test)]

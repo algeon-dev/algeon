@@ -176,7 +176,7 @@ impl LakehouseFooterPruningResolver for FooterPruningResolver<'_> {
             let object = object_store_file(&file.location)?;
             let store = self.object_stores.store_for_file(file, &object, source_node_id)?;
             let metadata = parquet_metadata(store, object.path, file.file_size_bytes, source_node_id).await?;
-            let selected_row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), metadata.num_row_groups());
+            let selected_row_groups = file.selected_or_all_row_groups(metadata.num_row_groups());
             per_file_row_group_key_ranges.push(row_group_key_ranges(
                 metadata.as_ref(),
                 key_column_index,
@@ -220,7 +220,7 @@ async fn static_reader_predicate_row_group_selections(
                 })
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let candidates = selected_or_all_row_groups(file.row_groups.as_deref(), total_row_groups);
+        let candidates = file.selected_or_all_row_groups(total_row_groups);
         let mut row_groups = Vec::with_capacity(candidates.len());
         for row_group_index in candidates {
             let Some(row_group) = metadata.row_groups().get(row_group_index) else {
@@ -674,7 +674,7 @@ async fn derive_dimension_key_filter(
             foreign_error_diagnostic("parquet_record_batch_stream_builder", &error, &object_context, Some(&object.path))
         })?;
         let row_group_count = builder.metadata().num_row_groups();
-        let row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), row_group_count);
+        let row_groups = file.selected_or_all_row_groups(row_group_count);
         let projection = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
         let mut stream = builder.with_projection(projection).with_row_groups(row_groups).build().map_err(|error| {
             foreign_error_diagnostic("parquet_record_batch_stream_build", &error, &object_context, Some(&object.path))
@@ -772,10 +772,6 @@ fn row_group_key_ranges(
                 .map(|range| KeyRange { min: range.min, max: range.max })
         })
         .collect()
-}
-
-fn selected_or_all_row_groups(selected: Option<&[usize]>, row_group_count: usize) -> Vec<usize> {
-    selected.map_or_else(|| (0..row_group_count).collect(), |row_groups| row_groups.to_vec())
 }
 
 #[cfg(test)]

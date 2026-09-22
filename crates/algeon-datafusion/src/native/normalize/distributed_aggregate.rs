@@ -6,11 +6,10 @@ use datafusion::{
         aggregates::{AggregateExec, AggregateMode},
     },
 };
+use query_engine::datatypes::is_supported_arrow_type;
 
 use super::{NativePlanRejection, peel_repartition};
-use crate::{
-    capability::CapabilityReason, native::expression_contract::is_supported_native_type, report::GpuCandidate,
-};
+use crate::{capability::CapabilityReason, report::GpuCandidate};
 
 #[derive(Debug, Clone)]
 pub(in crate::native) struct DistributedAggregatePeel<'a> {
@@ -203,6 +202,6 @@ fn distributed_final_output_is_native_safe(
     if function_name.eq_ignore_ascii_case("avg") {
         matches!(field.data_type(), DataType::Float32 | DataType::Float64 | DataType::Decimal128(_, _))
     } else {
-        is_supported_native_type(field.data_type())
+        is_supported_arrow_type(field.data_type())
     }
 }

@@ -12,9 +12,13 @@ use datafusion::{
         },
     },
 };
-use query_engine::expr::{
-    BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
-    LiteralValue as NativeLiteralValue,
+use query_engine::{
+    datatypes::is_supported_arrow_type,
+    expr::{
+        BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
+        LiteralValue as NativeLiteralValue,
+    },
+    validation::substring_stop_position,
 };
 
 use crate::{
@@ -22,13 +26,10 @@ use crate::{
     native::{
         expression_contract::{
             ResolvedColumn, ScalarFunctionKind, SupportedBinaryOperator, ValidatedPhysicalExpr,
-            declared_decimal_divide_output_type, is_list_carry_type, is_supported_native_type, physical_expr_data_type,
-            resolve_column, validate_physical_expr,
+            declared_decimal_divide_output_type, is_list_carry_type, physical_expr_data_type, resolve_column,
+            validate_physical_expr_contract,
         },
-        literal::{
-            NativeLiteralContext, literal_i32, literal_string, native_literal_value, parse_yyyy_mm_dd_date32,
-            substring_stop_position,
-        },
+        literal::{NativeLiteralContext, literal_i32, literal_string, native_literal_value, parse_yyyy_mm_dd_date32},
         lowering::FieldBinding,
     },
 };
@@ -38,7 +39,7 @@ pub(super) fn physical_expr_field(
     input_schema: &SchemaRef,
     name: &str,
 ) -> Result<Field, CapabilityReason> {
-    let validated = validate_physical_expr(expr, input_schema)?;
+    let validated = validate_physical_expr_contract(expr, input_schema)?;
     physical_expr_field_from_validated(&validated, name)
 }
 
@@ -50,7 +51,7 @@ pub(super) fn physical_expr_field_from_validated(
     let input_schema = validated.input_schema();
     let data_type =
         physical_expr_data_type(expr, input_schema).expect("validated expression must have a resolved output type");
-    debug_assert!(is_supported_native_type(&data_type), "validated expression output must be a native type");
+    debug_assert!(is_supported_arrow_type(&data_type), "validated expression output must be a native type");
     let nullable = expr.nullable(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     Ok(Field::new(name, data_type, nullable))
 }
@@ -67,7 +68,7 @@ pub(super) fn lower_physical_expr_with_bindings(
     input_schema: &SchemaRef,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, CapabilityReason> {
-    let validated = validate_physical_expr(expr, input_schema)?;
+    let validated = validate_physical_expr_contract(expr, input_schema)?;
     lower_validated_physical_expr_with_bindings(&validated, bindings)
 }
 
@@ -154,7 +155,7 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
         let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         // Dynamic filters are mutable. Validate the current snapshot before
         // deriving a new lowering proof rather than trusting the older root.
-        let current = validate_physical_expr(&current, input_schema)?;
+        let current = validate_physical_expr_contract(&current, input_schema)?;
         return lower_validated_physical_expr_with_bindings(&current, bindings);
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
@@ -552,7 +553,7 @@ pub(super) fn collect_required_field_indices(
     input_schema: &SchemaRef,
     required: &mut std::collections::BTreeSet<usize>,
 ) -> Result<(), CapabilityReason> {
-    let validated = validate_physical_expr(expr, input_schema)?;
+    let validated = validate_physical_expr_contract(expr, input_schema)?;
     collect_validated_required_field_indices(&validated, required)
 }
 
@@ -613,7 +614,7 @@ fn collect_validated_required_field_indices(
         let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         // Dynamic filters are mutable, so the current snapshot needs its own
         // proof even when the outer expression was validated earlier.
-        let current = validate_physical_expr(&current, input_schema)?;
+        let current = validate_physical_expr_contract(&current, input_schema)?;
         return collect_validated_required_field_indices(&current, required);
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {

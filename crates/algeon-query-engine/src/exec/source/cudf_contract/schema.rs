@@ -69,11 +69,11 @@ pub(in crate::exec::source) fn cudf_source_schema(source: &LocalParquetSource) -
         .fields()
         .iter()
         .map(|field| {
-            let dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.local_parquet_chunk.schema_cudf",
                     "local parquet source schema contains a type unsupported by cudf source reads",
+                    error,
                 )
                 .with_fact("column", field.name().as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))
@@ -176,11 +176,11 @@ pub(in crate::exec::source) fn cudf_partition_columns(source: &LocalParquetSourc
         .partition_columns
         .iter()
         .map(|column| {
-            let dtype = cudf_dtype_from_arrow_type(&column.data_type).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(&column.data_type).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.local_parquet_chunk.partition_cudf",
                     "local parquet partition column type is unsupported by cudf source reads",
+                    error,
                 )
                 .with_fact("partition_column", column.name.as_str())
                 .with_fact("data_type", format!("{:?}", column.data_type))
@@ -200,11 +200,11 @@ pub(in crate::exec::source) fn cudf_partition_columns(source: &LocalParquetSourc
 pub(in crate::exec::source) fn cudf_partition_value(value: &LiteralValue) -> Result<CudfPartitionValue> {
     match value {
         LiteralValue::Null(data_type) => {
-            let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(data_type).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.local_parquet_chunk.partition_cudf",
                     "local parquet partition null type is unsupported by cudf source reads",
+                    error,
                 )
                 .with_fact("data_type", format!("{data_type:?}"))
             })?;

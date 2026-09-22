@@ -39,7 +39,7 @@ use normalize::{
 };
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 use query_engine::{
-    datatypes::diagnostic_arrow_type,
+    datatypes::{diagnostic_arrow_type, is_supported_arrow_type},
     expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
@@ -324,7 +324,7 @@ fn unsupported_column_for_expression(
     let mut required = std::collections::BTreeSet::new();
     validate::collect_required_columns(expression, schema, &mut required).ok()?;
     schema.fields().iter().find_map(|field| {
-        (required.contains(field.name()) && !expression_contract::is_supported_native_type(field.data_type()))
+        (required.contains(field.name()) && !is_supported_arrow_type(field.data_type()))
             .then(|| unsupported_column_detail(field, role))
     })
 }
@@ -333,7 +333,7 @@ fn unsupported_column_for_schema(schema: &ArrowSchemaRef, role: &'static str) ->
     schema
         .fields()
         .iter()
-        .find(|field| !expression_contract::is_supported_native_type(field.data_type()))
+        .find(|field| !is_supported_arrow_type(field.data_type()))
         .map(|field| unsupported_column_detail(field, role))
 }
 

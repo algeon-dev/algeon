@@ -393,7 +393,11 @@ fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
     Ok(())
 }
 
-fn walk_join_residual_column_sides(
+/// Visits every column of a join residual predicate with its input index.
+///
+/// Returns `UnsupportedExpression` for a column that is not qualified with
+/// input 0 or 1, so `on_input` only ever sees those two indices.
+pub fn walk_join_residual_column_sides(
     expr: &Expr,
     operation: &'static str,
     bad_qualifier_message: &'static str,

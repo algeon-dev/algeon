@@ -12,10 +12,10 @@ use cudf::{
             ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind,
             ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence, PartitionColumn,
             PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
-            SchemaMappingDisposition, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole,
-            SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
-            ZeroColumnCountDisposition, plan_local_parquet_source_chunks, source_row_count_to_i64,
-            source_row_group_index_to_i32,
+            SchemaMappingDisposition, SourceChunk, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef,
+            SourceColumnRole, SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema,
+            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
+            source_row_count_to_i64, source_row_group_index_to_i32,
         },
     },
     ops::ast::AstExpression,
@@ -982,6 +982,29 @@ fn chunk_planning_validates_selected_row_groups_against_metadata() {
     assert_eq!(err.detail_value("file_index"), Some("0"));
     assert_eq!(err.detail_value("row_group"), Some("3"));
     assert_eq!(err.detail_value("row_group_position"), Some("1"));
+    assert_eq!(err.detail_value("max_row_group"), Some("2"));
+}
+
+#[test]
+fn chunk_selection_validates_row_groups_against_byte_only_metadata() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [])
+            .unwrap()
+            .with_projected_row_group_bytes(vec![10, 20, 30], vec![100, 200, 300])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+
+    let err = SourceChunk::from_source_file_selection(&source, 0, 0, Some(vec![1, 5])).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
+    assert_eq!(err.detail_value("reason"), Some("row_group_index_out_of_bounds"));
+    assert_eq!(err.detail_value("row_group"), Some("5"));
     assert_eq!(err.detail_value("max_row_group"), Some("2"));
 }
 

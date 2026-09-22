@@ -27,7 +27,7 @@ use datafusion::{
 };
 use query_engine::source::PredicateDisposition as NativePredicateDisposition;
 
-use super::expression_contract::validate_physical_expr;
+use super::expression_contract::validate_physical_expr_contract;
 use crate::capability::CapabilityReason;
 
 mod row_groups;
@@ -286,7 +286,7 @@ pub(super) fn validate_pruning_only_parquet_predicate(
         };
     };
     let filter_schema = filter.input().schema();
-    validate_physical_expr(filter.predicate(), &filter_schema)?;
+    validate_physical_expr_contract(filter.predicate(), &filter_schema)?;
     if scan_predicate_matches_filter(scan_predicate.as_ref(), filter.predicate().as_ref()) {
         Ok(())
     } else {

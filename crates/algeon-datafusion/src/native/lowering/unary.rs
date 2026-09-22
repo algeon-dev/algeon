@@ -18,7 +18,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::validate_physical_expr,
+        expression_contract::validate_physical_expr_contract,
         normalize::{NormalizedNativeFilter, NormalizedNativeProjection},
     },
 };
@@ -28,7 +28,8 @@ pub(super) fn lower_filter_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, CapabilityReason> {
-    let validated_predicate = validate_physical_expr(filter.filter.predicate(), &filter.filter.input().schema())?;
+    let validated_predicate =
+        validate_physical_expr_contract(filter.filter.predicate(), &filter.filter.input().schema())?;
     let selection = required_filter_output_selection(filter.filter, required_output_fields)?;
     let mut predicate_required = BTreeSet::new();
     collect_required_field_indices(
@@ -126,7 +127,7 @@ pub(super) fn lower_projection_input(
     let mut validated_projection = Vec::with_capacity(required_projection.len());
     for projection_expr in &required_projection {
         validated_projection
-            .push(validate_physical_expr(projection_expr.expr, &projection.projection.input().schema())?);
+            .push(validate_physical_expr_contract(projection_expr.expr, &projection.projection.input().schema())?);
         collect_required_field_indices(
             projection_expr.expr,
             &projection.projection.input().schema(),

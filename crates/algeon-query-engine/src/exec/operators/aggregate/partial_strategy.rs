@@ -1,12 +1,11 @@
 use std::{
     collections::BTreeMap,
-    hash::Hasher,
     time::{Duration, Instant},
 };
 
 use arrow::datatypes::{Schema as ArrowSchema, SchemaRef as ArrowSchemaRef};
 use cudf::NullPolicy;
-use fnv::FnvHasher;
+use query_planning::util::fnv1a64;
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateFunction, AggregateSpec,
@@ -1165,13 +1164,7 @@ pub(super) fn aggregate_structural_key(
         "groups=[{}];aggr=[{}];input=[{}];evidence=[{}]",
         group_exprs, aggregate_exprs, input_fields, input_evidence
     );
-    format!("agg-v1-fnv64-{:016x}", stable_fnv1a64(signature.as_bytes()))
-}
-
-pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hasher = FnvHasher::default();
-    hasher.write(bytes);
-    hasher.finish()
+    format!("agg-v1-fnv64-{:016x}", fnv1a64(signature.as_bytes()))
 }
 
 fn aggregate_function_structural_name(function: AggregateFunction) -> &'static str {

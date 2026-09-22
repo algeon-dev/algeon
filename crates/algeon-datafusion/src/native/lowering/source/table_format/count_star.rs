@@ -1,17 +1,17 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use query_engine::plan::NodeId;
+use query_engine::{datatypes::is_supported_arrow_type, plan::NodeId};
 
 use super::{
     AlgeonIcebergScanExec, CapabilityReason, DataType, ExecutionPlan, Field, LoweredNativeInput,
     NATIVE_ZERO_COLUMN_COUNT_COLUMN, NativeLiteralBatchSource, NativeLocalParquetSource,
     NativeParquetColumnRequirements, NativeQueryPlanBuilder, NativeSourceColumnRef, NativeSourceNode, Schema,
     SchemaRef, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
-    TableFormatScanPlan, available_table_format_scan_plan, is_supported_native_type,
-    table_format_arrow_data_types_match_except_list_child_names, table_format_file_schema,
-    table_format_local_footer_schema, table_format_local_parquet_files, table_format_local_parquet_files_for_group,
-    table_format_scan_plan_is_empty_admissible, table_format_scan_plan_rejection, table_format_source_read_groups,
-    validate_schema, validate_table_format_direct_file_column_field_ids, validate_table_format_scan_plan,
+    TableFormatScanPlan, available_table_format_scan_plan, table_format_arrow_data_types_match_except_list_child_names,
+    table_format_file_schema, table_format_local_footer_schema, table_format_local_parquet_files,
+    table_format_local_parquet_files_for_group, table_format_scan_plan_is_empty_admissible,
+    table_format_scan_plan_rejection, table_format_source_read_groups, validate_schema,
+    validate_table_format_direct_file_column_field_ids, validate_table_format_scan_plan,
 };
 
 pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
@@ -276,7 +276,7 @@ pub(super) fn table_format_explicit_count_star_probe_column<'a>(
         .filter_map(|mapping| {
             let index = table_format_count_star_probe_candidate_file_index(mapping, file_schema);
             let field_supported = index.is_some();
-            let field_id_supported = mapping.field_id.is_some() && is_supported_native_type(&mapping.data_type);
+            let field_id_supported = mapping.field_id.is_some() && is_supported_arrow_type(&mapping.data_type);
             (field_supported || field_id_supported).then(|| TableFormatCountStarFallbackColumn {
                 read_column: mapping.logical_name.clone(),
                 read_column_file_index: index.unwrap_or(0),
@@ -296,7 +296,7 @@ fn table_format_count_star_probe_candidate_file_index(
             let index = file_schema.index_of(name).ok()?;
             let field = file_schema.fields().get(index)?;
             (table_format_arrow_data_types_match_except_list_child_names(field.data_type(), &mapping.data_type)
-                && is_supported_native_type(field.data_type()))
+                && is_supported_arrow_type(field.data_type()))
             .then_some(index)
         })
         .collect::<BTreeSet<_>>();
@@ -312,7 +312,7 @@ pub(super) fn table_format_first_supported_file_column(
         .fields()
         .iter()
         .enumerate()
-        .find(|(_index, field)| is_supported_native_type(field.data_type()))
+        .find(|(_index, field)| is_supported_arrow_type(field.data_type()))
         .map(|(index, field)| TableFormatCountStarFallbackColumn {
             read_column: field.name().clone(),
             read_column_file_index: index,

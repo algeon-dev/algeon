@@ -89,10 +89,8 @@ use crate::{
         types::{DataType, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
-    internal::{
-        hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
-        resolve::validate_no_duplicate_names,
-    },
+    hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
+    internal::resolve::validate_no_duplicate_names,
     ops::dictionary,
     runtime::{
         BoundaryKind, BoundaryObservation, CudaEvent, CudaStream, ExecutionPlacement, QueryStageKind, Runtime,

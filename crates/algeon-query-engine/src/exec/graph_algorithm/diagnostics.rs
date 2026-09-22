@@ -8,7 +8,10 @@ use cugraph::ErrorKind;
 #[cfg(feature = "cugraph")]
 use cugraph::ErrorStatus;
 
-use super::{DataFrame, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type, cudf_query_error};
+use super::{
+    DataFrame, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_unsupported_type_error,
+};
 #[cfg(feature = "cugraph")]
 use crate::error::CugraphAllocationSource;
 #[cfg(feature = "cugraph")]
@@ -192,11 +195,11 @@ pub(super) fn boundary_delta(before: &BoundaryMetrics, after: &BoundaryMetrics) 
 pub(super) fn normalize_graph_result_schema(mut frame: DataFrame, schema: &SchemaRef) -> Result<DataFrame> {
     for field in schema.fields() {
         let field_name = field.name();
-        let target_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let target_type = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.graph_algorithm.schema_normalize",
                 "cuGraph result schema contains an unsupported output type",
+                error,
             )
             .with_fact("field_name", field_name)
             .with_fact("expected_type", format!("{:?}", field.data_type()))

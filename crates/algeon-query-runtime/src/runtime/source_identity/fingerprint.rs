@@ -1,15 +1,14 @@
 //! Byte-stable local-Parquet cache fingerprint construction.
 
-use std::{fmt::Write, hash::Hasher};
+use std::fmt::Write;
 
 use arrow::datatypes::SchemaRef;
-use fnv::FnvHasher;
 use query_planning::{
     source::{
         LocalParquetSource, ParquetEqualityDeleteFile, ParquetPositionDeleteFile, ParquetReaderDecimalType,
         ResolvedParquetSource, SourceColumnRef,
     },
-    util::escape_kv_delimited,
+    util::{escape_kv_delimited, fnv1a64},
 };
 
 pub(super) fn push_schema(output: &mut String, schema: &SchemaRef) {
@@ -192,7 +191,7 @@ pub(super) fn redact_source_cache_fingerprint(output: &mut String, source: &Loca
 }
 
 pub(super) fn redacted_position_delete_referenced_data_file(path: &str) -> String {
-    format!("stable_id_fnv64:{:016x}", stable_fnv1a64(path.as_bytes()))
+    format!("stable_id_fnv64:{:016x}", fnv1a64(path.as_bytes()))
 }
 
 pub(super) fn redact_resolved_source_contract(
@@ -328,13 +327,7 @@ pub(super) fn push_optional_string(output: &mut String, label: impl AsRef<str>, 
 }
 
 pub(super) fn stable_hashed_string(value: &str) -> String {
-    format!("fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len())
-}
-
-pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hasher = FnvHasher::default();
-    hasher.write(bytes);
-    hasher.finish()
+    format!("fnv64:{:016x}:len:{}", fnv1a64(value.as_bytes()), value.len())
 }
 
 pub(super) fn push_token(output: &mut String, key: impl AsRef<str>, value: impl ToString) {

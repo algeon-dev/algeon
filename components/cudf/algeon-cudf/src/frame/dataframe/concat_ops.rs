@@ -12,10 +12,8 @@ use crate::{
         types::DataType,
     },
     frame::series::Series,
-    internal::{
-        hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity},
-        resolve::missing_column_error,
-    },
+    hash::{FastHashMap, FastHashSet, fast_hash_map_with_capacity},
+    internal::resolve::missing_column_error,
     ops,
     runtime::{
         Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,

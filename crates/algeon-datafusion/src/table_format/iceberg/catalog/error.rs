@@ -1,5 +1,7 @@
 use std::error::Error as StdError;
 
+use query_engine::object_store_error::error_chain_text;
+
 use super::{Error, ErrorCode};
 
 pub(super) const CATALOG_BACKEND_OP: &str = "algeon_datafusion.iceberg.catalog_backend";
@@ -157,43 +159,6 @@ impl AwsCatalogErrorFacts {
         }
         error
     }
-}
-
-/// Maximum source-chain layers rendered for AWS transport-detail extraction.
-///
-/// Catalog backends flatten typed SDK errors into text, so extraction must
-/// see past generic wrappers; but an unbounded foreign chain must not
-/// dictate adapter work. Matches the crate's other foreign-error budgets.
-const MAX_AWS_FACT_CHAIN_DEPTH: usize = 32;
-/// Maximum bytes retained from the chain. AWS markers are short SDK codes;
-/// the cap only truncates extreme foreign payloads, never the markers.
-const MAX_AWS_FACT_CHAIN_BYTES: usize = 16_384;
-
-fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
-    let mut text = bounded_layer_text(&source.to_string(), MAX_AWS_FACT_CHAIN_BYTES);
-    let mut current = source.source();
-    for _ in 0..MAX_AWS_FACT_CHAIN_DEPTH {
-        let Some(layer) = current else { break };
-        if text.len() >= MAX_AWS_FACT_CHAIN_BYTES {
-            break;
-        }
-        text.push_str(": ");
-        let remaining = MAX_AWS_FACT_CHAIN_BYTES.saturating_sub(text.len());
-        text.push_str(&bounded_layer_text(&layer.to_string(), remaining));
-        current = layer.source();
-    }
-    text
-}
-
-fn bounded_layer_text(layer: &str, max_bytes: usize) -> String {
-    if layer.len() <= max_bytes {
-        return layer.to_string();
-    }
-    let mut end = max_bytes;
-    while !layer.is_char_boundary(end) {
-        end -= 1;
-    }
-    layer[..end].to_string()
 }
 
 fn aws_error_code_fact(text: &str) -> Option<&'static str> {

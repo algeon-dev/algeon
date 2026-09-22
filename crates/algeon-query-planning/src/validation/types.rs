@@ -258,7 +258,7 @@ pub fn is_decimal_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Decimal128(_, _))
 }
 
-fn is_string_type(data_type: &ArrowDataType) -> bool {
+pub fn is_string_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 

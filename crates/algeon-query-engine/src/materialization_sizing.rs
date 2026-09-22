@@ -54,7 +54,8 @@ pub fn join_output_upper_bound_bytes(
         .map(|column| {
             let data_type = match &column.data_type {
                 ArrowDataType::Timestamp(_, Some(_)) => return Err(unsupported_dtype(column)),
-                data_type => cudf_dtype_from_arrow_type(data_type).ok_or_else(|| unsupported_dtype(column))?,
+                data_type => cudf_dtype_from_arrow_type(data_type)
+                    .map_err(|error| unsupported_dtype(column).with_source(error))?,
             };
             Ok(MaterializedColumnUpperBoundInput {
                 data_type,

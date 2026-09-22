@@ -29,7 +29,7 @@ use super::{
     cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor, cugraph_schema_query_plan,
     edge_execution_config, edge_source_graph_vertex_estimate, exact_native_edge_source_gpu_plan,
     execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping, materialize_gpu_output_eagerly,
-    native_graph_spec_for_placement_hint, plan_error, planned_resident_graph_key, preflight_cugraph_query_plan,
+    native_graph_spec_for_placement_hint, plan, planned_resident_graph_key, preflight_cugraph_query_plan,
     prepare_cugraph_source_metadata, record_batches_to_gpu, register_gpu_resident_producer_discovery,
     register_graph_execution_plan_discovery, run_gpu_execution_task, task_context_with_cugraph_execution_ticket,
     validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
@@ -1326,7 +1326,7 @@ pub(super) fn projected_schema(schema: &SchemaRef, projection: Option<&Vec<usize
                 .fields()
                 .get(*index)
                 .map(|field| field.as_ref().clone())
-                .ok_or_else(|| plan_error(format!("cuGraph output projection index {index} is out of range")))
+                .ok_or_else(|| plan(format!("cuGraph output projection index {index} is out of range")))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Arc::new(Schema::new(fields)))

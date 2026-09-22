@@ -688,7 +688,7 @@ fn nonnegative_integral_literal_value(value: &LiteralValue) -> Option<u128> {
     }
 }
 
-fn target_integral_max(data_type: &ArrowDataType) -> Option<u128> {
+pub fn target_integral_max(data_type: &ArrowDataType) -> Option<u128> {
     match data_type {
         ArrowDataType::Int8 => Some(i8::MAX as u128),
         ArrowDataType::Int16 => Some(i16::MAX as u128),
@@ -758,7 +758,7 @@ fn validate_substring_bounds(start: i32, length: Option<i32>) -> Result<()> {
     Ok(())
 }
 
-fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+pub fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
     let zero_based_start = start.checked_sub(1)?;
     zero_based_start.checked_add(length)
 }

@@ -1,6 +1,5 @@
 use std::{
     fs::{self, OpenOptions},
-    hash::Hasher,
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -10,9 +9,9 @@ use std::{
 
 use arrow::datatypes::DataType;
 use cudf::frame::dataframe::{ParquetDictionaryPolicy, ParquetWriteOptions};
-use fnv::FnvHasher;
 use futures::StreamExt;
 use object_store::{Error as ObjectStoreError, ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
+use query_planning::util::fnv1a64;
 
 use super::{
     cudf_query_error,
@@ -168,7 +167,7 @@ pub(in crate::exec::source) fn local_cache_optimized_batch_entry(
     let cache_root = first.resolved_source.lakehouse_cache_root.clone()?;
     let source_node = first.source_node_id.to_string();
     let signature = local_cache_optimized_batch_signature(source, batch);
-    let hash = stable_fnv1a64(signature.as_bytes());
+    let hash = fnv1a64(signature.as_bytes());
     let file_name = format!("{}__batch_v4_{hash:016x}.parquet", sanitize_cache_component(&source_node));
     let path = Path::new(&cache_root).join("optimized-batches").join("v4").join(file_name);
     Some(LakehouseOptimizedBatchCacheEntry {
@@ -459,7 +458,7 @@ fn push_optimized_batch_contract_hash(output: &mut String, key: &str, value: Opt
         Some(value) => push_optimized_batch_contract_value(
             output,
             key,
-            format!("fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len()).as_str(),
+            format!("fnv64:{:016x}:len:{}", fnv1a64(value.as_bytes()), value.len()).as_str(),
         ),
         None => push_optimized_batch_contract_value(output, key, "none"),
     }
@@ -499,18 +498,12 @@ fn optimized_batch_row_group_size_rows(row_count: usize) -> i32 {
     LakehouseCachePolicy::default().optimized_batch_row_group_size_rows(row_count)
 }
 
-fn sanitize_cache_component(value: &str) -> String {
+pub fn sanitize_cache_component(value: &str) -> String {
     let sanitized = value
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') { ch } else { '_' })
         .collect::<String>();
     if sanitized.is_empty() { "unknown".to_string() } else { sanitized }
-}
-
-fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hasher = FnvHasher::default();
-    hasher.write(bytes);
-    hasher.finish()
 }
 
 #[expect(
@@ -1020,7 +1013,7 @@ fn lakehouse_cache_temp_path(cache_path: &Path) -> PathBuf {
 }
 
 pub(super) fn stable_log_hash(value: &str) -> String {
-    format!("{:016x}", stable_fnv1a64(value.as_bytes()))
+    format!("{:016x}", fnv1a64(value.as_bytes()))
 }
 
 fn lakehouse_cache_path_fact(path: &Path) -> String {

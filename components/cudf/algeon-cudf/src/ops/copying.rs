@@ -13,7 +13,7 @@ use crate::{
         table::{Table, TableView},
         types::TypeId,
     },
-    internal::hash::{FastHashSet, fast_hash_set_with_capacity},
+    hash::{FastHashSet, fast_hash_set_with_capacity},
     runtime::{
         execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },

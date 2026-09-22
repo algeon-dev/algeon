@@ -460,7 +460,7 @@ fn try_execute_column_only_projection(
 fn representation_cast_is_native_noop(output: &ProjectionOutput, source_type: cudf::DataType) -> bool {
     representation_cast_column(&output.expr).is_some_and(|(_, target_type)| {
         target_type == output.field.data_type()
-            && cudf_dtype_from_arrow_type(target_type).is_some_and(|target| source_type == target)
+            && cudf_dtype_from_arrow_type(target_type).is_ok_and(|target| source_type == target)
     })
 }
 
@@ -474,7 +474,7 @@ fn coerce_projection_output_schema(
         let field_name = field.name();
         let actual_dtype = frame_column_cudf_data_type(&frame, field_name, "query_engine.projection.schema_coerce")?;
         let expected_type = field.data_type();
-        let target_type = cudf_dtype_from_arrow_type(expected_type).ok_or_else(|| {
+        let target_type = cudf_dtype_from_arrow_type(expected_type).map_err(|error| {
             projection_schema_mismatch_error_with_budget(
                 token,
                 field_index,
@@ -483,6 +483,7 @@ fn coerce_projection_output_schema(
                 expected_type,
                 "expected_type_not_supported",
             )
+            .with_source(error)
         })?;
         if actual_dtype == target_type {
             continue;

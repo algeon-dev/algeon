@@ -1,6 +1,6 @@
 use algeon_datafusion::error::ErrorCode;
 use tempfile::Builder as FlightSqlTempfileBuilder;
-use tokio::{task::{spawn_blocking, yield_now}, time::timeout as flight_sql_timeout};
+use tokio::task::{spawn_blocking, yield_now};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_client_can_run_select_one() {
@@ -76,7 +76,7 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
     yield_now().await;
 
     server.abort();
-    let error = flight_sql_timeout(Duration::from_secs(1), server)
+    let error = timeout(Duration::from_secs(1), server)
         .await
         .expect("server task Drop must not block the current-thread runtime")
         .expect_err("aborted server task must report cancellation");
@@ -128,7 +128,7 @@ async fn flight_sql_builder_can_run_select_one_and_shutdown_by_token() {
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     drop(client);
     shutdown.cancel();
-    let server_result = flight_sql_timeout(Duration::from_secs(10), server)
+    let server_result = timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic");
@@ -194,7 +194,7 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
 
     drop(client);
     shutdown.cancel();
-    let server_result = flight_sql_timeout(Duration::from_secs(10), server)
+    let server_result = timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic");
@@ -271,14 +271,14 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
     // the assertion does not impose an ordering, and allow the configured
     // 60-second admission window when the shared-GPU lane is fully occupied.
     let (flight_batches, session_batches) =
-        flight_sql_timeout(Duration::from_secs(60), async { tokio::join!(flight_query, session_query) })
+        timeout(Duration::from_secs(60), async { tokio::join!(flight_query, session_query) })
             .await
             .expect("Flight and session queries should finish after direct backend admission releases");
     let flight_batches = flight_batches.expect("Flight query task should not panic");
     let session_batches = session_batches.expect("session query task should not panic").unwrap();
 
     shutdown.cancel();
-    let server_result = flight_sql_timeout(Duration::from_secs(10), server)
+    let server_result = timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic");
@@ -412,7 +412,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
 
     drop(holder);
     let (first_batches, second_batches) =
-        flight_sql_timeout(Duration::from_secs(60), async { tokio::join!(first_query, second_query) })
+        timeout(Duration::from_secs(60), async { tokio::join!(first_query, second_query) })
             .await
             .expect("both cloned-session queries should run after the shared slot is released");
     let first_batches = first_batches.expect("first cloned-session task must not panic");

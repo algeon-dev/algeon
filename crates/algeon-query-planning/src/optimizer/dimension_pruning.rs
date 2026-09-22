@@ -14,9 +14,7 @@ use super::{
         local_parquet_source, mutable_local_parquet_source, predicate_columns, reader_projection_indices,
         reader_projection_indices_for_exprs,
     },
-    lineage::{
-        dedup_lineages, simple_lineages_for_column as lineages_for_column, unique_simple_lineage as unique_lineage,
-    },
+    lineage::{dedup_lineages, simple_lineages_for_column, unique_simple_lineage},
     rewrite,
 };
 use crate::{
@@ -24,7 +22,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
     plan::{AggregateNode, JoinNode, JoinSide, JoinType, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan},
-    source::{LocalParquetFile, LocalParquetSource, SourceColumnRef, SourceNode},
+    source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
 mod eval;
@@ -36,7 +34,6 @@ pub use eval::I64ExprRangeAccumulator;
 #[doc(hidden)]
 pub use eval::derive_i64_expr_range_from_filtered_subtree;
 use eval::{array_i64_value, derive_dimension_key_filter, eval_bool};
-use key_filter::selected_or_all_row_groups;
 pub use key_filter::{
     DIMENSION_KEY_FILTER_MAX_RUNS, DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, RowGroupOverlapSelection,
     dimension_key_filter_from_batch, select_overlapping_row_groups,
@@ -235,9 +232,12 @@ pub fn optimize_dimension_derived_row_group_pruning(
                 rejected_reason: None,
             };
 
-            let Some(dimension_lineage) =
-                unique_lineage(&plan, &parent_counts, orientation.dimension_input, orientation.dimension_key.name())
-            else {
+            let Some(dimension_lineage) = unique_simple_lineage(
+                &plan,
+                &parent_counts,
+                orientation.dimension_input,
+                orientation.dimension_key.name(),
+            ) else {
                 candidate.rejected_reason =
                     Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionKeyLineageUnavailable);
                 record_dimension_pruning_candidate(&mut diagnostics, candidate);
@@ -246,7 +246,7 @@ pub fn optimize_dimension_derived_row_group_pruning(
             candidate.dimension_source_node_id = Some(dimension_lineage.source_node_id);
             candidate.dimension_key_column = Some(dimension_lineage.source_column.clone());
 
-            let target_lineages = dedup_lineages(lineages_for_column(
+            let target_lineages = dedup_lineages(simple_lineages_for_column(
                 &plan,
                 &parent_counts,
                 orientation.target_input,
@@ -419,12 +419,15 @@ pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<Dime
             continue;
         }
         for orientation in candidate_orientations(join) {
-            let Some(dimension) =
-                unique_lineage(plan, &parent_counts, orientation.dimension_input, orientation.dimension_key.name())
-            else {
+            let Some(dimension) = unique_simple_lineage(
+                plan,
+                &parent_counts,
+                orientation.dimension_input,
+                orientation.dimension_key.name(),
+            ) else {
                 continue;
             };
-            let targets = dedup_lineages(lineages_for_column(
+            let targets = dedup_lineages(simple_lineages_for_column(
                 plan,
                 &parent_counts,
                 orientation.target_input,
@@ -518,7 +521,7 @@ fn prune_target_source(
     // applies to resolver-supplied stats, so the local and resolver-supplied
     // (e.g. object-store) pruning paths never diverge on selection logic.
     for (file, row_group_key_ranges) in source.files.iter().zip(&per_file_row_group_key_ranges) {
-        let candidates = selected_or_all_row_groups(file, row_group_key_ranges.len());
+        let candidates = file.selected_or_all_row_groups(row_group_key_ranges.len());
         if candidates.len() != row_group_key_ranges.len() {
             return None;
         }
@@ -620,7 +623,7 @@ pub fn apply_local_parquet_row_group_selections(
         if selection.total_row_groups == 0 || selection.row_group_rows.len() != selection.total_row_groups {
             return unchanged(nodes);
         }
-        let candidates = selected_or_all_row_groups(file, selection.total_row_groups);
+        let candidates = file.selected_or_all_row_groups(selection.total_row_groups);
         if candidates.iter().any(|row_group| *row_group >= selection.total_row_groups) {
             return unchanged(nodes);
         }
@@ -710,7 +713,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
         // (e.g. a table-format file-level selection) is narrowed, never replaced
         // by raw positions. If the supplied stats do not align with the file's
         // selection, skip entirely rather than risk an unsound remap.
-        let candidates = selected_or_all_row_groups(file, row_group_key_ranges.len());
+        let candidates = file.selected_or_all_row_groups(row_group_key_ranges.len());
         if candidates.len() != row_group_key_ranges.len() {
             return unchanged(nodes);
         }
@@ -749,6 +752,7 @@ mod tests {
             DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
         },
         plan::QueryPlanBuilder,
+        source::LocalParquetFile,
     };
 
     #[test]
@@ -798,6 +802,26 @@ mod tests {
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
         assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_keeps_explicitly_empty_source_empty() {
+        // A dynamic filter marks a source proven empty as `Some(vec![])`.
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(Vec::new()));
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: vec![1, 2],
+                row_group_rows: vec![10, 20, 30, 40, 50],
+            }],
+        );
+
+        assert!(!result.applied);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(Vec::new()));
     }
 
     #[test]

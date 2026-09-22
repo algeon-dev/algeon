@@ -25,7 +25,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::{is_supported_native_type, validate_physical_expr},
+        expression_contract::validate_physical_expr_contract,
         lowering::{LoweredNativeInput, RequiredFields, expr::lower_physical_expr_with_bindings},
         normalize::NormalizedNativeSource,
         source::{NativeParquetColumnRequirements, attach_row_group_byte_metadata},
@@ -91,7 +91,7 @@ pub(super) fn lower_table_format_source_input(
     validate_table_format_scan_plan(scan_plan)?;
     validate_schema(scan_exec.schema())?;
     if let Some(filter) = filter {
-        validate_physical_expr(filter.predicate(), &filter.input().schema())?;
+        validate_physical_expr_contract(filter.predicate(), &filter.input().schema())?;
     }
     if scan_plan.data_files.iter().any(TableFormatDataFile::has_equality_delete_files) {
         return Err(CapabilityReason::IcebergDeleteFilesUnsupported);

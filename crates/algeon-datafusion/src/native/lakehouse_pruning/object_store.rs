@@ -1,16 +1,17 @@
 //! Object-store lookup, native storage-profile fallback, and redacted diagnostics.
 
-use std::{collections::HashMap, env, error::Error as StdError, hash::Hasher, sync::Arc};
+use std::{collections::HashMap, env, error::Error as StdError, sync::Arc};
 
 use datafusion::{
     execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     object_store::{Error as ObjectStoreError, ObjectStore, path::Path as ObjectStorePath},
 };
-use fnv::FnvHasher;
 use query_engine::{
+    object_store_error::{object_store_error_detail, object_store_error_kind},
     plan::NodeId,
     runtime::SourceStorageProfile,
     source::{LocalParquetFile, ParquetSourceLocation},
+    util::fnv1a64,
 };
 
 use crate::error::ErrorSourceDiagnostics;
@@ -143,58 +144,6 @@ pub(super) fn object_store_pruning_error(
     fields.join(" ")
 }
 
-fn object_store_error_kind(error: &ObjectStoreError) -> &'static str {
-    match error {
-        ObjectStoreError::PermissionDenied { .. } => "permission_denied",
-        ObjectStoreError::Unauthenticated { .. } => "unauthenticated",
-        ObjectStoreError::NotFound { .. } => "not_found",
-        ObjectStoreError::Generic { .. } => "generic",
-        ObjectStoreError::InvalidPath { .. } => "invalid_path",
-        ObjectStoreError::NotSupported { .. } => "not_supported",
-        _ => "other",
-    }
-}
-
-fn object_store_error_detail(error: &ObjectStoreError) -> Option<&'static str> {
-    match error {
-        ObjectStoreError::PermissionDenied { .. } => Some("access_denied"),
-        ObjectStoreError::Unauthenticated { .. } => Some("unauthenticated"),
-        ObjectStoreError::NotFound { .. } => Some("not_found"),
-        ObjectStoreError::Generic { source, .. } => classify_generic_object_store_source(source.as_ref()),
-        _ => None,
-    }
-}
-
-pub(super) fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Option<&'static str> {
-    let text = error_chain_text(source);
-    let lower = text.to_ascii_lowercase();
-    if contains_any(&lower, &["invalidaccesskeyid", "invalid access key", "invalid_access_key"]) {
-        return Some("invalid_access_key");
-    }
-    if contains_any(&lower, &["expiredtoken", "expired token", "token expired"]) {
-        return Some("expired_token");
-    }
-    if contains_any(&lower, &["signaturedoesnotmatch", "signature mismatch", "signature did not match"]) {
-        return Some("signature_mismatch");
-    }
-    if contains_any(&lower, &["accessdenied", "access denied", "permission denied"]) {
-        return Some("access_denied");
-    }
-    if contains_any(&lower, &["no credentials", "missing credentials", "could not load credentials"]) {
-        return Some("missing_credentials");
-    }
-    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
-        return Some("http_401");
-    }
-    if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
-        return Some("http_403");
-    }
-    if lower.contains("timeout") || lower.contains("timed out") {
-        return Some("timeout");
-    }
-    None
-}
-
 pub(super) fn foreign_error_diagnostic(
     kind: &'static str,
     error: &(dyn StdError + 'static),
@@ -214,21 +163,6 @@ pub(super) fn foreign_error_diagnostic(
         fields.push(format!("{key}={}", stable_log_field(value)));
     }
     fields.join(" ")
-}
-
-fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
-    let mut text = source.to_string();
-    let mut current = source.source();
-    while let Some(source) = current {
-        text.push_str(": ");
-        text.push_str(&source.to_string());
-        current = source.source();
-    }
-    text
-}
-
-fn contains_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
 }
 
 pub(super) fn stable_log_field(value: &str) -> String {
@@ -259,7 +193,5 @@ fn redacted_object_path_leaf(path: &str) -> String {
 }
 
 pub(super) fn stable_hash_hex(value: &str) -> String {
-    let mut hasher = FnvHasher::default();
-    hasher.write(value.as_bytes());
-    format!("{:016x}", hasher.finish())
+    format!("{:016x}", fnv1a64(value.as_bytes()))
 }

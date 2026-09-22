@@ -250,9 +250,9 @@ impl PreparedDataFrameGroupBy {
     where
         F: FnOnce(Error) -> Error,
     {
-        use crate::internal::{
+        use crate::{
             hash::{FastHashMap, fast_hash_map_with_capacity},
-            resolve::resolve_column_names,
+            internal::resolve::resolve_column_names,
         };
 
         require_non_empty_group_keys(self.keys.len(), operation)?;
@@ -596,9 +596,9 @@ impl<'a> GroupBy<'a> {
     where
         F: FnOnce(Error) -> Error,
     {
-        use crate::internal::{
+        use crate::{
             hash::{FastHashMap, fast_hash_map_with_capacity},
-            resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
+            internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
         };
 
         let execution =

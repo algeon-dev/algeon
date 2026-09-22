@@ -20,7 +20,7 @@ use query_engine::expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr};
 use super::{
     ExpressionCapability, ScalarFunctionKind, SupportedBinaryOperator,
     join_residual::validate_join_residual_scalar_function, join_residual_cast_mode, validate_join_residual,
-    validate_physical_expr,
+    validate_physical_expr_contract,
 };
 use crate::{capability::CapabilityReason, native::lowering::lower_physical_expr_for_test};
 
@@ -40,7 +40,7 @@ fn scalar_function(
 }
 
 fn assert_validation_lowering_parity(label: &str, expr: &Arc<dyn PhysicalExpr>, schema: &Arc<Schema>) {
-    validate_physical_expr(expr, schema).unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
+    validate_physical_expr_contract(expr, schema).unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
     lower_physical_expr_for_test(expr, schema).unwrap_or_else(|error| panic!("{label} must lower: {error:?}"));
 }
 
@@ -103,7 +103,7 @@ fn validated_expression_and_lowering_have_capability_parity() {
     let expr: Arc<dyn PhysicalExpr> =
         binary(col("value", &schema).unwrap(), Operator::Plus, lit(ScalarValue::Int64(Some(1))), &schema).unwrap();
 
-    let validated = validate_physical_expr(&expr, &schema).expect("expression should satisfy contract");
+    let validated = validate_physical_expr_contract(&expr, &schema).expect("expression should satisfy contract");
     assert!(Arc::ptr_eq(validated.expr(), &expr));
     let lowered = lower_physical_expr_for_test(&expr, &schema).expect("validated expression must lower");
     assert!(matches!(lowered, NativeExpr::Binary { op: NativeBinaryOp::Add, .. }));

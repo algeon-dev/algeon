@@ -1,15 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{Expr, LocalParquetFile, RecordBatch, array_i64_value, eval_bool};
-
-pub(super) fn selected_or_all_row_groups(file: &LocalParquetFile, row_group_count: usize) -> Vec<usize> {
-    if let Some(row_groups) = &file.row_groups
-        && !row_groups.is_empty()
-    {
-        return row_groups.clone();
-    }
-    (0..row_group_count).collect()
-}
+use super::{Expr, RecordBatch, array_i64_value, eval_bool};
 
 /// Inclusive dimension key range used to prune joined fact row groups.
 ///

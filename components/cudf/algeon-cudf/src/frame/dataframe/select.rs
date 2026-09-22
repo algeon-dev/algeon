@@ -10,10 +10,8 @@ use crate::{
         factorization::{Codebook, Factorized},
         series::Series,
     },
-    internal::{
-        hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
-        resolve::{duplicate_column_name_error, missing_column_error},
-    },
+    hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
+    internal::resolve::{duplicate_column_name_error, missing_column_error},
 };
 
 struct ResolvedSelectColumn {

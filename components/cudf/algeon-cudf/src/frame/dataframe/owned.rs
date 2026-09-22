@@ -14,11 +14,8 @@ use crate::{
         table::{Table, TableView},
     },
     frame::series::Series,
-    internal::{
-        hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
-        reassemble::dataframe_from_table_and_names,
-        resolve::validate_no_duplicate_names,
-    },
+    hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
+    internal::{reassemble::dataframe_from_table_and_names, resolve::validate_no_duplicate_names},
     ops::groupby,
     runtime::{BoundaryKind, ExecutionPlacement, QueryStageKind, Runtime, execution_domain::ExecutionDomain},
 };

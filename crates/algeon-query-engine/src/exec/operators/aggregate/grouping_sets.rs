@@ -8,9 +8,9 @@ use super::{
     aggregate_spec_has_avg, aggregate_spec_has_floating_statistical_aggregate, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, execute_groupby_aggregate, execute_groupby_aggregate_with_budget_observed,
-    execution_overrides, finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lit, lit_null,
-    lower_partial_aggregate_spec, validate_avg_output_fields,
+    cudf_query_error_with_budget_details, cudf_unsupported_type_error, execute_groupby_aggregate,
+    execute_groupby_aggregate_with_budget_observed, execution_overrides, finalize_avg_output_columns,
+    finalize_avg_output_columns_with_budget, lit, lit_null, lower_partial_aggregate_spec, validate_avg_output_fields,
 };
 
 pub(super) fn execute_grouping_sets_aggregate(
@@ -574,11 +574,11 @@ fn empty_grouping_set_null_series_with_type(
     metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<cudf::Series> {
-    let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let dtype = cudf_dtype_from_arrow_type(data_type).map_err(|error| {
+        cudf_unsupported_type_error(
             operation,
             "grouping-set empty identity column type is not supported by native execution",
+            error,
         )
         .with_fact("column", column)
         .with_fact("data_type", format!("{data_type:?}"))
@@ -754,11 +754,11 @@ fn complete_grouping_set_output(
                 .with_fact("column", key_column.as_str())
                 .with_fact("arrow_error", error.to_string())
             })?;
-            let dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+                cudf_unsupported_type_error(
                     operation,
                     "grouping-set null output key column type is not supported by native execution",
+                    error,
                 )
                 .with_fact("column", key_column.as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))
@@ -964,11 +964,11 @@ fn prepare_grouping_set_frame(
                 .with_fact("column", key_column.as_str())
                 .with_fact("arrow_error", error.to_string())
             })?;
-            let dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(field.data_type()).map_err(|error| {
+                cudf_unsupported_type_error(
                     operation,
                     "grouping-set null key column type is not supported by native execution",
+                    error,
                 )
                 .with_fact("column", key_column.as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))

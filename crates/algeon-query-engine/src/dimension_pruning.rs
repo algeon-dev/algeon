@@ -18,7 +18,7 @@ use query_planning::{
         DimensionKeyAccumulator, DimensionKeyFilter, I64ExprRangeAccumulator, KeyRange, LocalParquetPruningResolver,
     },
     parquet_stats::row_group_i64_range_for_root_column,
-    source::{LocalParquetFile, LocalParquetSource},
+    source::LocalParquetSource,
 };
 
 /// Local-filesystem [`LocalParquetPruningResolver`] used by the native engine
@@ -42,7 +42,7 @@ impl LocalParquetPruningResolver for LocalDimensionPruningResolver {
                 return false;
             };
             let metadata = reader.metadata();
-            let row_groups = selected_or_all_row_groups(file, metadata.num_row_groups());
+            let row_groups = file.selected_or_all_row_groups(metadata.num_row_groups());
             for row_group in row_groups {
                 let Some(row_group_rows) = metadata.row_group(row_group).num_rows().try_into().ok() else {
                     return false;
@@ -70,7 +70,7 @@ impl LocalParquetPruningResolver for LocalDimensionPruningResolver {
             let builder = ParquetRecordBatchReaderBuilder::try_new(opened).ok()?;
             let row_group_count = builder.metadata().num_row_groups();
             let mask = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
-            let row_groups = selected_or_all_row_groups(file, row_group_count);
+            let row_groups = file.selected_or_all_row_groups(row_group_count);
             let reader = builder.with_projection(mask).with_row_groups(row_groups).build().ok()?;
             for batch in reader {
                 let batch = batch.ok()?;
@@ -91,7 +91,7 @@ impl LocalParquetPruningResolver for LocalDimensionPruningResolver {
             let reader = SerializedFileReader::try_from(path).ok()?;
             let metadata = reader.metadata();
             let schema = metadata.file_metadata().schema_descr();
-            let selected_row_groups = selected_or_all_row_groups(file, metadata.num_row_groups());
+            let selected_row_groups = file.selected_or_all_row_groups(metadata.num_row_groups());
             let ranges = selected_row_groups
                 .into_iter()
                 .map(|row_group_index| {
@@ -118,7 +118,7 @@ impl LocalParquetPruningResolver for LocalDimensionPruningResolver {
             let builder = ParquetRecordBatchReaderBuilder::try_new(opened).ok()?;
             let row_group_count = builder.metadata().num_row_groups();
             let mask = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
-            let row_groups = selected_or_all_row_groups(file, row_group_count);
+            let row_groups = file.selected_or_all_row_groups(row_group_count);
             let reader = builder.with_projection(mask).with_row_groups(row_groups).build().ok()?;
             for batch in reader {
                 let batch = batch.ok()?;
@@ -127,16 +127,4 @@ impl LocalParquetPruningResolver for LocalDimensionPruningResolver {
         }
         Some(accumulator.finish())
     }
-}
-
-// Matches `query_planning::optimizer::dimension_pruning`'s local
-// selection rule: an explicit but empty `row_groups` is treated the same as
-// "unset" (every physical row group), not as an empty selection.
-fn selected_or_all_row_groups(file: &LocalParquetFile, row_group_count: usize) -> Vec<usize> {
-    if let Some(row_groups) = &file.row_groups
-        && !row_groups.is_empty()
-    {
-        return row_groups.clone();
-    }
-    (0..row_group_count).collect()
 }

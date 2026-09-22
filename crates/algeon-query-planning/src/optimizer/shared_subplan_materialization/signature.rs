@@ -559,10 +559,3 @@ fn aggregate_alias_canonicalization_input_is_rowset_preserving(plan: &QueryPlan,
     }
 }
 
-fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {
-    let mut sum = 0_u64;
-    for value in values {
-        sum = sum.checked_add(value?)?;
-    }
-    Some(sum)
-}

@@ -787,8 +787,15 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     left_required.insert(key.left.name().to_string());
                     right_required.insert(key.right.name().to_string());
                 }
-                if let Some(predicate) = &join.spec.residual_predicate {
-                    collect_join_expr_columns(predicate, &mut left_required, &mut right_required);
+                if let Some(predicate) = &join.spec.residual_predicate
+                    && collect_join_expr_columns(predicate, &mut left_required, &mut right_required).is_err()
+                {
+                    // An unattributable residual column must not be pruned from
+                    // either input; plan validation rejects the residual later.
+                    for (input, required) in [(join.inputs[0], &mut left_required), (join.inputs[1], &mut right_required)] {
+                        let schema = self.original.node(input).expect("join input must exist").output_schema();
+                        required.extend(schema.fields().iter().map(|field| field.name().clone()));
+                    }
                 }
                 for output in &output_projection {
                     match output.side {

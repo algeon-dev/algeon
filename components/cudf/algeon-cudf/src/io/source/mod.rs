@@ -34,7 +34,7 @@ use crate::{
         error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT, FACT_TYPE_ID, Result},
         types::{DataType, TimestampResolution, TypeId},
     },
-    internal::hash::{FastHashSet, fast_hash_set_with_capacity},
+    hash::{FastHashSet, fast_hash_set_with_capacity},
     ops::ast::{AstExpression, AstOperator},
     runtime::Runtime,
 };
@@ -445,16 +445,7 @@ fn validate_chunk_row_groups_for_source_file(
         }
     }
 
-    let row_group_count = source_file
-        .row_group_rows
-        .as_ref()
-        .or(source_file.row_group_bytes.as_ref())
-        .or(source_file.projected_row_group_uncompressed_bytes.as_ref())
-        .or(source_file.projected_row_group_compressed_bytes.as_ref())
-        .or(source_file.pure_filter_row_group_uncompressed_bytes.as_ref())
-        .or(source_file.pure_filter_row_group_compressed_bytes.as_ref())
-        .map(Vec::len);
-    if let Some(row_group_count) = row_group_count {
+    if let Some(row_group_count) = row_group_metadata_count(source_file) {
         for (row_group_position, row_group) in chunk.row_group_indexes.iter().copied().enumerate() {
             if row_group >= row_group_count {
                 let mut err = Error::new_with(
@@ -809,7 +800,13 @@ fn chunk_metadata_row_groups(chunk: &SourceChunk, source_file: &LocalParquetFile
 }
 
 fn chunk_metadata_row_groups_for_source_file(source_file: &LocalParquetFile) -> Vec<usize> {
-    let row_group_count = source_file
+    row_group_metadata_count(source_file).map_or_else(Vec::new, |count| (0..count).collect())
+}
+
+/// Row-group count taken from the first attached per-row-group metadata
+/// vector, or `None` when the file carries no row-group metadata.
+fn row_group_metadata_count(source_file: &LocalParquetFile) -> Option<usize> {
+    source_file
         .row_group_rows
         .as_ref()
         .or(source_file.row_group_bytes.as_ref())
@@ -817,12 +814,13 @@ fn chunk_metadata_row_groups_for_source_file(source_file: &LocalParquetFile) -> 
         .or(source_file.projected_row_group_compressed_bytes.as_ref())
         .or(source_file.pure_filter_row_group_uncompressed_bytes.as_ref())
         .or(source_file.pure_filter_row_group_compressed_bytes.as_ref())
-        .map(Vec::len);
-    row_group_count.map_or_else(Vec::new, |count| (0..count).collect())
+        .map(Vec::len)
 }
 
+/// Sums the selected row-group values; `None` on overflow or when a selected
+/// index has no metadata entry.
 fn checked_row_group_sum(values: &[u64], row_groups: &[usize]) -> Option<u64> {
-    row_groups.iter().try_fold(0u64, |acc, &row_group| acc.checked_add(values[row_group]))
+    row_groups.iter().try_fold(0u64, |acc, &row_group| acc.checked_add(*values.get(row_group)?))
 }
 
 fn optional_checked_row_group_sum(values: Option<&[u64]>, row_groups: &[usize]) -> Option<u64> {

@@ -23,7 +23,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::validate_physical_expr,
+        expression_contract::validate_physical_expr_contract,
         normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
         validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
     },
@@ -126,21 +126,21 @@ pub(super) fn add_native_aggregate_node(
 fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<(), CapabilityReason> {
     for aggregate_expr in aggregate.aggr_expr() {
         for expr in aggregate_expr.expressions() {
-            validate_physical_expr(&expr, &aggregate.input().schema())?;
+            validate_physical_expr_contract(&expr, &aggregate.input().schema())?;
         }
     }
     for filter in aggregate.filter_expr().iter().flatten() {
-        validate_physical_expr(filter, &aggregate.input().schema())?;
+        validate_physical_expr_contract(filter, &aggregate.input().schema())?;
     }
     for (group_expr, _alias) in aggregate.group_expr().expr() {
-        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+        validate_physical_expr_contract(group_expr, &aggregate.input().schema())?;
     }
     Ok(())
 }
 
 fn validate_projection_scalar_expressions(projection: &ProjectionExec) -> Result<(), CapabilityReason> {
     for projection_expr in projection.expr() {
-        validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
+        validate_physical_expr_contract(&projection_expr.expr, &projection.input().schema())?;
     }
     Ok(())
 }
@@ -217,11 +217,11 @@ pub(super) fn validate_required_scalar_expressions(
         for projection_expr in
             required_scan_projection(scan_projection, inputs.scan_output_schema, inputs.required_scan_output_columns)
         {
-            validate_physical_expr(projection_expr.expr, inputs.table_schema)?;
+            validate_physical_expr_contract(projection_expr.expr, inputs.table_schema)?;
         }
     }
     if let Some(filter) = inputs.filter {
-        validate_physical_expr(filter.predicate(), &filter.input().schema())?;
+        validate_physical_expr_contract(filter.predicate(), &filter.input().schema())?;
     }
     if let Some(projection) = inputs.pre_aggregate_projection {
         validate_projection_scalar_expressions(projection)?;

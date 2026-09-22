@@ -20,7 +20,9 @@ use crate::{
         interval_month_day_nano,
     },
     expression_lowering_policy::ExpressionLoweringPolicy,
+    native_error::cudf_unsupported_type_error,
     plan::ProjectionOutput,
+    validation::is_string_type,
 };
 
 mod aggregate;
@@ -50,11 +52,11 @@ pub fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
             if let Some(cast) = lower_integer_temporal_cast(expr, target_type)? {
                 return Ok(cast);
             }
-            let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let target_dtype = cudf_dtype_from_arrow_type(target_type).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.expr.lower_cast",
                     "native execution does not support casts to this target type",
+                    error,
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
@@ -134,11 +136,11 @@ fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataTy
             if let Some(cast) = lower_integer_temporal_cast(expr, target_type)? {
                 return Ok(cast);
             }
-            let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let target_dtype = cudf_dtype_from_arrow_type(target_type).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.expr.lower_cast",
                     "native execution does not support casts to this target type",
+                    error,
                 )
                 .with_fact("target_type", format!("{target_type:?}"))
             })?;
@@ -168,11 +170,11 @@ fn lower_try_cast_expr(input: &Expr, target_type: &ArrowDataType) -> Result<Cudf
         )
         .with_fact("target_type", format!("{target_type:?}")));
     }
-    let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let target_dtype = cudf_dtype_from_arrow_type(target_type).map_err(|error| {
+        cudf_unsupported_type_error(
             "query_engine.expr.lower_try_cast",
             "native execution does not support try-casts to this target type",
+            error,
         )
         .with_fact("target_type", format!("{target_type:?}"))
     })?;
@@ -226,11 +228,11 @@ pub fn lower_literal(value: &LiteralValue) -> Result<CudfExpr> {
         )
         .with_fact("literal", value)),
         LiteralValue::Null(data_type) => {
-            let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedType,
+            let dtype = cudf_dtype_from_arrow_type(data_type).map_err(|error| {
+                cudf_unsupported_type_error(
                     "query_engine.expr.lower_literal",
                     "native execution does not support typed null literals for this type",
+                    error,
                 )
                 .with_fact("literal", value)
                 .with_fact("data_type", format!("{data_type:?}"))
@@ -341,10 +343,6 @@ fn expr_declared_type(expr: &Expr) -> Option<ArrowDataType> {
         Expr::Alias { expr, .. } => expr_declared_type(expr),
         _ => None,
     }
-}
-
-fn is_string_type(data_type: &ArrowDataType) -> bool {
-    matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
 fn lower_integer_temporal_cast(expr: &Expr, target_type: &ArrowDataType) -> Result<Option<CudfExpr>> {
@@ -483,18 +481,18 @@ fn sql_boolean_or(left: CudfExpr, right: CudfExpr) -> CudfExpr {
 }
 
 fn lower_boolean_null_literal() -> CudfExpr {
-    lit_null(cudf_dtype_from_arrow_type(&ArrowDataType::Boolean).expect("Boolean must be a supported cudf dtype"))
+    lit_null(cudf::DataType::new(cudf::TypeId::Bool8))
 }
 
 fn expected_decimal_dtype(expected_type: &ArrowDataType) -> Result<Option<cudf::DataType>> {
     if !matches!(expected_type, ArrowDataType::Decimal128(_, _)) {
         return Ok(None);
     }
-    let dtype = cudf_dtype_from_arrow_type(expected_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let dtype = cudf_dtype_from_arrow_type(expected_type).map_err(|error| {
+        cudf_unsupported_type_error(
             "query_engine.expr.lower_binary",
             "native decimal division output type is not supported",
+            error,
         )
         .with_fact("expected_type", format!("{expected_type:?}"))
     })?;
@@ -541,11 +539,11 @@ fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<CudfE
 
 fn lower_string_length(expr: &Expr, output_type: &ArrowDataType) -> Result<CudfExpr> {
     let length = lower_expr(expr)?.str().len();
-    let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let target = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+        cudf_unsupported_type_error(
             "query_engine.expr.lower_string_length",
             "native string length output type is not supported",
+            error,
         )
         .with_fact("output_type", format!("{output_type:?}"))
     })?;
@@ -562,11 +560,11 @@ fn lower_regexp_replace(
     if is_string_type(output_type) {
         return Ok(replaced);
     }
-    let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let target = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+        cudf_unsupported_type_error(
             "query_engine.expr.lower_regexp_replace",
             "native REGEXP_REPLACE output type is not supported",
+            error,
         )
         .with_fact("output_type", format!("{output_type:?}"))
     })?;
@@ -585,13 +583,9 @@ fn lower_concat(exprs: &[Expr]) -> Result<CudfExpr> {
 }
 
 fn lower_round(expr: &Expr, decimal_places: i32, output_type: &ArrowDataType) -> Result<CudfExpr> {
-    let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
-            "query_engine.expr.lower_round",
-            "native ROUND output type is not supported",
-        )
-        .with_fact("output_type", format!("{output_type:?}"))
+    let dtype = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+        cudf_unsupported_type_error("query_engine.expr.lower_round", "native ROUND output type is not supported", error)
+            .with_fact("output_type", format!("{output_type:?}"))
     })?;
     if matches!(output_type, ArrowDataType::Float32 | ArrowDataType::Float64) {
         return lower_float_round(expr, decimal_places).map(|expr| expr.cast(dtype));
@@ -600,13 +594,9 @@ fn lower_round(expr: &Expr, decimal_places: i32, output_type: &ArrowDataType) ->
 }
 
 fn lower_sqrt(expr: &Expr, output_type: &ArrowDataType) -> Result<CudfExpr> {
-    let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
-            "query_engine.expr.lower_sqrt",
-            "native SQRT output type is not supported",
-        )
-        .with_fact("output_type", format!("{output_type:?}"))
+    let dtype = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+        cudf_unsupported_type_error("query_engine.expr.lower_sqrt", "native SQRT output type is not supported", error)
+            .with_fact("output_type", format!("{output_type:?}"))
     })?;
     Ok(lower_expr(expr)?.cast(dtype).sqrt().cast(dtype))
 }
@@ -767,11 +757,11 @@ fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -
         .with_fact("field", field.to_string())
         .with_fact("output_type", format!("{output_type:?}")));
     }
-    let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let target = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+        cudf_unsupported_type_error(
             "query_engine.expr.lower_date_trunc",
             "native DATE_TRUNC output type is not supported",
+            error,
         )
         .with_fact("output_type", format!("{output_type:?}"))
     })?;

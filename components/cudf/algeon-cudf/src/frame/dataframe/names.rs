@@ -3,13 +3,11 @@ use std::sync::Arc;
 use super::owned::DataFrame;
 use crate::{
     core::error::Result,
-    internal::{
-        hash::{
-            FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
-            fast_index_map_with_capacity,
-        },
-        resolve::{duplicate_column_name_error, missing_column_error},
+    hash::{
+        FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
+        fast_index_map_with_capacity,
     },
+    internal::resolve::{duplicate_column_name_error, missing_column_error},
 };
 
 impl DataFrame {

@@ -11,10 +11,10 @@ use datafusion::{
 };
 use query_engine::{
     datatypes::{
-        is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_arrow_type, is_supported_list_carry_type,
-        is_timestamp_with_timezone,
+        is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     rapids_backend::rapids_analysis_context,
+    validation::{is_integral_type, is_string_type, target_integral_max},
 };
 
 use super::{ExpressionCapability, ExpressionRejection};
@@ -154,14 +154,6 @@ pub(in crate::native) enum CastCapability {
     LiteralStringDate32,
 }
 
-pub(in crate::native) fn is_supported_native_type(data_type: &DataType) -> bool {
-    is_supported_arrow_type(data_type)
-}
-
-pub(in crate::native) fn is_timestamp_with_timezone_type(data_type: &DataType) -> bool {
-    is_timestamp_with_timezone(data_type)
-}
-
 pub(in crate::native) fn is_list_carry_type(data_type: &DataType) -> bool {
     is_supported_list_carry_type(data_type)
 }
@@ -213,24 +205,6 @@ pub(in crate::native) fn is_supported_to_timestamp_seconds_cast(
         && is_supported_arrow_cast(source_type, target_type, rapids_analysis_context())
 }
 
-pub(in crate::native) fn is_string_type(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
-}
-
-pub(in crate::native) fn is_integral_type(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-    )
-}
-
 pub(in crate::native) fn is_numeric_or_decimal_type(data_type: &DataType) -> bool {
     matches!(
         data_type,
@@ -249,8 +223,8 @@ pub(in crate::native) fn is_numeric_or_decimal_type(data_type: &DataType) -> boo
 }
 
 pub(in crate::native) fn compatible_types(left: &DataType, right: &DataType) -> bool {
-    !is_timestamp_with_timezone_type(left)
-        && !is_timestamp_with_timezone_type(right)
+    !is_timestamp_with_timezone(left)
+        && !is_timestamp_with_timezone(right)
         && !is_list_carry_type(left)
         && !is_list_carry_type(right)
         && !is_narrow_decimal_carry(left)
@@ -330,20 +304,6 @@ fn nonnegative_integral_scalar_value(value: &ScalarValue) -> Option<u128> {
         ScalarValue::UInt16(Some(value)) => Some(u128::from(*value)),
         ScalarValue::UInt32(Some(value)) => Some(u128::from(*value)),
         ScalarValue::UInt64(Some(value)) => Some(u128::from(*value)),
-        _ => None,
-    }
-}
-
-fn target_integral_max(data_type: &DataType) -> Option<u128> {
-    match data_type {
-        DataType::Int8 => Some(i8::MAX as u128),
-        DataType::Int16 => Some(i16::MAX as u128),
-        DataType::Int32 => Some(i32::MAX as u128),
-        DataType::Int64 => Some(i64::MAX as u128),
-        DataType::UInt8 => Some(u128::from(u8::MAX)),
-        DataType::UInt16 => Some(u128::from(u16::MAX)),
-        DataType::UInt32 => Some(u128::from(u32::MAX)),
-        DataType::UInt64 => Some(u128::from(u64::MAX)),
         _ => None,
     }
 }

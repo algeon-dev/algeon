@@ -1,15 +1,16 @@
 use std::time::Instant;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
-use cudf::interop::arrow_host::arrow_type_from_cudf_dtype as cudf_arrow_type_from_cudf_dtype;
+use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CudfScalar, DataFrame,
     ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, ExecutionOverrides, Expr, Field, GpuDataFrame,
     LiteralValue, QueryError, QueryErrorCode, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique,
     aggregate_spec_has_avg, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, execution_overrides, global_count_star_expr, global_valid_count_state_alias,
-    lower_column_expr, lower_expr, validate_avg_output_fields, validate_global_aggregate_capability,
+    cudf_query_error_with_budget_details, cudf_unsupported_type_error, execution_overrides, global_count_star_expr,
+    global_valid_count_state_alias, lower_column_expr, lower_expr, validate_avg_output_fields,
+    validate_global_aggregate_capability,
 };
 
 mod avg;
@@ -196,11 +197,11 @@ fn reduce_global_aggregate_column_impl(
         };
     }
     let series = if matches!(function, AggregateFunction::Sum) {
-        let target_type = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedType,
+        let target_type = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+            cudf_unsupported_type_error(
                 "query_engine.global_aggregate.cast_input",
                 "global aggregate input cast target type is not supported by native execution",
+                error,
             )
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{output_type:?}"))
@@ -384,11 +385,11 @@ fn global_null_output_series_impl(
     alias: &str,
     token: Option<(&ExecutionBudgetToken, &ExecutionMetrics)>,
 ) -> Result<cudf::Series> {
-    let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedType,
+    let dtype = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
+        cudf_unsupported_type_error(
             "query_engine.global_aggregate.null_output",
             "native global aggregate cannot construct a typed null output for this type",
+            error,
         )
         .with_fact("alias", alias)
         .with_fact("data_type", format!("{output_type:?}"))
@@ -433,7 +434,7 @@ fn frame_column_arrow_data_type(frame: &DataFrame, column: &str, operation: &'st
     let dtype = series.dtype().map_err(|error| {
         cudf_query_error(operation, "failed to inspect native column type", error).with_fact("column", column)
     })?;
-    cudf_arrow_type_from_cudf_dtype(dtype).map_err(|error| {
+    arrow_type_from_cudf_dtype(dtype).map_err(|error| {
         cudf_query_error(operation, "failed to map native column type to Arrow", error).with_fact("column", column)
     })
 }

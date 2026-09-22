@@ -1,5 +1,3 @@
-use query_engine::dimension_pruning::local_dimension_pruning_resolver as dynamic_filter_source_routes_local_dimension_pruning_resolver;
-
 #[test]
 fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_route() {
     let plan = estimated_inner_join_plan(JoinSide::Right, 512 * 1024 * 1024, 10_000_000, 16 * 1024 * 1024, 100_000);
@@ -8,7 +6,7 @@ fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_r
         plan,
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -54,7 +52,7 @@ fn dynamic_filter_execution_options_survive_gpu_resident_sink_clone() {
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
     let gpu_plan = result.plan.clone_with_gpu_resident_sink();
 
@@ -76,7 +74,7 @@ fn native_optimizer_rejects_large_keyset_route_to_dimension_sized_local_parquet_
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -161,7 +159,7 @@ fn native_optimizer_keeps_large_keyset_source_reader_route_when_downstream_work_
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     let candidate = result
@@ -193,7 +191,7 @@ fn native_optimizer_rejects_dynamic_filter_route_when_producer_keyset_exceeds_ru
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -218,7 +216,7 @@ fn native_optimizer_uses_custom_dynamic_filter_runtime_limit_for_route_discovery
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -270,7 +268,7 @@ fn native_optimizer_keeps_filtered_producer_when_unfiltered_row_estimate_exceeds
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -322,7 +320,7 @@ fn native_optimizer_rejects_large_keyset_dimension_route_when_producer_is_larger
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -376,7 +374,7 @@ fn native_optimizer_keeps_large_keyset_dimension_route_when_many_row_groups_cons
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -400,7 +398,7 @@ fn native_optimizer_keeps_dimension_sized_consumer_route_when_producer_keyset_is
         plan,
         &options,
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -425,7 +423,7 @@ fn native_optimizer_discovers_dynamic_filter_route_for_inner_keyed_residual_join
         plan,
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(),
-        dynamic_filter_source_routes_local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
