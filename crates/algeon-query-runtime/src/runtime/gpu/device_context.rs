@@ -1,14 +1,18 @@
 //! Per-device service runtime context.
 
-use std::sync::Arc;
+use std::{sync, sync::Arc};
 
+use cudf::runtime::{DeviceHealthStatus, device_health_snapshot};
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{
     DeviceFacts, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, MemoryGrant,
     registry::EngineDeviceHealthIdentity,
 };
-use crate::{observability::AdmissionRequestId, runtime::ServiceStreamPool};
+use crate::{
+    observability::{AdmissionRequestId, AttemptId},
+    runtime::{ServiceStreamPool, gpu::lanes::DeviceLanePermits},
+};
 
 /// Service runtime state for one CUDA device ordinal.
 #[derive(Debug, Clone)]
@@ -30,7 +34,7 @@ struct DeviceContextInner {
     memory_failure_tracker: DeviceMemoryFailureTracker,
     ledger: Arc<DeviceLedger>,
     facts: DeviceFacts,
-    lane_permits: std::sync::Arc<super::lanes::DeviceLanePermits>,
+    lane_permits: Arc<DeviceLanePermits>,
 }
 
 impl DeviceContext {
@@ -146,10 +150,8 @@ impl DeviceContext {
             .with_fact("max_active_attempts", max_active_attempts)
             .with_fact("ledger_max_active_attempts", ledger.profile().max_active_attempts));
         }
-        let lane_permits = std::sync::Arc::new(super::lanes::DeviceLanePermits::new(
-            device.ordinal(),
-            ledger.profile().max_active_attempts,
-        ));
+        let lane_permits =
+            sync::Arc::new(DeviceLanePermits::new(device.ordinal(), ledger.profile().max_active_attempts));
         Ok(Self {
             inner: Arc::new(DeviceContextInner {
                 device,
@@ -199,7 +201,7 @@ impl DeviceContext {
 
     /// Per-device attempt lane array (`A_d` lanes, one per admitted attempt).
     #[doc(hidden)]
-    pub fn lane_permits(&self) -> &std::sync::Arc<super::lanes::DeviceLanePermits> {
+    pub fn lane_permits(&self) -> &Arc<DeviceLanePermits> {
         &self.inner.lane_permits
     }
 
@@ -221,8 +223,8 @@ impl DeviceContext {
     /// ledger before placement can issue another grant.
     #[doc(hidden)]
     pub fn synchronize_native_admission_health(&self) -> Result<bool> {
-        let health = cudf::runtime::device_health_snapshot(self.inner.device);
-        if health.status() != cudf::runtime::DeviceHealthStatus::Unhealthy {
+        let health = device_health_snapshot(self.inner.device);
+        if health.status() != DeviceHealthStatus::Unhealthy {
             return Ok(false);
         }
         self.inner.ledger.close_admission_if_open(format!(
@@ -241,7 +243,7 @@ impl DeviceContext {
     pub fn try_admit_attempt(
         &self,
         waiter_id: AdmissionRequestId,
-        attempt_id: crate::observability::AttemptId,
+        attempt_id: AttemptId,
         requested_query_cap_bytes: Option<u64>,
     ) -> Result<Option<MemoryGrant>> {
         if self.synchronize_native_admission_health()? {

@@ -24,17 +24,13 @@ pub mod arrow_host;
 mod borrowed;
 mod column;
 mod consumer_import;
-/// Native-independent interop contracts used by the `cudf` adapters.
-///
-/// This re-exports the `rapids_interop` crate, so values imported through this
-/// module have the same types as values imported directly from that crate.
-pub use rapids_interop as contract;
-mod contracts;
 mod errors;
 pub(crate) mod execution;
 pub mod frame;
 mod import_graph;
 pub(crate) mod projection;
+#[path = "contracts.rs"]
+mod release_contracts;
 mod runtime_lease;
 pub mod runtime_release;
 mod table;
@@ -51,16 +47,21 @@ use consumer_import::{
     import_table_from_borrowed_view, import_table_from_owned_transfer, import_table_from_prepared_export,
     wrap_imported_dataframe, wrap_imported_series,
 };
-use contracts::*;
 use errors::*;
 use execution::*;
 pub use frame::PartitionedDataFrameExport;
 use prepared::*;
 use projection::{prepared_column_projection_from_view, prepared_host_column_projection_from_view};
+/// Native-independent interop contracts used by the `cudf` adapters.
+///
+/// This re-exports the `rapids_interop` crate, so values imported through this
+/// module have the same types as values imported directly from that crate.
+pub use rapids_interop as contract;
 use rapids_interop::{
     OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferParts, PartitionedOwnedTableTransfer,
     PartitionedOwnedTableTransferPartition, ReleaseContract, ReleaseSynchronization, TransferCompletionRule,
 };
+use release_contracts::*;
 use runtime_release::*;
 pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};
 mod prepared {
@@ -94,7 +95,7 @@ use crate::{
     },
     ops::dictionary,
     runtime::{
-        BoundaryKind, BoundaryObservation, CudaEvent, ExecutionPlacement, QueryStageKind, Runtime,
+        BoundaryKind, BoundaryObservation, CudaEvent, CudaStream, ExecutionPlacement, QueryStageKind, Runtime,
         execution_domain::ExecutionDomain, record_boundary_observation_in_domain,
     },
 };
@@ -161,9 +162,7 @@ fn table_view_boundary_observation(
 ///
 /// This does not transfer ownership. The returned handle is valid only for the
 /// lifetime of `stream`.
-pub fn cuda_stream_handle(
-    stream: &crate::runtime::CudaStream,
-) -> Result<rapids_interop::CudaStreamHandle<'_>, InteropError> {
+pub fn cuda_stream_handle(stream: &CudaStream) -> Result<rapids_interop::CudaStreamHandle<'_>, InteropError> {
     let raw = stream.interop_raw_handle().map_err(|error| {
         map_cudf_error(InteropErrorKind::ReadinessUnavailable, "interop::cuda_stream_handle", error)
     })?;
@@ -175,9 +174,7 @@ pub fn cuda_stream_handle(
 ///
 /// This does not transfer ownership. The returned handle is valid only for the
 /// lifetime of `event`.
-pub fn cuda_event_handle(
-    event: &crate::runtime::CudaEvent,
-) -> Result<rapids_interop::CudaEventHandle<'_>, InteropError> {
+pub fn cuda_event_handle(event: &CudaEvent) -> Result<rapids_interop::CudaEventHandle<'_>, InteropError> {
     let raw = event
         .interop_raw_handle()
         .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, "interop::cuda_event_handle", error))?;

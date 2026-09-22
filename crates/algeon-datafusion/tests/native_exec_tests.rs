@@ -29,10 +29,10 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
-    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
+    datasource::{memory::MemorySourceConfig, physical_plan::ParquetSource, source::DataSourceExec},
     execution::{SessionStateBuilder, context::TaskContext, object_store::ObjectStoreUrl},
     logical_expr::Operator,
-    physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col},
+    physical_expr::{LexOrdering, Partitioning, PhysicalSortExpr, expressions::col},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
         ExecutionPlan, collect,
@@ -45,12 +45,14 @@ use datafusion::{
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
 };
+use futures::executor::block_on;
 use parquet::arrow::ArrowWriter;
 use proptest::prelude::*;
 use query_engine::{
     mode::CapabilityEnvelopeStatus,
     plan::{NativePlanCostOptions, NativePlanCostReason},
 };
+use tokio::runtime::Builder;
 use workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -221,14 +223,11 @@ fn native_optimizer_property_checked_ilike_boundary_rejects_partition_grouped_sc
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let scan = support::parquet_scan_with_partition_field(&path, Field::new("part", DataType::Int32, false));
-    let partition_grouped = scan
-        .downcast_ref::<datafusion::datasource::source::DataSourceExec>()
-        .expect("partition scan should be DataSourceExec");
-    let (file_scan, _parquet_source) = partition_grouped
-        .downcast_to_file_source::<datafusion::datasource::physical_plan::ParquetSource>()
-        .expect("partition scan should use ParquetSource");
+    let partition_grouped = scan.downcast_ref::<DataSourceExec>().expect("partition scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        partition_grouped.downcast_to_file_source::<ParquetSource>().expect("partition scan should use ParquetSource");
     assert!(!file_scan.table_partition_cols().is_empty());
-    assert!(matches!(file_scan.output_partitioning, Some(datafusion::physical_expr::Partitioning::Hash(_, _))));
+    assert!(matches!(file_scan.output_partitioning, Some(Partitioning::Hash(_, _))));
     let plan = ilike_filter_over_scan(scan);
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
@@ -278,12 +277,11 @@ fn native_optimizer_property_checked_ilike_boundary_matches_cpu_results() {
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
 
-    let cpu = futures::executor::block_on(collect(ilike_filter_plan(&path), Arc::new(TaskContext::default()))).unwrap();
+    let cpu = block_on(collect(ilike_filter_plan(&path), Arc::new(TaskContext::default()))).unwrap();
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
     let native_plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let native_leaf = mixed_boundary_native_leaf(native_plan.as_ref());
-    let native =
-        futures::executor::block_on(collect(Arc::clone(&native_plan), Arc::new(TaskContext::default()))).unwrap();
+    let native = block_on(collect(Arc::clone(&native_plan), Arc::new(TaskContext::default()))).unwrap();
 
     assert_eq!(ilike_rows(&native), ilike_rows(&cpu));
     let metrics = native_leaf.metrics().expect("the native leaf owns runtime metrics for the one D2H boundary");
@@ -309,7 +307,7 @@ fn native_optimizer_property_checked_ilike_boundary_reserves_host_output_before_
     let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
 
-    let error = futures::executor::block_on(collect(Arc::clone(&plan), task_context))
+    let error = block_on(collect(Arc::clone(&plan), task_context))
         .expect_err("the optimizer-built mixed boundary must reserve its host Arrow output before D2H");
 
     assert!(matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)), "unexpected error: {error:?}");
@@ -339,7 +337,7 @@ fn native_optimizer_property_checked_ilike_boundary_uses_one_backend_admission_a
     let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let native_leaf = mixed_boundary_native_leaf(plan.as_ref());
 
-    let batches = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
+    let batches = block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
 
     assert_eq!(ilike_rows(&batches), vec![(1, Some("Alpha".to_string())), (3, Some("ALMANAC".to_string()))]);
     let metrics =
@@ -384,7 +382,7 @@ proptest! {
         write_ilike_parquet_file_with_labels(&path, &labels);
         let pattern = format!("{prefix}%");
 
-        let cpu = futures::executor::block_on(collect(
+        let cpu = block_on(collect(
             ilike_filter_plan_with_pattern(&path, pattern.clone()),
             Arc::new(TaskContext::default()),
         ))
@@ -410,7 +408,7 @@ proptest! {
         let native = filter.input().downcast_ref::<AlgeonNativeExec>().expect("mixed boundary must replace only the source leaf");
         assert_mixed_boundary_properties(filter, native);
 
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         let mixed = runtime.block_on(collect(Arc::clone(&planned), Arc::new(TaskContext::default()))).unwrap();
         prop_assert_eq!(ilike_rows(&mixed), ilike_rows(&cpu));
 
@@ -438,10 +436,7 @@ fn mixed_boundary_native_leaf(plan: &dyn ExecutionPlan) -> &AlgeonNativeExec {
 
 fn assert_mixed_boundary_properties(filter: &FilterExec, native: &AlgeonNativeExec) {
     assert_eq!(filter.schema().as_ref(), native.schema().as_ref());
-    assert!(matches!(
-        filter.properties().output_partitioning(),
-        datafusion::physical_expr::Partitioning::UnknownPartitioning(1)
-    ));
+    assert!(matches!(filter.properties().output_partitioning(), Partitioning::UnknownPartitioning(1)));
     assert_eq!(filter.properties().emission_type, EmissionType::Final);
     assert_eq!(filter.properties().boundedness, Boundedness::Bounded);
     assert!(filter.properties().output_ordering().is_none());
@@ -449,10 +444,7 @@ fn assert_mixed_boundary_properties(filter: &FilterExec, native: &AlgeonNativeEx
     assert!(filter.properties().equivalence_properties().oeq_class().is_empty());
     assert!(filter.properties().equivalence_properties().constraints().is_empty());
 
-    assert!(matches!(
-        native.properties().output_partitioning(),
-        datafusion::physical_expr::Partitioning::UnknownPartitioning(1)
-    ));
+    assert!(matches!(native.properties().output_partitioning(), Partitioning::UnknownPartitioning(1)));
     assert_eq!(native.properties().emission_type, EmissionType::Final);
     assert_eq!(native.properties().boundedness, Boundedness::Bounded);
     assert!(native.properties().output_ordering().is_none());
@@ -461,7 +453,7 @@ fn assert_mixed_boundary_properties(filter: &FilterExec, native: &AlgeonNativeEx
     assert!(native.properties().equivalence_properties().constraints().is_empty());
 }
 
-fn ilike_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<(i32, Option<String>)> {
+fn ilike_rows(batches: &[RecordBatch]) -> Vec<(i32, Option<String>)> {
     let mut rows = batches
         .iter()
         .flat_map(|batch| {
@@ -548,8 +540,7 @@ fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let batches =
-        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
+    let batches = block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
 
@@ -571,14 +562,13 @@ fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
     let sorted: Arc<dyn ExecutionPlan> =
         Arc::new(SortExec::new(ordering.clone(), scan).with_preserve_partitioning(true));
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, sorted));
-    let expected = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
+    let expected = block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
     let rule = AlgeonNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     assert!(optimized.downcast_ref::<AlgeonNativeExec>().is_some());
-    let actual =
-        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
+    let actual = block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(actual.len(), expected.len());
     assert_eq!(int32_array(&actual[0], 0).values().as_ref(), int32_array(&expected[0], 0).values().as_ref());
     assert_eq!(int32_array(&actual[0], 0).values().as_ref(), &[1, 1, 1, 1, 2, 2]);
@@ -999,7 +989,7 @@ fn session_without_native_rule_has_no_native_optimizer_stages() {
     let dir = unique_temp_dir("algeon-datafusion-native-exec-cpu-only-count-probe");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let state = datafusion::execution::SessionStateBuilder::new_with_default_features().build();
+    let state = SessionStateBuilder::new_with_default_features().build();
     let rule_names = state.physical_optimizers().iter().map(|rule| rule.name()).collect::<Vec<_>>();
     assert!(!rule_names.contains(&"algeon_datafusion_native_count_only"));
     assert!(!rule_names.contains(&"algeon_datafusion_native"));
@@ -1130,8 +1120,7 @@ fn native_optimizer_rule_executes_distinct_aggregate_over_anti_join_natively() {
     assert_eq!(report.not_selected_count(), 0);
 
     // Row parity with the DataFusion baseline: no key survives the NOT IN.
-    let batches =
-        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
+    let batches = block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 1);
     assert_eq!(int64_array(&batches[0], 0).value(0), 0);
@@ -1266,21 +1255,17 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
-    futures::executor::block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()))
-        .unwrap();
+    block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
 
-    let df =
-        futures::executor::block_on(ctx.sql("SELECT id, TRY_CAST(name AS INT) AS maybe_int FROM bench ORDER BY id"))
-            .unwrap();
-    let plan = futures::executor::block_on(df.create_physical_plan()).unwrap();
+    let df = block_on(ctx.sql("SELECT id, TRY_CAST(name AS INT) AS maybe_int FROM bench ORDER BY id")).unwrap();
+    let plan = block_on(df.create_physical_plan()).unwrap();
     let optimized_tree = displayable(plan.as_ref()).indent(false).to_string();
     assert!(
         optimized_tree.contains("AlgeonNativeExec"),
         "TRY_CAST(string -> int) should lower into a native execution node:\n{optimized_tree}"
     );
 
-    let batches: DfResult<Vec<RecordBatch>> =
-        futures::executor::block_on(collect(plan, Arc::new(TaskContext::default())));
+    let batches: DfResult<Vec<RecordBatch>> = block_on(collect(plan, Arc::new(TaskContext::default())));
     let batches = batches.unwrap();
     assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 5);
 

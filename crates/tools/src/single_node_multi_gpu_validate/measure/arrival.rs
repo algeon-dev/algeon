@@ -4,7 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::time::{Instant as TokioInstant, sleep, sleep_until};
+
 use super::*;
+use crate::single_node_multi_gpu_validate::schedule::ScheduledArrival;
 
 pub(super) struct DrivenRun {
     pub(super) observations: Vec<AttemptObservation>,
@@ -236,14 +239,14 @@ pub(super) fn duration_paced_arrival(
     step_index: usize,
     queries: &[SelectedQuery],
     sessions: &SessionPool,
-) -> super::super::schedule::ScheduledArrival {
+) -> ScheduledArrival {
     let query_index = sequence % queries.len();
     let session_index = sequence
         % sessions
             .get(&queries[query_index].fixture_index)
             .expect("install_sessions registers every selected fixture workload")
             .len();
-    super::super::schedule::ScheduledArrival {
+    ScheduledArrival {
         sequence,
         round,
         step_index,
@@ -375,7 +378,7 @@ pub(super) async fn drive_with_queue_observation(
                     && !measurement_feature_off_probes_submitted
                     && Instant::now() < warmup_deadline
                 {
-                    tokio::time::sleep_until(tokio::time::Instant::from_std(warmup_deadline)).await;
+                    sleep_until(TokioInstant::from_std(warmup_deadline)).await;
                 }
             }
         } else {
@@ -392,7 +395,7 @@ pub(super) async fn drive_with_queue_observation(
                     }
                 },
                 Some(_) => {},
-                None => tokio::time::sleep_until(tokio::time::Instant::from_std(planned)).await,
+                None => sleep_until(TokioInstant::from_std(planned)).await,
             }
         }
 
@@ -521,7 +524,7 @@ pub(super) async fn observe_queue_peak(
             return Ok(peak);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+        sleep(POLL_INTERVAL.min(remaining)).await;
     }
 }
 
@@ -1144,7 +1147,7 @@ pub(super) async fn drive_duration_paced_close_under_load(
     }
 
     if Instant::now() < close_at {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(close_at)).await;
+        sleep_until(TokioInstant::from_std(close_at)).await;
     }
     let mut in_flight_sequences = BTreeSet::new();
     for _ in 0..last_step.concurrency {
@@ -1228,7 +1231,7 @@ pub(super) async fn wait_for_close_under_load_cohort(
             )
             .into());
         }
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -1416,7 +1419,7 @@ pub(super) async fn wait_for_target_live_work(
             )
             .into());
         };
-        tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+        sleep(POLL_INTERVAL.min(remaining)).await;
     }
 }
 
@@ -1450,7 +1453,7 @@ pub(super) async fn wait_for_any_live_work(
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return Err("--deadline-first-after-ms elapsed before the first attempt exposed admitted work".into());
         };
-        tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+        sleep(POLL_INTERVAL.min(remaining)).await;
     }
 }
 
@@ -1474,7 +1477,7 @@ pub(super) async fn wait_for_target_release(
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return Ok(false);
         };
-        tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+        sleep(POLL_INTERVAL.min(remaining)).await;
     }
 }
 

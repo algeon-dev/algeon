@@ -42,6 +42,7 @@ use algeon_datafusion::{
 };
 use datafusion::prelude::SessionContext;
 use query_engine::observability::{AttemptFailureFactKey, SealedAttemptProjection};
+use tokio::time::{Instant as TokioInstant, sleep_until};
 use workloads::{tpcds::describe_tpcds_dataset, tpch::describe_tpch_dataset};
 
 mod arrival;
@@ -64,6 +65,8 @@ use sampling::Sampler;
 use workload::{
     FamilySessions, WorkloadFamily, WorkloadItem, build_sessions, discover_graph_seed, mix_families, resolve_item,
 };
+
+use crate::loaded_libraries::write_loaded_libraries;
 
 #[cfg(test)]
 mod tests;
@@ -342,7 +345,7 @@ async fn measure(
         let ctx = Arc::clone(session_for(sessions, &item)?);
         tasks.push(tokio::spawn(async move {
             let due = origin + arrival.offset;
-            tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+            sleep_until(TokioInstant::from_std(due)).await;
             let outcome = run_attempt(
                 &backend,
                 &ctx,
@@ -409,7 +412,7 @@ async fn measure(
         attempt_counters,
     };
     report.write_all()?;
-    crate::loaded_libraries::write_loaded_libraries(&config.run_dir())?;
+    write_loaded_libraries(&config.run_dir())?;
     println!("{}", report::SUMMARY_COLUMNS.join("\t"));
     println!("{}", report.summary_fields().join("\t"));
     eprintln!(

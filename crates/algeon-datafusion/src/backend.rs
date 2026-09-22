@@ -12,11 +12,6 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use datafusion::execution::{SessionState, SessionStateBuilder};
 #[cfg(feature = "qualification")]
 pub use query_engine::runtime::DeviceQuarantineInjection;
-use query_engine::runtime::{
-    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-    GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus, QueryExecutionConfig,
-    QueueBounds,
-};
 pub use query_engine::runtime::{DeviceCapabilities, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 /// Canonical device profile bound to an explicit process-scoped GPU memory
 /// ownership promise.
@@ -29,7 +24,19 @@ pub use query_engine::runtime::{
     GpuBackendDeviceInstallationBounds as AlgeonGpuDeviceInstallationBounds,
     GpuBackendDeviceProfile as AlgeonGpuDeviceProfile,
 };
+use query_engine::{
+    error::QueryError,
+    runtime::{
+        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus, QueryExecutionConfig,
+        QueueBounds, probe_device_capacity,
+    },
+};
+#[cfg(test)]
+use query_engine::{error::Result as QueryEngineResult, runtime::QueryHandle};
 
+#[cfg(feature = "cugraph")]
+use crate::native_exec::GraphBfsSingleflightSnapshot;
 use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource},
@@ -39,8 +46,11 @@ use crate::{
         GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
         QueryServiceDeviceAdmissionSnapshot,
     },
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy},
-    session::AlgeonSessionStateBuilderExt,
+    planner::{
+        AlgeonGpuExecutionMode, AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule,
+        DataFusionCpuExecutionPolicy,
+    },
+    session::{AlgeonSessionStateBuilderExt, installed_algeon_native_optimizer_config},
 };
 
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
@@ -178,15 +188,13 @@ impl AlgeonGpuBackend {
         memory_ownership: GpuMemoryOwnership,
         backend_reserve_bytes: u64,
     ) -> Result<GpuDeviceCapacityProbe> {
-        query_engine::runtime::probe_device_capacity(device_ordinal, memory_ownership, backend_reserve_bytes).map_err(
-            |error| {
-                Error::from_native_with_blocking_diagnostics(
-                    "algeon_datafusion.backend.probe_device_capacity",
-                    "failed to probe declarable GPU device capacity",
-                    error,
-                )
-            },
-        )
+        probe_device_capacity(device_ordinal, memory_ownership, backend_reserve_bytes).map_err(|error| {
+            Error::from_native_with_blocking_diagnostics(
+                "algeon_datafusion.backend.probe_device_capacity",
+                "failed to probe declarable GPU device capacity",
+                error,
+            )
+        })
     }
 
     /// Non-blockingly signals backend shutdown.
@@ -364,7 +372,7 @@ impl AlgeonGpuBackend {
     /// installed optimizer is bound to another backend, or its execution
     /// config carries no query admission authority.
     pub fn is_session_state_bound(&self, state: &SessionState) -> bool {
-        crate::session::installed_algeon_native_optimizer_config(state)
+        installed_algeon_native_optimizer_config(state)
             .is_some_and(|optimizer_config| self.is_execution_config_bound(optimizer_config.native_execution_config()))
     }
 
@@ -380,7 +388,7 @@ impl AlgeonGpuBackend {
 
     /// Exact-request BFS coalescing counters shared by sessions from this backend.
     #[cfg(feature = "cugraph")]
-    pub fn cugraph_bfs_singleflight_snapshot(&self) -> crate::native_exec::GraphBfsSingleflightSnapshot {
+    pub fn cugraph_bfs_singleflight_snapshot(&self) -> GraphBfsSingleflightSnapshot {
         self.optimizer_config.native_execution_config().graph_bfs_singleflight_snapshot()
     }
 
@@ -436,7 +444,7 @@ impl AlgeonGpuBackend {
 /// facts. This wrapper folds that cause into the adapter message so consumers
 /// that only print the outermost error still see the actionable numbers
 /// instead of a bare "initialization failed".
-fn backend_core_build_error(message: &'static str, source: query_engine::error::QueryError) -> Error {
+fn backend_core_build_error(message: &'static str, source: QueryError) -> Error {
     Error::from_native_with_blocking_diagnostics("algeon_datafusion.backend.gpu_core", message, source)
 }
 
@@ -555,7 +563,7 @@ impl InstalledTestGpuBackend {
         self.backend().optimizer_config()
     }
 
-    pub(crate) fn admit_query(&self) -> query_engine::error::Result<query_engine::runtime::QueryHandle> {
+    pub(crate) fn admit_query(&self) -> QueryEngineResult<QueryHandle> {
         self.backend().session_capability().admit_query()
     }
 
@@ -616,7 +624,7 @@ impl AlgeonGpuBackendBuilder {
         self
     }
 
-    pub fn with_execution_mode(mut self, mode: crate::planner::AlgeonGpuExecutionMode) -> Self {
+    pub fn with_execution_mode(mut self, mode: AlgeonGpuExecutionMode) -> Self {
         self.optimizer_config = self.optimizer_config.with_execution_mode(mode);
         self
     }

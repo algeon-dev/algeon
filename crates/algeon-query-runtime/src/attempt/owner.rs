@@ -2,9 +2,13 @@
 use std::{
     fmt,
     future::Future,
+    mem, panic,
+    panic::AssertUnwindSafe,
     pin::Pin,
-    sync::{Arc, Condvar, Mutex, atomic::Ordering},
+    sync,
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, atomic::Ordering},
     task::{Context, Poll, Waker},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -15,18 +19,19 @@ use super::{
 };
 #[cfg(test)]
 use crate::observability::{
-    AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFailureCode, AttemptFailureStatus, AttemptFaultIsolation,
+    AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFailureCode, AttemptFailureFactKey, AttemptFailureFactValue,
+    AttemptFailureOperation, AttemptFailureOrigin, AttemptFailureStatus, AttemptFaultIsolation,
     AttemptFinalDomainUsage, AttemptHealthTransition, AttemptNativeFault, AttemptNativeFaultEvidence,
-    AttemptNativeFaultKind, AttemptNativeStatus, AttemptTeardownHealth,
+    AttemptNativeFaultKind, AttemptNativeStatus, AttemptTeardownHealth, QueryBoundaryKind,
 };
 use crate::{
     observability::{
-        AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,
-        AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureSummary, AttemptId, AttemptQueryId,
-        AttemptRetryAdvice, AttemptTerminalCommit, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
-        QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeCleanupFailureObservation, RuntimeObservationClock,
-        RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner,
-        RuntimeObservationPayload, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+        AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
+        AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureSummary,
+        AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit, AttemptTraceContext, CleanupFailurePhase,
+        CleanupFailureSummary, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeCleanupFailureObservation,
+        RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle,
+        RuntimeObservationOwner, RuntimeObservationPayload, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
         SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
@@ -159,7 +164,7 @@ pub struct AttemptCompletion {
 
 impl Clone for AttemptCompletion {
     fn clone(&self) -> Self {
-        let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.receivers = state.receivers.saturating_add(1);
         Self { cell: Arc::clone(&self.cell) }
     }
@@ -187,14 +192,14 @@ impl AttemptCompletionFactory {
     /// Mints one independent counted receiver for the attempt's immutable
     /// terminal report.
     pub fn completion(&self) -> AttemptCompletion {
-        let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.receivers = state.receivers.saturating_add(1);
         AttemptCompletion { cell: Arc::clone(&self.cell) }
     }
 
     /// Returns the published report without waiting, when ready.
     pub fn try_report(&self) -> Option<Arc<QueryAttemptReport>> {
-        let state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
     }
 }
@@ -210,7 +215,7 @@ impl SealedAttemptReportSink {
     fn invoke(&self, report: Arc<QueryAttemptReport>) {
         // A projection must never prevent the owning attempt from publishing
         // its already-finalized report.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.notify)(report)));
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| (self.notify)(report)));
     }
 }
 
@@ -242,7 +247,7 @@ struct AttemptCore {
     // Set once during construction after the observation owner exists. A
     // `RuntimeObservationHandle` is cloneable record-only state, so holding it
     // here cannot cycle back into the attempt core.
-    observation: std::sync::OnceLock<RuntimeObservationHandle>,
+    observation: OnceLock<RuntimeObservationHandle>,
     cell: Arc<AttemptCompletionCell>,
     counters: Arc<AttemptBackendCounters>,
     completion_queue: Option<Arc<AttemptCompletionQueue>>,
@@ -265,8 +270,8 @@ impl fmt::Debug for AttemptCore {
 }
 
 impl AttemptCore {
-    fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, AttemptLifecycle> {
-        self.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock_lifecycle(&self) -> MutexGuard<'_, AttemptLifecycle> {
+        self.lifecycle.lock().unwrap_or_else(sync::PoisonError::into_inner)
     }
 
     fn monotonic_ns(&self) -> u64 {
@@ -277,7 +282,7 @@ impl AttemptCore {
     where F: Fn(Arc<QueryAttemptReport>) + Send + Sync + 'static {
         let mut sink = Some(SealedAttemptReportSink { notify: Box::new(sink) });
         let published = {
-            let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
             match &state.report {
                 Some(report) if state.report_visible => Some(Arc::clone(report)),
                 Some(_) => {
@@ -316,7 +321,7 @@ impl AttemptCore {
         let resource_evidence = terminal_commit.and_then(AttemptTerminalCommit::resource_evidence);
         let alternate_device_eligibility = terminal_commit
             .map(AttemptTerminalCommit::alternate_device_eligibility)
-            .unwrap_or(crate::observability::AttemptAlternateDeviceEligibility::Unavailable);
+            .unwrap_or(AttemptAlternateDeviceEligibility::Unavailable);
         let retry_advice = AttemptRetryAdvice::from_sealed_attempt(
             &outcome,
             primary_failure.as_ref(),
@@ -441,12 +446,12 @@ impl AttemptCore {
         // flag wakes any completion receiver; late registrations clone this
         // canonical allocation directly rather than retaining another copy.
         let report = loop {
-            let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
             if let Some(existing) = &state.report {
                 if state.report_visible {
                     return Ok(Arc::clone(existing));
                 }
-                let _guard = self.cell.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _guard = self.cell.changed.wait(state).unwrap_or_else(sync::PoisonError::into_inner);
                 continue;
             }
             state.report = Some(Arc::clone(&report));
@@ -459,19 +464,19 @@ impl AttemptCore {
         // before any completion reader can observe it.
         let (wakers, abandoned) = loop {
             let sinks = {
-                let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                std::mem::take(&mut state.sealed_report_sinks)
+                let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
+                mem::take(&mut state.sealed_report_sinks)
             };
             for sink in sinks {
                 sink.invoke(Arc::clone(&report));
             }
-            let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
             if !state.sealed_report_sinks.is_empty() {
                 continue;
             }
             debug_assert!(state.report.as_ref().is_some_and(|existing| Arc::ptr_eq(existing, &report)));
             state.report_visible = true;
-            break (std::mem::take(&mut state.wakers), state.receivers == 0);
+            break (mem::take(&mut state.wakers), state.receivers == 0);
         };
         self.counters.reports_ready.fetch_add(1, Ordering::AcqRel);
         self.cell.changed.notify_all();
@@ -490,7 +495,7 @@ impl AttemptCore {
         // The report is durable: the attempt's observation permit has nothing
         // left to fence and is released before any waiter observes close
         // quiescence. Report and completion state carry no lease.
-        self.observation_permit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        self.observation_permit.lock().unwrap_or_else(sync::PoisonError::into_inner).take();
         Ok(report)
     }
 
@@ -557,7 +562,7 @@ impl AttemptOwner {
             lifecycle: Mutex::new(AttemptLifecycle::new(clock.monotonic_ns())),
             clock: Arc::clone(&clock),
             cancellation: AttemptCancellation::new(request.deadline),
-            observation: std::sync::OnceLock::new(),
+            observation: sync::OnceLock::new(),
             cell: Arc::clone(&cell),
             counters,
             completion_queue: queue,
@@ -588,7 +593,7 @@ impl AttemptOwner {
                 }
             });
         core.observation.set(owner.handle()).expect("attempt observation handle is set exactly once");
-        core.observation_permit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(permit);
+        core.observation_permit.lock().unwrap_or_else(sync::PoisonError::into_inner).replace(permit);
         AttemptBegin {
             owner: Self(Arc::new(AttemptInner { core, observation_owner: owner, finalizer_slot })),
             completion: AttemptCompletionFactory { cell },
@@ -641,7 +646,7 @@ impl AttemptOwner {
 
     /// An independent receiver for the terminal report.
     pub fn completion(&self) -> AttemptCompletion {
-        self.0.core.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).receivers += 1;
+        self.0.core.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner).receivers += 1;
         AttemptCompletion { cell: Arc::clone(&self.0.core.cell) }
     }
 
@@ -735,7 +740,7 @@ impl Drop for AttemptOwner {
     fn drop(&mut self) {
         let report_ready = self.0.core.lock_lifecycle().ready.is_some();
         if !report_ready {
-            let _ = self.commit_terminal(if std::thread::panicking() {
+            let _ = self.commit_terminal(if thread::panicking() {
                 RuntimeTerminalOutcome::Panicked
             } else {
                 RuntimeTerminalOutcome::Dropped
@@ -855,7 +860,7 @@ impl AttemptFinalizerSlot {
     fn take(&self) -> Result<AttemptFinalizer, AttemptLifecycleError> {
         self.0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(sync::PoisonError::into_inner)
             .take()
             .ok_or(AttemptLifecycleError::FinalizationUnavailable)
     }
@@ -871,7 +876,7 @@ impl AttemptFinalizerSlot {
     /// `NotRequired`, while an admitted envelope consumes it after cleanup.
     #[doc(hidden)]
     pub fn record_primary_failure(&self, summary: AttemptFailureSummary) -> Result<(), AttemptLifecycleError> {
-        let guard = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.0.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let finalizer = guard.as_ref().ok_or(AttemptLifecycleError::FinalizationUnavailable)?;
         finalizer.record_primary_failure(summary);
         Ok(())
@@ -1044,24 +1049,24 @@ impl AttemptHandle {
 impl AttemptCompletion {
     /// Returns whether the terminal report has been published.
     pub fn is_ready(&self) -> bool {
-        self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).report_visible
+        self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner).report_visible
     }
 
     /// Returns the published report without waiting, when ready.
     pub fn try_report(&self) -> Option<Arc<QueryAttemptReport>> {
-        let state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
     }
 
     /// Blocks the current thread until the report is published or the timeout
     /// elapses. Intended for synchronous tests and diagnostics.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<Arc<QueryAttemptReport>> {
-        let state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let (state, _) = self
             .cell
             .changed
             .wait_timeout_while(state, timeout, |state| !state.report_visible)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(sync::PoisonError::into_inner);
         state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
     }
 }
@@ -1070,7 +1075,7 @@ impl Future for AttemptCompletion {
     type Output = Arc<QueryAttemptReport>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         if state.report_visible
             && let Some(report) = &state.report
         {
@@ -1085,7 +1090,7 @@ impl Future for AttemptCompletion {
 
 impl Drop for AttemptCompletion {
     fn drop(&mut self) {
-        let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.cell.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.receivers = state.receivers.saturating_sub(1);
     }
 }
@@ -1225,12 +1230,7 @@ mod tests {
         assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
         assert_eq!(snapshot.attempt_report().expect("attempt report embedded"), report.as_ref());
         assert!(snapshot.events().iter().any(|event| {
-            matches!(
-                event.payload,
-                RuntimeObservationPayload::QueryBoundary {
-                    boundary: crate::observability::QueryBoundaryKind::Cancelled
-                }
-            )
+            matches!(event.payload, RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Cancelled })
         }));
     }
 
@@ -1613,10 +1613,10 @@ mod tests {
         let summary = report.primary_failure.as_ref().expect("captured native primary summary");
         assert_eq!(summary.code(), AttemptFailureCode::CudfTemporaryFailure);
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
-        assert_eq!(summary.operation(), crate::observability::AttemptFailureOperation::Admission);
+        assert_eq!(summary.operation(), AttemptFailureOperation::Admission);
         assert_eq!(summary.facts().len(), 1);
-        assert_eq!(summary.facts()[0].key(), crate::observability::AttemptFailureFactKey::Reason);
-        assert_eq!(summary.facts()[0].value(), crate::observability::AttemptFailureFactValue::DeadlineExpired);
+        assert_eq!(summary.facts()[0].key(), AttemptFailureFactKey::Reason);
+        assert_eq!(summary.facts()[0].value(), AttemptFailureFactValue::DeadlineExpired);
         assert!(summary.text().is_none());
     }
 
@@ -1678,9 +1678,9 @@ mod tests {
         assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
         let summary = report.primary_failure.as_ref().expect("deadline summary");
         assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
-        assert_eq!(summary.origin(), crate::observability::AttemptFailureOrigin::Native);
+        assert_eq!(summary.origin(), AttemptFailureOrigin::Native);
         assert_eq!(summary.facts().len(), 1);
-        assert_eq!(summary.facts()[0].value(), crate::observability::AttemptFailureFactValue::DeadlineExpired);
+        assert_eq!(summary.facts()[0].value(), AttemptFailureFactValue::DeadlineExpired);
     }
 
     #[test]
@@ -1697,7 +1697,7 @@ mod tests {
             assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
             let summary = report.primary_failure.as_ref().expect("control cancellation summary");
             assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
-            assert_eq!(summary.origin(), crate::observability::AttemptFailureOrigin::AttemptControl);
+            assert_eq!(summary.origin(), AttemptFailureOrigin::AttemptControl);
             assert!(summary.facts().is_empty());
         }
     }
@@ -1714,7 +1714,7 @@ mod tests {
             let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
             let summary = report.primary_failure.as_ref().expect("control summary");
             assert_eq!(summary.code(), code);
-            assert_eq!(summary.origin(), crate::observability::AttemptFailureOrigin::AttemptControl);
+            assert_eq!(summary.origin(), AttemptFailureOrigin::AttemptControl);
             assert_eq!(summary.status(), AttemptFailureStatus::NotApplicable);
             assert!(summary.text().is_none());
         }
@@ -1734,6 +1734,8 @@ mod tests {
 
 #[cfg(test)]
 mod terminalize_race_tests {
+    use query_planning::error::QueryErrorCode;
+
     use super::*;
     use crate::{observability::DeterministicRuntimeObservationClock, runtime::BackendLifecycle};
 
@@ -1753,7 +1755,7 @@ mod terminalize_race_tests {
         // The admission binding terminalizes the rejection at its source.
         admission_rejection
             .reject(&QueryError::new(
-                query_planning::error::QueryErrorCode::ServiceOverloaded,
+                QueryErrorCode::ServiceOverloaded,
                 "test.admission_rejection",
                 "injected admission rejection",
             ))

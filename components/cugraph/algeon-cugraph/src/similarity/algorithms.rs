@@ -13,7 +13,7 @@ use cugraph_sys::{
 use crate::{
     array::DeviceArrayView,
     error::{Result, check_error, require_non_null},
-    graph::Graph,
+    graph::{Graph, Transposition},
     handle::EnteredContext,
     similarity::{
         AllPairsSimilarityParams, CosineSimilarityResult, JaccardSimilarityResult, OverlapSimilarityResult,
@@ -81,7 +81,7 @@ pub(crate) fn create_vertex_pairs<T, V: CugraphElement>(
 
 fn pairwise_similarity(
     handle: &EnteredContext<'_>,
-    graph: &mut Graph<impl crate::graph::Transposition>,
+    graph: &mut Graph<impl Transposition>,
     pairs: VertexPairs,
     params: &SimilarityParams,
     operation: &'static str,
@@ -120,7 +120,7 @@ fn pairwise_similarity(
 
 fn all_pairs_similarity<V: CugraphElement>(
     handle: &EnteredContext<'_>,
-    graph: &mut Graph<impl crate::graph::Transposition>,
+    graph: &mut Graph<impl Transposition>,
     vertices: Option<&DeviceArrayView<'_, V>>,
     params: &AllPairsSimilarityParams,
     operation: &'static str,
@@ -163,7 +163,7 @@ macro_rules! define_pairwise {
             params: &SimilarityParams,
         ) -> Result<$result_ty>
         where
-            T: crate::graph::Transposition,
+            T: Transposition,
         {
             let inner = pairwise_similarity(handle, graph, pairs, params, $operation, $c_fn)?;
             Ok($result_ty::from_inner(inner))
@@ -180,7 +180,7 @@ macro_rules! define_all_pairs {
             params: &AllPairsSimilarityParams,
         ) -> Result<$result_ty>
         where
-            T: crate::graph::Transposition,
+            T: Transposition,
         {
             let inner = all_pairs_similarity(handle, graph, vertices, params, $operation, $c_fn)?;
             Ok($result_ty::from_inner(inner))

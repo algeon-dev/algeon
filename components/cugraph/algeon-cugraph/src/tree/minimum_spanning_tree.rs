@@ -5,6 +5,7 @@ use std::ptr;
 use cugraph_sys::{cugraph_error_t, cugraph_induced_subgraph_result_t, cugraph_minimum_spanning_tree};
 
 use crate::{
+    cudf_interop::minimum_spanning_tree_result_to_dataframe,
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
     handle::EnteredContext,
@@ -100,7 +101,7 @@ impl MinimumSpanningTreeResult {
     /// Returns `"source"` and `"destination"` columns, plus optional
     /// `"weight"`, `"edge_id"`, and `"edge_type"` columns when present.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::minimum_spanning_tree_result_to_dataframe(self, runtime)
+        minimum_spanning_tree_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("MinimumSpanningTreeResult::to_dataframe"))
     }
 }

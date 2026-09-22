@@ -1,8 +1,22 @@
 use cudf::{
     ErrorCode, ErrorKind, ErrorStatus,
-    core::error::{FactKeyName, FactValue},
+    core::error::{FactKeyName, FactValue, find_cudf_error_in_chain, kind_for_code},
+    testing::{
+        core::{
+            trigger_invariant_violation_for_test, trigger_null_handle_contract_error_for_test,
+            trigger_range_limit_error_for_test, trigger_table_column_count_limit_error_for_test,
+        },
+        dataframe::new_column_length_mismatch_error_for_test,
+        error::from_interop_in_for_test,
+        interop::{
+            trigger_interop_column_index_limit_for_test, trigger_interop_projection_missing_null_mask_for_test,
+            trigger_interop_projection_negative_offset_for_test,
+        },
+    },
 };
 use rapids_interop::{InteropError, InteropErrorKind};
+
+use crate::common::run_named_cases;
 
 fn device_fact(err: &cudf::Error, key: FactKeyName) -> i32 {
     match err.fact_value(key) {
@@ -16,7 +30,7 @@ fn interop_error_converts_with_kind_context_status_and_source() {
         .with_context("operation", "interop::PreparedColumnExport::try_prepare_device_column_export")
         .with_context("type_id", "Dictionary32");
 
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
 
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -43,7 +57,7 @@ fn interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error()
         .with_context("column_id", "7")
         .set_source(std::io::Error::other("child cause"));
 
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
     let source = std::error::Error::source(&err).expect("expected interop source");
 
     assert_eq!(source.to_string(), "borrowed view rejected");
@@ -51,7 +65,7 @@ fn interop_error_nested_source_chain_is_preserved_when_mapping_into_cudf_error()
 }
 
 fn interop_not_found_maps_to_not_found() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding")
             .with_context("buffer_id", "10"),
         "test::interop_boundary",
@@ -66,7 +80,7 @@ fn interop_not_found_maps_to_not_found() {
 }
 
 fn interop_readiness_unavailable_without_cudf_source_maps_to_permanent_execution_context_error() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::ReadinessUnavailable,
             "CUDA stream handle must carry explicit device identity",
@@ -83,7 +97,7 @@ fn interop_readiness_unavailable_without_cudf_source_maps_to_permanent_execution
 }
 
 fn interop_execution_binding_unavailable_without_cudf_source_uses_stable_code() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::ExecutionBindingUnavailable,
             "borrowed table projection requires an explicit producer execution binding",
@@ -101,7 +115,7 @@ fn interop_execution_binding_unavailable_without_cudf_source_uses_stable_code() 
 }
 
 fn interop_lease_already_active_without_cudf_source_uses_stable_code() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::LeaseAlreadyActive,
             "prepared table export already has an active read lease",
@@ -119,7 +133,7 @@ fn interop_lease_already_active_without_cudf_source_uses_stable_code() {
 }
 
 fn interop_unsupported_layout_maps_to_unsupported() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(InteropErrorKind::UnsupportedLayout, "struct columns are not supported for this export path")
             .with_context("layout", "struct"),
         "test::interop_boundary",
@@ -134,7 +148,7 @@ fn interop_unsupported_layout_maps_to_unsupported() {
 }
 
 fn interop_execution_binding_mismatch_maps_to_runtime_binding_mismatch() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::ExecutionBindingMismatch,
             "prepared table import runtime must use the same CUDA device as the producer partition",
@@ -158,7 +172,7 @@ fn interop_execution_binding_mismatch_maps_to_runtime_binding_mismatch() {
 }
 
 fn interop_descriptor_runtime_binding_mismatch_maps_to_canonical_device_context() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::ExecutionBindingMismatch,
             "borrowed descriptor import requires the destination runtime to use the same CUDA device",
@@ -182,7 +196,7 @@ fn interop_descriptor_runtime_binding_mismatch_maps_to_canonical_device_context(
 }
 
 fn interop_readiness_mismatch_maps_to_runtime_binding_mismatch() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::ReadinessMismatch,
             "prepared export readiness event must live on the producer CUDA device",
@@ -207,7 +221,7 @@ fn interop_readiness_mismatch_maps_to_runtime_binding_mismatch() {
 }
 
 fn interop_release_stream_mismatch_maps_to_canonical_device_context() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::ReadinessMismatch,
             "runtime-backed owned-transfer release stream must live on the release CUDA device",
@@ -232,7 +246,7 @@ fn interop_release_stream_mismatch_maps_to_canonical_device_context() {
 }
 
 fn interop_mixed_device_unsupported_maps_to_cross_device_inputs() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(
             InteropErrorKind::MixedDeviceUnsupported,
             "owned table transfer requires all referenced bindings to live on one CUDA device",
@@ -256,7 +270,7 @@ fn interop_mixed_device_unsupported_maps_to_cross_device_inputs() {
 }
 
 fn interop_profile_unsupported_maps_to_unsupported_operation_code() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(InteropErrorKind::ProfileUnsupported, "prepared host export requires host-visible readiness")
             .with_context("profile", "prepared_host_export")
             .with_context("readiness", "device_stream_ordered"),
@@ -274,7 +288,7 @@ fn interop_profile_unsupported_maps_to_unsupported_operation_code() {
 }
 
 fn interop_placement_unsupported_maps_to_unsupported_operation_code() {
-    let err = cudf::testing::error::from_interop_in_for_test(
+    let err = from_interop_in_for_test(
         InteropError::new(InteropErrorKind::PlacementUnsupported, "prepared host export requires host-backed buffers")
             .with_context("binding", "values")
             .with_context("placement", "cuda"),
@@ -294,7 +308,7 @@ fn interop_error_promotes_nested_operation_context_into_operation_and_called() {
         .with_context("operation", "runtime::completion::wait")
         .with_context("column_id", "7");
 
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
 
     assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -312,8 +326,8 @@ fn interop_error_promotes_nested_operation_context_into_operation_and_called() {
 }
 
 fn interop_projection_negative_offset_contract_maps_to_cudf_error_with_canonical_context() {
-    let interop = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test().unwrap_err();
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let interop = trigger_interop_projection_negative_offset_for_test().unwrap_err();
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
@@ -325,8 +339,8 @@ fn interop_projection_negative_offset_contract_maps_to_cudf_error_with_canonical
 }
 
 fn interop_projection_missing_null_mask_contract_maps_to_cudf_error_with_canonical_context() {
-    let interop = cudf::testing::interop::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let interop = trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
@@ -338,8 +352,8 @@ fn interop_projection_missing_null_mask_contract_maps_to_cudf_error_with_canonic
 }
 
 fn interop_column_index_limit_contract_maps_to_cudf_error_with_canonical_context() {
-    let interop = cudf::testing::interop::trigger_interop_column_index_limit_for_test().unwrap_err();
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let interop = trigger_interop_column_index_limit_for_test().unwrap_err();
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
     let expected_column_index = usize::MAX.to_string();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -359,12 +373,12 @@ fn interop_error_with_cudf_source_preserves_cudf_kind_and_status() {
     // Construction helpers are crate-internal, so tests cannot build an
     // `Error` directly. They must exercise a production-shaped path that
     // returns one.
-    let inner_cudf_error = cudf::testing::core::trigger_invariant_violation_for_test().unwrap_err();
+    let inner_cudf_error = trigger_invariant_violation_for_test().unwrap_err();
     let interop = InteropError::new(InteropErrorKind::ExecutionBindingUnavailable, "CUDA runtime busy")
         .with_context("operation", "interop::ActiveReadLease::complete")
         .set_source(inner_cudf_error);
 
-    let err = cudf::testing::error::from_interop_in_for_test(interop, "test::interop_boundary");
+    let err = from_interop_in_for_test(interop, "test::interop_boundary");
 
     // Truthful path: code/kind/status derive purely from the interop kind, not
     // from the nested cudf error.
@@ -377,13 +391,13 @@ fn interop_error_with_cudf_source_preserves_cudf_kind_and_status() {
     // level deeper in the source chain.
     let outer_source = std::error::Error::source(&err).expect("expected interop source");
     assert_eq!(outer_source.to_string(), "CUDA runtime busy");
-    let inner = cudf::core::error::find_cudf_error_in_chain(outer_source).expect("expected nested cudf error");
+    let inner = find_cudf_error_in_chain(outer_source).expect("expected nested cudf error");
     assert_eq!(inner.code(), ErrorCode::InvariantViolation);
     assert_eq!(inner.operation(), "testing::trigger_invariant_violation_for_test");
 }
 
 fn testing_hook_locks_invariant_violation_helper_contract() {
-    let err = cudf::testing::core::trigger_invariant_violation_for_test().unwrap_err();
+    let err = trigger_invariant_violation_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::InvariantViolation);
@@ -393,7 +407,7 @@ fn testing_hook_locks_invariant_violation_helper_contract() {
 }
 
 fn testing_hook_locks_null_handle_on_success_helper_contract() {
-    let err = cudf::testing::core::trigger_null_handle_contract_error_for_test().unwrap_err();
+    let err = trigger_null_handle_contract_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::InvariantViolation);
@@ -404,7 +418,7 @@ fn testing_hook_locks_null_handle_on_success_helper_contract() {
 }
 
 fn testing_hook_locks_shared_range_limit_helper_contract() {
-    let err = cudf::testing::core::trigger_range_limit_error_for_test().unwrap_err();
+    let err = trigger_range_limit_error_for_test().unwrap_err();
     let expected_row_count = usize::MAX.to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -419,7 +433,7 @@ fn testing_hook_locks_shared_range_limit_helper_contract() {
 }
 
 fn testing_hook_locks_shared_limit_validation_helper_contract() {
-    let err = cudf::testing::core::trigger_table_column_count_limit_error_for_test().unwrap_err();
+    let err = trigger_table_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -434,7 +448,7 @@ fn testing_hook_locks_shared_limit_validation_helper_contract() {
 }
 
 fn testing_hook_locks_column_name_count_mismatch_helper_contract() {
-    let err = cudf::testing::dataframe::new_column_length_mismatch_error_for_test(2, 3);
+    let err = new_column_length_mismatch_error_for_test(2, 3);
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
@@ -456,13 +470,13 @@ fn invariant_violation_is_exposed_as_a_first_class_kind_and_code() {
     // must map the leaf to the dedicated kind, and `ForeignInvariantViolation`
     // also projects to the same kind so callers can match on `ErrorKind`
     // for coarse policy while still using `ErrorCode` for precise classification.
-    assert_eq!(cudf::core::error::kind_for_code(ErrorCode::InvariantViolation), ErrorKind::InvariantViolation);
-    assert_eq!(cudf::core::error::kind_for_code(ErrorCode::ForeignInvariantViolation), ErrorKind::InvariantViolation);
+    assert_eq!(kind_for_code(ErrorCode::InvariantViolation), ErrorKind::InvariantViolation);
+    assert_eq!(kind_for_code(ErrorCode::ForeignInvariantViolation), ErrorKind::InvariantViolation);
 }
 
 #[test]
 fn error_api_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "interop_error_converts_with_kind_context_status_and_source",
             interop_error_converts_with_kind_context_status_and_source,

@@ -4,6 +4,7 @@ use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationRetry,
     DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
 };
+use cudf_sys::test_support;
 
 #[test]
 fn callback_panic_before_rust_receives_generation_does_not_block_installation() {
@@ -14,7 +15,7 @@ fn callback_panic_before_rust_receives_generation_does_not_block_installation() 
         ..DeviceMemoryManagerOptions::default()
     };
 
-    unsafe { cudf_sys::test_support::cudf_test_memory_manager_invoke_failure_callback_before_install_returns() };
+    unsafe { test_support::cudf_test_memory_manager_invoke_failure_callback_before_install_returns() };
     let (manager, outcome) =
         DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
             device,

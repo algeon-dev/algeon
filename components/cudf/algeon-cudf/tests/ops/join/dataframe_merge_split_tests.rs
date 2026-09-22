@@ -5,32 +5,33 @@ use cudf::{
 };
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
+    column_from_slice, column_from_slice_nullable, dataframe_from_columns, dependency_wait_call_count_for_stream,
+    error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
 };
 
 fn left_df() -> DataFrame {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
-    crate::common::dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df() -> DataFrame {
     let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let values = column_from_slice(&[200i32, 300, 400]).unwrap();
-    crate::common::dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn left_df_asym() -> DataFrame {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10i32, 20, 30]).unwrap();
-    crate::common::dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
+    dataframe_from_columns(vec!["left_id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 fn right_df_asym() -> DataFrame {
     let ids = column_from_slice(&[2i32, 3, 4]).unwrap();
     let values = column_from_slice(&[200i32, 300, 400]).unwrap();
-    crate::common::dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
+    dataframe_from_columns(vec!["right_id".to_string(), "value".to_string()], vec![ids, values]).unwrap()
 }
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
@@ -144,15 +145,12 @@ fn test_merge_split_asymmetric_keys_preserve_each_side_schema() {
 fn test_merge_split_respects_null_equality() {
     let left_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let left_vals = column_from_slice(&[10i32, 20, 30]).unwrap();
-    let left =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals])
-            .unwrap();
+    let left = dataframe_from_columns(vec!["id".to_string(), "val".to_string()], vec![left_ids, left_vals]).unwrap();
 
     let right_ids = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let right_vals = column_from_slice(&[100i32, 200, 300]).unwrap();
     let right =
-        crate::common::dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals])
-            .unwrap();
+        dataframe_from_columns(vec!["id".to_string(), "rval".to_string()], vec![right_ids, right_vals]).unwrap();
 
     let eq_result =
         left.merge_split(&right, MergeOptions::new().on(["id"]).null_equality(NullEquality::Equal)).unwrap();
@@ -226,7 +224,7 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
 }
 
 fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -241,7 +239,7 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let split = left.merge_split(&right, MergeOptions::new().how_inner().on(["id"])).unwrap();
 
@@ -254,7 +252,7 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     // DataFrame guarantees one retained provenance bundle for all columns, so
     // one dependency from the right frame's stream orders both right keys and
     // payload before the left/output stream.
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let left_rows: Vec<_> = i32_column(&split.left, "id").into_iter().zip(i32_column(&split.left, "score")).collect();
@@ -356,7 +354,7 @@ fn test_merge_split_in_context_left_on_without_right_on() {
 
 #[test]
 fn dataframe_merge_split_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_inner_merge_split_on_shared_key", test_inner_merge_split_on_shared_key),
         ("test_left_merge_split_preserves_all_left_rows", test_left_merge_split_preserves_all_left_rows),
         ("test_full_merge_split_preserves_all_rows", test_full_merge_split_preserves_all_rows),

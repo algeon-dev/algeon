@@ -4,6 +4,8 @@ use cudf::{
 };
 use cudf_sys::*;
 
+use crate::common::run_named_cases;
+
 fn public_unary_operator_discriminants_match_ffi_contract() {
     let pairs = [
         (UnaryOperator::Sin as i32, CUDF_UNARY_SIN as i32),
@@ -142,7 +144,7 @@ fn public_auxiliary_enum_discriminants_match_ffi_contract() {
 
 #[test]
 fn ffi_enum_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "public_unary_operator_discriminants_match_ffi_contract",
             public_unary_operator_discriminants_match_ffi_contract,

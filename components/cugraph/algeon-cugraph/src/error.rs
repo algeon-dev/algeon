@@ -12,6 +12,11 @@ use std::{
     fmt,
 };
 
+use cudf::{
+    DeviceId,
+    runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
+    testing::device_safety,
+};
 use cugraph_sys::{
     cugraph_allocation_source_t, cugraph_error_alignment, cugraph_error_allocation_source, cugraph_error_code_t,
     cugraph_error_cuda_error, cugraph_error_domain_id, cugraph_error_failure_source, cugraph_error_failure_source_t,
@@ -774,14 +779,14 @@ unsafe fn check_error_with_payload(
             NativeCudaFailure::Fatal(cuda_status) => {
                 if let Some(device_id) = usize::try_from(device)
                     .ok()
-                    .and_then(|ordinal| cudf::DeviceId::new(ordinal).ok())
-                    .or_else(|| cudf::testing::device_safety::injected_device_id(device))
+                    .and_then(|ordinal| DeviceId::new(ordinal).ok())
+                    .or_else(|| device_safety::injected_device_id(device))
                 {
-                    cudf::runtime::report_device_fault(
+                    report_device_fault(
                         device_id,
-                        cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+                        DeviceFaultKind::FatalDeviceOperation,
                         operation,
-                        Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(cuda_status)),
+                        Some(DeviceFaultNativeStatus::Cuda(cuda_status)),
                     );
                 }
                 err = err
@@ -809,6 +814,8 @@ unsafe fn check_error_with_payload(
 
 #[cfg(test)]
 mod tests {
+    use cudf::runtime::DeviceHealthStatus;
+
     use super::*;
 
     #[test]
@@ -1134,8 +1141,8 @@ mod tests {
 
     #[test]
     fn fatal_native_cuda_classification_quarantines_the_explicit_owner_device() {
-        let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
-        let device = cudf::testing::device_safety::injected_device_id(7).expect("injected owner device");
+        let scope = device_safety::DeviceSafetyTestScope::install([]);
+        let device = device_safety::injected_device_id(7).expect("injected owner device");
 
         // SAFETY: the null error pointer is permitted on failure and the typed
         // CUDA classification is injected directly into the Rust translation
@@ -1154,11 +1161,11 @@ mod tests {
         assert!(error.is_persistent());
         assert!(error.to_string().contains("cuda_failure_classification: fatal"));
         let snapshot = scope.health_snapshot(device);
-        assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
         assert_eq!(snapshot.fault_count(), 1);
         let first = snapshot.first_fault().expect("fatal fault");
-        assert_eq!(first.kind(), cudf::runtime::DeviceFaultKind::FatalDeviceOperation);
+        assert_eq!(first.kind(), DeviceFaultKind::FatalDeviceOperation);
         assert_eq!(first.operation(), "test_fatal_cugraph_call");
-        assert_eq!(first.native_status(), Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(700)));
+        assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cuda(700)));
     }
 }

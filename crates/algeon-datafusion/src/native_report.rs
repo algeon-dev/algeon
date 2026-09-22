@@ -63,8 +63,11 @@ use crate::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
         AlgeonNativeGpuProducerExec,
     },
-    planner::AlgeonNativePhysicalOptimizerRule,
-    report::{CandidateOutcome, GpuCandidate},
+    planner::{
+        AlgeonNativePhysicalOptimizerRule, NativeCapabilityCompiledGraphDiagnostics,
+        NativeCapabilityContractDiagnostics,
+    },
+    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE, GpuCandidate},
 };
 
 mod dataset;
@@ -590,7 +593,7 @@ fn datafusion_planning_row_for_planning_failure(
         unsupported_category: Some("planning".to_string()),
         capability_decision_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
-        native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics::default(),
+        native_optimizer: NativeOptimizerDiagnostics::default(),
         edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
@@ -634,7 +637,7 @@ fn datafusion_execution_row_for_planning_failure(
 }
 
 fn capability_decision_rows_for_candidate(
-    diagnostics: &crate::planner::NativeCapabilityContractDiagnostics,
+    diagnostics: &NativeCapabilityContractDiagnostics,
     candidate: &GpuCandidate,
     reason: Option<CapabilityReason>,
 ) -> Vec<CapabilityDecisionRow> {
@@ -671,17 +674,17 @@ fn capability_decision_rows_for_candidate(
 fn candidate_reason_code(outcome: &CandidateOutcome) -> Option<String> {
     match outcome {
         CandidateOutcome::Selected { .. } => None,
-        CandidateOutcome::Deferred { .. } => Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
+        CandidateOutcome::Deferred { .. } => Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
         CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code().to_string()),
         CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code().to_string()),
     }
 }
 
 fn capability_compiled_graphs_for_candidate(
-    diagnostics: &crate::planner::NativeCapabilityContractDiagnostics,
+    diagnostics: &NativeCapabilityContractDiagnostics,
     candidate: &GpuCandidate,
     reason: Option<CapabilityReason>,
-) -> Vec<crate::planner::NativeCapabilityCompiledGraphDiagnostics> {
+) -> Vec<NativeCapabilityCompiledGraphDiagnostics> {
     if reason.is_some() || !capability_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
     }
@@ -706,7 +709,7 @@ mod tests {
 
     #[test]
     fn deferred_candidate_projects_deferred_kind_without_deriving_disposition() {
-        let expected_reason = crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string();
+        let expected_reason = DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string();
         let report = PlanningReport::from_outcomes([CandidateOutcome::Deferred {
             candidate: GpuCandidate::new("mixed_join", 1),
             planning_stage: "physical_optimizer".to_string(),

@@ -1,13 +1,22 @@
 //! Engine-owned empty graph input behavior.
 
+use arrow::datatypes::SchemaRef;
+
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionResult, NodeId, QueryError, QueryErrorCode,
     Result, cudf_query_error, traversal,
 };
+use crate::{
+    datatypes::cudf_dtype_from_arrow_type,
+    plan::{
+        EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy, GraphAlgorithmNode,
+        GraphAlgorithmParams, GraphAlgorithmSpec, GraphSimilarityParams,
+    },
+};
 
 pub(super) fn resolve_empty_graph_input(
     context: &ExecutionContext,
-    node: &crate::plan::GraphAlgorithmNode,
+    node: &GraphAlgorithmNode,
     sanitized_edges: &DataFrame,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
     input_rows: u64,
@@ -15,14 +24,14 @@ pub(super) fn resolve_empty_graph_input(
 ) -> Result<Option<GraphAlgorithmExecutionResult>> {
     let policy = node.spec.algorithm.definition().empty_input_policy();
     validate_required_side_inputs(&node.spec, side_inputs, policy.side_inputs)?;
-    if policy.side_inputs == crate::plan::EmptyGraphSideInputPolicy::RequireVertexPairs {
+    if policy.side_inputs == EmptyGraphSideInputPolicy::RequireVertexPairs {
         let pairs = similarity_vertex_pairs(&node.spec, side_inputs)?;
         if pairs.num_rows() == 0 {
             return empty_graph_execution_result(context, &node.spec, policy, "vertex_pairs_empty").map(Some);
         }
     }
     if sanitized_input_rows != 0
-        && policy.edge_input == crate::plan::EmptyGraphEdgeInputAction::BfsEndpointPolicy
+        && policy.edge_input == EmptyGraphEdgeInputAction::BfsEndpointPolicy
         && let Some(result) =
             traversal::resolve_empty_bfs_source_input(context, &node.spec, sanitized_edges, side_inputs)?
     {
@@ -33,24 +42,24 @@ pub(super) fn resolve_empty_graph_input(
     }
 
     match policy.edge_input {
-        crate::plan::EmptyGraphEdgeInputAction::ReturnEmpty => {
+        EmptyGraphEdgeInputAction::ReturnEmpty => {
             empty_graph_execution_result(context, &node.spec, policy, "edge_source_empty").map(Some)
         },
-        crate::plan::EmptyGraphEdgeInputAction::ValidateSelectorsThenReturnEmpty => {
+        EmptyGraphEdgeInputAction::ValidateSelectorsThenReturnEmpty => {
             validate_empty_graph_selectors(&node.spec, input_rows, sanitized_input_rows)?;
             empty_graph_execution_result(context, &node.spec, policy, "edge_source_empty").map(Some)
         },
-        crate::plan::EmptyGraphEdgeInputAction::Reject => Err(empty_graph_input_error(
+        EmptyGraphEdgeInputAction::Reject => Err(empty_graph_input_error(
             &node.spec,
             "edge",
             "operation_requires_nonempty_graph",
             input_rows,
             sanitized_input_rows,
         )),
-        crate::plan::EmptyGraphEdgeInputAction::BfsEndpointPolicy => {
+        EmptyGraphEdgeInputAction::BfsEndpointPolicy => {
             traversal::resolve_empty_bfs_edge_input(context, &node.spec, sanitized_edges, side_inputs).map(Some)
         },
-        crate::plan::EmptyGraphEdgeInputAction::SimilarityVertexPairs => {
+        EmptyGraphEdgeInputAction::SimilarityVertexPairs => {
             let pairs = similarity_vertex_pairs(&node.spec, side_inputs)?;
             Err(empty_graph_input_error(
                 &node.spec,
@@ -66,17 +75,15 @@ pub(super) fn resolve_empty_graph_input(
 }
 
 fn validate_required_side_inputs(
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
-    policy: crate::plan::EmptyGraphSideInputPolicy,
+    policy: EmptyGraphSideInputPolicy,
 ) -> Result<()> {
     match policy {
-        crate::plan::EmptyGraphSideInputPolicy::None | crate::plan::EmptyGraphSideInputPolicy::BfsPredicates => Ok(()),
-        crate::plan::EmptyGraphSideInputPolicy::RequireVertexPairs => {
-            similarity_vertex_pairs(spec, side_inputs).map(|_| ())
-        },
-        crate::plan::EmptyGraphSideInputPolicy::RequirePersonalization => {
-            let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
+        EmptyGraphSideInputPolicy::None | EmptyGraphSideInputPolicy::BfsPredicates => Ok(()),
+        EmptyGraphSideInputPolicy::RequireVertexPairs => similarity_vertex_pairs(spec, side_inputs).map(|_| ()),
+        EmptyGraphSideInputPolicy::RequirePersonalization => {
+            let GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "query_engine.graph_algorithm.empty_input",
@@ -113,10 +120,8 @@ fn validate_required_side_inputs(
     }
 }
 
-fn similarity_vertex_pairs_params(
-    spec: &crate::plan::GraphAlgorithmSpec,
-) -> Result<&crate::plan::GraphSimilarityParams> {
-    let crate::plan::GraphAlgorithmParams::Similarity(params) = &spec.params else {
+fn similarity_vertex_pairs_params(spec: &GraphAlgorithmSpec) -> Result<&GraphSimilarityParams> {
+    let GraphAlgorithmParams::Similarity(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.empty_input",
@@ -128,7 +133,7 @@ fn similarity_vertex_pairs_params(
 }
 
 fn similarity_vertex_pairs<'a>(
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     side_inputs: &'a std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<&'a GpuDataFrame> {
     let params = similarity_vertex_pairs_params(spec)?;
@@ -144,14 +149,10 @@ fn similarity_vertex_pairs<'a>(
     })
 }
 
-fn validate_empty_graph_selectors(
-    spec: &crate::plan::GraphAlgorithmSpec,
-    input_rows: u64,
-    sanitized_input_rows: u64,
-) -> Result<()> {
+fn validate_empty_graph_selectors(spec: &GraphAlgorithmSpec, input_rows: u64, sanitized_input_rows: u64) -> Result<()> {
     let (seeds, k) = match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => (&params.seeds, params.k),
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => (&params.seeds, params.k),
+        GraphAlgorithmParams::BetweennessCentrality(params) => (&params.seeds, params.k),
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => (&params.seeds, params.k),
         _ => {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -185,7 +186,7 @@ fn validate_empty_graph_selectors(
 }
 
 fn empty_graph_input_error(
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     input_role: &'static str,
     reason: &'static str,
     input_rows: u64,
@@ -206,8 +207,8 @@ fn empty_graph_input_error(
 
 pub(super) fn empty_graph_execution_result(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
-    policy: crate::plan::EmptyGraphInputPolicy,
+    spec: &GraphAlgorithmSpec,
+    policy: EmptyGraphInputPolicy,
     reason: &'static str,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let runtime = context.runtime()?;
@@ -222,10 +223,7 @@ pub(super) fn empty_graph_execution_result(
     })
 }
 
-pub(super) fn empty_graph_result_frame(
-    runtime: &cudf::Runtime,
-    schema: &arrow::datatypes::SchemaRef,
-) -> Result<DataFrame> {
+pub(super) fn empty_graph_result_frame(runtime: &cudf::Runtime, schema: &SchemaRef) -> Result<DataFrame> {
     if schema.fields().is_empty() {
         return Ok(runtime.empty_dataframe());
     }
@@ -233,7 +231,7 @@ pub(super) fn empty_graph_result_frame(
         .fields()
         .iter()
         .map(|field| {
-            let dtype = crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+            let dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "query_engine.graph_algorithm.empty_input",

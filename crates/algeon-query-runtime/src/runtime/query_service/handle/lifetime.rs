@@ -1,15 +1,21 @@
 //! Admitted attempt lifetime and root-context setup coordination.
 
+#[cfg(test)]
+use std::sync::Barrier;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::{
     collections::BTreeMap,
+    mem, sync,
     sync::{
-        Arc, Condvar, Weak,
+        Arc, Condvar, MutexGuard, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::{sync::Notify, time::timeout};
 
 use super::{
     super::{
@@ -20,7 +26,15 @@ use super::{
 };
 #[cfg(test)]
 use crate::runtime::attempt_domain::AttemptAllocationDomain;
-use crate::runtime::{AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation};
+#[cfg(test)]
+use crate::runtime::gpu::DeviceWorkerScope;
+use crate::{
+    observability::AttemptId,
+    runtime::{
+        AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
+        query_service::service::transaction::AdmissionEnvelope,
+    },
+};
 
 const CONTEXT_SETUP_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -42,7 +56,7 @@ enum RootContextSetupState {
 struct RootContextSetupCoordinator {
     state: Mutex<RootContextSetupState>,
     changed: Condvar,
-    async_changed: tokio::sync::Notify,
+    async_changed: Notify,
 }
 
 impl RootContextSetupCoordinator {
@@ -50,7 +64,7 @@ impl RootContextSetupCoordinator {
         Self {
             state: Mutex::new(RootContextSetupState::Unclaimed),
             changed: Condvar::new(),
-            async_changed: tokio::sync::Notify::new(),
+            async_changed: Notify::new(),
         }
     }
 }
@@ -80,7 +94,7 @@ pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     service: Mutex<Option<Arc<QueryServiceInner>>>,
     pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
-    pub(super) attempt_id: crate::observability::AttemptId,
+    pub(super) attempt_id: AttemptId,
     /// The admitted attempt owns the collector until every outward execution
     /// context has drained. Report commit then consumes its one unambiguous
     /// cache-scope event after CUDA cleanup is fenced.
@@ -100,7 +114,7 @@ pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     root_context_setup: RootContextSetupCoordinator,
     pub(super) attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
     pub(super) attempt_stream_provider_route: Mutex<Option<Arc<AttemptStreamProviderRoute>>>,
-    envelope: Mutex<Option<super::super::service::transaction::AdmissionEnvelope>>,
+    envelope: Mutex<Option<AdmissionEnvelope>>,
     pub(super) admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
@@ -137,9 +151,9 @@ impl QueryHandleLifetime {
         service: Arc<QueryServiceInner>,
         admission_request_id: AdmissionRequestId,
         observation: RuntimeObservationHandle,
-        attempt_id: crate::observability::AttemptId,
+        attempt_id: AttemptId,
         completion: QueryCompletion,
-        envelope: super::super::service::transaction::AdmissionEnvelope,
+        envelope: AdmissionEnvelope,
         admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
         admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
         compatible_devices: Vec<usize>,
@@ -195,9 +209,7 @@ impl QueryHandleLifetime {
         })
     }
 
-    pub(super) fn lock_envelope(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, Option<super::super::service::transaction::AdmissionEnvelope>>> {
+    pub(super) fn lock_envelope(&self) -> Result<MutexGuard<'_, Option<AdmissionEnvelope>>> {
         self.envelope.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,
@@ -208,17 +220,17 @@ impl QueryHandleLifetime {
     }
 
     pub(super) fn cache_scope_allocator_correlation(&self) -> AttemptCacheScopeAllocatorCorrelation {
-        self.cache_scope_allocator_correlation.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.cache_scope_allocator_correlation.lock().unwrap_or_else(sync::PoisonError::into_inner).clone()
     }
 
     fn take_cache_scope_allocator_correlation(&self) -> AttemptCacheScopeAllocatorCorrelation {
         match self.cache_scope_allocator_correlation.lock() {
-            Ok(mut correlation) => std::mem::take(&mut *correlation),
+            Ok(mut correlation) => mem::take(&mut *correlation),
             Err(error) => {
                 eprintln!(
                     "[query-engine] warning: recovering poisoned query service cache scope allocator correlation"
                 );
-                std::mem::take(&mut *error.into_inner())
+                mem::take(&mut *error.into_inner())
             },
         }
     }
@@ -234,7 +246,7 @@ impl QueryHandleLifetime {
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn envelope_evidence(
         &self,
-    ) -> Option<(Option<u64>, u64, Option<crate::runtime::gpu::DeviceWorkerScope>)> {
+    ) -> Option<(Option<u64>, u64, Option<DeviceWorkerScope>)> {
         self.lock_envelope().ok()?.as_ref().map(|envelope| {
             (
                 envelope.domain().map(|domain| domain.domain_id()),
@@ -248,11 +260,9 @@ impl QueryHandleLifetime {
     /// commit and before the observation seal. The barrier fires exactly once.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn arm_release_commit_gate(&self) -> Arc<ReleaseCommitGate> {
-        let gate = Arc::new(ReleaseCommitGate {
-            entered: std::sync::atomic::AtomicUsize::new(0),
-            gate: std::sync::Barrier::new(2),
-        });
-        *self.release_commit_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+        let gate =
+            Arc::new(ReleaseCommitGate { entered: sync::atomic::AtomicUsize::new(0), gate: sync::Barrier::new(2) });
+        *self.release_commit_gate.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
         gate
     }
 
@@ -260,11 +270,9 @@ impl QueryHandleLifetime {
     /// its admission envelope, after the report seal. The barrier fires once.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn arm_envelope_release_gate(&self) -> Arc<EnvelopeReleaseGate> {
-        let gate = Arc::new(EnvelopeReleaseGate {
-            entered: std::sync::atomic::AtomicUsize::new(0),
-            gate: std::sync::Barrier::new(2),
-        });
-        *self.envelope_release_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+        let gate =
+            Arc::new(EnvelopeReleaseGate { entered: sync::atomic::AtomicUsize::new(0), gate: sync::Barrier::new(2) });
+        *self.envelope_release_gate.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
         gate
     }
 
@@ -274,11 +282,10 @@ impl QueryHandleLifetime {
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn arm_root_context_binding_gate(&self) -> Arc<RootContextBindingGate> {
         let gate = Arc::new(RootContextBindingGate {
-            entered: std::sync::atomic::AtomicUsize::new(0),
-            gate: std::sync::Barrier::new(2),
+            entered: sync::atomic::AtomicUsize::new(0),
+            gate: sync::Barrier::new(2),
         });
-        *self.root_context_binding_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(Arc::clone(&gate));
+        *self.root_context_binding_gate.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
         gate
     }
 
@@ -287,7 +294,7 @@ impl QueryHandleLifetime {
         let gate = self
             .root_context_binding_gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(sync::PoisonError::into_inner)
             .as_ref()
             .map(Arc::clone);
         if let Some(gate) = gate {
@@ -302,7 +309,7 @@ impl QueryHandleLifetime {
         &self,
         usage: cudf::QueryMemoryDomainUsage,
     ) {
-        *self.terminal_domain_usage.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(usage);
+        *self.terminal_domain_usage.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(usage);
     }
 
     /// Installs an unrelated root-stream completion to exercise the
@@ -311,7 +318,7 @@ impl QueryHandleLifetime {
     /// before it returns admission capacity.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn install_foreign_root_stream_cleanup_completion_for_test(&self) {
-        let root_context = self.root_context.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root_context = self.root_context.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let root_context = root_context.as_ref().expect("root context is acquired before injecting cleanup collision");
         assert!(root_context.install_root_stream_cleanup_completion(|_| {}, || {}));
     }
@@ -335,10 +342,7 @@ impl QueryHandleLifetime {
         self.query_epoch.acquire(owner, operation).map_err(|_error| self.released_error())
     }
 
-    fn lock_root_context_setup(
-        &self,
-        operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, RootContextSetupState>> {
+    fn lock_root_context_setup(&self, operation: &'static str) -> Result<MutexGuard<'_, RootContextSetupState>> {
         self.root_context_setup.state.lock().map_err(|_error| {
             QueryError::new(QueryErrorCode::Internal, operation, "query service root-context setup mutex was poisoned")
                 .with_fact("reason", "root_context_setup_poisoned")
@@ -404,7 +408,7 @@ impl QueryHandleLifetime {
             if !root_setup_in_flight {
                 return Ok(());
             }
-            let _ = tokio::time::timeout(CONTEXT_SETUP_WAIT_POLL_INTERVAL, changed).await;
+            let _ = timeout(CONTEXT_SETUP_WAIT_POLL_INTERVAL, changed).await;
         }
     }
 
@@ -445,7 +449,7 @@ impl QueryHandleLifetime {
     }
 
     pub(super) fn complete_root_context_setup(&self) {
-        let mut state = self.root_context_setup.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.root_context_setup.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         debug_assert_eq!(*state, RootContextSetupState::InFlight);
         *state = RootContextSetupState::Ready;
         drop(state);
@@ -454,7 +458,7 @@ impl QueryHandleLifetime {
     }
 
     fn rollback_root_context_setup(&self) {
-        let mut state = self.root_context_setup.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.root_context_setup.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         if *state == RootContextSetupState::InFlight {
             *state = RootContextSetupState::Unclaimed;
         }
@@ -604,8 +608,8 @@ impl QueryHandleLifetime {
 #[derive(Debug)]
 #[doc(hidden)]
 pub(in crate::runtime::query_service) struct ReleaseCommitGate {
-    pub(super) entered: std::sync::atomic::AtomicUsize,
-    pub(super) gate: std::sync::Barrier,
+    pub(super) entered: AtomicUsize,
+    pub(super) gate: Barrier,
 }
 
 /// Barrier held while the attempt still owns its admission envelope, so a
@@ -615,8 +619,8 @@ pub(in crate::runtime::query_service) struct ReleaseCommitGate {
 #[derive(Debug)]
 #[doc(hidden)]
 pub(in crate::runtime::query_service) struct EnvelopeReleaseGate {
-    pub(super) entered: std::sync::atomic::AtomicUsize,
-    pub(super) gate: std::sync::Barrier,
+    pub(super) entered: AtomicUsize,
+    pub(super) gate: Barrier,
 }
 
 #[cfg(test)]
@@ -636,8 +640,8 @@ impl EnvelopeReleaseGate {
 #[derive(Debug)]
 #[doc(hidden)]
 pub(in crate::runtime::query_service) struct RootContextBindingGate {
-    pub(super) entered: std::sync::atomic::AtomicUsize,
-    pub(super) gate: std::sync::Barrier,
+    pub(super) entered: AtomicUsize,
+    pub(super) gate: Barrier,
 }
 
 #[cfg(test)]

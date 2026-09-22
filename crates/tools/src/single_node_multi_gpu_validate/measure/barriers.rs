@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use tokio::task::JoinHandle;
+
 use super::*;
 
 /// Runner-local facts captured at the close boundary. The evidence
@@ -71,5 +73,5 @@ pub(super) struct PendingCancellationBarrier {
     pub(super) attempt_sequence: usize,
     pub(super) requested_after: Duration,
     pub(super) requested: Arc<AtomicBool>,
-    pub(super) task: Option<tokio::task::JoinHandle<()>>,
+    pub(super) task: Option<JoinHandle<()>>,
 }

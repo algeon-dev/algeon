@@ -1,7 +1,7 @@
 #[test]
 fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     let plan = compatible_small_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -13,7 +13,7 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     assert_eq!(candidate.superset_read_columns, vec!["id", "state", "zip"]);
     let sources = local_parquet_sources_for_stable_id(&result.plan, "customer_address");
     assert_eq!(sources.len(), 1);
-    validate_local_parquet_source(sources[0], query_engine::rapids_backend::rapids_analysis_context()).expect("shared source must retain a valid schema mapping contract");
+    validate_local_parquet_source(sources[0], rapids_analysis_context()).expect("shared source must retain a valid schema mapping contract");
     assert_eq!(sources[0].diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
     assert!(sources[0].diagnostics.rejected_features.is_empty());
     assert!(sources[0].unique_key_columns.is_empty(), "source reuse must not leak branch-local proof");
@@ -81,14 +81,14 @@ fn native_optimizer_rejects_source_reuse_with_branch_specific_dynamic_filter_rou
     let union = builder.add_union(vec![date_join, other_branch], branch_schema);
     let plan = builder.finish_gpu_resident(union);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
+        Some(LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "web_sales"), 2);
     assert!(result.plan.dynamic_filter_routes().iter().any(|route| {
@@ -105,7 +105,7 @@ fn native_optimizer_keeps_local_parquet_source_reuse_contract_isolated() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -125,7 +125,7 @@ fn native_optimizer_local_parquet_source_reuse_diagnostics_redact_stable_file_id
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 1);
     let stable_file_ids = &result.diagnostics.local_parquet_source_reuse.candidates[0].stable_file_ids;
@@ -148,7 +148,7 @@ fn native_optimizer_keeps_decimal_contract_source_reuse_isolated() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -167,7 +167,7 @@ fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -175,7 +175,7 @@ fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order
     assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 0);
     assert_eq!(
         result.diagnostics.local_parquet_source_reuse.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address_a"), 2);
 }
@@ -188,7 +188,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_name
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -197,7 +197,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_name
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -209,7 +209,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -218,7 +218,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -230,7 +230,7 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -239,7 +239,7 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
     assert_eq!(count_star_probe_source_count(&result.plan), 2);
 }
@@ -252,7 +252,7 @@ fn native_optimizer_rejects_position_delete_source_reuse_contract() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -261,7 +261,7 @@ fn native_optimizer_rejects_position_delete_source_reuse_contract() {
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -273,7 +273,7 @@ fn native_optimizer_rejects_field_id_output_schema_override_source_reuse_contrac
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -282,14 +282,14 @@ fn native_optimizer_rejects_field_id_output_schema_override_source_reuse_contrac
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
 #[test]
 fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_source() {
     let plan = compatible_small_local_parquet_source_variants_with_max_rows_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -307,7 +307,7 @@ fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_sourc
 #[test]
 fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_source_reuse() {
     let plan = graph_bfs_local_source_reuse_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
@@ -334,7 +334,7 @@ fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_sour
 #[test]
 fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants() {
     let plan = large_local_parquet_source_variants_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -350,7 +350,7 @@ fn native_optimizer_reuses_large_projection_only_local_parquet_source_variants()
 #[test]
 fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_source_variant() {
     let plan = large_superset_with_smaller_local_parquet_source_variant_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -365,7 +365,7 @@ fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_so
 #[test]
 fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggregate() {
     let plan = large_superset_with_grouped_aggregate_source_variant_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -374,7 +374,7 @@ fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggr
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
+        Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
 }
@@ -389,7 +389,7 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
         },
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -403,7 +403,7 @@ fn native_optimizer_uses_full_file_size_for_source_reuse_variant_size_evidence()
 #[test]
 fn native_optimizer_reuses_large_superset_when_grouped_aggregate_variant_is_not_widened() {
     let plan = large_grouped_aggregate_superset_with_smaller_source_variant_plan();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -420,7 +420,7 @@ fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjac
         local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
@@ -453,7 +453,7 @@ fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjac
     );
 }
 
-fn compatible_small_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn compatible_small_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let SourceNode::LocalParquet(full_source) = customer_address_source(&["id", "state"], &[0, 1], None) else {
         unreachable!("customer address source helper always builds local Parquet")
@@ -478,7 +478,7 @@ fn compatible_small_local_parquet_source_variants_plan() -> query_engine::plan::
     builder.finish_gpu_resident(union)
 }
 
-fn contract_mismatched_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn contract_mismatched_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let direct = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         remote_direct_customer_address_contract(),
@@ -498,7 +498,7 @@ fn contract_mismatched_local_parquet_source_variants_plan() -> query_engine::pla
     builder.finish_gpu_resident(union)
 }
 
-fn count_star_probe_source_reuse_plan() -> query_engine::plan::QueryPlan {
+fn count_star_probe_source_reuse_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(count_star_probe_customer_address_source("id", 0));
     let right = builder.add_source(count_star_probe_customer_address_source("zip", 2));
@@ -507,7 +507,7 @@ fn count_star_probe_source_reuse_plan() -> query_engine::plan::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn position_delete_source_reuse_plan() -> query_engine::plan::QueryPlan {
+fn position_delete_source_reuse_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(
         contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
@@ -528,7 +528,7 @@ fn position_delete_source_reuse_plan() -> query_engine::plan::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn field_id_output_schema_override_source_reuse_plan() -> query_engine::plan::QueryPlan {
+fn field_id_output_schema_override_source_reuse_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(field_id_output_schema_override_source(&[("old_id", "id")]));
     let right = builder.add_source(field_id_output_schema_override_source(&[("old_id", "id"), ("old_state", "state")]));
@@ -544,7 +544,7 @@ fn field_id_output_schema_override_source_reuse_plan() -> query_engine::plan::Qu
     builder.finish_gpu_resident(union)
 }
 
-fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let full = builder.add_source(sensitive_stable_id_customer_address_source(&["id", "state"], &[0, 1], None));
     let filtered = builder.add_source(sensitive_stable_id_customer_address_source(
@@ -564,7 +564,7 @@ fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> query_
     builder.finish_gpu_resident(union)
 }
 
-fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let plain = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         remote_direct_customer_address_contract(),
@@ -585,7 +585,7 @@ fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> query_eng
     builder.finish_gpu_resident(union)
 }
 
-fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> query_engine::plan::QueryPlan {
+fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let first = builder.add_source(customer_address_two_file_source(&["id", "state"], &[0, 1], false));
     let second = builder.add_source(customer_address_two_file_source(&["id", "zip"], &[0, 2], true));
@@ -601,7 +601,7 @@ fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> 
     builder.finish_gpu_resident(union)
 }
 
-fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> query_engine::plan::QueryPlan {
+fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let full = builder.add_source(customer_address_source(&["id", "state"], &[0, 1], None));
     let filtered = builder.add_source(customer_address_source_with_max_rows(
@@ -622,7 +622,7 @@ fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> query_
     builder.finish_gpu_resident(union)
 }
 
-fn conflicting_file_index_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn conflicting_file_index_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let id_source = builder.add_source(customer_address_source(&["id"], &[0], None));
     let zip_source = builder.add_source(customer_address_source(&["zip"], &[0], None));
@@ -638,7 +638,7 @@ fn conflicting_file_index_local_parquet_source_variants_plan() -> query_engine::
     builder.finish_gpu_resident(union)
 }
 
-fn conflicting_column_name_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn conflicting_column_name_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let first = builder.add_source(customer_address_source(&["id"], &[0], None));
     let second = builder.add_source(customer_address_source(&["id"], &[1], None));
@@ -654,7 +654,7 @@ fn conflicting_column_name_local_parquet_source_variants_plan() -> query_engine:
     builder.finish_gpu_resident(union)
 }
 
-fn graph_bfs_local_source_reuse_plan() -> query_engine::plan::QueryPlan {
+fn graph_bfs_local_source_reuse_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(graph_reuse_source(&["src", "dst", "weight"], &[0, 1, 2]));
     let target_vertices = builder.add_source(graph_reuse_source(&["vertex_id"], &[3]));
@@ -695,7 +695,7 @@ fn graph_reuse_source(columns: &[&str], file_indices: &[usize]) -> SourceNode {
     ))
 }
 
-fn large_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
+fn large_local_parquet_source_variants_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -724,7 +724,7 @@ fn large_local_parquet_source_variants_plan() -> query_engine::plan::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn large_superset_with_smaller_local_parquet_source_variant_plan() -> query_engine::plan::QueryPlan {
+fn large_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -752,7 +752,7 @@ fn large_superset_with_smaller_local_parquet_source_variant_plan() -> query_engi
     builder.finish_gpu_resident(union)
 }
 
-fn large_superset_with_grouped_aggregate_source_variant_plan() -> query_engine::plan::QueryPlan {
+fn large_superset_with_grouped_aggregate_source_variant_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -788,7 +788,7 @@ fn large_superset_with_grouped_aggregate_source_variant_plan() -> query_engine::
     builder.finish_gpu_resident(union)
 }
 
-fn file_size_only_superset_with_grouped_aggregate_source_variant_plan() -> query_engine::plan::QueryPlan {
+fn file_size_only_superset_with_grouped_aggregate_source_variant_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(file_size_only_local_source_with_stable_id(
         "inventory",
@@ -842,7 +842,7 @@ fn file_size_only_local_source_with_stable_id(
     SourceNode::LocalParquet(source)
 }
 
-fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> query_engine::plan::QueryPlan {
+fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let aggregate_input = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -878,7 +878,7 @@ fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> query_
     builder.finish_gpu_resident(union)
 }
 
-fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> query_engine::plan::QueryPlan {
+fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
         "inventory",
@@ -1075,7 +1075,7 @@ fn count_star_probe_customer_address_source(column: &str, file_index: usize) -> 
     SourceNode::LocalParquet(source)
 }
 
-fn count_star_probe_source_count(plan: &query_engine::plan::QueryPlan) -> usize {
+fn count_star_probe_source_count(plan: &QueryPlan) -> usize {
     plan.nodes()
         .iter()
         .filter(|node| match &node.kind {
@@ -1091,12 +1091,12 @@ fn gpu_source(name: &str, fields: &[&str]) -> SourceNode {
     SourceNode::GpuResident(GpuResidentSource::new(name, schema(fields)))
 }
 
-fn local_parquet_source_count_for_stable_id(plan: &query_engine::plan::QueryPlan, stable_id: &str) -> usize {
+fn local_parquet_source_count_for_stable_id(plan: &QueryPlan, stable_id: &str) -> usize {
     local_parquet_sources_for_stable_id(plan, stable_id).len()
 }
 
 fn local_parquet_sources_for_stable_id<'a>(
-    plan: &'a query_engine::plan::QueryPlan,
+    plan: &'a QueryPlan,
     stable_id: &str,
 ) -> Vec<&'a LocalParquetSource> {
     plan.nodes()
@@ -1114,8 +1114,8 @@ fn local_parquet_sources_for_stable_id<'a>(
 }
 
 fn assert_source_input(
-    plan: &query_engine::plan::QueryPlan,
-    node_id: query_engine::plan::NodeId,
+    plan: &QueryPlan,
+    node_id: NodeId,
     name: &str,
 ) {
     let node = plan.node(node_id).expect("node should exist");

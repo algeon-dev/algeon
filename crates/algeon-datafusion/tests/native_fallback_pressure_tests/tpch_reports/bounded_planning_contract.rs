@@ -1,4 +1,4 @@
-use super::super::*;
+use crate::fallback_pressure::*;
 
 #[tokio::test]
 async fn tpch_progression_contract_pairs_fallback_pressure_and_bounded_planning() {

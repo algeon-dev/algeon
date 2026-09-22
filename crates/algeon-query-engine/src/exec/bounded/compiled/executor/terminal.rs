@@ -1,15 +1,19 @@
-use super::{
-    super::{
-        helpers::{attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource},
-        resource::CompiledGpuResourcePayload,
-    },
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
-};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
 use crate::{
     error::Result,
-    exec::bounded::{
-        ResidentGpuFrame, execute_bounded_generic_unary_from_frame, execute_bounded_generic_union,
-        materialize_bounded_frame_to_host, materialize_bounded_join_leaf_local_parquet_source_stream,
+    exec::{
+        bounded::{
+            ResidentGpuFrame,
+            compiled::{
+                helpers::{
+                    attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
+                },
+                resource::CompiledGpuResourcePayload,
+            },
+            execute_bounded_generic_unary_from_frame, execute_bounded_generic_union, materialize_bounded_frame_to_host,
+            materialize_bounded_join_leaf_local_parquet_source_stream,
+        },
+        operators::execute_limit,
     },
     pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing, SinkBoundaryKind},
     plan::{NodeId, PlanNode, ResultSink},
@@ -42,7 +46,7 @@ impl CompiledGpuTaskExecutor<'_> {
             "compiled_limit",
             input_payload.clone_frame(),
             false,
-            |context, input, _token, metrics| crate::exec::operators::execute_limit(context, limit, input, metrics),
+            |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))

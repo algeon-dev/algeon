@@ -1,9 +1,19 @@
 //! Tests for concatenation operations.
-use cudf::{ErrorCode, ErrorKind, core::Table, ops::concatenate, testing::prelude::*};
+use cudf::{
+    ErrorCode, ErrorKind,
+    core::Table,
+    ops::concatenate,
+    testing::{
+        concatenate::{
+            trigger_concatenate_column_count_limit_error_for_test, trigger_concatenate_table_count_limit_error_for_test,
+        },
+        prelude::*,
+    },
+};
 
 use crate::common::{
     error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation, sample_runtime,
+    reset_sync_observation, run_named_cases, sample_runtime,
 };
 
 fn test_concatenate_columns() {
@@ -104,7 +114,7 @@ fn test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract() {
 }
 
 fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
-    let err = cudf::testing::concatenate::trigger_concatenate_column_count_limit_error_for_test().unwrap_err();
+    let err = trigger_concatenate_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -118,7 +128,7 @@ fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
 }
 
 fn test_testing_hook_locks_concatenate_table_count_limit_contract() {
-    let err = cudf::testing::concatenate::trigger_concatenate_table_count_limit_error_for_test().unwrap_err();
+    let err = trigger_concatenate_table_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -206,7 +216,7 @@ fn test_concatenate_tables_succeeds_with_mixed_domains_and_uses_first_provenance
 
 #[test]
 fn concatenate_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_concatenate_columns", test_concatenate_columns),
         ("test_concatenate_columns_rejects_empty_input", test_concatenate_columns_rejects_empty_input),
         ("test_concatenate_tables", test_concatenate_tables),

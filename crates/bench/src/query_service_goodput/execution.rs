@@ -5,13 +5,14 @@ use std::{
 };
 
 use algeon_datafusion::{
-    attempt::{AttemptOptions, QueryAttemptReport},
+    attempt::{AlgeonAttempt, AttemptOptions, QueryAttemptReport},
     backend::AlgeonGpuBackend,
     error::DataFusionErrorExt,
 };
 use arrow::{
     array::{Array, Float32Array, Float64Array},
     datatypes::{DataType, SchemaRef},
+    error::ArrowError,
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
@@ -22,8 +23,10 @@ use datafusion::{
 };
 use futures::StreamExt as _;
 use query_engine::harness::StableFnv1a64;
+use tokio::time::timeout;
 
 use super::{config::GoodputConfig, workload::WorkloadItem};
+use crate::plan_artifacts::append_compiled_pipeline_diagnostic;
 
 /// Raw facts observed for one executed arrival, before classification.
 #[derive(Debug)]
@@ -72,8 +75,7 @@ pub(super) async fn run_attempt(
         },
     };
     let completion = attempt.completion();
-    let drained =
-        tokio::time::timeout(config.query_timeout, drain(&attempt, ctx, item, config, plan_artifact_dir)).await;
+    let drained = timeout(config.query_timeout, drain(&attempt, ctx, item, config, plan_artifact_dir)).await;
     let timed_out = drained.is_err();
     if timed_out {
         // A harness-side timeout is not a service outcome. Cancel so the
@@ -114,7 +116,7 @@ struct DrainedOutput {
 }
 
 async fn drain(
-    attempt: &algeon_datafusion::attempt::AlgeonAttempt,
+    attempt: &AlgeonAttempt,
     ctx: &SessionContext,
     item: &WorkloadItem,
     config: &GoodputConfig,
@@ -125,7 +127,7 @@ async fn drain(
             let plan = attempt.plan_sql(ctx, &item.sql).await?;
             let mut text = format!("physical_plan:\n{}\n", displayable(plan.as_ref()).indent(true));
             text.push_str("\ncompiled_pipelines_recompiled_for_diagnostics:\n");
-            crate::plan_artifacts::append_compiled_pipeline_diagnostic(&mut text, &plan);
+            append_compiled_pipeline_diagnostic(&mut text, &plan);
             std::fs::write(dir.join(format!("{}.plan.txt", item.id)), text)
                 .map_err(|error| DataFusionError::External(Box::new(error)))?;
             attempt.execute_physical_plan(plan, ctx)?
@@ -160,7 +162,7 @@ fn adapter_error_code(error: &DataFusionError) -> Option<String> {
 }
 
 /// Order-independent multiset fingerprint over the collected output.
-fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<String, arrow::error::ArrowError> {
+fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<String, ArrowError> {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("algeon-datafusion-goodput-output-multiset-v1");
     hasher.update_field("schema_metadata");
@@ -174,7 +176,7 @@ fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<St
     let mut row_fingerprints = Vec::with_capacity(batches.iter().map(RecordBatch::num_rows).sum());
     for batch in batches {
         if batch.schema().fields() != schema.fields() {
-            return Err(arrow::error::ArrowError::SchemaError(
+            return Err(ArrowError::SchemaError(
                 "goodput output fingerprint requires collected batches to match the planned schema".to_string(),
             ));
         }
@@ -208,20 +210,20 @@ fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<St
 /// in the last bits; comparing at full precision would report those as wrong
 /// results. The retained precision is far above the reordering noise, which
 /// for a sum of N terms grows like sqrt(N) machine epsilons.
-fn render_value(column: &dyn Array, row: usize) -> Result<String, arrow::error::ArrowError> {
+fn render_value(column: &dyn Array, row: usize) -> Result<String, ArrowError> {
     match column.data_type() {
         DataType::Float64 => {
             let values = column
                 .as_any()
                 .downcast_ref::<Float64Array>()
-                .ok_or_else(|| arrow::error::ArrowError::CastError("Float64 column did not downcast".to_string()))?;
+                .ok_or_else(|| ArrowError::CastError("Float64 column did not downcast".to_string()))?;
             Ok(format!("{:.9e}", values.value(row)))
         },
         DataType::Float32 => {
             let values = column
                 .as_any()
                 .downcast_ref::<Float32Array>()
-                .ok_or_else(|| arrow::error::ArrowError::CastError("Float32 column did not downcast".to_string()))?;
+                .ok_or_else(|| ArrowError::CastError("Float32 column did not downcast".to_string()))?;
             Ok(format!("{:.4e}", values.value(row)))
         },
         _ => array_value_to_string(column, row),

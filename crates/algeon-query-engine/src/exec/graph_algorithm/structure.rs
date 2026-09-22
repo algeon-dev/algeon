@@ -1,16 +1,22 @@
+use cugraph::{
+    community::TriangleCountParams, labeling::ConnectedComponentsParams, structure::CoreNumberParams,
+    tree::MinimumSpanningTreeParams,
+};
+
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     cudf_query_error, degree_type_to_cugraph, k_core_params, map_cugraph_error, normalize_graph_result_schema,
     project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
+use crate::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 pub(super) fn execute_degrees_all(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::DegreesAll(_) = &spec.params else {
+    let GraphAlgorithmParams::DegreesAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.degrees_all",
@@ -47,11 +53,11 @@ pub(super) fn execute_degrees_all(
 
 pub(super) fn execute_in_degrees_all(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::InDegreesAll(_) = &spec.params else {
+    let GraphAlgorithmParams::InDegreesAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.in_degrees_all",
@@ -89,11 +95,11 @@ pub(super) fn execute_in_degrees_all(
 
 pub(super) fn execute_out_degrees_all(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::OutDegreesAll(_) = &spec.params else {
+    let GraphAlgorithmParams::OutDegreesAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.out_degrees_all",
@@ -133,11 +139,11 @@ pub(super) fn execute_out_degrees_all(
 
 pub(super) fn execute_weakly_connected_components(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::WeaklyConnectedComponents(_) = &spec.params else {
+    let GraphAlgorithmParams::WeaklyConnectedComponents(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.weakly_connected_components",
@@ -156,7 +162,7 @@ pub(super) fn execute_weakly_connected_components(
         options,
         "algeon_datafusion_cugraph_weakly_connected_components",
         |runtime, entered, graph| {
-            let wcc_params = cugraph::labeling::ConnectedComponentsParams::default();
+            let wcc_params = ConnectedComponentsParams::default();
             let result = graph.weakly_connected_components(entered, &wcc_params).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.weakly_connected_components",
                 "cuGraph weakly_connected_components failed",
@@ -176,11 +182,11 @@ pub(super) fn execute_weakly_connected_components(
 
 pub(super) fn execute_strongly_connected_components(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::StronglyConnectedComponents(_) = &spec.params else {
+    let GraphAlgorithmParams::StronglyConnectedComponents(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.strongly_connected_components",
@@ -199,7 +205,7 @@ pub(super) fn execute_strongly_connected_components(
         options,
         "algeon_datafusion_cugraph_strongly_connected_components",
         |runtime, entered, graph| {
-            let scc_params = cugraph::labeling::ConnectedComponentsParams::default();
+            let scc_params = ConnectedComponentsParams::default();
             let result = graph.strongly_connected_components(entered, &scc_params).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.strongly_connected_components",
                 "cuGraph strongly_connected_components failed",
@@ -219,11 +225,11 @@ pub(super) fn execute_strongly_connected_components(
 
 pub(super) fn execute_triangle_count_all(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::TriangleCountAll(_) = &spec.params else {
+    let GraphAlgorithmParams::TriangleCountAll(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.triangle_count_all",
@@ -242,7 +248,7 @@ pub(super) fn execute_triangle_count_all(
         options,
         "algeon_datafusion_cugraph_triangle_count_all",
         |runtime, entered, graph| {
-            let tc_params = cugraph::community::TriangleCountParams::default();
+            let tc_params = TriangleCountParams::default();
             let result = graph.triangle_count_all(entered, &tc_params).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.triangle_count_all",
                 "cuGraph triangle_count_all failed",
@@ -262,11 +268,11 @@ pub(super) fn execute_triangle_count_all(
 
 pub(super) fn execute_core_number(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::CoreNumber(params) = &spec.params else {
+    let GraphAlgorithmParams::CoreNumber(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.core_number",
@@ -278,7 +284,7 @@ pub(super) fn execute_core_number(
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
-    let cn_params = cugraph::structure::CoreNumberParams {
+    let cn_params = CoreNumberParams {
         degree_type: degree_type_to_cugraph(params.degree_type, spec.graph_options.directed),
         do_expensive_check: false,
     };
@@ -307,11 +313,11 @@ pub(super) fn execute_core_number(
 
 pub(super) fn execute_k_core(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::KCore(params) = &spec.params else {
+    let GraphAlgorithmParams::KCore(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.k_core",
@@ -357,11 +363,11 @@ pub(super) fn execute_k_core(
 
 pub(super) fn execute_minimum_spanning_tree(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::MinimumSpanningTree(_) = &spec.params else {
+    let GraphAlgorithmParams::MinimumSpanningTree(_) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.minimum_spanning_tree",
@@ -380,7 +386,7 @@ pub(super) fn execute_minimum_spanning_tree(
         options,
         "algeon_datafusion_cugraph_minimum_spanning_tree",
         |runtime, entered, graph| {
-            let mst_params = cugraph::tree::MinimumSpanningTreeParams::default();
+            let mst_params = MinimumSpanningTreeParams::default();
             let result = graph.minimum_spanning_tree(entered, &mst_params).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.minimum_spanning_tree",
                 "cuGraph minimum_spanning_tree failed",

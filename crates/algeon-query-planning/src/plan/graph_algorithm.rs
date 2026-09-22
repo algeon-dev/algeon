@@ -6,6 +6,8 @@
 //! is selected later by the adapter/runtime.
 use std::sync::Arc;
 
+use arrow::datatypes::DataType as ArrowDataType;
+
 use super::{Expr, Field, NodeId, PlanNode, ProjectionNode, QueryPlan, Schema, SchemaRef};
 
 mod centrality;
@@ -247,27 +249,24 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
         | GraphAlgorithm::KatzCentrality
         | GraphAlgorithm::BetweennessCentrality => {
             // Centrality-style algorithms expose one score per vertex.
-            vec![
-                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-                Field::new("value", arrow::datatypes::DataType::Float64, false),
-            ]
+            vec![Field::new("vertex", ArrowDataType::Int64, false), Field::new("value", ArrowDataType::Float64, false)]
         },
         GraphAlgorithm::EdgeBetweennessCentrality => {
             vec![
-                Field::new("source", arrow::datatypes::DataType::Int64, false),
-                Field::new("destination", arrow::datatypes::DataType::Int64, false),
-                Field::new("score", arrow::datatypes::DataType::Float64, false),
+                Field::new("source", ArrowDataType::Int64, false),
+                Field::new("destination", ArrowDataType::Int64, false),
+                Field::new("score", ArrowDataType::Float64, false),
             ]
         },
         GraphAlgorithm::Bfs => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("distance", arrow::datatypes::DataType::Int64, false),
-            Field::new("predecessor", arrow::datatypes::DataType::Int64, true),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("distance", ArrowDataType::Int64, false),
+            Field::new("predecessor", ArrowDataType::Int64, true),
         ],
         GraphAlgorithm::Louvain => {
             vec![
-                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-                Field::new("partition", arrow::datatypes::DataType::Int64, false),
+                Field::new("vertex", ArrowDataType::Int64, false),
+                Field::new("partition", ArrowDataType::Int64, false),
             ]
         },
         GraphAlgorithm::Hits => {
@@ -277,71 +276,69 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             // the stable SQL schema so the meaning is obvious to query
             // authors.
             vec![
-                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-                Field::new("hub_score", arrow::datatypes::DataType::Float64, false),
-                Field::new("authority_score", arrow::datatypes::DataType::Float64, false),
+                Field::new("vertex", ArrowDataType::Int64, false),
+                Field::new("hub_score", ArrowDataType::Float64, false),
+                Field::new("authority_score", ArrowDataType::Float64, false),
             ]
         },
         GraphAlgorithm::Sssp => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
             // SSSP distances are weighted (Float64); BFS uses Int64 hop counts.
-            Field::new("distance", arrow::datatypes::DataType::Float64, false),
+            Field::new("distance", ArrowDataType::Float64, false),
             // -1 sentinel means no predecessor (source vertex or unreachable);
             // nullable=true matches the BFS predecessor convention.
-            Field::new("predecessor", arrow::datatypes::DataType::Int64, true),
+            Field::new("predecessor", ArrowDataType::Int64, true),
         ],
         GraphAlgorithm::DegreesAll => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("in_degree", arrow::datatypes::DataType::Int64, false),
-            Field::new("out_degree", arrow::datatypes::DataType::Int64, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("in_degree", ArrowDataType::Int64, false),
+            Field::new("out_degree", ArrowDataType::Int64, false),
         ],
         GraphAlgorithm::InDegreesAll => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("in_degree", arrow::datatypes::DataType::Int64, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("in_degree", ArrowDataType::Int64, false),
         ],
         GraphAlgorithm::OutDegreesAll => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("out_degree", arrow::datatypes::DataType::Int64, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("out_degree", ArrowDataType::Int64, false),
         ],
         // WCC and SCC both return a vertex-label assignment. Labels are
         // component identifiers and are not semantically ordered; parity
         // tests use partition-equivalence comparison.
-        GraphAlgorithm::WeaklyConnectedComponents | GraphAlgorithm::StronglyConnectedComponents => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("label", arrow::datatypes::DataType::Int64, false),
-        ],
+        GraphAlgorithm::WeaklyConnectedComponents | GraphAlgorithm::StronglyConnectedComponents => {
+            vec![Field::new("vertex", ArrowDataType::Int64, false), Field::new("label", ArrowDataType::Int64, false)]
+        },
         GraphAlgorithm::TriangleCountAll => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("triangle_count", arrow::datatypes::DataType::Int64, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("triangle_count", ArrowDataType::Int64, false),
         ],
         GraphAlgorithm::CoreNumber => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("core_number", arrow::datatypes::DataType::Int64, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("core_number", ArrowDataType::Int64, false),
         ],
         // KCore and MST return an edge list; column names follow the
         // graph-SQL `src`/`dst` convention. The current output contract omits weight.
-        GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => vec![
-            Field::new("src", arrow::datatypes::DataType::Int64, false),
-            Field::new("dst", arrow::datatypes::DataType::Int64, false),
-        ],
+        GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => {
+            vec![Field::new("src", ArrowDataType::Int64, false), Field::new("dst", ArrowDataType::Int64, false)]
+        },
         // Leiden, ECG, and spectral modularity maximization return a
         // vertex-partition assignment. Labels are
         // partition identifiers; parity tests use partition-equivalence.
         GraphAlgorithm::Leiden | GraphAlgorithm::Ecg | GraphAlgorithm::SpectralModularityMaximization => {
             vec![
-                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-                Field::new("partition", arrow::datatypes::DataType::Int64, false),
+                Field::new("vertex", ArrowDataType::Int64, false),
+                Field::new("partition", ArrowDataType::Int64, false),
             ]
         },
         GraphAlgorithm::ForceAtlas2 => vec![
-            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-            Field::new("x", arrow::datatypes::DataType::Float32, false),
-            Field::new("y", arrow::datatypes::DataType::Float32, false),
+            Field::new("vertex", ArrowDataType::Int64, false),
+            Field::new("x", ArrowDataType::Float32, false),
+            Field::new("y", ArrowDataType::Float32, false),
         ],
         GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => vec![
-            Field::new("first", arrow::datatypes::DataType::Int64, false),
-            Field::new("second", arrow::datatypes::DataType::Int64, false),
-            Field::new("similarity", arrow::datatypes::DataType::Float64, false),
+            Field::new("first", ArrowDataType::Int64, false),
+            Field::new("second", ArrowDataType::Int64, false),
+            Field::new("similarity", ArrowDataType::Float64, false),
         ],
     };
     Arc::new(Schema::new(fields))
@@ -359,10 +356,10 @@ pub fn graph_result_schema_for_params(algorithm: GraphAlgorithm, params: &GraphA
 pub fn graph_result_schema_for_vertex_type(
     algorithm: GraphAlgorithm,
     params: &GraphAlgorithmParams,
-    vertex_type: &arrow::datatypes::DataType,
+    vertex_type: &ArrowDataType,
 ) -> SchemaRef {
     assert!(
-        matches!(vertex_type, arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64),
+        matches!(vertex_type, ArrowDataType::Int32 | ArrowDataType::Int64),
         "native graph vertex type must be Int32 or Int64"
     );
     let vertex_columns = algorithm.definition().vertex_output_columns();

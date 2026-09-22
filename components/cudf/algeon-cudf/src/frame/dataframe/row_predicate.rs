@@ -3,19 +3,19 @@ use std::sync::Arc;
 use super::owned::DataFrame;
 use crate::{
     core::{
-        error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result, usize_to_i32},
         scalar::Scalar,
         types::{DataType, TypeId},
     },
     internal::resolve::missing_column_error,
     ops::{
         Expr,
-        binary::BinaryOperator,
+        binary::{BinaryOperator, infer_binary_output_dtype_in},
         expr::{self, LitValue},
         filter,
         unary::UnaryOperator,
     },
-    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution},
 };
 
 struct LoweredRowPredicate {
@@ -159,7 +159,7 @@ impl DataFrame {
         let mask = expr::eval_in_output_domain(self, Arc::clone(&output_domain), operation, &predicate)?;
         let mask_view = mask.view()?;
         filter::validate_boolean_mask(&mask_view, self.num_rows(), "DataFrame row count", operation)?;
-        let execution = crate::runtime::execution_resolver::ResolvedExecution::with_output_domain(
+        let execution = ResolvedExecution::with_output_domain(
             Arc::clone(&output_domain),
             [&self.domain, mask_view.execution_domain()],
             operation,
@@ -212,7 +212,7 @@ fn lower_expr(
                     kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_COLUMN_REF,
                     lhs_index: -1,
                     rhs_index: -1,
-                    column_index: crate::core::error::usize_to_i32(column_index, operation, "column_index")?,
+                    column_index: usize_to_i32(column_index, operation, "column_index")?,
                     binary_op: cudf_sys::CUDF_BINARY_EQUAL,
                     unary_op: cudf_sys::CUDF_UNARY_NOT,
                     literal: std::ptr::null_mut(),
@@ -425,7 +425,7 @@ fn lower_binary_expr(
         | BinaryOperator::LessEqual
         | BinaryOperator::GreaterEqual => {
             validate_row_predicate_comparison_types(lhs_type.id(), rhs_type.id(), op, operation)?;
-            crate::ops::binary::infer_binary_output_dtype_in(lhs_type, rhs_type, op, operation)?
+            infer_binary_output_dtype_in(lhs_type, rhs_type, op, operation)?
         },
         BinaryOperator::LogicalAnd
         | BinaryOperator::LogicalOr
@@ -573,7 +573,7 @@ fn lower_is_null_expr(
 
 fn push_node(lowered: &mut LoweredRowPredicate, node: cudf_sys::cudf_row_predicate_node_t) -> Result<i32> {
     lowered.nodes.push(node);
-    crate::core::error::usize_to_i32(lowered.nodes.len() - 1, "dataframe::row_predicate::push_node", "node_index")
+    usize_to_i32(lowered.nodes.len() - 1, "dataframe::row_predicate::push_node", "node_index")
 }
 
 fn unsupported_predicate<T>(operation: &'static str, expr_kind: &str) -> Result<T> {

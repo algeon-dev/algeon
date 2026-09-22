@@ -6,6 +6,7 @@ use std::{
 };
 
 use super::*;
+use crate::clickbench_benchmark::KVIKIO_COMPAT_MODE_ENV;
 
 /// Facts recorded once per benchmark run so an artifact can be attributed to
 /// the source revision, native build, GPU, driver, and process limits that
@@ -70,7 +71,7 @@ impl RunProvenance {
             cpu_model: fs::read_to_string("/proc/cpuinfo").ok().and_then(parse_cpu_model),
             cpu_logical: std::thread::available_parallelism().ok().map(usize::from),
             fd_soft_limit: fs::read_to_string("/proc/self/limits").ok().and_then(parse_fd_soft_limit),
-            kvikio_compat_mode: std::env::var(crate::clickbench_benchmark::KVIKIO_COMPAT_MODE_ENV).ok(),
+            kvikio_compat_mode: std::env::var(KVIKIO_COMPAT_MODE_ENV).ok(),
             devices: resources.device_provenance(),
         }
     }

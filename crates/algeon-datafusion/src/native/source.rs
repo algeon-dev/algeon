@@ -1,13 +1,21 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::collections::BTreeSet;
+#[cfg(feature = "cugraph")]
+use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use datafusion::{
-    datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
-    physical_plan::filter::FilterExec,
-};
 #[cfg(feature = "cugraph")]
 use datafusion::{datasource::source::DataSourceExec, physical_plan::ExecutionPlan};
-use parquet::file::reader::{FileReader, SerializedFileReader};
+use datafusion::{
+    datasource::{
+        listing::PartitionedFile,
+        physical_plan::{FileScanConfig, FileSource, ParquetSource},
+    },
+    physical_plan::filter::FilterExec,
+};
+use parquet::file::{
+    metadata::{KeyValue, ParquetMetaData},
+    reader::{FileReader, SerializedFileReader},
+};
 use query_engine::{
     expr::LiteralValue as NativeLiteralValue,
     parquet_stats::{
@@ -287,7 +295,7 @@ pub(super) fn local_parquet_scan_is_empty(file_scan: &FileScanConfig) -> bool {
 
 fn native_parquet_file_for_scan(
     file_scan: &FileScanConfig,
-    file: &datafusion::datasource::listing::PartitionedFile,
+    file: &PartitionedFile,
 ) -> Result<NativeLocalParquetFile, CapabilityReason> {
     if file_scan.object_store_url.as_str().starts_with("file://") {
         let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
@@ -323,10 +331,7 @@ fn native_parquet_file_for_scan(
         .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)
 }
 
-fn object_store_file_uri(
-    file_scan: &FileScanConfig,
-    file: &datafusion::datasource::listing::PartitionedFile,
-) -> Result<String, CapabilityReason> {
+fn object_store_file_uri(file_scan: &FileScanConfig, file: &PartitionedFile) -> Result<String, CapabilityReason> {
     let location = file.object_meta.location.as_ref();
     if location.starts_with("s3://") {
         return Ok(location.to_string());
@@ -427,11 +432,11 @@ pub(super) fn attach_row_group_byte_metadata(
 /// Reads exactly one parseable graph-vertex upper bound from the Parquet
 /// footer.  Duplicate, empty, or malformed metadata is deliberately ignored
 /// rather than selecting an arbitrary producer value.
-fn graph_vertex_upper_bound_from_footer(metadata: &parquet::file::metadata::ParquetMetaData) -> Option<u64> {
+fn graph_vertex_upper_bound_from_footer(metadata: &ParquetMetaData) -> Option<u64> {
     graph_vertex_upper_bound_from_key_value_metadata(metadata.file_metadata().key_value_metadata()?)
 }
 
-fn graph_vertex_upper_bound_from_key_value_metadata(metadata: &[parquet::file::metadata::KeyValue]) -> Option<u64> {
+fn graph_vertex_upper_bound_from_key_value_metadata(metadata: &[KeyValue]) -> Option<u64> {
     let mut entries = metadata.iter().filter(|entry| entry.key == GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY);
     let value = entries.next()?.value.as_deref()?.parse::<u64>().ok()?;
     entries.next().is_none().then_some(value)
@@ -446,13 +451,13 @@ fn graph_vertex_upper_bound_from_key_value_metadata(metadata: &[parquet::file::m
 /// footer. A malformed, duplicate, or overbroad entry remains unavailable;
 /// callers then retain the normal Python-compatible edge-normalize path.
 fn graph_simple_directed_edge_topology_from_footer(
-    metadata: &parquet::file::metadata::ParquetMetaData,
+    metadata: &ParquetMetaData,
 ) -> Option<GraphSimpleDirectedEdgeTopology> {
     graph_simple_directed_edge_topology_from_key_value_metadata(metadata.file_metadata().key_value_metadata()?)
 }
 
 fn graph_simple_directed_edge_topology_from_key_value_metadata(
-    metadata: &[parquet::file::metadata::KeyValue],
+    metadata: &[KeyValue],
 ) -> Option<GraphSimpleDirectedEdgeTopology> {
     let mut entries =
         metadata.iter().filter(|entry| entry.key == GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY);
@@ -502,7 +507,7 @@ fn validate_partition_columns(
 
 fn partition_column_disposition(
     file_scan: &FileScanConfig,
-    files: &[&datafusion::datasource::listing::PartitionedFile],
+    files: &[&PartitionedFile],
     required_partition_indices: &[usize],
 ) -> NativePartitionColumnDisposition {
     if required_partition_indices.is_empty() {
@@ -519,7 +524,7 @@ fn partition_column_disposition(
 }
 
 fn native_partition_values(
-    file: &datafusion::datasource::listing::PartitionedFile,
+    file: &PartitionedFile,
     required_partition_indices: &[usize],
 ) -> Result<Vec<NativeLiteralValue>, CapabilityReason> {
     required_partition_indices

@@ -2,23 +2,27 @@ use std::sync::Arc;
 
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
 use crate::{
+    dynamic_filter::DynamicFilterProducer,
     error::Result,
-    exec::bounded::{
-        ResidentGpuFrame,
-        compiled::{
-            helpers::{
-                attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
-                sort_node,
+    exec::{
+        bounded::{
+            BoundedUnaryStage, ResidentGpuFrame, SourceAggregateTopK,
+            compiled::{
+                helpers::{
+                    attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
+                    sort_node,
+                },
+                resource::CompiledGpuResourcePayload,
             },
-            resource::CompiledGpuResourcePayload,
+            execute_bounded_generic_unary_from_frame, execute_compiled_bounded_aggregate_from_frame,
+            execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
+            execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
+            execute_final_sort_node_from_stream_with_retry,
         },
-        execute_bounded_generic_unary_from_frame, execute_compiled_bounded_aggregate_from_frame,
-        execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
-        execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
-        execute_final_sort_node_from_stream_with_retry,
+        operators::execute_window,
     },
-    pipeline::{PipelineTask, ResidentDataForm, SortStrategy},
-    plan::PlanNode,
+    pipeline::{CompiledPipeline, PipelineTask, ResidentDataForm, SortStrategy},
+    plan::{PlanNode, QueryPlan},
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -232,7 +236,7 @@ impl CompiledGpuTaskExecutor<'_> {
             input_payload.clone_frame(),
             false,
             |context, input, _token, metrics| {
-                crate::exec::operators::execute_window(context, window, &input_schema, input, &output_schema, metrics)
+                execute_window(context, window, &input_schema, input, &output_schema, metrics)
             },
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
@@ -317,15 +321,17 @@ impl CompiledGpuTaskExecutor<'_> {
 /// exclusively consumed projection chain. Shared aggregate facts must remain
 /// complete for every consumer, including dynamic-filter producers.
 fn compiled_aggregate_topk<'a>(
-    plan: &'a crate::plan::QueryPlan,
-    pipeline: &crate::pipeline::CompiledPipeline,
+    plan: &'a QueryPlan,
+    pipeline: &CompiledPipeline,
     task: &PipelineTask,
-) -> Option<crate::exec::bounded::SourceAggregateTopK<'a>> {
+) -> Option<SourceAggregateTopK<'a>> {
     let node_id = task.plan_node()?;
-    if plan.dynamic_filter_routes().iter().any(|route| matches!(
-        route.producer,
-        crate::dynamic_filter::DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } if aggregate_node_id == node_id
-    )) {
+    if plan.dynamic_filter_routes().iter().any(|route| {
+        matches!(
+            route.producer,
+            DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } if aggregate_node_id == node_id
+        )
+    }) {
         return None;
     }
     let mut current = task;
@@ -342,7 +348,7 @@ fn compiled_aggregate_topk<'a>(
         let node_id = current.plan_node()?;
         let node = plan.node(node_id)?;
         match &node.kind {
-            PlanNode::Projection(projection) => stages.push(crate::exec::bounded::BoundedUnaryStage::Projection {
+            PlanNode::Projection(projection) => stages.push(BoundedUnaryStage::Projection {
                 node_id,
                 node: projection,
                 output_schema: node.output_schema(),
@@ -354,11 +360,7 @@ fn compiled_aggregate_topk<'a>(
                 let PlanNode::Limit(limit) = &plan.node(limit_node)?.kind else {
                     return None;
                 };
-                return Some(crate::exec::bounded::SourceAggregateTopK {
-                    post_aggregate_stages: stages,
-                    sort,
-                    limit: (limit_node, limit),
-                });
+                return Some(SourceAggregateTopK { post_aggregate_stages: stages, sort, limit: (limit_node, limit) });
             },
             _ => return None,
         }

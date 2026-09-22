@@ -4,10 +4,12 @@ use cudf::{
     BoundaryKind, DenseMatrixLayout, ErrorCode, Runtime, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::reshape::interleave_columns,
-    testing::prelude::*,
+    testing::{arrow, boundary, prelude::*},
 };
 
-use crate::common::{last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation};
+use crate::common::{
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, run_named_cases,
+};
 
 fn direct_interleave_columns_uses_the_public_reshape_surface() {
     let runtime = Runtime::new().unwrap();
@@ -188,8 +190,8 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     let placement = matrix.placement();
 
     reset_exec_observation();
-    cudf::testing::boundary::reset_boundary_observation_for_test();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    boundary::reset_boundary_observation_for_test();
+    arrow::reset_arrow_host_interop_observation_for_test();
     let validated = matrix.validate_finite().unwrap();
 
     assert_eq!(validated.len(), matrix.len());
@@ -210,13 +212,13 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     assert_eq!(observation.columns, 1);
     assert!(observation.synchronized_for_host);
     assert_eq!(observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
-    assert_eq!(cudf::testing::boundary::last_boundary_observation_for_test(), Some(observation));
-    assert!(cudf::testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+    assert_eq!(boundary::last_boundary_observation_for_test(), Some(observation));
+    assert!(arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
 #[test]
 fn matrix_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "direct_interleave_columns_uses_the_public_reshape_surface",
             direct_interleave_columns_uses_the_public_reshape_surface,

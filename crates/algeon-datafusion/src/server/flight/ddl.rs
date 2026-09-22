@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
 use super::*;
+use crate::{attempt::AttemptOptions, server::adapter_error::Result as AdapterResult};
 
 impl DatafusionAlgeonFlightSqlService {
     pub(super) async fn execute_update_sql(
@@ -12,7 +13,7 @@ impl DatafusionAlgeonFlightSqlService {
     ) -> Result<i64, Status> {
         let query_id = planning_lease.key().query_id().to_string();
         let sql: Arc<str> = sql.into();
-        let attempt = match self.admission.begin_attempt(crate::server::attempt::AttemptOptions {
+        let attempt = match self.admission.begin_attempt(AttemptOptions {
             query_id: Some(query_id.clone()),
             trace_context: correlation_id.clone(),
             deadline: None,
@@ -259,7 +260,7 @@ impl DatafusionAlgeonFlightSqlService {
         correlation_id: Option<String>,
     ) -> Result<i64, Status> {
         let query_id = planning_lease.key().query_id().to_string();
-        let attempt = match self.admission.begin_attempt(crate::server::attempt::AttemptOptions {
+        let attempt = match self.admission.begin_attempt(AttemptOptions {
             query_id: Some(query_id.clone()),
             trace_context: correlation_id.clone(),
             deadline: None,
@@ -328,7 +329,7 @@ pub(super) async fn reject_drop_object_type_mismatch(
     ctx: &SessionContext,
     plan: &LogicalPlan,
     operation: &'static str,
-) -> crate::server::adapter_error::Result<()> {
+) -> AdapterResult<()> {
     let (object_name, expected_table_type) = match plan {
         LogicalPlan::Ddl(DdlStatement::DropTable(drop_table)) => (&drop_table.name, TableType::Base),
         LogicalPlan::Ddl(DdlStatement::DropView(drop_view)) => (&drop_view.name, TableType::View),
@@ -342,7 +343,7 @@ async fn reject_drop_table_type_mismatch(
     object_name: &TableReference,
     expected_table_type: TableType,
     operation: &'static str,
-) -> crate::server::adapter_error::Result<()> {
+) -> AdapterResult<()> {
     let table_name = object_name.table().to_string();
     let Ok(schema) = ctx.state().schema_for_ref(object_name.clone()) else {
         return Ok(());

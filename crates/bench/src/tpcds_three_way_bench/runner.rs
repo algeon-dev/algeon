@@ -20,7 +20,7 @@ use algeon_datafusion::{
     },
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
     planner::AlgeonNativePhysicalOptimizerRule,
-    report::CandidateOutcome,
+    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::record_batch::RecordBatch;
@@ -28,7 +28,7 @@ use datafusion::{
     common::utils::memory::get_record_batch_memory_size,
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{
-        collect,
+        ExecutionPlan, collect,
         metrics::{MetricValue, MetricsSet},
     },
     prelude::{SessionConfig, SessionContext},
@@ -390,20 +390,20 @@ async fn run_query_collect(
     }
 }
 
-fn plan_contains_native_runtime(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+fn plan_contains_native_runtime(plan: &dyn ExecutionPlan) -> bool {
     plan.downcast_ref::<AlgeonNativeExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_runtime(child.as_ref()))
 }
 
-fn plan_metrics_recursive(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> MetricsSet {
+fn plan_metrics_recursive(plan: &dyn ExecutionPlan) -> MetricsSet {
     let mut metrics = MetricsSet::new();
     append_plan_metrics(&mut metrics, plan);
     metrics
 }
 
-fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn datafusion::physical_plan::ExecutionPlan) {
+fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn ExecutionPlan) {
     if let Some(plan_metrics) = plan.metrics() {
         for metric in plan_metrics.iter() {
             metrics.push(Arc::clone(metric));
@@ -435,9 +435,7 @@ fn planning_summary(optimizer: Option<&AlgeonNativePhysicalOptimizerRule>) -> Pl
                 .filter_map(|outcome| match outcome {
                     CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code()),
                     CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code()),
-                    CandidateOutcome::Deferred { .. } => {
-                        Some(algeon_datafusion::report::DEFERRED_PRODUCER_BINDING_REASON_CODE)
-                    },
+                    CandidateOutcome::Deferred { .. } => Some(DEFERRED_PRODUCER_BINDING_REASON_CODE),
                     CandidateOutcome::Selected { .. } => None,
                 })
                 .collect::<Vec<_>>();

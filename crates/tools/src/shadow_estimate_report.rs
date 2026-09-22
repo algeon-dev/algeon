@@ -43,11 +43,13 @@ use query_engine::{
     admission::{bounded_pipeline_decision, canonical_execution_scope_fingerprint, log_safe_fingerprint},
     observability::AttemptFinalDomainUsage,
     pipeline::{ShadowBytes, ShadowPipelineEstimate, ShadowTaskEnvelope},
+    plan::QueryPlan,
+    rapids_backend::rapids_analysis_context,
     runtime::{
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    shadow::estimate_compiled_pipeline,
+    shadow::{estimate_compiled_pipeline, frontend_output_records},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -229,10 +231,10 @@ async fn process_query(
     };
     let gpu_plan = native_plan.clone_with_deferred_host_materialization_sink();
     let execution_scope = log_safe_fingerprint(&canonical_execution_scope_fingerprint(&gpu_plan));
-    let frontend_outputs = query_engine::shadow::frontend_output_records(&gpu_plan);
+    let frontend_outputs = frontend_output_records(&gpu_plan);
     let frontend_coverage = frontend_output_coverage(&gpu_plan);
 
-    let decision = bounded_pipeline_decision(&gpu_plan, mode, query_engine::rapids_backend::rapids_analysis_context())?;
+    let decision = bounded_pipeline_decision(&gpu_plan, mode, rapids_analysis_context())?;
     let rejection_reason = decision.rejection_projection().map(|projection| projection.reason.to_string());
     let admission = decision.into_execution_admission()?;
     let pipeline = match &admission {
@@ -728,7 +730,7 @@ fn join_task_runtime_rows(
     (deltas, mismatches)
 }
 
-fn frontend_output_coverage(plan: &query_engine::plan::QueryPlan) -> Coverage {
+fn frontend_output_coverage(plan: &QueryPlan) -> Coverage {
     let outputs = plan.advisory_outputs();
     let known = outputs.iter().filter(|binding| binding.statistics.bytes.value().is_some()).count();
     Coverage { total: outputs.len(), known }

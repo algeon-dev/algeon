@@ -9,7 +9,20 @@
 //! admission on that device before report publication; when fault isolation
 //! is unknown the whole backend is marked unhealthy.
 
-use crate::runtime::attempt_domain::AttemptAllocationDomain;
+use cudf::{
+    DeviceId, QueryMemoryDomainUsage,
+    runtime::{
+        DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthSnapshot, DeviceHealthStatus, device_health_snapshot,
+    },
+};
+
+use crate::{
+    observability::{
+        AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFaultIsolation, AttemptNativeFault,
+        AttemptNativeFaultEvidence, AttemptNativeFaultKind, AttemptNativeStatus, AttemptTeardownHealth,
+    },
+    runtime::{attempt_domain::AttemptAllocationDomain, service_stream::StreamCleanupOutcome},
+};
 
 /// One terminal release decision and its bounded native-health projection.
 ///
@@ -22,9 +35,9 @@ pub struct CapacityCommitDecision {
     #[doc(hidden)]
     pub disposition: CapacityCommitDisposition,
     #[doc(hidden)]
-    pub usage: Option<cudf::QueryMemoryDomainUsage>,
+    pub usage: Option<QueryMemoryDomainUsage>,
     #[doc(hidden)]
-    pub native_fault_evidence: Option<crate::observability::AttemptNativeFaultEvidence>,
+    pub native_fault_evidence: Option<AttemptNativeFaultEvidence>,
 }
 
 /// How the release commit disposes of the attempt's device capacity.
@@ -60,14 +73,12 @@ pub enum CleanupEvidence {
     CallbackAbandoned,
 }
 
-impl From<crate::runtime::service_stream::StreamCleanupOutcome> for CleanupEvidence {
-    fn from(outcome: crate::runtime::service_stream::StreamCleanupOutcome) -> Self {
+impl From<StreamCleanupOutcome> for CleanupEvidence {
+    fn from(outcome: StreamCleanupOutcome) -> Self {
         match outcome {
-            crate::runtime::service_stream::StreamCleanupOutcome::Completed => Self::Completed,
-            crate::runtime::service_stream::StreamCleanupOutcome::StreamSynchronizationFailed => {
-                Self::StreamSynchronizationFailed
-            },
-            crate::runtime::service_stream::StreamCleanupOutcome::CallbackAbandoned => Self::CallbackAbandoned,
+            StreamCleanupOutcome::Completed => Self::Completed,
+            StreamCleanupOutcome::StreamSynchronizationFailed => Self::StreamSynchronizationFailed,
+            StreamCleanupOutcome::CallbackAbandoned => Self::CallbackAbandoned,
         }
     }
 }
@@ -82,8 +93,8 @@ pub fn decide_capacity_disposition(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
     cleanup_evidence: CleanupEvidence,
-    terminal_usage: Option<cudf::QueryMemoryDomainUsage>,
-) -> (CapacityCommitDisposition, Option<cudf::QueryMemoryDomainUsage>) {
+    terminal_usage: Option<QueryMemoryDomainUsage>,
+) -> (CapacityCommitDisposition, Option<QueryMemoryDomainUsage>) {
     let decision = decide_capacity_commit(device_ordinal, domain, cleanup_evidence, terminal_usage);
     (decision.disposition, decision.usage)
 }
@@ -94,7 +105,7 @@ pub fn decide_capacity_commit(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
     cleanup_evidence: CleanupEvidence,
-    terminal_usage: Option<cudf::QueryMemoryDomainUsage>,
+    terminal_usage: Option<QueryMemoryDomainUsage>,
 ) -> CapacityCommitDecision {
     // A ledger-only admission owns no device state: there is nothing to
     // sample, quarantine, or mark unhealthy, and the commit must stay free
@@ -120,7 +131,7 @@ pub fn decide_capacity_commit(
             native_fault_evidence: Some(unknown_isolation_native_evidence(cleanup_evidence)),
         };
     }
-    let Ok(device) = cudf::DeviceId::new(device_ordinal) else {
+    let Ok(device) = DeviceId::new(device_ordinal) else {
         return CapacityCommitDecision {
             disposition: CapacityCommitDisposition::BackendUnhealthy {
                 reason: format!("invalid device ordinal {device_ordinal} at release commit"),
@@ -129,8 +140,8 @@ pub fn decide_capacity_commit(
             native_fault_evidence: Some(unknown_isolation_native_evidence(cleanup_evidence)),
         };
     };
-    let health_before_sample = cudf::runtime::device_health_snapshot(device);
-    if health_before_sample.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+    let health_before_sample = device_health_snapshot(device);
+    if health_before_sample.status() == DeviceHealthStatus::Unhealthy {
         return device_quarantine_decision(device_ordinal, cleanup_evidence, health_before_sample, None);
     }
     if cleanup_evidence == CleanupEvidence::StreamSynchronizationFailed {
@@ -149,8 +160,8 @@ pub fn decide_capacity_commit(
             // sample faulted the device, native health reflects it above; an
             // otherwise healthy device with an unsamplable domain has unknown
             // isolation.
-            let health_after_sample = cudf::runtime::device_health_snapshot(device);
-            if health_after_sample.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+            let health_after_sample = device_health_snapshot(device);
+            if health_after_sample.status() == DeviceHealthStatus::Unhealthy {
                 return device_quarantine_decision(device_ordinal, cleanup_evidence, health_after_sample, None);
             } else {
                 return CapacityCommitDecision {
@@ -172,8 +183,8 @@ pub fn decide_capacity_commit(
     // second terminal snapshot makes that race a device-local quarantine
     // before capacity or a report becomes visible, rather than reusing the
     // earlier healthy read.
-    let health_after_sample = cudf::runtime::device_health_snapshot(device);
-    if health_after_sample.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+    let health_after_sample = device_health_snapshot(device);
+    if health_after_sample.status() == DeviceHealthStatus::Unhealthy {
         return device_quarantine_decision(device_ordinal, cleanup_evidence, health_after_sample, Some(usage));
     }
     if usage.active_members != 0
@@ -208,8 +219,8 @@ pub fn decide_capacity_commit(
 fn device_quarantine_decision(
     device_ordinal: usize,
     cleanup_evidence: CleanupEvidence,
-    health: cudf::runtime::DeviceHealthSnapshot,
-    usage: Option<cudf::QueryMemoryDomainUsage>,
+    health: DeviceHealthSnapshot,
+    usage: Option<QueryMemoryDomainUsage>,
 ) -> CapacityCommitDecision {
     CapacityCommitDecision {
         disposition: CapacityCommitDisposition::DeviceQuarantine {
@@ -224,21 +235,17 @@ fn device_quarantine_decision(
     }
 }
 
-fn teardown_health(cleanup_evidence: CleanupEvidence) -> crate::observability::AttemptTeardownHealth {
+fn teardown_health(cleanup_evidence: CleanupEvidence) -> AttemptTeardownHealth {
     match cleanup_evidence {
-        CleanupEvidence::Completed => crate::observability::AttemptTeardownHealth::Completed,
-        CleanupEvidence::StreamSynchronizationFailed => {
-            crate::observability::AttemptTeardownHealth::StreamSynchronizationFailed
-        },
-        CleanupEvidence::CallbackAbandoned => crate::observability::AttemptTeardownHealth::CallbackAbandoned,
+        CleanupEvidence::Completed => AttemptTeardownHealth::Completed,
+        CleanupEvidence::StreamSynchronizationFailed => AttemptTeardownHealth::StreamSynchronizationFailed,
+        CleanupEvidence::CallbackAbandoned => AttemptTeardownHealth::CallbackAbandoned,
     }
 }
 
-fn unknown_isolation_native_evidence(
-    cleanup_evidence: CleanupEvidence,
-) -> crate::observability::AttemptNativeFaultEvidence {
-    crate::observability::AttemptNativeFaultEvidence {
-        isolation: crate::observability::AttemptFaultIsolation::Unknown,
+fn unknown_isolation_native_evidence(cleanup_evidence: CleanupEvidence) -> AttemptNativeFaultEvidence {
+    AttemptNativeFaultEvidence {
+        isolation: AttemptFaultIsolation::Unknown,
         teardown_health: teardown_health(cleanup_evidence),
         device_health: None,
         first_fault: None,
@@ -247,39 +254,30 @@ fn unknown_isolation_native_evidence(
 
 fn device_local_native_evidence(
     cleanup_evidence: CleanupEvidence,
-    health: cudf::runtime::DeviceHealthSnapshot,
-) -> crate::observability::AttemptNativeFaultEvidence {
-    use crate::observability::{
-        AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFaultIsolation, AttemptNativeFault,
-        AttemptNativeFaultKind, AttemptNativeStatus,
-    };
-
+    health: DeviceHealthSnapshot,
+) -> AttemptNativeFaultEvidence {
     let first_fault = health.first_fault().map(|fault| AttemptNativeFault {
         kind: match fault.kind() {
-            cudf::runtime::DeviceFaultKind::CurrentDeviceQueryFailed => {
-                AttemptNativeFaultKind::CurrentDeviceQueryFailed
-            },
-            cudf::runtime::DeviceFaultKind::OwnerDeviceEntryFailed => AttemptNativeFaultKind::OwnerDeviceEntryFailed,
-            cudf::runtime::DeviceFaultKind::AmbientDeviceRestoreFailed => {
-                AttemptNativeFaultKind::AmbientDeviceRestoreFailed
-            },
-            cudf::runtime::DeviceFaultKind::FatalDeviceOperation => AttemptNativeFaultKind::FatalDeviceOperation,
-            cudf::runtime::DeviceFaultKind::TeardownQuarantined => AttemptNativeFaultKind::TeardownQuarantined,
+            DeviceFaultKind::CurrentDeviceQueryFailed => AttemptNativeFaultKind::CurrentDeviceQueryFailed,
+            DeviceFaultKind::OwnerDeviceEntryFailed => AttemptNativeFaultKind::OwnerDeviceEntryFailed,
+            DeviceFaultKind::AmbientDeviceRestoreFailed => AttemptNativeFaultKind::AmbientDeviceRestoreFailed,
+            DeviceFaultKind::FatalDeviceOperation => AttemptNativeFaultKind::FatalDeviceOperation,
+            DeviceFaultKind::TeardownQuarantined => AttemptNativeFaultKind::TeardownQuarantined,
             _ => AttemptNativeFaultKind::Unknown,
         },
         status: fault.native_status().and_then(|status| match status {
-            cudf::runtime::DeviceFaultNativeStatus::Cudf(status) => Some(AttemptNativeStatus::Cudf(status)),
-            cudf::runtime::DeviceFaultNativeStatus::Cuda(status) => Some(AttemptNativeStatus::Cuda(status)),
+            DeviceFaultNativeStatus::Cudf(status) => Some(AttemptNativeStatus::Cudf(status)),
+            DeviceFaultNativeStatus::Cuda(status) => Some(AttemptNativeStatus::Cuda(status)),
             _ => None,
         }),
     });
-    crate::observability::AttemptNativeFaultEvidence {
+    AttemptNativeFaultEvidence {
         isolation: AttemptFaultIsolation::DeviceLocal,
         teardown_health: teardown_health(cleanup_evidence),
         device_health: Some(AttemptDeviceHealth {
             status: match health.status() {
-                cudf::runtime::DeviceHealthStatus::Healthy => AttemptDeviceHealthStatus::Healthy,
-                cudf::runtime::DeviceHealthStatus::Unhealthy => AttemptDeviceHealthStatus::Unhealthy,
+                DeviceHealthStatus::Healthy => AttemptDeviceHealthStatus::Healthy,
+                DeviceHealthStatus::Unhealthy => AttemptDeviceHealthStatus::Unhealthy,
             },
             fault_count: health.fault_count(),
             rejected_operation_count: health.rejected_operation_count(),

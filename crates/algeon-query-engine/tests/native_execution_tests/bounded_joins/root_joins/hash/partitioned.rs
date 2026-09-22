@@ -1,3 +1,5 @@
+use query_engine::expr::CaseWhen;
+
 #[test]
 fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join() {
     let runtime = backend_runtime();
@@ -25,12 +27,12 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -94,10 +96,10 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -166,10 +168,10 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
@@ -194,10 +196,10 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
@@ -208,10 +210,10 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
@@ -279,10 +281,10 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
@@ -307,10 +309,10 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
@@ -321,10 +323,10 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&prefix_schema),
@@ -390,12 +392,12 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -471,12 +473,12 @@ fn bounded_native_query_executes_or_residual_with_mixed_join() {
             .with_residual_predicate(residual)
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -538,9 +540,9 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -633,9 +635,9 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
         right,
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -648,13 +650,13 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "category", "category"),
-                query_engine::expr::ColumnRef::input(1, "category", "dim_category"),
+                ColumnRef::input(0, "category", "category"),
+                ColumnRef::input(1, "category", "dim_category"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "bucket", "bucket"), "bucket"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "bucket", "bucket"), "bucket"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&hash_join_schema),
@@ -699,7 +701,7 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
         Field::new("category", DataType::Utf8, false),
     ]));
     let residual = Expr::case(
-        vec![query_engine::expr::CaseWhen::new(
+        vec![CaseWhen::new(
             qty_gt_right_order_id_times_ten(),
             Expr::literal(LiteralValue::Boolean(true)),
         )],
@@ -721,12 +723,12 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
             .with_residual_predicate(residual)
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -734,7 +736,7 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -790,12 +792,12 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -869,16 +871,16 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
         JoinSpec::new(JoinType::Full, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(0, "order_id", "left_order_id"),
                     "left_order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
                     "right_order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -1002,11 +1004,11 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -1107,11 +1109,11 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -1126,11 +1128,11 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "category", "category"),
+                    ColumnRef::input(0, "category", "category"),
                     "category",
                 ),
             ])

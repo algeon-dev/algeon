@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use query_engine::admission::AttemptCapabilityEvidence;
+use datafusion::datasource::source::DataSourceExec;
+use query_engine::{
+    admission::AttemptCapabilityEvidence,
+    plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
+};
 
 use super::{
     AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec, CooperativeExec, CugraphAlgoExec,
@@ -11,9 +15,13 @@ use super::{
 };
 use crate::{
     attempt::AlgeonAttemptExtension,
+    native::{
+        exact_row_count_for_datafusion_local_parquet_scan, graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
+    },
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, admission::QueryAdmissionTicket,
-        composed_admission_capability_evidence, query_admission_ticket_from_task_context,
+        composed_admission_capability_evidence, gpu_resident_producer_input_name, lakehouse::resolve_query_plan,
+        query_admission_ticket_from_task_context,
     },
 };
 
@@ -36,7 +44,7 @@ pub(super) fn edge_execution_config(
 pub(super) async fn exact_native_edge_source_gpu_plan(
     edge_source: &dyn ExecutionPlan,
     task_context: &TaskContext,
-) -> Result<Option<query_engine::plan::QueryPlan>> {
+) -> Result<Option<QueryPlan>> {
     let (execution_config, native_plan) = if let Some(native) = as_algeon_native_exec(edge_source) {
         (native.execution_config(), native.native_plan())
     } else if let Some(composed) = as_algeon_native_composed_exec(edge_source) {
@@ -44,8 +52,7 @@ pub(super) async fn exact_native_edge_source_gpu_plan(
     } else {
         return Ok(None);
     };
-    let plan =
-        crate::native_exec::lakehouse::resolve_query_plan(execution_config, native_plan.clone(), task_context).await;
+    let plan = resolve_query_plan(execution_config, native_plan.clone(), task_context).await;
     Ok(Some(plan.clone_with_gpu_resident_sink()))
 }
 
@@ -59,8 +66,8 @@ pub(super) fn cugraph_execution_config_after_staging(
     edge_normalize_inserted: bool,
     default_execution_config: &AlgeonNativeExecutionConfig,
     task_context: &TaskContext,
-    exact_edge_source_gpu_plan: Option<&query_engine::plan::QueryPlan>,
-) -> Result<(AlgeonNativeExecutionConfig, query_engine::plan::QueryPlan)> {
+    exact_edge_source_gpu_plan: Option<&QueryPlan>,
+) -> Result<(AlgeonNativeExecutionConfig, QueryPlan)> {
     let execution_config =
         edge_execution_config(edge_source, default_execution_config).without_query_admission_ticket();
     // The nested state that lowers a cuGraph edge relation deliberately has
@@ -123,9 +130,9 @@ fn compile_cugraph_admission_ticket(
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
     execution_config: AlgeonNativeExecutionConfig,
-    exact_edge_source_gpu_plan: Option<&query_engine::plan::QueryPlan>,
+    exact_edge_source_gpu_plan: Option<&QueryPlan>,
     task_context: &TaskContext,
-) -> Result<(AlgeonNativeExecutionConfig, query_engine::plan::QueryPlan, bool)> {
+) -> Result<(AlgeonNativeExecutionConfig, QueryPlan, bool)> {
     let edge_row_upper_bound = if execution_config.query_admission_source().is_none() {
         None
     } else {
@@ -195,7 +202,7 @@ fn compile_cugraph_admission_ticket(
                     let occurrence_ids = composed
                         .gpu_inputs()
                         .iter()
-                        .filter_map(|input| crate::native_exec::gpu_resident_producer_input_name(input.as_ref()))
+                        .filter_map(|input| gpu_resident_producer_input_name(input.as_ref()))
                         .collect::<Vec<_>>();
                     occurrence_ids.len() == composed.gpu_inputs().len()
                         && evidence.validate_composed_occurrences(edge_plan, &occurrence_ids).is_ok()
@@ -300,7 +307,7 @@ fn collect_native_fragment_capability_evidences(
 /// graph admission's row, vertex, capability, and native-boundary checks on
 /// this one wrapper set so a new producer form cannot silently lose pricing
 /// evidence while retaining graph execution authority.
-pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&query_engine::plan::QueryPlan> {
+pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
     if let Some(native) = as_algeon_native_exec(plan) {
         return Some(native.native_plan());
     }
@@ -314,8 +321,8 @@ pub(super) fn lowered_native_edge_plan(plan: &dyn ExecutionPlan) -> Option<&quer
 }
 
 pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
-    if let Some(source) = edge_source.downcast_ref::<datafusion::datasource::source::DataSourceExec>()
-        && let Some(rows) = crate::native::exact_row_count_for_datafusion_local_parquet_scan(source)
+    if let Some(source) = edge_source.downcast_ref::<DataSourceExec>()
+        && let Some(rows) = exact_row_count_for_datafusion_local_parquet_scan(source)
     {
         return Ok(Some(rows));
     }
@@ -373,7 +380,7 @@ pub(super) fn resident_side_input_output_rows(plan: &dyn ExecutionPlan) -> Resul
 }
 
 fn native_query_plan_hard_row_upper_bound(plan: &dyn ExecutionPlan) -> Option<u64> {
-    lowered_native_edge_plan(plan).and_then(query_engine::plan::row_bounds::query_plan_hard_row_upper_bound)
+    lowered_native_edge_plan(plan).and_then(query_plan_hard_row_upper_bound)
 }
 
 pub(super) fn native_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64> {
@@ -388,12 +395,10 @@ pub(super) fn native_edge_source_allows_graph_aware_ticket(edge_source: &dyn Exe
 }
 
 pub(super) fn edge_source_graph_vertex_estimate(edge_source: &dyn ExecutionPlan) -> Option<u64> {
-    edge_source
-        .downcast_ref::<datafusion::datasource::source::DataSourceExec>()
-        .and_then(crate::native::graph_vertex_upper_bound_for_datafusion_local_parquet_scan)
+    edge_source.downcast_ref::<DataSourceExec>().and_then(graph_vertex_upper_bound_for_datafusion_local_parquet_scan)
 }
 
-pub(super) fn native_plan_is_graph_ticket_light_edge_source(native_plan: &query_engine::plan::QueryPlan) -> bool {
+pub(super) fn native_plan_is_graph_ticket_light_edge_source(native_plan: &QueryPlan) -> bool {
     native_plan.nodes().iter().all(|node| {
         matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
     })

@@ -5,6 +5,12 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    optimizer::{NativeOptimizerChange, SEMIJOIN_REDUCTION_RULE_NAME, optimize_query_plan},
+    plan::JoinNode,
+    rapids_backend::rapids_analysis_context,
+};
 
 use super::*;
 
@@ -41,13 +47,13 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
         "pre-optimizer left-semi should still sit above an inner-join tree"
     );
 
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         direct_plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
-    assert_eq!(optimized.change, query_engine::optimizer::NativeOptimizerChange::Changed);
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);
     assert!(
@@ -56,7 +62,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
             .semijoin_reduction
             .candidates
             .iter()
-            .all(|candidate| candidate.rule_name == query_engine::optimizer::SEMIJOIN_REDUCTION_RULE_NAME)
+            .all(|candidate| candidate.rule_name == SEMIJOIN_REDUCTION_RULE_NAME)
     );
 
     let optimized_left_semi = native_join_ids(&optimized.plan, NativeJoinType::LeftSemi);
@@ -119,7 +125,7 @@ fn field(name: &str) -> Field {
     Field::new(name, DataType::Int32, false)
 }
 
-fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &query_engine::plan::JoinNode)> {
+fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &JoinNode)> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {

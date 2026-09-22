@@ -26,7 +26,7 @@ use super::{
     ScalarValue, SlidingAggregateWindowExpr, SortExec, SortPreservingMergeExec, StandardWindowExpr, TryCastExpr,
     WindowAggExec, WindowExpr, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowUDFExpr, is_supported_arrow_type,
 };
-use crate::planner::FinalPlanCoverage;
+use crate::{final_plan_observation::observe_final_plan, planner::FinalPlanCoverage};
 
 mod expressions;
 mod shape_family;
@@ -40,7 +40,7 @@ pub(crate) use shape_family::candidate_shape_family;
 pub(super) use crate::physical_plan::physical_plan_shape;
 
 pub(crate) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> FinalPlanCoverage {
-    crate::final_plan_observation::observe_final_plan(plan)
+    observe_final_plan(plan)
 }
 
 pub(crate) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {

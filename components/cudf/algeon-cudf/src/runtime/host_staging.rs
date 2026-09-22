@@ -18,7 +18,7 @@ use std::{
     sync::{Condvar, Mutex, OnceLock},
 };
 
-use crate::core::error::{self, Result};
+use crate::core::error::{self, ErrorCode, Result};
 
 const DEFAULT_SLAB_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_SLAB_COUNT: usize = 8;
@@ -111,7 +111,7 @@ impl PinnedSlabPool {
     pub(crate) fn acquire(&'static self) -> Result<PinnedSlabLease> {
         let mut state = self.state.lock().map_err(|_poisoned| {
             error::Error::new_with(
-                crate::core::error::ErrorCode::InvariantViolation,
+                ErrorCode::InvariantViolation,
                 "host_staging::acquire",
                 "pinned staging pool mutex was poisoned",
             )
@@ -128,7 +128,7 @@ impl PinnedSlabPool {
                     Err(error) => {
                         let mut state = self.state.lock().map_err(|_poisoned| {
                             error::Error::new_with(
-                                crate::core::error::ErrorCode::InvariantViolation,
+                                ErrorCode::InvariantViolation,
                                 "host_staging::acquire",
                                 "pinned staging pool mutex was poisoned",
                             )
@@ -142,7 +142,7 @@ impl PinnedSlabPool {
             }
             state = self.available.wait(state).map_err(|_poisoned| {
                 error::Error::new_with(
-                    crate::core::error::ErrorCode::InvariantViolation,
+                    ErrorCode::InvariantViolation,
                     "host_staging::acquire",
                     "pinned staging pool mutex was poisoned",
                 )

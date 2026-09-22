@@ -1,3 +1,5 @@
+use query_engine::runtime::SourceChunkPlanningMode;
+
 use super::*;
 
 #[test]
@@ -12,7 +14,7 @@ fn run_start_line_renders_unobservable_facts_as_unknown_not_defaults() {
             1,
             DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            query_engine::runtime::SourceChunkPlanningMode::Conservative,
+            SourceChunkPlanningMode::Conservative,
         ),
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
         ..NativeTpchBenchmarkConfig::default()

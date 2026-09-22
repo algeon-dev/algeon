@@ -20,7 +20,7 @@ use arrow::{
 };
 use bytes::Bytes;
 use datafusion::{
-    execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
+    execution::{TaskContext, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     object_store::{
         CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt,
         PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult, memory::InMemory,
@@ -39,6 +39,7 @@ use query_engine::{
     runtime::{S3SourceStorageProfile, SourceStorageProfile},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
+use tokio::{task::yield_now, time::timeout};
 
 use super::prune_native_query_plan;
 use crate::{
@@ -264,7 +265,7 @@ fn composed_admission_execution_config(backend: &InstalledTestGpuBackend) -> Alg
         .with_lakehouse_footer_pruning(true)
 }
 
-fn task_context_with_runtime(runtime_env: Arc<RuntimeEnv>) -> Arc<datafusion::execution::TaskContext> {
+fn task_context_with_runtime(runtime_env: Arc<RuntimeEnv>) -> Arc<TaskContext> {
     SessionContext::new_with_config_rt(SessionConfig::new(), runtime_env).task_ctx()
 }
 
@@ -437,9 +438,9 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
     drop(stream);
     drop(exec);
     drop(ticket);
-    tokio::time::timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(5), async {
         while backend.backend().admission_snapshot().unwrap().active_queries != 0 {
-            tokio::task::yield_now().await;
+            yield_now().await;
         }
     })
     .await

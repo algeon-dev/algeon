@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::plan::{GraphAlgorithmParams, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink};
+use crate::plan::{GraphAlgorithmParams, GraphAlgorithmSpec, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink};
 
 pub(super) fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
     match sink {
@@ -163,10 +163,7 @@ fn remap_node_id(id: NodeId, remap: &BTreeMap<NodeId, NodeId>) -> NodeId {
     *remap.get(&id).expect("reachable input node must have a remapped id")
 }
 
-fn remap_graph_algorithm_spec_side_inputs(
-    spec: &mut crate::plan::GraphAlgorithmSpec,
-    input_remap: &BTreeMap<NodeId, NodeId>,
-) {
+fn remap_graph_algorithm_spec_side_inputs(spec: &mut GraphAlgorithmSpec, input_remap: &BTreeMap<NodeId, NodeId>) {
     let GraphAlgorithmParams::Bfs(params) = &mut spec.params else {
         return;
     };
@@ -205,7 +202,7 @@ mod tests {
         expr::{AggregateSpec, Expr, LimitSpec, SortExpr, SortSpec},
         plan::{
             AggregateNode, EdgeNormalizeNode, EdgeNormalizeSpec, FilterNode, GraphAlgorithm, GraphAlgorithmNode,
-            GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs,
+            GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
             GraphConstructionOptions, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinNode,
             JoinSpec, JoinType, LimitNode, PlanFacts, ProjectionNode, ProjectionOutput, SchemaBehavior, SortNode,
             UnionNode, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec,
@@ -383,7 +380,7 @@ mod tests {
                 include_edge_ids: Some(GraphPredicateInput::new(node_id(5), "edge_id")),
                 include_edges: Some(GraphEdgePredicateInput::new(node_id(6), "src", "dst", Some("edge_id"))),
             },
-            endpoint_policy: crate::plan::GraphBfsEndpointPolicy::Strict,
+            endpoint_policy: GraphBfsEndpointPolicy::Strict,
             path_output: None,
             return_target_info: true,
         };

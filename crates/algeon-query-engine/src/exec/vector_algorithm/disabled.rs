@@ -1,4 +1,4 @@
-use super::super::*;
+use crate::exec::*;
 
 pub(in crate::exec) fn execute_vector_algorithm(
     node_id: NodeId,

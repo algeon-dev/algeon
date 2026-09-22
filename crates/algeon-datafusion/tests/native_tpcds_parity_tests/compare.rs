@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use algeon_datafusion::{
-    native_report::bench_support::{
-        NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
-        NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityWorkloadItem,
-        ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
-        sql_top_level_order_by_covers_output_columns,
+    native_report::{
+        NativeOptimizerDiagnostics, NativePlanningFailure,
+        bench_support::{
+            NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
+            NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityWorkloadItem,
+            ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches,
+            sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+        },
     },
     planner::{NativeCapabilityContractDiagnostics, NativePlanningDiagnostics},
     report::{GpuCandidate, PlanningReport},
@@ -134,13 +137,11 @@ fn external_oracle_decimal_precision_widening_matches_cpu_value() {
         query_id: "qxx".to_string(),
         sql: "SELECT amount FROM t ORDER BY amount".to_string(),
         cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: cpu_schema, batches: vec![cpu_batch] },
-        native_planning: NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
-            algeon_datafusion::native_report::NativePlanningFailure {
-                stage: "physical_planning".to_string(),
-                reason_code: "physical_planning_failed".to_string(),
-                message: "not relevant".to_string(),
-            },
-        ),
+        native_planning: NativeTpcdsParityNativePlanningOutcome::PlanningFailed(NativePlanningFailure {
+            stage: "physical_planning".to_string(),
+            reason_code: "physical_planning_failed".to_string(),
+            message: "not relevant".to_string(),
+        }),
         native_runtime: NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
         duckdb_output: NativeTpcdsParityExternalOutput::Succeeded {
             schema: duckdb_schema,
@@ -262,20 +263,16 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
     let item = NativeTpcdsParityWorkloadItem {
         query_id: "q01".to_string(),
         sql: "SELECT 1 ORDER BY 1".to_string(),
-        cpu_outcome: NativeTpcdsParityCpuOutcome::PlanningFailed(
-            algeon_datafusion::native_report::NativePlanningFailure {
-                stage: "sql_to_logical_plan".to_string(),
-                reason_code: "sql_planning_failed".to_string(),
-                message: "boom".to_string(),
-            },
-        ),
-        native_planning: NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
-            algeon_datafusion::native_report::NativePlanningFailure {
-                stage: "sql_to_logical_plan".to_string(),
-                reason_code: "sql_planning_failed".to_string(),
-                message: "boom".to_string(),
-            },
-        ),
+        cpu_outcome: NativeTpcdsParityCpuOutcome::PlanningFailed(NativePlanningFailure {
+            stage: "sql_to_logical_plan".to_string(),
+            reason_code: "sql_planning_failed".to_string(),
+            message: "boom".to_string(),
+        }),
+        native_planning: NativeTpcdsParityNativePlanningOutcome::PlanningFailed(NativePlanningFailure {
+            stage: "sql_to_logical_plan".to_string(),
+            reason_code: "sql_planning_failed".to_string(),
+            message: "boom".to_string(),
+        }),
         native_runtime: NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
         duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
     };
@@ -367,7 +364,7 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
             input_plan_shape: "EmptyExec".to_string(),
             input_join_diagnostics: Vec::new(),
             report,
-            native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics::default(),
+            native_optimizer: NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),
             capability_contract: NativeCapabilityContractDiagnostics::default(),
         }),

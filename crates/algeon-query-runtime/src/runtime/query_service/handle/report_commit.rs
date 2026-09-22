@@ -8,18 +8,34 @@ use std::{
     },
 };
 
-use super::super::*;
+use query_planning::error::{QueryError, QueryErrorCode};
+
 #[cfg(test)]
 use super::lifetime::ReleaseCommitGate;
 use crate::{
+    attempt::AttemptLifecycleError,
     observability::{
         AttemptAllocatorEvent, AttemptAllocatorEventAction, AttemptAllocatorEventSource, AttemptAllocatorPoolUsage,
-        AttemptEvidenceField, AttemptFaultIsolation, AttemptResourceEvidence, AttemptTimedDomainUsage,
-        AttemptUnattributedAllocatorEvent,
+        AttemptAlternateDeviceEligibility, AttemptCapacityDisposition, AttemptEvidenceField, AttemptFaultIsolation,
+        AttemptFinalDomainUsage, AttemptHealthTransition, AttemptNativeFaultEvidence, AttemptResourceEvidence,
+        AttemptTerminalCommit, AttemptTimedDomainUsage, AttemptUnattributedAllocatorEvent, CleanupFailurePhase,
+        CleanupFailureSummary, RuntimeCleanupFailureObservation, RuntimeObservationPayload,
+        has_proven_device_local_fault_evidence,
     },
-    runtime::allocator_correlation::{
-        AllocatorDomainAttempt, AllocatorEventEvidenceRead, AttemptCacheScopeAllocatorCorrelation,
-        discard_admitted_domain, retire_admitted_domain,
+    runtime::{
+        allocator_correlation::{
+            AllocatorDomainAttempt, AllocatorEventEvidenceRead, AttemptCacheScopeAllocatorCorrelation,
+            discard_admitted_domain, retire_admitted_domain,
+        },
+        attempt_domain::AttemptAllocationDomain,
+        gpu::DeviceAdmissionHealth,
+        query_service::{
+            admission::QueryCompletionActivityTail,
+            service::disposition::{
+                CapacityCommitDecision, CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit,
+            },
+            *,
+        },
     },
 };
 
@@ -41,7 +57,7 @@ pub(super) struct QueryHandleReportCommit {
     pub(super) device_ordinal: usize,
     pub(super) admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     pub(super) compatible_devices: Vec<usize>,
-    pub(super) domain: Option<super::super::super::attempt_domain::AttemptAllocationDomain>,
+    pub(super) domain: Option<AttemptAllocationDomain>,
     pub(super) memory_grant: Option<MemoryGrant>,
     pub(super) allocator_domain_attempt: Option<AllocatorDomainAttempt>,
     pub(super) cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
@@ -54,16 +70,16 @@ pub(super) struct QueryHandleReportCommit {
 
 enum FrozenResidentCommit {
     Frozen(cudf::QueryMemoryDomainUsage),
-    Failed { error: query_planning::error::QueryError, usage: Option<cudf::QueryMemoryDomainUsage> },
+    Failed { error: QueryError, usage: Option<cudf::QueryMemoryDomainUsage> },
 }
 
 struct SettledCapacityCommit {
-    disposition: super::super::service::disposition::CapacityCommitDisposition,
+    disposition: CapacityCommitDisposition,
     usage: Option<cudf::QueryMemoryDomainUsage>,
-    native_fault_evidence: Option<crate::observability::AttemptNativeFaultEvidence>,
+    native_fault_evidence: Option<AttemptNativeFaultEvidence>,
     cache_scope_allocator_event: Option<cudf::AllocatorEvent>,
     allocator_event_evidence: Option<AllocatorEventEvidenceRead>,
-    resident_cleanup_failure: Option<crate::observability::CleanupFailureSummary>,
+    resident_cleanup_failure: Option<CleanupFailureSummary>,
 }
 
 impl QueryHandleReportCommit {
@@ -71,9 +87,8 @@ impl QueryHandleReportCommit {
         self,
         mut external_completion: Option<QueryCompletion>,
         terminal_outcome: RuntimeTerminalOutcome,
-        evidence: super::super::service::disposition::CleanupEvidence,
-    ) -> Option<super::super::admission::QueryCompletionActivityTail> {
-        use super::super::service::disposition::CapacityCommitDisposition;
+        evidence: CleanupEvidence,
+    ) -> Option<QueryCompletionActivityTail> {
         let settled = self.settle_capacity_commit(evidence, terminal_outcome.clone());
         let SettledCapacityCommit {
             disposition,
@@ -140,10 +155,9 @@ impl QueryHandleReportCommit {
 
     fn settle_capacity_commit(
         &self,
-        evidence: super::super::service::disposition::CleanupEvidence,
+        evidence: CleanupEvidence,
         terminal_outcome: RuntimeTerminalOutcome,
     ) -> SettledCapacityCommit {
-        use super::super::service::disposition::{CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit};
         // Seal attempt-owned cache-scope windows before this report chooses
         // any allocator evidence. A context clone cannot append to a report
         // in flight, and an unclosed checkout remains unavailable rather than
@@ -164,15 +178,12 @@ impl QueryHandleReportCommit {
         };
         let resident_cleanup_failure = match &frozen_resident_commit {
             Some(FrozenResidentCommit::Failed { error, .. }) => {
-                Some(crate::observability::CleanupFailureSummary::from_native_error(
-                    crate::observability::CleanupFailurePhase::FinalValidation,
-                    error,
-                ))
+                Some(CleanupFailureSummary::from_native_error(CleanupFailurePhase::FinalValidation, error))
             },
             Some(FrozenResidentCommit::Frozen(_)) | None => None,
         };
         let decision = match frozen_resident_commit {
-            Some(FrozenResidentCommit::Frozen(usage)) => super::super::service::disposition::CapacityCommitDecision {
+            Some(FrozenResidentCommit::Frozen(usage)) => CapacityCommitDecision {
                 disposition: CapacityCommitDisposition::FrozenResident { resident_bytes: usage.current_aligned_bytes },
                 usage: Some(usage),
                 native_fault_evidence: None,
@@ -190,8 +201,7 @@ impl QueryHandleReportCommit {
                 decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence, self.terminal_domain_usage)
             },
         };
-        let super::super::service::disposition::CapacityCommitDecision { disposition, usage, native_fault_evidence } =
-            decision;
+        let CapacityCommitDecision { disposition, usage, native_fault_evidence } = decision;
         if let Some(usage) = usage.as_ref() {
             debug_assert_eq!(
                 usage.domain_id,
@@ -211,18 +221,15 @@ impl QueryHandleReportCommit {
 
     fn record_terminal_cleanup_failure(
         &self,
-        evidence: super::super::service::disposition::CleanupEvidence,
-        resident_cleanup_failure: Option<crate::observability::CleanupFailureSummary>,
+        evidence: CleanupEvidence,
+        resident_cleanup_failure: Option<CleanupFailureSummary>,
     ) {
-        use super::super::service::disposition::CleanupEvidence;
         let cleanup_failure = match evidence {
             CleanupEvidence::Completed => resident_cleanup_failure,
             CleanupEvidence::StreamSynchronizationFailed => {
-                Some(crate::observability::CleanupFailureSummary::stream_synchronization_failed())
+                Some(CleanupFailureSummary::stream_synchronization_failed())
             },
-            CleanupEvidence::CallbackAbandoned => {
-                Some(crate::observability::CleanupFailureSummary::callback_abandoned())
-            },
+            CleanupEvidence::CallbackAbandoned => Some(CleanupFailureSummary::callback_abandoned()),
         };
         if let Some(summary) = cleanup_failure {
             // Record the canonical lifecycle fact before the bounded timeline
@@ -230,9 +237,7 @@ impl QueryHandleReportCommit {
             // cleanup count or its first summary.
             self.observation.record_attempt_cleanup_failure(summary.clone());
             self.observation.record(|| {
-                crate::observability::RuntimeObservationPayload::CleanupFailure(Box::new(
-                    crate::observability::RuntimeCleanupFailureObservation { summary },
-                ))
+                RuntimeObservationPayload::CleanupFailure(Box::new(RuntimeCleanupFailureObservation { summary }))
             });
         }
     }
@@ -240,14 +245,13 @@ impl QueryHandleReportCommit {
     fn commit_terminal_report(
         &self,
         external_completion: &mut Option<QueryCompletion>,
-        disposition: &super::super::service::disposition::CapacityCommitDisposition,
+        disposition: &CapacityCommitDisposition,
         usage: Option<cudf::QueryMemoryDomainUsage>,
-        native_fault_evidence: Option<crate::observability::AttemptNativeFaultEvidence>,
+        native_fault_evidence: Option<AttemptNativeFaultEvidence>,
         allocator_event_evidence: Option<&AllocatorEventEvidenceRead>,
         cache_scope_allocator_event: Option<cudf::AllocatorEvent>,
-    ) -> std::result::Result<(), crate::attempt::AttemptLifecycleError> {
-        use super::super::service::disposition::CapacityCommitDisposition;
-        let final_domain_usage = usage.map(crate::observability::AttemptFinalDomainUsage::from);
+    ) -> std::result::Result<(), AttemptLifecycleError> {
+        let final_domain_usage = usage.map(AttemptFinalDomainUsage::from);
         let post_cleanup_pool_usage =
             self.domain.as_ref().and_then(|domain| domain.pool_usage().ok()).map(project_pool_usage);
         // The post-cleanup usage is intentionally timed independently from
@@ -281,25 +285,25 @@ impl QueryHandleReportCommit {
         // health transition above. Typed fault and retry evidence shares this
         // commit and must not resample terminal facts.
         let terminal_commit = match &disposition {
-            CapacityCommitDisposition::FrozenResident { .. } => crate::observability::AttemptTerminalCommit::new(
-                crate::observability::AttemptCapacityDisposition::FrozenResident,
+            CapacityCommitDisposition::FrozenResident { .. } => AttemptTerminalCommit::new(
+                AttemptCapacityDisposition::FrozenResident,
                 final_domain_usage,
-                crate::observability::AttemptHealthTransition::HealthyReuse,
+                AttemptHealthTransition::HealthyReuse,
             ),
-            CapacityCommitDisposition::HealthyReuse => crate::observability::AttemptTerminalCommit::new(
-                crate::observability::AttemptCapacityDisposition::Released,
+            CapacityCommitDisposition::HealthyReuse => AttemptTerminalCommit::new(
+                AttemptCapacityDisposition::Released,
                 final_domain_usage,
-                crate::observability::AttemptHealthTransition::HealthyReuse,
+                AttemptHealthTransition::HealthyReuse,
             ),
-            CapacityCommitDisposition::DeviceQuarantine { .. } => crate::observability::AttemptTerminalCommit::new(
-                crate::observability::AttemptCapacityDisposition::RetainedQuarantine,
+            CapacityCommitDisposition::DeviceQuarantine { .. } => AttemptTerminalCommit::new(
+                AttemptCapacityDisposition::RetainedQuarantine,
                 final_domain_usage,
-                crate::observability::AttemptHealthTransition::DeviceQuarantined,
+                AttemptHealthTransition::DeviceQuarantined,
             ),
-            CapacityCommitDisposition::BackendUnhealthy { .. } => crate::observability::AttemptTerminalCommit::new(
-                crate::observability::AttemptCapacityDisposition::RetainedQuarantine,
+            CapacityCommitDisposition::BackendUnhealthy { .. } => AttemptTerminalCommit::new(
+                AttemptCapacityDisposition::RetainedQuarantine,
                 final_domain_usage,
-                crate::observability::AttemptHealthTransition::BackendUnhealthy,
+                AttemptHealthTransition::BackendUnhealthy,
             ),
         };
         let terminal_commit = native_fault_evidence
@@ -345,8 +349,8 @@ impl QueryHandleReportCommit {
             None
         };
         if let Some(message) = attestation_failure {
-            let error = query_planning::error::QueryError::new(
-                query_planning::error::QueryErrorCode::CleanupFailed,
+            let error = QueryError::new(
+                QueryErrorCode::CleanupFailed,
                 "query_engine.runtime.query_service.freeze_resident",
                 message,
             )
@@ -375,12 +379,7 @@ impl QueryHandleReportCommit {
 
     /// Commits the selected health disposition before the resource evidence is
     /// sampled or the attempt finalizer can publish a report.
-    fn commit_capacity_health(
-        &self,
-        disposition: &super::super::service::disposition::CapacityCommitDisposition,
-    ) -> bool {
-        use super::super::service::disposition::CapacityCommitDisposition;
-
+    fn commit_capacity_health(&self, disposition: &CapacityCommitDisposition) -> bool {
         match disposition {
             CapacityCommitDisposition::HealthyReuse | CapacityCommitDisposition::FrozenResident { .. } => true,
             CapacityCommitDisposition::DeviceQuarantine { reason } => {
@@ -403,8 +402,7 @@ impl QueryHandleReportCommit {
                     );
                     return false;
                 }
-                let committed =
-                    matches!(ledger.health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. }));
+                let committed = matches!(ledger.health(), Ok(DeviceAdmissionHealth::Closed { .. }));
                 if !committed {
                     eprintln!(
                         "[query-engine] warning: device admission closure was not observable during release commit"
@@ -428,13 +426,10 @@ impl QueryHandleReportCommit {
     /// later admission must independently re-check placement and capacity.
     fn alternate_device_eligibility_after_quarantine(
         &self,
-        disposition: &super::super::service::disposition::CapacityCommitDisposition,
-        native_fault_evidence: Option<crate::observability::AttemptNativeFaultEvidence>,
+        disposition: &CapacityCommitDisposition,
+        native_fault_evidence: Option<AttemptNativeFaultEvidence>,
         capacity_health_committed: bool,
-    ) -> crate::observability::AttemptAlternateDeviceEligibility {
-        use super::super::service::disposition::CapacityCommitDisposition;
-        use crate::observability::{AttemptAlternateDeviceEligibility, has_proven_device_local_fault_evidence};
-
+    ) -> AttemptAlternateDeviceEligibility {
         let proven_device_local_fault = matches!(disposition, CapacityCommitDisposition::DeviceQuarantine { .. })
             && native_fault_evidence.as_ref().is_some_and(has_proven_device_local_fault_evidence);
         if !proven_device_local_fault {
@@ -472,7 +467,7 @@ impl QueryHandleReportCommit {
                     }
                     let can_ever_fit =
                         ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
-                    if can_ever_fit && matches!(ledger.health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Open)) {
+                    if can_ever_fit && matches!(ledger.health(), Ok(DeviceAdmissionHealth::Open)) {
                         return AttemptAlternateDeviceEligibility::Eligible;
                     }
                 },
@@ -488,7 +483,7 @@ impl QueryHandleReportCommit {
                     }
                     let can_ever_fit =
                         ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
-                    if can_ever_fit && matches!(ledger.health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Open)) {
+                    if can_ever_fit && matches!(ledger.health(), Ok(DeviceAdmissionHealth::Open)) {
                         return AttemptAlternateDeviceEligibility::Eligible;
                     }
                 },
@@ -505,7 +500,7 @@ impl QueryHandleReportCommit {
         &self,
         device_sample_ns: Option<u64>,
         post_cleanup_usage: Option<AttemptTimedDomainUsage>,
-        native_fault_evidence: Option<crate::observability::AttemptNativeFaultEvidence>,
+        native_fault_evidence: Option<AttemptNativeFaultEvidence>,
         allocator_event_evidence: Option<&AllocatorEventEvidenceRead>,
         cache_scope_allocator_event: Option<cudf::AllocatorEvent>,
     ) -> Option<AttemptResourceEvidence> {
@@ -527,7 +522,7 @@ impl QueryHandleReportCommit {
         // without inventing a device association.
         if matches!(
             native_fault_evidence,
-            Some(crate::observability::AttemptNativeFaultEvidence { isolation: AttemptFaultIsolation::Unknown, .. })
+            Some(AttemptNativeFaultEvidence { isolation: AttemptFaultIsolation::Unknown, .. })
         ) {
             return Some(evidence);
         }
@@ -621,13 +616,10 @@ impl QueryHandleReportCommit {
     /// Keeps a closed, bounded interval only after the stream/domain cleanup
     /// callback proves completion. Any failed or abandoned cleanup is an
     /// explicit unattributed state rather than a guessed retired watermark.
-    fn finish_allocator_domain_correlation(
-        &self,
-        evidence: super::super::service::disposition::CleanupEvidence,
-    ) -> Option<AllocatorEventEvidenceRead> {
+    fn finish_allocator_domain_correlation(&self, evidence: CleanupEvidence) -> Option<AllocatorEventEvidenceRead> {
         let service = self.service.as_ref()?;
         let binding = self.allocator_domain_attempt?;
-        if evidence == super::super::service::disposition::CleanupEvidence::Completed
+        if evidence == CleanupEvidence::Completed
             && let Some(domain) = self.domain.as_ref()
         {
             Some(retire_admitted_domain(&service.allocator_event_correlation, binding, domain.as_cudf()))

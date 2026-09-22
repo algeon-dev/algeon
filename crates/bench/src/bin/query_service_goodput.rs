@@ -6,9 +6,11 @@
 
 use std::process::ExitCode;
 
+use bench::query_service_goodput::run;
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    match bench::query_service_goodput::run().await {
+    match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("query_service_goodput: {error}");

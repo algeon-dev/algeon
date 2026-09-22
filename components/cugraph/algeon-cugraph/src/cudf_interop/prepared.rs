@@ -1,8 +1,11 @@
 use std::{any::Any, sync::Arc};
 
-use cudf::interop::contract::{
-    ColumnLayout, CompletionAuthority, InteropError, LeaseCompletionResult, PhysicalValidity, Placement,
-    ReadStartAuthority,
+use cudf::interop::{
+    contract::{
+        BufferBinding, ColumnLayout, CompletionAuthority, CompletionWitness, ExportProfile, InteropError,
+        LeaseCompletionResult, PhysicalValidity, Placement, ReadStartAuthority, SemanticColumn,
+    },
+    cuda_stream_handle,
 };
 
 use super::{
@@ -18,13 +21,13 @@ use crate::{
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
     handle::EnteredContext,
     similarity::VertexPairs,
-    types::GraphProperties,
+    types::{DataType, GraphProperties},
 };
 
 #[derive(Clone, Copy)]
 pub(super) struct PreparedEdgeColumn<'a> {
-    pub(super) column: &'a cudf::interop::contract::SemanticColumn,
-    pub(super) bindings: &'a [cudf::interop::contract::BufferBinding<'a>],
+    pub(super) column: &'a SemanticColumn,
+    pub(super) bindings: &'a [BufferBinding<'a>],
 }
 
 pub(super) struct PreparedEdgeList<'a> {
@@ -44,14 +47,11 @@ pub(super) struct PreparedVertexPairList<'a> {
 
 pub(super) struct RetainedPreparedCompletion {
     owner: Arc<dyn Any + Send + Sync>,
-    witness: cudf::interop::contract::CompletionWitness,
+    witness: CompletionWitness,
 }
 
-pub(super) fn prepared_profile_supported(
-    profile: cudf::interop::contract::ExportProfile,
-    operation: &'static str,
-) -> Result<()> {
-    if profile == cudf::interop::contract::ExportProfile::PreparedDeviceExport {
+pub(super) fn prepared_profile_supported(profile: ExportProfile, operation: &'static str) -> Result<()> {
+    if profile == ExportProfile::PreparedDeviceExport {
         return Ok(());
     }
 
@@ -63,7 +63,7 @@ fn prepared_fixed_width_values_binding<'a>(
     column: PreparedEdgeColumn<'a>,
     name: &str,
     operation: &'static str,
-) -> Result<&'a cudf::interop::contract::BufferBinding<'a>> {
+) -> Result<&'a BufferBinding<'a>> {
     let values = match column.column.layout() {
         ColumnLayout::FixedWidth { values } => *values,
         layout => {
@@ -93,7 +93,7 @@ fn prepared_device_binding<'a>(
     column: PreparedEdgeColumn<'a>,
     name: &str,
     operation: &'static str,
-) -> Result<&'a cudf::interop::contract::BufferBinding<'a>> {
+) -> Result<&'a BufferBinding<'a>> {
     let binding = prepared_fixed_width_values_binding(column, name, operation)?;
 
     let Placement::CudaDevice { .. } = binding.placement() else {
@@ -203,7 +203,7 @@ fn validate_prepared_vertex_pair_shape(
     first: &RawDeviceArrayView<'_>,
     second: &RawDeviceArrayView<'_>,
     operation: &'static str,
-) -> Result<crate::types::DataType> {
+) -> Result<DataType> {
     let first_dtype = first.dtype()?;
     let second_dtype = second.dtype()?;
 
@@ -244,7 +244,7 @@ pub(super) fn prepared_lease_authorities<'a>(
 ) -> Result<(ReadStartAuthority<'a>, CompletionAuthority<'a>)> {
     match handle.runtime() {
         Some(runtime) => {
-            let stream = cudf::interop::cuda_stream_handle(runtime.stream())
+            let stream = cuda_stream_handle(runtime.stream())
                 .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
             Ok((ReadStartAuthority::ConsumerStream { stream }, CompletionAuthority::SameDeviceStream { stream }))
         },
@@ -406,12 +406,12 @@ pub(super) fn vertex_pairs_from_prepared_columns<T: Transposition>(
     let dtype = validate_prepared_vertex_pair_shape(&first, &second, operation)?;
 
     match dtype {
-        crate::types::DataType::Int32 => {
+        DataType::Int32 => {
             let first = DeviceArrayView::<i32>::from_raw_unchecked(first.raw_view());
             let second = DeviceArrayView::<i32>::from_raw_unchecked(second.raw_view());
             graph.vertex_pairs(handle, &first, &second)
         },
-        crate::types::DataType::Int64 => {
+        DataType::Int64 => {
             let first = DeviceArrayView::<i64>::from_raw_unchecked(first.raw_view());
             let second = DeviceArrayView::<i64>::from_raw_unchecked(second.raw_view());
             graph.vertex_pairs(handle, &first, &second)
@@ -424,7 +424,10 @@ pub(super) fn vertex_pairs_from_prepared_columns<T: Transposition>(
 mod tests {
     use std::ffi::c_void;
 
-    use cudf::interop::contract::{ColumnLayout, PhysicalValidity, Placement, SemanticColumn, TypeId as InteropTypeId};
+    use cudf::interop::contract::{
+        BoundBytes, BufferId, ColumnId, ColumnLayout, DataType as InteropDataType, PhysicalValidity, Placement,
+        SchemaNullability, SemanticColumn, TypeId as InteropTypeId,
+    };
 
     use super::*;
     use crate::error::ErrorKind;
@@ -432,13 +435,13 @@ mod tests {
     #[test]
     fn prepared_fixed_width_values_binding_missing_values_binding_is_invalid_state() {
         let column = SemanticColumn::new(
-            cudf::interop::contract::ColumnId::new(1),
-            cudf::interop::contract::DataType::new(InteropTypeId::Int32),
+            ColumnId::new(1),
+            InteropDataType::new(InteropTypeId::Int32),
             3,
             0,
             PhysicalValidity::NoValidityBuffer,
-            cudf::interop::contract::SchemaNullability::NonNullable,
-            ColumnLayout::FixedWidth { values: cudf::interop::contract::BufferId::new(42) },
+            SchemaNullability::NonNullable,
+            ColumnLayout::FixedWidth { values: BufferId::new(42) },
         );
         let prepared = PreparedEdgeColumn { column: &column, bindings: &[] };
 
@@ -450,21 +453,16 @@ mod tests {
 
     #[test]
     fn prepared_column_without_explicit_null_count_is_invalid_state() {
-        let bytes =
-            cudf::interop::contract::BoundBytes::from_raw_parts(std::ptr::dangling_mut::<c_void>(), 12).expect("bytes");
-        let binding = cudf::interop::contract::BufferBinding::new(
-            cudf::interop::contract::BufferId::new(7),
-            bytes,
-            Placement::CudaDevice { device: 0 },
-        );
+        let bytes = BoundBytes::from_raw_parts(std::ptr::dangling_mut::<c_void>(), 12).expect("bytes");
+        let binding = BufferBinding::new(BufferId::new(7), bytes, Placement::CudaDevice { device: 0 });
         let column = SemanticColumn::new(
-            cudf::interop::contract::ColumnId::new(1),
-            cudf::interop::contract::DataType::new(InteropTypeId::Int32),
+            ColumnId::new(1),
+            InteropDataType::new(InteropTypeId::Int32),
             3,
             0,
-            PhysicalValidity::ValidityMask { mask: cudf::interop::contract::BufferId::new(99), null_count: None },
-            cudf::interop::contract::SchemaNullability::Nullable,
-            ColumnLayout::FixedWidth { values: cudf::interop::contract::BufferId::new(7) },
+            PhysicalValidity::ValidityMask { mask: BufferId::new(99), null_count: None },
+            SchemaNullability::Nullable,
+            ColumnLayout::FixedWidth { values: BufferId::new(7) },
         );
         let bindings = [binding];
         let prepared = PreparedEdgeColumn { column: &column, bindings: &bindings };
@@ -477,21 +475,16 @@ mod tests {
 
     #[test]
     fn prepared_column_binding_shorter_than_active_range_is_invalid_state() {
-        let bytes =
-            cudf::interop::contract::BoundBytes::from_raw_parts(std::ptr::dangling_mut::<c_void>(), 8).expect("bytes");
-        let binding = cudf::interop::contract::BufferBinding::new(
-            cudf::interop::contract::BufferId::new(7),
-            bytes,
-            Placement::CudaDevice { device: 0 },
-        );
+        let bytes = BoundBytes::from_raw_parts(std::ptr::dangling_mut::<c_void>(), 8).expect("bytes");
+        let binding = BufferBinding::new(BufferId::new(7), bytes, Placement::CudaDevice { device: 0 });
         let column = SemanticColumn::new(
-            cudf::interop::contract::ColumnId::new(1),
-            cudf::interop::contract::DataType::new(InteropTypeId::Int32),
+            ColumnId::new(1),
+            InteropDataType::new(InteropTypeId::Int32),
             3,
             0,
             PhysicalValidity::NoValidityBuffer,
-            cudf::interop::contract::SchemaNullability::NonNullable,
-            ColumnLayout::FixedWidth { values: cudf::interop::contract::BufferId::new(7) },
+            SchemaNullability::NonNullable,
+            ColumnLayout::FixedWidth { values: BufferId::new(7) },
         );
         let bindings = [binding];
         let prepared = PreparedEdgeColumn { column: &column, bindings: &bindings };

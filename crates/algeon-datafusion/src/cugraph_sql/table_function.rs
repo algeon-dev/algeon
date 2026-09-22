@@ -35,6 +35,8 @@ use datafusion::{
     physical_expr::{expressions::Column, projection::ProjectionExpr},
     physical_plan::projection::ProjectionExec,
 };
+#[cfg(feature = "cugraph")]
+use futures::executor::block_on;
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphVertexIdDomain,
@@ -44,10 +46,14 @@ use super::{
 };
 #[cfg(feature = "cugraph")]
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
+use crate::error::{Error, ErrorCode};
+#[cfg(feature = "cugraph")]
+use crate::planner::RelationalNativeRewritePolicy;
 #[cfg(feature = "cugraph")]
 use crate::{
-    cugraph_sql::CugraphAlgoExec, native_exec::AlgeonNativeExecutionConfig,
-    session::session_state_with_native_execution_config,
+    cugraph_sql::CugraphAlgoExec,
+    native_exec::AlgeonNativeExecutionConfig,
+    session::{installed_algeon_native_optimizer_config, session_state_with_native_execution_config},
 };
 
 #[cfg(feature = "cugraph")]
@@ -104,13 +110,12 @@ impl TableProvider for CugraphAlgoTableProvider {
             .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
         let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
         resolve_vertex_output_schema(&mut spec, &vertex_domain);
-        let native_execution_config = crate::session::installed_algeon_native_optimizer_config(session_state)
+        let native_execution_config = installed_algeon_native_optimizer_config(session_state)
             .map(|optimizer_config| optimizer_config.native_execution_config().clone())
             .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
-        let relational_rewrite_enabled = crate::session::installed_algeon_native_optimizer_config(session_state)
-            .is_none_or(|optimizer_config| {
-                optimizer_config.relational_native_rewrite_policy()
-                    == crate::planner::RelationalNativeRewritePolicy::Enabled
+        let relational_rewrite_enabled =
+            installed_algeon_native_optimizer_config(session_state).is_none_or(|optimizer_config| {
+                optimizer_config.relational_native_rewrite_policy() == RelationalNativeRewritePolicy::Enabled
             });
         // This nested state lowers the edge/predicate relations only. The
         // final outer plan owns the invocation ticket and manifest; subplan
@@ -364,7 +369,7 @@ fn maybe_resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, session: 
     let Ok(schema) = session_state.schema_for_ref(table_ref.clone()) else {
         return;
     };
-    let Ok(Some(provider)) = futures::executor::block_on(schema.table(table_ref.table())) else {
+    let Ok(Some(provider)) = block_on(schema.table(table_ref.table())) else {
         return;
     };
     let Ok(vertex_domain) = validate_edge_source_schema(spec, &provider.schema()) else {
@@ -510,15 +515,15 @@ async fn literal_bfs_source_plan(
 
 fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) -> Result<CugraphVertexIdDomain> {
     let src = schema.field_with_name(&spec.src_col).map_err(|_| {
-        DataFusionError::from(crate::error::Error::new(
-            crate::error::ErrorCode::FieldNotFound,
+        DataFusionError::from(Error::new(
+            ErrorCode::FieldNotFound,
             "algeon_datafusion.cugraph_sql.edge_source_schema",
             format!("cuGraph edge source '{}' is missing source column '{}'", spec.table_name, spec.src_col),
         ))
     })?;
     let dst = schema.field_with_name(&spec.dst_col).map_err(|_| {
-        DataFusionError::from(crate::error::Error::new(
-            crate::error::ErrorCode::FieldNotFound,
+        DataFusionError::from(Error::new(
+            ErrorCode::FieldNotFound,
             "algeon_datafusion.cugraph_sql.edge_source_schema",
             format!("cuGraph edge source '{}' is missing destination column '{}'", spec.table_name, spec.dst_col),
         ))
@@ -527,8 +532,8 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
     validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
     if let Some(edge_id_col) = &spec.edge_id_col {
         let edge_id = schema.field_with_name(edge_id_col).map_err(|_| {
-            DataFusionError::from(crate::error::Error::new(
-                crate::error::ErrorCode::FieldNotFound,
+            DataFusionError::from(Error::new(
+                ErrorCode::FieldNotFound,
                 "algeon_datafusion.cugraph_sql.edge_source_schema",
                 format!("cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'", spec.table_name),
             ))

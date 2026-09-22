@@ -1,5 +1,12 @@
 use std::{path::Path, sync::Arc};
 
+use query_engine::{
+    admission::bounded_join_unsupported_shape_facts,
+    expr::ColumnRef,
+    plan::{NodeId, QueryPlan},
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -17,33 +24,22 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
         &lineitem_schema,
     );
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     assert!(
-        !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_keyless_conditional_join_input_subplan_pipeline()
+        !plan.capability_analysis(rapids_analysis_context()).admits_keyless_conditional_join_input_subplan_pipeline()
     );
     assert!(
         !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
     assert!(
         !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
     );
-    assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_keyed_hash_join_resident_subplan_pipeline()
-    );
-    assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none()
-    );
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_keyed_hash_join_resident_subplan_pipeline());
+    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -113,7 +109,7 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
     lineitem_path: &Path,
     supplier_schema: &Arc<Schema>,
     lineitem_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let revenue_projection_schema = Arc::new(Schema::new(vec![
         Field::new("supplier_no", DataType::Int32, false),
         Field::new("revenue", DataType::Int64, false),
@@ -156,17 +152,14 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                query_engine::expr::ColumnRef::input(1, "supplier_no", "supplier_no"),
+                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(1, "supplier_no", "supplier_no"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "total_revenue", "total_revenue"),
-                "total_revenue",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+            JoinOutputColumn::right(ColumnRef::input(1, "total_revenue", "total_revenue"), "total_revenue"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&supplier_revenue_schema),
@@ -195,17 +188,14 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "total_revenue", "total_revenue"),
-                query_engine::expr::ColumnRef::input(1, "max_revenue", "max_revenue"),
+                ColumnRef::input(0, "total_revenue", "total_revenue"),
+                ColumnRef::input(1, "max_revenue", "max_revenue"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "total_revenue", "total_revenue"),
-                "total_revenue",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+            JoinOutputColumn::left(ColumnRef::input(0, "total_revenue", "total_revenue"), "total_revenue"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&supplier_revenue_schema),
@@ -224,7 +214,7 @@ fn build_resident_revenue_aggregate(
     lineitem_schema: &Arc<Schema>,
     revenue_projection_schema: Arc<Schema>,
     revenue_schema: Arc<Schema>,
-) -> query_engine::plan::NodeId {
+) -> NodeId {
     let lineitem = builder.add_source(SourceNode::LocalParquet(join_left_source(
         lineitem_path,
         lineitem_schema,

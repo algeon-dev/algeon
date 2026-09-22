@@ -294,7 +294,7 @@ fn source_column_ref_signature(source_ref: SourceColumnRef) -> String {
     }
 }
 
-fn file_signature(file: &crate::source::LocalParquetFile) -> String {
+fn file_signature(file: &LocalParquetFile) -> String {
     let partition_values = file.partition_values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join(",");
     format!(
         "stable_id={};location={};resolved_contract={};reader_decimal_contract={};row_groups={};partition_values={}",
@@ -317,7 +317,7 @@ fn location_signature(location: &ParquetSourceLocation) -> String {
     }
 }
 
-fn reader_decimal_contract_signature(reader_decimal_types: &[crate::source::ParquetReaderDecimalType]) -> String {
+fn reader_decimal_contract_signature(reader_decimal_types: &[ParquetReaderDecimalType]) -> String {
     let mut output = String::new();
     push_contract_value(&mut output, "reader_decimal_types.len", reader_decimal_types.len().to_string().as_str());
     for (index, decimal_type) in reader_decimal_types.iter().enumerate() {
@@ -496,7 +496,7 @@ fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Exp
         Expr::Case { branches, else_expr } => Expr::Case {
             branches: branches
                 .iter()
-                .map(|branch| crate::expr::CaseWhen {
+                .map(|branch| CaseWhen {
                     when: canonicalize_aggregate_input_expr(plan, input, &branch.when),
                     then: canonicalize_aggregate_input_expr(plan, input, &branch.then),
                 })

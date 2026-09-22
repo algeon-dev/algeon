@@ -4,6 +4,12 @@ use std::{
     task::{Context, Poll},
 };
 
+use arrow::array::new_empty_array;
+use cudf::DataFrame;
+use query_engine::{
+    error::QueryErrorCode, native_error::cudf_query_error, plan::QueryPlan, runtime::ExecutionCancellation,
+};
+
 use super::{
     AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeMetrics, BoxFuture, ChildrenPropertiesMode,
     CugraphAlgorithmSpec, DataFusionError, Error, ErrorCode, ExecutionContext, ExecutionPlan, GpuDataFrame,
@@ -15,6 +21,7 @@ use super::{
     get_record_batch_memory_size, gpu_resident_producer_input_name, native_gpu_resident_producer,
     plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows,
 };
+use crate::native_exec::{lakehouse::resolve_query_plan, validate_host_wrapped_gpu_execution};
 
 const CUGRAPH_HOST_INPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-input-staging]";
 const CUGRAPH_HOST_OUTPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-output-staging]";
@@ -151,8 +158,8 @@ impl CugraphInputRowBounds {
 pub(super) struct StagedCugraphInputs {
     pub(super) edge: StagedCugraphSource,
     pub(super) predicates: Vec<StagedCugraphSource>,
-    pub(super) admitted_graph_plan: Option<query_engine::plan::QueryPlan>,
-    pub(super) admitted_edge_source_gpu_plan: Option<query_engine::plan::QueryPlan>,
+    pub(super) admitted_graph_plan: Option<QueryPlan>,
+    pub(super) admitted_edge_source_gpu_plan: Option<QueryPlan>,
     pub(super) host_evidence: HostReservationEvidence,
     pub(super) reservation: Option<MemoryReservation>,
 }
@@ -179,7 +186,7 @@ pub(super) async fn stage_cugraph_inputs(
     edge_source: Arc<dyn ExecutionPlan>,
     predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
     task_context: Arc<TaskContext>,
-    cancellation: &query_engine::runtime::ExecutionCancellation,
+    cancellation: &ExecutionCancellation,
     max_staging_bytes: usize,
 ) -> Result<StagedCugraphInputs> {
     collect_cugraph_inputs(
@@ -200,7 +207,7 @@ pub(super) async fn collect_cugraph_inputs(
     edge_source: Arc<dyn ExecutionPlan>,
     predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
     task_context: Arc<TaskContext>,
-    cancellation: &query_engine::runtime::ExecutionCancellation,
+    cancellation: &ExecutionCancellation,
     max_input_staging_bytes: usize,
     max_output_staging_bytes: usize,
 ) -> Result<CollectedCugraphInputs> {
@@ -248,7 +255,7 @@ async fn stage_cugraph_source(
     source_kind: &'static str,
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
-    cancellation: &query_engine::runtime::ExecutionCancellation,
+    cancellation: &ExecutionCancellation,
     max_staging_bytes: usize,
     staged_bytes: &mut usize,
     reservation: &mut MemoryReservation,
@@ -262,7 +269,7 @@ async fn stage_cugraph_source(
         return Ok(StagedCugraphSource::Native { schema, plan });
     }
     if plan_contains_algeon_native(plan.as_ref()) {
-        crate::native_exec::validate_host_wrapped_gpu_execution(plan.as_ref(), task_context.as_ref())?;
+        validate_host_wrapped_gpu_execution(plan.as_ref(), task_context.as_ref())?;
     }
 
     let partition_count = plan.properties().output_partitioning().partition_count();
@@ -279,9 +286,7 @@ async fn stage_cugraph_source(
     Ok(StagedCugraphSource::Host { schema, batches })
 }
 
-pub(super) fn check_host_staging_cancellation(
-    cancellation: &query_engine::runtime::ExecutionCancellation,
-) -> Result<()> {
+pub(super) fn check_host_staging_cancellation(cancellation: &ExecutionCancellation) -> Result<()> {
     cancellation.check("algeon_datafusion.cugraph_sql.host_input_staging").map_err(|error| {
         DataFusionError::from(Error::from_native(
             "algeon_datafusion.cugraph_sql.host_input_staging",
@@ -460,7 +465,7 @@ impl StagedCugraphSource {
         context: &ExecutionContext,
         metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
-        admitted_edge_source_gpu_plan: Option<query_engine::plan::QueryPlan>,
+        admitted_edge_source_gpu_plan: Option<QueryPlan>,
     ) -> Result<GpuDataFrame> {
         match self {
             Self::Native { plan, .. } => {
@@ -577,7 +582,7 @@ impl RecordBatchStream for EagerCugraphHostOutput {
 pub(super) fn materialize_gpu_output_eagerly(
     handle: GpuResultHandle,
     task_context: &TaskContext,
-    cancellation: query_engine::runtime::ExecutionCancellation,
+    cancellation: ExecutionCancellation,
     max_staging_bytes: usize,
     host_evidence: Option<&HostReservationEvidence>,
     metrics: &mut GraphExecutionMetrics<'_>,
@@ -606,7 +611,7 @@ pub(super) fn materialize_gpu_output_eagerly(
     let mut staged_bytes = 0usize;
     let mut batches = Vec::new();
     while let Some(prepared) = cursor.prepare_next_batch().map_err(|error| {
-        if error.code() == query_engine::error::QueryErrorCode::HostMaterializationLimitExceeded {
+        if error.code() == QueryErrorCode::HostMaterializationLimitExceeded {
             return DataFusionError::from(
                 Error::new(
                     ErrorCode::HostStagingLimitExceeded,
@@ -738,7 +743,7 @@ pub(super) async fn execute_edge_source_to_gpu(
     metrics: &mut GraphExecutionMetrics<'_>,
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
-    admitted_composed_plan: Option<query_engine::plan::QueryPlan>,
+    admitted_composed_plan: Option<QueryPlan>,
 ) -> Result<GpuDataFrame> {
     if native_gpu_resident_producer(plan.as_ref()).is_some() {
         let (_, handle) =
@@ -746,13 +751,10 @@ pub(super) async fn execute_edge_source_to_gpu(
         return Ok(handle.into_gpu_frame());
     }
     if let Some(native) = as_algeon_native_exec(plan.as_ref()) {
-        let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
-            native.execution_config(),
-            native.native_plan().clone(),
-            task_context.as_ref(),
-        )
-        .await
-        .clone_with_gpu_resident_sink();
+        let native_plan =
+            resolve_query_plan(native.execution_config(), native.native_plan().clone(), task_context.as_ref())
+                .await
+                .clone_with_gpu_resident_sink();
         let outcome = execute_query_plan(context, QueryExecutionRequest::new(&native_plan));
         let output = finalize_graph_query_outcome(
             metrics,
@@ -773,13 +775,9 @@ pub(super) async fn execute_edge_source_to_gpu(
     if let Some(native) = as_algeon_native_composed_exec(plan.as_ref()) {
         let native_plan = match admitted_composed_plan {
             Some(plan) => plan,
-            None => crate::native_exec::lakehouse::resolve_query_plan(
-                native.execution_config(),
-                native.native_plan().clone(),
-                task_context.as_ref(),
-            )
-            .await
-            .clone_with_gpu_resident_sink(),
+            None => resolve_query_plan(native.execution_config(), native.native_plan().clone(), task_context.as_ref())
+                .await
+                .clone_with_gpu_resident_sink(),
         };
         let runtime_occurrence_ids = native
             .gpu_inputs()
@@ -863,14 +861,13 @@ pub(super) fn record_batches_to_gpu(
         "query service closed before cuGraph edge import acquired its runtime",
     )?;
     let Some(first_batch) = batches.first() else {
-        let arrays =
-            schema.fields().iter().map(|field| arrow::array::new_empty_array(field.data_type())).collect::<Vec<_>>();
+        let arrays = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
         let batch = RecordBatch::try_new(schema, arrays).map_err(DataFusionError::from)?;
-        return cudf::DataFrame::from_record_batch(&runtime, &batch).map(GpuDataFrame::new).map_err(|error| {
+        return DataFrame::from_record_batch(&runtime, &batch).map(GpuDataFrame::new).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "algeon_datafusion.cugraph_sql.edge_source_host_import",
                 "failed to import empty host Arrow edge-source batch into cudf",
-                query_engine::native_error::cudf_query_error(
+                cudf_query_error(
                     "algeon_datafusion.cugraph_sql.edge_source_host_import",
                     "failed to import empty host Arrow edge-source batch into cudf",
                     error,
@@ -878,11 +875,11 @@ pub(super) fn record_batches_to_gpu(
             ))
         });
     };
-    let imported = cudf::DataFrame::from_record_batches(&runtime, batches).map_err(|error| {
+    let imported = DataFrame::from_record_batches(&runtime, batches).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "algeon_datafusion.cugraph_sql.edge_source_host_import",
             "failed to import host Arrow edge-source batches into cudf",
-            query_engine::native_error::cudf_query_error(
+            cudf_query_error(
                 "algeon_datafusion.cugraph_sql.edge_source_host_import",
                 "failed to import host Arrow edge-source batches into cudf",
                 error,

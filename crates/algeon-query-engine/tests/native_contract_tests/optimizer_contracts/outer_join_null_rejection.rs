@@ -1,12 +1,14 @@
+use query_engine::optimizer::{JoinFilterReassociationOptions, OuterJoinNullRejectionOptions};
+
 #[test]
 fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_right_nulls() {
     let plan = inner_join_over_projected_left_join_right_key_plan();
     let options = NativeOptimizerOptions {
-        join_filter_reassociation: query_engine::optimizer::JoinFilterReassociationOptions::disabled(),
+        join_filter_reassociation: JoinFilterReassociationOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -32,11 +34,11 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
         inner_join_over_estimated_projected_left_join_right_key_plan(1024 * 1024, 10_000, 32 * 1024 * 1024, 1_000_000);
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
-        outer_join_null_rejection: query_engine::optimizer::OuterJoinNullRejectionOptions::default(),
+        outer_join_null_rejection: OuterJoinNullRejectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -62,7 +64,7 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
 fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side() {
     let plan = inner_join_over_projected_left_join_left_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -73,7 +75,7 @@ fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side(
 fn outer_join_null_rejection_rejects_shared_outer_join_output() {
     let plan = shared_left_join_output_with_one_null_rejecting_consumer_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -89,7 +91,7 @@ fn outer_join_null_rejection_rejects_shared_outer_join_output() {
 fn outer_join_null_rejection_keeps_left_join_below_limit() {
     let plan = inner_join_over_limited_projected_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -100,7 +102,7 @@ fn outer_join_null_rejection_keeps_left_join_below_limit() {
 fn outer_join_null_rejection_keeps_large_null_introducing_input() {
     let plan = inner_join_over_large_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -117,9 +119,9 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
     let plan = aggregate_over_reason_join_over_large_left_join_plan();
     let mut options = NativeOptimizerOptions::disabled();
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
-    options.outer_join_null_rejection = query_engine::optimizer::OuterJoinNullRejectionOptions::default();
+    options.outer_join_null_rejection = OuterJoinNullRejectionOptions::default();
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -151,7 +153,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
 fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
     let plan = union_aggregate_over_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -175,7 +177,7 @@ fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
 fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::Eligible);
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -197,7 +199,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
 fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_nullable() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullableMarker);
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let PlanNode::Projection(projection) = &result.plan.root_node().kind else {
@@ -213,7 +215,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_null
 fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullsMatch);
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -224,22 +226,22 @@ fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
 fn outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::MarkerEscapes);
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
     assert!(result.diagnostics.outer_join_null_rejection.is_empty());
 }
 
-fn inner_join_over_projected_left_join_right_key_plan() -> query_engine::plan::QueryPlan {
+fn inner_join_over_projected_left_join_right_key_plan() -> QueryPlan {
     inner_join_over_projected_left_join_key_plan("r_key")
 }
 
-fn inner_join_over_projected_left_join_left_key_plan() -> query_engine::plan::QueryPlan {
+fn inner_join_over_projected_left_join_left_key_plan() -> QueryPlan {
     inner_join_over_projected_left_join_key_plan("l_key")
 }
 
-fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> query_engine::plan::QueryPlan {
+fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         rejecting_key,
         gpu_source("left", &["l_key", "payload"]),
@@ -248,7 +250,7 @@ fn inner_join_over_projected_left_join_key_plan(rejecting_key: &str) -> query_en
     )
 }
 
-fn inner_join_over_limited_projected_left_join_right_key_plan() -> query_engine::plan::QueryPlan {
+fn inner_join_over_limited_projected_left_join_right_key_plan() -> QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         "r_key",
         gpu_source("left", &["l_key", "payload"]),
@@ -262,7 +264,7 @@ fn inner_join_over_estimated_projected_left_join_right_key_plan(
     left_rows: u64,
     right_bytes: u64,
     right_rows: u64,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         "r_key",
         estimated_local_source_with_fields("left", &["l_key", "payload"], left_bytes, left_rows),
@@ -276,7 +278,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
     left_source: SourceNode,
     right_source: SourceNode,
     limit_fetch: Option<usize>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(left_source);
     let right = builder.add_source(right_source);
@@ -330,7 +332,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
     builder.finish_gpu_resident(root)
 }
 
-fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> query_engine::plan::QueryPlan {
+fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(gpu_source("left", &["l_key"]));
     let right = builder.add_source(gpu_source("right", &["r_key"]));
@@ -372,7 +374,7 @@ fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> query_engi
     builder.finish_gpu_resident(root)
 }
 
-fn inner_join_over_large_left_join_right_key_plan() -> query_engine::plan::QueryPlan {
+fn inner_join_over_large_left_join_right_key_plan() -> QueryPlan {
     inner_join_over_projected_left_join_key_plan_with_sources(
         "r_key",
         gpu_source("left", &["l_key", "payload"]),
@@ -381,7 +383,7 @@ fn inner_join_over_large_left_join_right_key_plan() -> query_engine::plan::Query
     )
 }
 
-fn aggregate_over_reason_join_over_large_left_join_plan() -> query_engine::plan::QueryPlan {
+fn aggregate_over_reason_join_over_large_left_join_plan() -> QueryPlan {
     let sales_schema = schema(&["ss_item_sk", "ss_customer_sk", "ss_ticket_number", "ss_quantity", "ss_sales_price"]);
     let returns_schema = schema(&["sr_item_sk", "sr_reason_sk", "sr_ticket_number", "sr_return_quantity"]);
     let left_join_schema = Arc::new(Schema::new(vec![
@@ -504,7 +506,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> query_engine::plan:
     builder.finish_with_host_sink(limited)
 }
 
-fn union_aggregate_over_left_join_right_key_plan() -> query_engine::plan::QueryPlan {
+fn union_aggregate_over_left_join_right_key_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let returns = builder.add_source(gpu_source("returns", &["return_item", "return_order", "returns_value"]));
     let sales = builder.add_source(gpu_source("sales", &["sales_item", "sales_order", "site_sk"]));
@@ -590,7 +592,7 @@ enum MarkerNullFilterPlanVariant {
     MarkerEscapes,
 }
 
-fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> query_engine::plan::QueryPlan {
+fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(gpu_source("left", &["l_key", "payload"]));
     let right_schema = Arc::new(Schema::new(vec![
@@ -641,7 +643,7 @@ fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> qu
 
 fn outer_join_null_rejection_only_options() -> NativeOptimizerOptions {
     NativeOptimizerOptions {
-        outer_join_null_rejection: query_engine::optimizer::OuterJoinNullRejectionOptions::default(),
+        outer_join_null_rejection: OuterJoinNullRejectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     }
 }

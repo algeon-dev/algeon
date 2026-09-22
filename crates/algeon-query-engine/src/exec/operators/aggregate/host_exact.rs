@@ -10,7 +10,7 @@ use arrow::{
         Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
         StringArray, StringViewArray, UInt64Array,
     },
-    datatypes::SchemaRef as ArrowSchemaRef,
+    datatypes::{Schema as ArrowSchema, SchemaRef as ArrowSchemaRef},
 };
 use cudf::hash::{FastHashMap, fast_hash_map_with_capacity};
 
@@ -522,7 +522,7 @@ fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
     output_rows: u64,
     extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
@@ -796,7 +796,7 @@ fn aggregate_group_key_exprs_for_metrics(spec: &AggregateSpec) -> String {
     }
 }
 
-fn aggregate_group_key_dtypes_for_metrics(spec: &AggregateSpec, input_schema: &arrow::datatypes::Schema) -> String {
+fn aggregate_group_key_dtypes_for_metrics(spec: &AggregateSpec, input_schema: &ArrowSchema) -> String {
     if spec.group_exprs.is_empty() {
         return "none".to_string();
     }

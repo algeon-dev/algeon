@@ -2,8 +2,9 @@
 use cudf::{DataFrame, ErrorCode, ErrorKind, ops::filter as low_level_filter, testing::prelude::*};
 
 use crate::common::{
-    column_from_slice, error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation, sample_df, sample_runtime,
+    column_from_slice, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
+    reset_exec_observation, reset_sync_observation, run_named_cases, sample_df, sample_runtime, series,
 };
 
 // ---------------------------------------------------------------------------
@@ -24,7 +25,7 @@ fn test_filter_series_mask_basic() {
 }
 
 fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
     let df = cudf::DataFrame::from_series([
@@ -35,7 +36,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let mask = mask_rt.series(&[true, false, true, false, true]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let filtered = df.filter(&mask).unwrap();
 
@@ -43,7 +44,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     assert_eq!(filtered.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     assert_eq!(filtered.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4, 5]);
@@ -52,7 +53,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
 
 fn test_filter_series_mask_all_true() {
     let df = sample_df();
-    let mask = crate::common::series::<bool>("mask", &[true, true, true, true, true]).unwrap();
+    let mask = series::<bool>("mask", &[true, true, true, true, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 5);
@@ -60,7 +61,7 @@ fn test_filter_series_mask_all_true() {
 
 fn test_filter_series_mask_all_false() {
     let df = sample_df();
-    let mask = crate::common::series::<bool>("mask", &[false, false, false, false, false]).unwrap();
+    let mask = series::<bool>("mask", &[false, false, false, false, false]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows(), 0);
@@ -74,7 +75,7 @@ fn test_filter_series_mask_all_false() {
 
 fn test_filter_series_preserves_column_names() {
     let df = sample_df();
-    let mask = crate::common::series::<bool>("m", &[true, false, true, false, true]).unwrap();
+    let mask = series::<bool>("m", &[true, false, true, false, true]).unwrap();
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
@@ -88,7 +89,7 @@ fn test_filter_series_preserves_column_names() {
 
 fn test_filter_series_rejects_wrong_length_mask() {
     let df = sample_df(); // 5 rows
-    let mask = crate::common::series::<bool>("short", &[true, false]).unwrap();
+    let mask = series::<bool>("short", &[true, false]).unwrap();
 
     let result = df.filter(&mask);
     assert!(result.is_err());
@@ -107,7 +108,7 @@ fn test_filter_series_rejects_wrong_length_mask() {
 fn test_filter_series_rejects_non_bool_mask() {
     let df = sample_df();
     // Pass an i32 series as mask; should be rejected.
-    let mask = crate::common::series::<i32>("bad_mask", &[1, 0, 1, 0, 1]).unwrap();
+    let mask = series::<i32>("bad_mask", &[1, 0, 1, 0, 1]).unwrap();
 
     let result = df.filter(&mask);
     assert!(result.is_err());
@@ -199,7 +200,7 @@ fn test_advanced_low_level_filter_rejects_wrong_length_mask() {
 
 #[test]
 fn dataframe_high_level_filter_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_filter_series_mask_basic", test_filter_series_mask_basic),
         (
             "test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_provenance",

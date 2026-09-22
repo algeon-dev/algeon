@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+use arrow::{array::ArrayRef, compute::kernels::comparison::like, error::ArrowError, record_batch::RecordBatch};
+use arrow_flight::{FlightData, sql::metadata::SqlInfoData};
+use futures::stream::once;
 
 use super::*;
 
@@ -18,7 +22,7 @@ const FLIGHT_SQL_TABLE_TYPES: &[&str] = &[FLIGHT_SQL_TABLE_TYPE_TABLE, FLIGHT_SQ
 /// use it directly.
 pub(super) fn flight_sql_table_types_schema() -> Arc<Schema> {
     use arrow::datatypes::{DataType, Field};
-    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    static SCHEMA: OnceLock<Arc<Schema>> = OnceLock::new();
     Arc::clone(SCHEMA.get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]))))
 }
 
@@ -29,7 +33,7 @@ pub(super) fn flight_sql_table_types_schema() -> Arc<Schema> {
 /// constraints, so the response is always an empty batch; but it must
 /// still carry this exact schema or arrow-flight clients refuse it.
 pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
-    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    static SCHEMA: OnceLock<Arc<Schema>> = OnceLock::new();
     Arc::clone(SCHEMA.get_or_init(|| {
         Arc::new(Schema::new(vec![
             Field::new("catalog_name", DataType::Utf8, true),
@@ -48,7 +52,7 @@ pub(super) fn flight_sql_primary_keys_schema() -> Arc<Schema> {
 /// does not model foreign-key constraints, so the body is always empty; but
 /// the schema must still match exactly or arrow-flight clients refuse it.
 pub(super) fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
-    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    static SCHEMA: OnceLock<Arc<Schema>> = OnceLock::new();
     Arc::clone(SCHEMA.get_or_init(|| {
         Arc::new(Schema::new(vec![
             Field::new("pk_catalog_name", DataType::Utf8, true),
@@ -69,9 +73,9 @@ pub(super) fn flight_sql_foreign_keys_schema() -> Arc<Schema> {
 }
 
 /// Empty-row `RecordBatch` matching [`flight_sql_foreign_keys_schema`].
-pub(super) fn empty_foreign_keys_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
+pub(super) fn empty_foreign_keys_batch() -> Result<RecordBatch, ArrowError> {
     let schema = flight_sql_foreign_keys_schema();
-    let columns: Vec<arrow::array::ArrayRef> = vec![
+    let columns: Vec<ArrayRef> = vec![
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<&str>::new())),
@@ -86,13 +90,13 @@ pub(super) fn empty_foreign_keys_batch() -> Result<arrow::record_batch::RecordBa
         Arc::new(UInt8Array::from(Vec::<u8>::new())),
         Arc::new(UInt8Array::from(Vec::<u8>::new())),
     ];
-    arrow::record_batch::RecordBatch::try_new(schema, columns)
+    RecordBatch::try_new(schema, columns)
 }
 
 /// Empty-row `RecordBatch` matching [`flight_sql_primary_keys_schema`].
-pub(super) fn empty_primary_keys_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
+pub(super) fn empty_primary_keys_batch() -> Result<RecordBatch, ArrowError> {
     let schema = flight_sql_primary_keys_schema();
-    let columns: Vec<arrow::array::ArrayRef> = vec![
+    let columns: Vec<ArrayRef> = vec![
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<&str>::new())),
@@ -100,17 +104,17 @@ pub(super) fn empty_primary_keys_batch() -> Result<arrow::record_batch::RecordBa
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(Int32Array::from(Vec::<i32>::new())),
     ];
-    arrow::record_batch::RecordBatch::try_new(schema, columns)
+    RecordBatch::try_new(schema, columns)
 }
 
 /// Build the single-batch response for `CommandGetTableTypes`.
 ///
 /// `FLIGHT_SQL_TABLE_TYPES` is the source of truth; keep it sorted at authoring
 /// time instead of re-sorting here.
-pub(super) fn build_table_types_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
+pub(super) fn build_table_types_batch() -> Result<RecordBatch, ArrowError> {
     debug_assert!(FLIGHT_SQL_TABLE_TYPES.windows(2).all(|w| w[0] < w[1]), "FLIGHT_SQL_TABLE_TYPES must be sorted");
-    let column = arrow::array::StringArray::from_iter_values(FLIGHT_SQL_TABLE_TYPES.iter().copied());
-    arrow::record_batch::RecordBatch::try_new(flight_sql_table_types_schema(), vec![Arc::new(column)])
+    let column = StringArray::from_iter_values(FLIGHT_SQL_TABLE_TYPES.iter().copied());
+    RecordBatch::try_new(flight_sql_table_types_schema(), vec![Arc::new(column)])
 }
 
 pub(super) struct GetTablesPrefilters {
@@ -159,9 +163,7 @@ pub(super) fn metadata_like_filter_matches(pattern: Option<&str>, value: &str) -
     };
     let values = StringArray::from(vec![value]);
     let patterns = StringArray::from(vec![pattern]);
-    arrow::compute::kernels::comparison::like(&values, &patterns)
-        .map(|matches| matches.is_valid(0) && matches.value(0))
-        .unwrap_or(true)
+    like(&values, &patterns).map(|matches| matches.is_valid(0) && matches.value(0)).unwrap_or(true)
 }
 
 /// Map DataFusion's `TableType` to the Flight SQL wire string. `Temporary` has
@@ -207,16 +209,16 @@ where
 /// arrow-flight metadata builders.
 pub(super) fn metadata_record_batch_stream(
     schema: Arc<Schema>,
-    batch: arrow::record_batch::RecordBatch,
+    batch: RecordBatch,
     operation: &'static str,
     message: &'static str,
-) -> BoxStream<'static, Result<arrow_flight::FlightData, Status>> {
-    let stream = encode_flight_data_stream(schema, futures::stream::once(async move { Ok(batch) }))
+) -> BoxStream<'static, Result<FlightData, Status>> {
+    let stream = encode_flight_data_stream(schema, once(async move { Ok(batch) }))
         .map_err(move |error| arrow_flight_error_to_status_for_operation(error, operation, message));
     Box::pin(stream)
 }
 
-pub(super) fn sql_info_data() -> Result<arrow_flight::sql::metadata::SqlInfoData, Status> {
+pub(super) fn sql_info_data() -> Result<SqlInfoData, Status> {
     let mut builder = SqlInfoDataBuilder::new();
     builder.append(SqlInfo::FlightSqlServerName, "algeon-datafusion");
     builder.append(SqlInfo::FlightSqlServerVersion, env!("CARGO_PKG_VERSION"));
@@ -320,9 +322,10 @@ mod get_tables_prefilter_tests {
         time::Duration,
     };
 
-    use arrow::datatypes::SchemaRef;
+    use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
     use datafusion::{
         catalog::{CatalogProvider, SchemaProvider},
+        common::{DataFusionError, Result as DataFusionResult},
         datasource::{MemTable, TableProvider},
     };
 
@@ -385,7 +388,7 @@ mod get_tables_prefilter_tests {
             self.tables.keys().cloned().collect()
         }
 
-        async fn table(&self, name: &str) -> datafusion::common::Result<Option<Arc<dyn TableProvider>>> {
+        async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
             self.table_calls.lock().unwrap().push(name.to_string());
             let Some((_, schema)) = self.tables.get(name) else {
                 return Ok(None);
@@ -394,10 +397,10 @@ mod get_tables_prefilter_tests {
             Ok(Some(Arc::new(provider)))
         }
 
-        async fn table_type(&self, name: &str) -> datafusion::common::Result<Option<TableType>> {
+        async fn table_type(&self, name: &str) -> DataFusionResult<Option<TableType>> {
             self.table_type_calls.lock().unwrap().push(name.to_string());
             if self.table_type_error_names.contains(name) {
-                return Err(datafusion::common::DataFusionError::Execution(format!("table_type failed for {name}")));
+                return Err(DataFusionError::Execution(format!("table_type failed for {name}")));
             }
             Ok(self.tables.get(name).map(|(table_type, _)| *table_type))
         }
@@ -436,7 +439,7 @@ mod get_tables_prefilter_tests {
         }
     }
 
-    fn table_names_from_batch(batch: &arrow::record_batch::RecordBatch) -> Vec<String> {
+    fn table_names_from_batch(batch: &RecordBatch) -> Vec<String> {
         let index = batch.schema().index_of("table_name").unwrap();
         let array = batch.column(index).as_any().downcast_ref::<StringArray>().unwrap();
         (0..array.len()).map(|row| array.value(row).to_string()).collect()

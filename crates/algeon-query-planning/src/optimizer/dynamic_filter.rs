@@ -1,4 +1,6 @@
-use arrow::datatypes::DataType as ArrowDataType;
+use std::collections::BTreeSet;
+
+use arrow::datatypes::{DataType as ArrowDataType, Field};
 
 use super::{
     access::local_parquet_source,
@@ -17,7 +19,10 @@ use crate::{
         dynamic_filter_consumer_source_feeds_downstream_work_fanout,
     },
     expr::{AggregateFunction, BinaryOp, ColumnQualifier, ColumnRef, Expr},
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows},
+    plan::{
+        AggregateNode, JoinNode, JoinNullEquality, JoinSide, JoinType, NodeId, PlanNode, QueryPlan,
+        estimated_output_bytes, estimated_output_rows,
+    },
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
@@ -180,14 +185,14 @@ fn producer_input_is_literal_batch_exact_keyset(plan: &QueryPlan, node_id: NodeI
 fn join_shape_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && join.spec.keys.len() == 1
-        && join.spec.null_equality == crate::plan::JoinNullEquality::NullsDoNotMatch
+        && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
         && !join.spec.output_projection.is_empty()
         && join.spec.build_artifact_id.is_none()
 }
 
 fn subtree_contains_node(plan: &QueryPlan, root: NodeId, target: NodeId) -> bool {
     let mut stack = vec![root];
-    let mut visited = std::collections::BTreeSet::new();
+    let mut visited = BTreeSet::new();
     while let Some(node_id) = stack.pop() {
         if !visited.insert(node_id) {
             continue;
@@ -372,7 +377,7 @@ fn post_decode_consumer_for_orientation(
     })
 }
 
-fn dynamic_filter_key_type_is_supported(field: &arrow::datatypes::Field, ctx: AnalysisContext<'_>) -> bool {
+fn dynamic_filter_key_type_is_supported(field: &Field, ctx: AnalysisContext<'_>) -> bool {
     ctx.backend().supports_type(field.data_type())
         && !is_timestamp_with_timezone(field.data_type())
         && !is_supported_list_carry_type(field.data_type())

@@ -6,6 +6,7 @@ use super::{
     ExecutionMetrics, FilterNode, GpuDataFrame, LocalParquetSource, NodeId, Result, SourceChunk, SourceChunkBatch,
     SourceFooterFacts, dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
 };
+use crate::rapids_backend::rapids_analysis_context;
 
 pub(super) fn merged_reader_predicate_route_ids(
     source: &LocalParquetSource,
@@ -37,7 +38,7 @@ pub(super) fn merged_reader_predicate_route_ids(
             column,
             filter,
             options,
-            crate::rapids_backend::rapids_analysis_context(),
+            rapids_analysis_context(),
             footers,
         )? {
             ids.insert(route.id);

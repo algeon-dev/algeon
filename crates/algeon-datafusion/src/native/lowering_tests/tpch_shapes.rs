@@ -1,3 +1,16 @@
+use query_engine::{
+    admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts, bounded_pipeline_decision},
+    capability::{CapabilityDecision, CapabilityEnvelope, CapabilityEnvelopeAdmission},
+    dimension_pruning::local_dimension_pruning_resolver,
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerLowering},
+    optimizer::{
+        AggregateJoinPushdownRejectedReason, NativeOptimizerChange, NativeOptimizerOptions, SemijoinReductionOptions,
+        optimize_query_plan,
+    },
+    plan::{AggregateNode, JoinNode},
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[path = "tpch_shapes/q22.rs"]
@@ -16,10 +29,10 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    let analysis = native_plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = native_plan.capability_analysis(rapids_analysis_context());
     assert!(
         native_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should lower to the executable aggregate-over-join subplan TopK pipeline: {:?}\n{native_plan}",
         analysis.multi_join_aggregate_over_join_subplan_topk_admission,
@@ -28,11 +41,11 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should be admitted by the capability contract:\n{native_plan}"
     );
-    let optimized_q2 = query_engine::optimizer::optimize_query_plan(
+    let optimized_q2 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert!(
         optimized_q2.diagnostics.join_filter_reassociation.applied_count >= 1,
@@ -44,16 +57,13 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert!(
         optimized_q2
             .plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
         optimized_q2.plan
     );
-    let facts = query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("q02 should expose modeled bounded join facts");
+    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+        .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q15 = items.iter().find(|item| item.query_id == "q15").expect("TPC-H workload should include q15");
@@ -64,45 +74,35 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert_eq!(
-        native_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .root_full_sort_join_aggregate_admission,
-        query_engine::capability::CapabilityDecision::Satisfied,
+        native_plan.capability_analysis(rapids_analysis_context()).root_full_sort_join_aggregate_admission,
+        CapabilityDecision::Satisfied,
         "q15 root full-sort admission should be satisfied",
     );
     assert!(
-        native_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_root_full_sort_join_aggregate_pipeline(),
+        native_plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(),
         "q15 should lower to the executable root full-sort shared aggregate fanout pipeline:\n{native_plan}"
     );
-    let optimized_q15 = query_engine::optimizer::optimize_query_plan(
+    let optimized_q15 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert_eq!(
-        optimized_q15
-            .plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .root_full_sort_join_aggregate_admission,
-        query_engine::capability::CapabilityDecision::Satisfied,
+        optimized_q15.plan.capability_analysis(rapids_analysis_context()).root_full_sort_join_aggregate_admission,
+        CapabilityDecision::Satisfied,
         "optimized q15 root full-sort admission should remain satisfied",
     );
     assert!(
         optimized_q15
             .plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",
         optimized_q15.plan
     );
-    let facts = query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("q15 should expose modeled bounded join facts");
+    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+        .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q18 = items.iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
@@ -114,15 +114,12 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let native_plan = &result.plans[0];
     assert!(
         native_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
-    let facts = query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("q18 should expose modeled bounded join facts");
+    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+        .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q20 = items.iter().find(|item| item.query_id == "q20").expect("TPC-H workload should include q20");
@@ -134,15 +131,12 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let native_plan = &result.plans[0];
     assert!(
         native_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
-    let facts = query_engine::admission::bounded_join_modeled_facts(
-        native_plan,
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("q20 should expose modeled bounded join facts");
+    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+        .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     fs::remove_dir_all(dir).unwrap();
@@ -209,14 +203,14 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
 
     let result = lower_physical_plan_to_native(plan);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         result.plans[0].clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
 
-    assert_eq!(optimized.change, query_engine::optimizer::NativeOptimizerChange::Changed);
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
@@ -259,21 +253,19 @@ async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
     // rewrite (`root_topk_join_aggregate_requires_source_reduction_evidence`),
     // so the late left-semi survives into aggregate-join pushdown; the tiny
     // dataset admits the rewrite, so disable the pass to reach the same shape.
-    let options = query_engine::optimizer::NativeOptimizerOptions {
-        semijoin_reduction: query_engine::optimizer::SemijoinReductionOptions::disabled(),
-        ..Default::default()
-    };
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let options =
+        NativeOptimizerOptions { semijoin_reduction: SemijoinReductionOptions::disabled(), ..Default::default() };
+    let optimized = optimize_query_plan(
         result.plans[0].clone(),
         &options,
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
 
     let pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert!(
         pushdown.candidates.iter().any(|candidate| candidate.rejected_reason
-            == Some(query_engine::optimizer::AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups)),
+            == Some(AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups)),
         "the o_orderkey semi filter already discards whole groups: {pushdown:?}"
     );
 
@@ -325,11 +317,11 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         "q21 should lower its NOT EXISTS branch to a right-build native left-anti residual join"
     );
 
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         result.plans[0].clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     for build_side in [NativeJoinSide::Right, NativeJoinSide::Left] {
         let mut nodes = optimized.plan.nodes().to_vec();
@@ -343,7 +335,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         }
         let plan = QueryPlan::from_rewritten_parts(nodes, optimized.plan.root_id(), optimized.plan.sink().clone())
             .with_rewrite_state_from(&optimized.plan);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
         if matches!(build_side, NativeJoinSide::Right) {
             assert!(
                 analysis.admits_bounded_join(),
@@ -359,31 +351,21 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
                 !analysis.admits_bounded_join(),
                 "no named envelope should cover left-build q21: {analysis:?}\n{plan}"
             );
-            let decision = query_engine::admission::bounded_pipeline_decision(
-                &plan,
-                Default::default(),
-                query_engine::rapids_backend::rapids_analysis_context(),
-            )
-            .expect("left-build q21 bounded admission should not fail");
+            let decision = bounded_pipeline_decision(&plan, Default::default(), rapids_analysis_context())
+                .expect("left-build q21 bounded admission should not fail");
             assert!(
                 decision.admission().is_some(),
                 "left-build q21 should admit through the composed pipeline: {:?}\n{plan}",
                 decision.rejection_projection()
             );
-            assert_eq!(
-                analysis.capability_envelope_label(),
-                query_engine::capability::CapabilityEnvelope::ComposedPipeline
-            );
+            assert_eq!(analysis.capability_envelope_label(), CapabilityEnvelope::ComposedPipeline);
         }
     }
 
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn q21_left_only_mixed_residual_join_matches(
-    join: &query_engine::plan::JoinNode,
-    expected_join_type: NativeJoinType,
-) -> bool {
+fn q21_left_only_mixed_residual_join_matches(join: &JoinNode, expected_join_type: NativeJoinType) -> bool {
     join.spec.join_type == expected_join_type
         && join.spec.build_side == NativeJoinSide::Right
         && !join.spec.keys.is_empty()
@@ -428,19 +410,9 @@ fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &Qu
             && join.spec.keys[0].right.name() == "ps_partkey"
     });
     let (producer_column, consumer_column, consumer_table, expected_lowering) = if part_builds_partsupp_join {
-        (
-            "p_partkey",
-            "ps_partkey",
-            "partsupp",
-            query_engine::dynamic_filter::DynamicFilterConsumerLowering::PostDecodeOnly,
-        )
+        ("p_partkey", "ps_partkey", "partsupp", DynamicFilterConsumerLowering::PostDecodeOnly)
     } else {
-        (
-            "ps_partkey",
-            "p_partkey",
-            "part",
-            query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
-        )
+        ("ps_partkey", "p_partkey", "part", DynamicFilterConsumerLowering::ReaderPredicate)
     };
 
     assert!(
@@ -450,7 +422,7 @@ fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &Qu
                 && route.consumer_lowering == expected_lowering
                 && matches!(
                     route.consumer,
-                    query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource {
+                    DynamicFilterConsumer::LocalParquetSource {
                         source_node_id
                     } if source_tables_below(plan, source_node_id) == BTreeSet::from([consumer_table.to_string()])
                 )
@@ -459,7 +431,7 @@ fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &Qu
     );
 }
 
-fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &query_engine::plan::JoinNode)> {
+fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &JoinNode)> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -520,11 +492,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            native_plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none(),
+        bounded_join_unsupported_shape_facts(native_plan, rapids_analysis_context()).is_none(),
         "q07 should use the bounded multi-join native path:\n{native_plan}"
     );
     let nation_projection = native_plan
@@ -626,13 +594,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
     let plan = &result.plans[0];
     assert_q11_keyless_proof_admitted(plan, "lowered q11");
-    assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none()
-    );
+    assert!(bounded_join_unsupported_shape_facts(plan, rapids_analysis_context()).is_none());
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
     assert!(
@@ -701,11 +663,11 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
     );
 
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert_q11_keyless_proof_admitted(&optimized.plan, "optimized q11");
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
@@ -715,8 +677,10 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         "q11 grouped aggregate-over-join input should be reduced before its join: {aggregate_join_pushdown:?}"
     );
     assert!(
-        aggregate_join_pushdown.candidates.iter().any(|candidate| candidate.rejected_reason
-            == Some(query_engine::optimizer::AggregateJoinPushdownRejectedReason::InputNotJoin)),
+        aggregate_join_pushdown
+            .candidates
+            .iter()
+            .any(|candidate| candidate.rejected_reason == Some(AggregateJoinPushdownRejectedReason::InputNotJoin)),
         "q11 scalar threshold aggregate should be derived from the grouped branch before aggregate-join pushdown: {aggregate_join_pushdown:?}"
     );
     let preaggregates = optimized
@@ -774,15 +738,13 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 }
 
 fn assert_q11_keyless_proof_admitted(plan: &QueryPlan, context: &str) {
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     assert_eq!(
         analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
-        query_engine::capability::CapabilityDecision::Satisfied,
+        CapabilityDecision::Satisfied,
         "{context} should retain the keyless aggregate-over-join proof:\n{plan}"
     );
-    let query_engine::capability::CapabilityEnvelopeAdmission::Admitted { .. } =
-        analysis.capability_envelope_admission()
-    else {
+    let CapabilityEnvelopeAdmission::Admitted { .. } = analysis.capability_envelope_admission() else {
         panic!("{context} should be bounded executable: {:?}\n{plan}", analysis.capability_envelope_admission());
     };
     // The keyless scalar-fanout cardinality proof survives as a node fact, not
@@ -883,11 +845,11 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     assert_eq!(proj.outputs[0].field.name(), "c_count");
     assert_eq!(proj.outputs[1].field.name(), "custdist");
 
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(
@@ -963,21 +925,17 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
 
     let plan = &result.plans[0];
     assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_root_full_sort_join_aggregate_pipeline(),
+        plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(),
         "q16 should be admitted as one root full-sort grouped aggregate pipeline:\n{plan}"
     );
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert!(
-        optimized
-            .plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_root_full_sort_join_aggregate_pipeline(),
+        optimized.plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q16 should remain admitted as one root full-sort grouped aggregate pipeline:\n{}",
         optimized.plan
     );
@@ -1074,11 +1032,7 @@ fn skip_projection_nodes(plan: &QueryPlan, mut node_id: NodeId) -> NodeId {
     node_id
 }
 
-fn projection_wrapped_aggregate<'a>(
-    plan: &'a QueryPlan,
-    node_id: NodeId,
-    context: &str,
-) -> &'a query_engine::plan::AggregateNode {
+fn projection_wrapped_aggregate<'a>(plan: &'a QueryPlan, node_id: NodeId, context: &str) -> &'a AggregateNode {
     let projection_node = plan.node(node_id).unwrap_or_else(|| panic!("{context} projection should exist"));
     let PlanNode::Projection(projection) = &projection_node.kind else {
         panic!("{context} should be projection-wrapped");

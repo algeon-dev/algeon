@@ -7,6 +7,7 @@ use super::{
     record_dynamic_filter_reader_predicate_rows, release_join_source_chunks_reverse, source_chunk_batch_target_bytes,
     source_read_budget_correction_from_error, split_retryable_chunk,
 };
+use crate::exec::{retry::backoff_before_retry, source::observed_chunk_row_group_count};
 
 pub(super) fn read_join_leaf_source_chunks_serial(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -120,10 +121,7 @@ pub(super) fn read_join_leaf_source_batch_or_split(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
-            crate::exec::retry::backoff_before_retry(
-                execution.context(),
-                "query_engine.exec.bounded.join_leaf_source_batch_split_retry",
-            )?;
+            backoff_before_retry(execution.context(), "query_engine.exec.bounded.join_leaf_source_batch_split_retry")?;
             let mut outputs = read_join_leaf_source_batch_or_split(
                 execution,
                 source,
@@ -244,10 +242,7 @@ pub(super) fn retry_join_leaf_source_chunk_after_error(
         && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
     {
         execution.metrics().record_source_chunk_retry();
-        crate::exec::retry::backoff_before_retry(
-            execution.context(),
-            "query_engine.exec.bounded.join_leaf_source_split_retry",
-        )?;
+        backoff_before_retry(execution.context(), "query_engine.exec.bounded.join_leaf_source_split_retry")?;
         let mut outputs = read_join_leaf_source_chunk_with_retry(
             execution,
             source,
@@ -352,7 +347,7 @@ pub(super) fn read_join_leaf_source_chunk_attempt_uncommitted(
 }
 
 pub(super) fn committed_join_source_chunk_row_groups(chunk: &SourceChunk) -> u64 {
-    crate::exec::source::observed_chunk_row_group_count(chunk).unwrap_or_else(|| chunk.row_group_count()) as u64
+    observed_chunk_row_group_count(chunk).unwrap_or_else(|| chunk.row_group_count()) as u64
 }
 
 pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
@@ -373,10 +368,7 @@ pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
     };
     record_chunk_retry_error(error, execution.metrics());
     execution.metrics().record_source_chunk_retry();
-    crate::exec::retry::backoff_before_retry(
-        execution.context(),
-        "query_engine.exec.bounded.join_leaf_source_budget_retry",
-    )?;
+    backoff_before_retry(execution.context(), "query_engine.exec.bounded.join_leaf_source_budget_retry")?;
     execution.metrics().record_source_chunk_attempt();
     read_local_parquet_chunk_with_reader_dynamic_filter_count(
         execution.context(),

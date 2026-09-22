@@ -8,6 +8,7 @@ use crate::{
             self, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT, FACT_LEFT_TYPE_ID,
             FACT_RIGHT_TYPE_ID, Result,
         },
+        table::TableView,
         types::DataType,
     },
     frame::series::Series,
@@ -254,7 +255,7 @@ impl DataFrame {
         let self_tv = self.build_table_view()?;
         let other_tvs: Vec<_> = others.iter().map(|df| df.build_table_view()).collect::<Result<_>>()?;
 
-        let mut table_refs: Vec<&crate::core::table::TableView<'_>> = Vec::with_capacity(1 + others.len());
+        let mut table_refs: Vec<&TableView<'_>> = Vec::with_capacity(1 + others.len());
         table_refs.push(&self_tv);
         for tv in &other_tvs {
             table_refs.push(tv);

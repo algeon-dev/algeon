@@ -7,12 +7,16 @@ use arrow::{
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateFunction, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
+    expr::{
+        AggregateFunction, BinaryOp, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity,
+    },
     plan::{
-        AggregateNode, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction,
+        AggregateNode, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan,
+        WindowFunction, canonical_execution_scope_fingerprint,
         row_bounds::query_plan_node_hard_row_upper_bound_with_resident_rows,
     },
-    source::{SourceColumnRef, SourceNode},
+    source::{LiteralBatchSource, LocalParquetSource, SourceColumnRef, SourceNode},
+    util::log_safe_fingerprint,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,7 +31,7 @@ pub enum StringPayloadLineage {
 
 impl StringPayloadLineage {
     fn audit_label(&self) -> String {
-        let fingerprint = crate::util::log_safe_fingerprint(&format!("{self:?}"));
+        let fingerprint = log_safe_fingerprint(&format!("{self:?}"));
         match self {
             Self::Parquet { physical_column_index, selected_row_groups, .. } => format!(
                 "kind=parquet,column_index={physical_column_index},selected_row_group_count={},fingerprint={fingerprint}",
@@ -170,7 +174,7 @@ impl PlanColumnEvidence {
     pub fn audit_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for (column, bound) in &self.string_payload_bounds {
-            let column = crate::util::log_safe_fingerprint(column);
+            let column = log_safe_fingerprint(column);
             lines.push(format!(
                 "string_payload,column={column},total_payload_upper_bound_bytes={},distinct_payload_upper_bound_bytes={},distinct_value_count_upper_bound={},row_multiplicity_upper_bound={},max_single_value_length_bytes={},lineage_count={}",
                 optional_bytes(bound.total_payload_upper_bound_bytes),
@@ -264,7 +268,7 @@ impl PlanColumnEvidenceAnalysis {
                         };
                         if bound.max_single_value_length_bytes.is_none() {
                             bound.lineages = BTreeSet::from([StringPayloadLineage::PendingResident {
-                                execution_scope_fingerprint: crate::plan::canonical_execution_scope_fingerprint(plan),
+                                execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
                                 occurrence_id: source.input_name.clone(),
                                 column_index,
                             }]);
@@ -373,7 +377,7 @@ impl PlanColumnEvidenceAnalysis {
                     .with_fact("owner_node_id", node_id)
                     .with_fact(
                         "owner_execution_scope_fingerprint",
-                        crate::util::log_safe_fingerprint(&crate::plan::canonical_execution_scope_fingerprint(plan)),
+                        log_safe_fingerprint(&canonical_execution_scope_fingerprint(plan)),
                     )
             })?,
             PlanNode::GraphAlgorithm(_) => PlanColumnEvidence::default(),
@@ -474,7 +478,7 @@ pub fn plan_node_is_unique_on(plan: &QueryPlan, node_id: NodeId, columns: &BTree
     Ok(partial_plan_node_is_unique_on(plan.nodes(), node_id, columns))
 }
 
-fn local_parquet_evidence(source: &crate::source::LocalParquetSource) -> PlanColumnEvidence {
+fn local_parquet_evidence(source: &LocalParquetSource) -> PlanColumnEvidence {
     let mut output = PlanColumnEvidence::default();
     for field in source.output_schema().fields() {
         if !is_string(field.data_type()) {
@@ -519,7 +523,7 @@ fn local_parquet_evidence(source: &crate::source::LocalParquetSource) -> PlanCol
     output
 }
 
-fn literal_evidence(node_id: NodeId, source: &crate::source::LiteralBatchSource) -> PlanColumnEvidence {
+fn literal_evidence(node_id: NodeId, source: &LiteralBatchSource) -> PlanColumnEvidence {
     let mut output = PlanColumnEvidence::default();
     for (column_index, field) in source.schema.fields().iter().enumerate() {
         if !is_string(field.data_type()) {
@@ -567,7 +571,7 @@ fn constrained_filter_evidence(
     input_rows: Option<u64>,
     node_id: NodeId,
 ) -> PlanColumnEvidence {
-    if let Expr::Binary { left, op: crate::expr::BinaryOp::And, right, .. } = predicate {
+    if let Expr::Binary { left, op: BinaryOp::And, right, .. } = predicate {
         return constrained_filter_evidence(
             right,
             constrained_filter_evidence(left, output, input_rows, node_id),
@@ -757,7 +761,7 @@ fn join_evidence(
         };
         let mut bound = input.string_payload_bound(projected.column.name()).cloned();
         let input_rows_are_not_duplicated = Some(projected.side) == bounded_side
-            || matches!(join.spec.join_type, crate::plan::JoinType::LeftSemi | crate::plan::JoinType::LeftAnti)
+            || matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
                 && projected.side == JoinSide::Left
             || match projected.side {
                 JoinSide::Left => right_is_unique,
@@ -767,7 +771,7 @@ fn join_evidence(
             && !bounded_is_unique
             && !join.spec.preserves_total_payload_bound_for_output(&projected.output_name)
         {
-            if join.spec.join_type == crate::plan::JoinType::Inner
+            if join.spec.join_type == JoinType::Inner
                 && let Some(bounded_side) = bounded_side
                 && let Some(equivalent) = equivalent_bounded_join_key_bound(join, projected, left, right, bounded_side)
                 && equivalent.total_payload_upper_bound_bytes.is_some()
@@ -778,7 +782,7 @@ fn join_evidence(
                 } else {
                     bound = Some(equivalent.clone());
                 }
-            } else if join.spec.join_type == crate::plan::JoinType::Left
+            } else if join.spec.join_type == JoinType::Left
                 && projected.side == JoinSide::Left
                 && left_is_unique
                 && let Some(equivalent) =
@@ -870,7 +874,7 @@ fn payload_row_bound_overflow(stage: &'static str) -> QueryError {
 
 fn equivalent_bounded_join_key_bound<'a>(
     join: &JoinNode,
-    projected: &crate::plan::JoinOutputColumn,
+    projected: &JoinOutputColumn,
     left: &'a PlanColumnEvidence,
     right: &'a PlanColumnEvidence,
     bounded_side: JoinSide,
@@ -941,15 +945,11 @@ fn remap_unique_key_sets(
 }
 
 #[doc(hidden)]
-pub fn partial_plan_node_is_unique_on(
-    nodes: &[crate::plan::QueryNode],
-    node_id: NodeId,
-    columns: &BTreeSet<String>,
-) -> bool {
+pub fn partial_plan_node_is_unique_on(nodes: &[QueryNode], node_id: NodeId, columns: &BTreeSet<String>) -> bool {
     unique_keys_by_node(nodes).get(node_id.index()).is_some_and(|keys| keys.iter().any(|key| key.is_subset(columns)))
 }
 
-fn unique_keys_by_node(nodes: &[crate::plan::QueryNode]) -> Vec<Vec<BTreeSet<String>>> {
+fn unique_keys_by_node(nodes: &[QueryNode]) -> Vec<Vec<BTreeSet<String>>> {
     let mut by_node = Vec::with_capacity(nodes.len());
     for node in nodes {
         let input_keys = |input: NodeId| by_node.get(input.index()).cloned().unwrap_or_default();
@@ -1045,7 +1045,7 @@ fn join_unique_keys(
     if bounded_side == Some(JoinSide::Left)
         || bounded_is_unique
         || right_is_unique
-        || matches!(join.spec.join_type, crate::plan::JoinType::LeftSemi | crate::plan::JoinType::LeftAnti)
+        || matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
     {
         output.extend(remap_unique_key_sets(left_keys, mappings(JoinSide::Left)));
     }
@@ -1079,10 +1079,7 @@ fn remap_equivalent_columns(
 }
 
 #[doc(hidden)]
-pub fn identity_source_column<'a>(
-    expr: &'a Expr,
-    input_schema: Option<&arrow::datatypes::SchemaRef>,
-) -> Option<&'a str> {
+pub fn identity_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) -> Option<&'a str> {
     if let Some(column) = alias_wrapped_column(expr) {
         return Some(column.name());
     }
@@ -1097,11 +1094,11 @@ pub fn identity_source_column<'a>(
     }
 }
 
-fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&arrow::datatypes::SchemaRef>) -> Option<&'a str> {
+fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&SchemaRef>) -> Option<&'a str> {
     if let Some(column) = identity_source_column(expr, input_schema) {
         return Some(column);
     }
-    let Expr::Binary { left, op: crate::expr::BinaryOp::Add, right, .. } = expr else {
+    let Expr::Binary { left, op: BinaryOp::Add, right, .. } = expr else {
         return None;
     };
     let (column, literal) = match (left.as_ref(), right.as_ref()) {
@@ -1144,6 +1141,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::{expr::ColumnRef, source::GpuResidentSource};
 
     #[test]
     fn builder_answers_partial_uniqueness_without_finishing_a_temporary_plan() {
@@ -1161,8 +1159,8 @@ mod tests {
     use crate::{
         expr::{AggregateExpr, AggregateSpec, CaseWhen, LiteralValue, SortExpr},
         parquet_stats::{ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence},
-        plan::{JoinKey, JoinOutputColumn, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder, WindowSpec},
-        source::{LiteralBatchSource, LocalParquetFile, LocalParquetSource},
+        plan::{JoinKey, JoinSpec, ProjectionOutput, QueryPlanBuilder, WindowSpec},
+        source::LocalParquetFile,
     };
 
     fn production_endpoint_source() -> LocalParquetSource {
@@ -1285,20 +1283,16 @@ mod tests {
         ]));
         let mut builder = QueryPlanBuilder::new();
         let current = builder.add_source(SourceNode::GpuResident(
-            crate::source::GpuResidentSource::new("current", Arc::clone(&path_schema)).with_row_count_upper_bound(49),
+            GpuResidentSource::new("current", Arc::clone(&path_schema)).with_row_count_upper_bound(49),
         ));
         let previous = builder.add_source(SourceNode::GpuResident(
-            crate::source::GpuResidentSource::new("previous", Arc::clone(&path_schema)).with_row_count_upper_bound(49),
+            GpuResidentSource::new("previous", Arc::clone(&path_schema)).with_row_count_upper_bound(49),
         ));
         let previous = builder.add_projection(
             previous,
             vec![
                 ProjectionOutput::new(
-                    Expr::binary(
-                        Expr::column("path_index"),
-                        crate::expr::BinaryOp::Add,
-                        Expr::literal(LiteralValue::Int64(1)),
-                    ),
+                    Expr::binary(Expr::column("path_index"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(1))),
                     Field::new("next_path_index", DataType::Int64, false),
                 ),
                 ProjectionOutput::new(Expr::column("vertex"), Field::new("vertex", DataType::Utf8, false)),
@@ -1310,13 +1304,13 @@ mod tests {
             JoinSpec::new(
                 JoinType::Inner,
                 vec![JoinKey::new(
-                    crate::expr::ColumnRef::input(0, "path_index", "path_index"),
-                    crate::expr::ColumnRef::input(1, "next_path_index", "next_path_index"),
+                    ColumnRef::input(0, "path_index", "path_index"),
+                    ColumnRef::input(1, "next_path_index", "next_path_index"),
                 )],
             )
             .with_output_projection(vec![
-                JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "object_id"),
-                JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertex", "vertex"), "subject_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "vertex", "vertex"), "object_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "vertex", "vertex"), "subject_id"),
             ]),
             output_schema,
         );
@@ -1337,9 +1331,8 @@ mod tests {
     fn integer_addition_requires_non_nullable_identity_without_overflow() {
         let non_nullable = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let nullable = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, true)]));
-        let add = |literal| {
-            Expr::binary(Expr::column("value"), crate::expr::BinaryOp::Add, Expr::literal(LiteralValue::Int64(literal)))
-        };
+        let add =
+            |literal| Expr::binary(Expr::column("value"), BinaryOp::Add, Expr::literal(LiteralValue::Int64(literal)));
         assert_eq!(unique_source_column(&add(0), Some(&non_nullable)), Some("value"));
         assert_eq!(unique_source_column(&add(1), Some(&non_nullable)), None);
         assert_eq!(unique_source_column(&add(0), Some(&nullable)), None);
@@ -1372,12 +1365,12 @@ mod tests {
         let spec = JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
-                crate::expr::ColumnRef::input(1, "sourceId", "sourceId"),
+                ColumnRef::input(0, "sourceId", "sourceId"),
+                ColumnRef::input(1, "sourceId", "sourceId"),
             )],
         )
         .with_output_projection(vec![JoinOutputColumn::left(
-            crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
+            ColumnRef::input(0, "sourceId", "sourceId"),
             "sourceId",
         )]);
         let join = join_builder.add_join(left, right, spec, output_schema);
@@ -1445,11 +1438,7 @@ mod tests {
                 ProjectionOutput::new(
                     Expr::case(
                         vec![CaseWhen::new(
-                            Expr::binary(
-                                Expr::column("selector"),
-                                crate::expr::BinaryOp::Eq,
-                                Expr::literal(LiteralValue::Int32(0)),
-                            ),
+                            Expr::binary(Expr::column("selector"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(0))),
                             Expr::literal(LiteralValue::Utf8("long".to_owned())),
                         )],
                         Expr::literal(LiteralValue::Utf8("ok".to_owned())),
@@ -1533,13 +1522,13 @@ mod tests {
             JoinSpec::new(
                 JoinType::Inner,
                 vec![JoinKey::new(
-                    crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
-                    crate::expr::ColumnRef::input(1, "sourceId", "sourceId"),
+                    ColumnRef::input(0, "sourceId", "sourceId"),
+                    ColumnRef::input(1, "sourceId", "sourceId"),
                 )],
             )
             .with_at_most_one_match_per_bounded_row(JoinSide::Left)
             .with_output_projection(vec![JoinOutputColumn::left(
-                crate::expr::ColumnRef::input(0, "targetId", "targetId"),
+                ColumnRef::input(0, "targetId", "targetId"),
                 "targetId",
             )]),
             Arc::clone(&output_schema),
@@ -1567,13 +1556,13 @@ mod tests {
             JoinSpec::new(
                 JoinType::Inner,
                 vec![JoinKey::new(
-                    crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
-                    crate::expr::ColumnRef::input(1, "sourceId", "sourceId"),
+                    ColumnRef::input(0, "sourceId", "sourceId"),
+                    ColumnRef::input(1, "sourceId", "sourceId"),
                 )],
             )
             .with_at_most_one_match_per_bounded_row(JoinSide::Left)
             .with_output_projection(vec![JoinOutputColumn::right(
-                crate::expr::ColumnRef::input(1, "targetId", "targetId"),
+                ColumnRef::input(1, "targetId", "targetId"),
                 "targetId",
             )]),
             Arc::clone(&output_schema),
@@ -1605,13 +1594,13 @@ mod tests {
                 JoinSpec::new(
                     join_type,
                     vec![JoinKey::new(
-                        crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
-                        crate::expr::ColumnRef::input(1, "sourceId", "sourceId"),
+                        ColumnRef::input(0, "sourceId", "sourceId"),
+                        ColumnRef::input(1, "sourceId", "sourceId"),
                     )],
                 )
                 .with_output_projection(vec![
-                    JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "sourceId", "sourceId"), "sourceId"),
-                    JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "targetId", "targetId"), "targetId"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "sourceId", "sourceId"), "sourceId"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "targetId", "targetId"), "targetId"),
                 ]),
                 Arc::new(Schema::new(vec![
                     Field::new("sourceId", DataType::Utf8, false),
@@ -1635,13 +1624,13 @@ mod tests {
             JoinSpec::new(
                 JoinType::Inner,
                 vec![JoinKey::new(
-                    crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
-                    crate::expr::ColumnRef::input(1, "sourceId", "sourceId"),
+                    ColumnRef::input(0, "sourceId", "sourceId"),
+                    ColumnRef::input(1, "sourceId", "sourceId"),
                 )],
             )
             .with_at_most_one_match_per_bounded_row(JoinSide::Left)
             .with_output_projection(vec![JoinOutputColumn::right(
-                crate::expr::ColumnRef::input(1, "targetId", "targetId"),
+                ColumnRef::input(1, "targetId", "targetId"),
                 "targetId",
             )]),
             output_schema,

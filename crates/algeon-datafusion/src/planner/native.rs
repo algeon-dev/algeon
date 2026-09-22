@@ -8,23 +8,31 @@ use datafusion::{
 use query_engine::{
     admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence},
     metrics::QueryId,
+    optimizer::NativeOptimizerDiagnostics,
+    plan::QueryPlan,
+    source::SourceDiagnostics,
 };
 
 use super::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy, FinalPlanDisposition, classify_final_plan};
+#[cfg(feature = "cugraph")]
+use crate::native_exec::composed_admission_capability_evidence;
 use crate::{
     attempt::AlgeonAttemptExtension,
+    capability::CapabilityReason,
+    cugraph_sql::is_feature_disabled_execution_plan,
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
         AlgeonNativeGpuProducerExec, GpuFunctionHostOccurrenceExec,
         admission::QueryAdmissionTicket,
+        gpu_resident_producer,
         graph::{GraphExecutionPlan, graph_execution_plan},
         plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
-    report::{CandidateOutcome, PlanningReport},
+    report::{CandidateOutcome, GpuCandidate, PlanningReport, UnsupportedColumnDetail},
     session::{ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
@@ -86,7 +94,7 @@ impl PhysicalOptimizerRule for AlgeonFinalPlanRequirementRule {
         // rejection. It executes neither a CPU fallback nor a GPU operator,
         // so it satisfies the no-CPU-execution contract without being
         // misclassified as a native workload.
-        let feature_disabled_terminal = crate::cugraph_sql::is_feature_disabled_execution_plan(plan.as_ref());
+        let feature_disabled_terminal = is_feature_disabled_execution_plan(plan.as_ref());
         if disposition != FinalPlanDisposition::Native && !feature_disabled_terminal {
             return Err(
                 final_plan_requirement_error(plan.as_ref(), disposition, self.planning_report().as_ref()).into()
@@ -153,11 +161,7 @@ fn final_plan_requirement_error(
 
 fn first_native_not_supported(
     report: &PlanningReport,
-) -> Option<(
-    &crate::report::GpuCandidate,
-    crate::capability::CapabilityReason,
-    Option<&crate::report::UnsupportedColumnDetail>,
-)> {
+) -> Option<(&GpuCandidate, CapabilityReason, Option<&UnsupportedColumnDetail>)> {
     report.outcomes().iter().enumerate().find_map(|(index, outcome)| match outcome {
         CandidateOutcome::NotSupported { candidate, capability_reason } => {
             Some((candidate, *capability_reason, report.unsupported_column(index)))
@@ -184,9 +188,9 @@ pub struct NativePlanningDiagnostics {
     /// Candidate rewrite outcomes from the native physical optimizer rule.
     pub report: PlanningReport,
     /// DataFusion-free native optimizer diagnostics from the lowered plan.
-    pub native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics,
+    pub native_optimizer: NativeOptimizerDiagnostics,
     /// Source-read diagnostics captured while lowering/planning native sources.
-    pub source_diagnostics: Vec<query_engine::source::SourceDiagnostics>,
+    pub source_diagnostics: Vec<SourceDiagnostics>,
     /// Canonical capability-contract evidence.
     pub capability_contract: NativeCapabilityContractDiagnostics,
 }
@@ -213,8 +217,8 @@ struct AlgeonNativePhysicalOptimizerRuleState {
     last_input_plan_shape: Mutex<String>,
     last_input_join_diagnostics: Mutex<Vec<NativeJoinDiagnosticSummary>>,
     last_report: Mutex<Option<PlanningReport>>,
-    last_native_optimizer: Mutex<query_engine::optimizer::NativeOptimizerDiagnostics>,
-    last_source_diagnostics: Mutex<Vec<query_engine::source::SourceDiagnostics>>,
+    last_native_optimizer: Mutex<NativeOptimizerDiagnostics>,
+    last_source_diagnostics: Mutex<Vec<SourceDiagnostics>>,
     last_capability_contract: Mutex<NativeCapabilityContractDiagnostics>,
 }
 
@@ -238,7 +242,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                 last_input_plan_shape: Mutex::new(String::new()),
                 last_input_join_diagnostics: Mutex::new(Vec::new()),
                 last_report: Mutex::new(None),
-                last_native_optimizer: Mutex::new(query_engine::optimizer::NativeOptimizerDiagnostics::default()),
+                last_native_optimizer: Mutex::new(NativeOptimizerDiagnostics::default()),
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
             }),
@@ -256,7 +260,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                 last_input_plan_shape: Mutex::new(String::new()),
                 last_input_join_diagnostics: Mutex::new(Vec::new()),
                 last_report: Mutex::new(None),
-                last_native_optimizer: Mutex::new(query_engine::optimizer::NativeOptimizerDiagnostics::default()),
+                last_native_optimizer: Mutex::new(NativeOptimizerDiagnostics::default()),
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
             }),
@@ -284,7 +288,7 @@ impl AlgeonNativePhysicalOptimizerRule {
     }
 
     /// Source diagnostics captured during the most recent native planning attempt.
-    pub fn last_source_diagnostics(&self) -> Vec<query_engine::source::SourceDiagnostics> {
+    pub fn last_source_diagnostics(&self) -> Vec<SourceDiagnostics> {
         self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
     }
 
@@ -336,7 +340,7 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        self.config.validate().map_err(datafusion::common::DataFusionError::from)?;
+        self.config.validate().map_err(DataFusionError::from)?;
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok(plan);
         }
@@ -446,7 +450,7 @@ impl PhysicalOptimizerRule for AlgeonNativePhysicalOptimizerRule {
 impl AlgeonNativePhysicalOptimizerRule {
     fn store_optimization_attempt(&self, optimized: &NativeOptimizationAttempt) -> DataFusionResult<()> {
         *self.state.last_report.lock().map_err(|_| {
-            datafusion::common::DataFusionError::from(Error::new(
+            DataFusionError::from(Error::new(
                 ErrorCode::Internal,
                 "algeon_datafusion.native_optimizer.report",
                 "native planning report mutex was poisoned",
@@ -495,7 +499,7 @@ fn plan_query_admission_ticket_for_optimized_plan(
     let ticket = native_execution_config
         .new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)
         .map_err(|error| {
-            datafusion::common::DataFusionError::from(Error::from_native(
+            DataFusionError::from(Error::from_native(
                 "algeon_datafusion.native_optimizer.graph_ticket_ask",
                 "failed to compute query admission ticket requirements",
                 error,
@@ -569,13 +573,12 @@ fn bind_gpu_function_host_occurrences(
             Ok(plan)
         };
     }
-    let producer = crate::native_exec::gpu_resident_producer(plan.as_ref());
+    let producer = gpu_resident_producer(plan.as_ref());
     let children = plan.children().into_iter().cloned().collect::<Vec<_>>();
     let mut rewritten_children = Vec::with_capacity(children.len());
     let mut children_changed = false;
     for child in children {
-        let child_materializes_host_result =
-            producer.is_none() || crate::native_exec::gpu_resident_producer(child.as_ref()).is_none();
+        let child_materializes_host_result = producer.is_none() || gpu_resident_producer(child.as_ref()).is_none();
         let rewritten =
             bind_gpu_function_host_occurrences(Arc::clone(&child), child_materializes_host_result, next_occurrence)?;
         children_changed |= !Arc::ptr_eq(&child, &rewritten);
@@ -586,7 +589,7 @@ fn bind_gpu_function_host_occurrences(
     } else {
         plan.replace_children(rewritten_children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))?
     };
-    let Some(producer) = crate::native_exec::gpu_resident_producer(plan.as_ref()) else {
+    let Some(producer) = gpu_resident_producer(plan.as_ref()) else {
         return Ok(plan);
     };
     if !materializes_host_result || producer.host_result_query_plan()?.is_none() {
@@ -616,7 +619,7 @@ fn collect_gpu_function_occurrences(
     }
     if let Some(bound) = plan.downcast_ref::<GpuFunctionHostOccurrenceExec>() {
         let predecessors = collect_gpu_function_occurrences(bound.input().as_ref(), false, occurrences)?;
-        let producer = crate::native_exec::gpu_resident_producer(bound.input().as_ref()).ok_or_else(|| {
+        let producer = gpu_resident_producer(bound.input().as_ref()).ok_or_else(|| {
             DataFusionError::from(
                 Error::new(
                     ErrorCode::InvalidExecutionPlan,
@@ -647,11 +650,10 @@ fn collect_gpu_function_occurrences(
         ));
         return Ok(vec![bound.occurrence_id().to_string()]);
     }
-    let producer = crate::native_exec::gpu_resident_producer(plan);
+    let producer = gpu_resident_producer(plan);
     let mut predecessors = Vec::new();
     for child in plan.children() {
-        let child_materializes_host_result =
-            producer.is_none() || crate::native_exec::gpu_resident_producer(child.as_ref()).is_none();
+        let child_materializes_host_result = producer.is_none() || gpu_resident_producer(child.as_ref()).is_none();
         for occurrence in collect_gpu_function_occurrences(child.as_ref(), child_materializes_host_result, occurrences)?
         {
             if !predecessors.contains(&occurrence) {
@@ -681,7 +683,7 @@ fn collect_gpu_function_occurrences(
 
 fn plan_contains_gpu_execution(plan: &dyn ExecutionPlan) -> bool {
     graph_execution_plan(plan).is_some()
-        || crate::native_exec::gpu_resident_producer(plan).is_some()
+        || gpu_resident_producer(plan).is_some()
         || lowered_native_plan(plan).is_some()
         || plan.children().iter().any(|child| plan_contains_gpu_execution(child.as_ref()))
 }
@@ -701,8 +703,7 @@ fn collect_native_fragment_capability_evidences(
         } else {
             composed.native_plan()
         };
-        evidence_items
-            .push(crate::native_exec::composed_admission_capability_evidence(composed_plan, composed.gpu_inputs())?);
+        evidence_items.push(composed_admission_capability_evidence(composed_plan, composed.gpu_inputs())?);
         true
     } else {
         false
@@ -726,10 +727,9 @@ fn collect_native_fragment_capability_evidences(
     let graph_execution_evidence =
         graph_execution_plan(plan).map(GraphExecutionPlan::graph_execution_capability_evidence).transpose()?;
     let is_cugraph_execution = graph_execution_evidence.is_some();
-    let producer = crate::native_exec::gpu_resident_producer(plan);
+    let producer = gpu_resident_producer(plan);
     for child in plan.children() {
-        let child_materializes_host_result =
-            producer.is_none() || crate::native_exec::gpu_resident_producer(child.as_ref()).is_none();
+        let child_materializes_host_result = producer.is_none() || gpu_resident_producer(child.as_ref()).is_none();
         collect_native_fragment_capability_evidences(
             child.as_ref(),
             executes_as_cugraph_input || is_cugraph_execution,
@@ -762,13 +762,11 @@ fn collect_native_fragment_capability_evidences(
     Ok(())
 }
 
-fn native_plan_capability_evidence(
-    native_plan: &query_engine::plan::QueryPlan,
-) -> DataFusionResult<AttemptCapabilityEvidence> {
+fn native_plan_capability_evidence(native_plan: &QueryPlan) -> DataFusionResult<AttemptCapabilityEvidence> {
     Ok(AttemptCapabilityEvidence::for_query_plan(native_plan))
 }
 
-fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&query_engine::plan::QueryPlan> {
+fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
     if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
         return Some(native.native_plan());
     }
@@ -860,11 +858,6 @@ mod tests {
 
     #[test]
     fn strict_rejection_schema_detail_is_client_visible_but_not_log_safe() {
-        use crate::{
-            capability::CapabilityReason,
-            report::{GpuCandidate, UnsupportedColumnDetail},
-        };
-
         let mut report = PlanningReport::new();
         report.push_not_supported_column(
             GpuCandidate::new("ParquetExec", 1),
@@ -972,11 +965,9 @@ mod tests {
         let union = builder.add_union(vec![left_source, right_source], Arc::clone(&schema));
         let consumer_plan = builder.finish_with_host_sink_schema(union, schema);
 
-        let expected = crate::native_exec::composed_admission_capability_evidence(
-            &consumer_plan,
-            &[Arc::new(left.clone()), Arc::new(right.clone())],
-        )
-        .expect("composed evidence binds both producer occurrences");
+        let expected =
+            composed_admission_capability_evidence(&consumer_plan, &[Arc::new(left.clone()), Arc::new(right.clone())])
+                .expect("composed evidence binds both producer occurrences");
         let composed =
             AlgeonNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
                 .unwrap();

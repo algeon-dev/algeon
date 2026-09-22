@@ -1,20 +1,32 @@
 #[cfg(feature = "iceberg")]
 use std::sync::Arc;
 
+#[cfg(feature = "iceberg")]
+use datafusion::datasource::TableProvider;
 use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
 
 use crate::server::{
-    adapter_session::AlgeonSessionStateBuilderExt, backend::AlgeonGpuBackend, config::ServerConfig,
-    cugraph_sql::CugraphSqlConfig, error::ServerError,
+    adapter_session::AlgeonSessionStateBuilderExt,
+    backend::AlgeonGpuBackend,
+    config::{CugraphServerConfig, ServerConfig},
+    cugraph_sql::CugraphSqlConfig,
+    error::{Result as ServerResult, ServerError},
+    planner::DataFusionCpuExecutionPolicy,
+    workspace::{install_workspace_overlay, warn_if_default_schema_is_read_only},
+};
+#[cfg(feature = "iceberg")]
+use crate::server::{
+    config::IcebergCatalogBackendConfig,
+    table_format::{iceberg::AlgeonIcebergTableProvider, scan::TableFormatParquetReadStrategyConfig},
 };
 
 pub async fn build_session_context_with_backend(
     config: &ServerConfig,
     backend: &AlgeonGpuBackend,
-) -> crate::server::error::Result<SessionContext> {
+) -> ServerResult<SessionContext> {
     let mut effective_config = config.clone();
     effective_config.native_optimizer_config = backend.optimizer_config().clone();
     let session_config = build_session_config(&effective_config)?;
@@ -37,14 +49,14 @@ pub async fn build_session_context_with_backend(
     #[cfg(feature = "iceberg")]
     register_iceberg_catalog(&ctx, &effective_config).await?;
     if let Some(workspace) = &effective_config.workspace {
-        crate::server::workspace::install_workspace_overlay(&ctx, workspace)?;
+        install_workspace_overlay(&ctx, workspace)?;
     }
-    crate::server::workspace::warn_if_default_schema_is_read_only(&ctx, &effective_config);
+    warn_if_default_schema_is_read_only(&ctx, &effective_config);
 
     Ok(ctx)
 }
 
-pub(crate) fn cugraph_sql_config(config: &crate::server::config::CugraphServerConfig) -> CugraphSqlConfig {
+pub(crate) fn cugraph_sql_config(config: &CugraphServerConfig) -> CugraphSqlConfig {
     CugraphSqlConfig { default_graph_options: config.default_graph_options.clone() }
 }
 
@@ -52,9 +64,9 @@ pub(crate) fn cugraph_sql_config(config: &crate::server::config::CugraphServerCo
 /// standard environment configuration. The server enables catalog discovery
 /// but does not change optimizer or execution settings beyond what the
 /// configured final plan requirement implies (see below).
-pub(crate) fn build_session_config(config: &ServerConfig) -> crate::server::error::Result<SessionConfig> {
-    let gpu_only = config.native_optimizer_config.datafusion_cpu_execution_policy()
-        == crate::server::planner::DataFusionCpuExecutionPolicy::Reject;
+pub(crate) fn build_session_config(config: &ServerConfig) -> ServerResult<SessionConfig> {
+    let gpu_only =
+        config.native_optimizer_config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Reject;
     SessionConfig::from_env()
         .map(enable_session_discovery)
         .map(|session_config| {
@@ -74,7 +86,7 @@ pub(super) fn enable_session_discovery(config: SessionConfig) -> SessionConfig {
 }
 
 #[cfg(feature = "iceberg")]
-async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -> crate::server::error::Result<()> {
+async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -> ServerResult<()> {
     let Some(iceberg) = &config.iceberg else {
         return Ok(());
     };
@@ -83,7 +95,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     // application and returns a `ResolvedTable` that freezes the
     // table, snapshot, schema, and source policy together.
     let (backend, catalog_type): (Arc<iceberg_catalog::CatalogBackend>, &'static str) = match &iceberg.backend {
-        crate::server::config::IcebergCatalogBackendConfig::Glue(glue) => {
+        IcebergCatalogBackendConfig::Glue(glue) => {
             let mut catalog_config = iceberg_catalog::GlueCatalogConfig::new(
                 glue.catalog_handle.clone(),
                 glue.warehouse.clone(),
@@ -105,7 +117,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
                 .into_backend();
             (Arc::new(backend), "glue")
         },
-        crate::server::config::IcebergCatalogBackendConfig::Rest(rest) => {
+        IcebergCatalogBackendConfig::Rest(rest) => {
             let catalog_config = rest.clone().with_source_access_policy(iceberg.source_access_policy().clone());
             let backend = iceberg_catalog::RestCatalogBackend::connect(catalog_config)
                 .await
@@ -229,17 +241,16 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 fn build_alias_provider(
     resolved: iceberg_catalog::ResolvedTable,
     catalog_type: &str,
-    parquet_read_strategy_config: crate::server::table_format::scan::TableFormatParquetReadStrategyConfig,
+    parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
     scan_planning_timeout: std::time::Duration,
-) -> crate::server::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
-    let provider =
-        crate::server::table_format::iceberg::AlgeonIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(
-            resolved,
-            parquet_read_strategy_config,
-        )
-        .map_err(|error| ServerError::session("failed to build AlgeonIcebergTableProvider", error))?
-        .with_catalog_type(catalog_type)
-        .with_scan_planning_timeout(Some(scan_planning_timeout));
+) -> ServerResult<Arc<dyn TableProvider>> {
+    let provider = AlgeonIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(
+        resolved,
+        parquet_read_strategy_config,
+    )
+    .map_err(|error| ServerError::session("failed to build AlgeonIcebergTableProvider", error))?
+    .with_catalog_type(catalog_type)
+    .with_scan_planning_timeout(Some(scan_planning_timeout));
     Ok(Arc::new(provider))
 }
 
@@ -248,13 +259,16 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::server::ALGEON_SERVER_CUGRAPH_ENABLED_ENV;
+    use crate::server::{
+        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, config::ALGEON_SERVER_EXECUTION_MODE_ENV,
+        planner::AlgeonGpuExecutionMode,
+    };
 
     fn server_config_with_test_device_profile(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
         let config_file = tempfile::NamedTempFile::new().expect("create server config fixture");
         std::fs::write(config_file.path(), "[[admission.device_profiles]]\ndevice_ordinal = 0\n")
             .expect("write server config fixture");
-        env.insert(crate::server::ALGEON_SERVER_CONFIG_FILE_ENV, config_file.path().to_string_lossy().into_owned());
+        env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, config_file.path().to_string_lossy().into_owned());
         ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("load server config fixture")
     }
 
@@ -270,13 +284,9 @@ mod tests {
 
     #[test]
     fn execution_mode_env_maps_to_functions_only_and_preserves_partitions() {
-        let env =
-            BTreeMap::from([(crate::server::config::ALGEON_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string())]);
+        let env = BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "functions_only".to_string())]);
         let server = server_config_with_test_device_profile(env);
-        assert_eq!(
-            server.native_optimizer_config.execution_mode().unwrap(),
-            crate::server::planner::AlgeonGpuExecutionMode::FunctionsOnly
-        );
+        assert_eq!(server.native_optimizer_config.execution_mode().unwrap(), AlgeonGpuExecutionMode::FunctionsOnly);
         let session = build_session_config(&server).expect("session config");
         let baseline = SessionConfig::from_env().expect("baseline session config");
         assert_eq!(
@@ -288,8 +298,7 @@ mod tests {
 
     #[test]
     fn execution_mode_env_maps_native_required_to_single_partition() {
-        let env =
-            BTreeMap::from([(crate::server::config::ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
+        let env = BTreeMap::from([(ALGEON_SERVER_EXECUTION_MODE_ENV, "native_required".to_string())]);
         let server = server_config_with_test_device_profile(env);
         let session = build_session_config(&server).expect("session config");
         assert_eq!(session.options().execution.target_partitions, 1);

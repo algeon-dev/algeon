@@ -4,15 +4,15 @@
 
 use cudf::{ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, TypeId};
 
-use crate::common::error_context_value;
+use crate::common::{error_context_value, nullable_series, run_named_cases, series};
 
 // ===========================================================================
 // Basic concatenation
 // ===========================================================================
 
 fn test_concat_two_i32_series() {
-    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[3, 4, 5]).unwrap();
+    let a = series::<i32>("a", &[1, 2]).unwrap();
+    let b = series::<i32>("b", &[3, 4, 5]).unwrap();
 
     let result = Series::concat(&[&a, &b]).unwrap();
     assert_eq!(result.len(), 5);
@@ -23,8 +23,8 @@ fn test_concat_two_i32_series() {
 fn test_concat_in_uses_borrowed_execution_overrides() {
     let runtime = Runtime::new().unwrap();
     let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[3, 4, 5]).unwrap();
+    let a = series::<i32>("a", &[1, 2]).unwrap();
+    let b = series::<i32>("b", &[3, 4, 5]).unwrap();
 
     let result = Series::concat_in(&[&a, &b], &ctx).unwrap();
 
@@ -34,9 +34,9 @@ fn test_concat_in_uses_borrowed_execution_overrides() {
 }
 
 fn test_concat_three_f64_series() {
-    let a = crate::common::series::<f64>("a", &[1.0]).unwrap();
-    let b = crate::common::series::<f64>("b", &[2.0, 3.0]).unwrap();
-    let c = crate::common::series::<f64>("c", &[4.0]).unwrap();
+    let a = series::<f64>("a", &[1.0]).unwrap();
+    let b = series::<f64>("b", &[2.0, 3.0]).unwrap();
+    let c = series::<f64>("c", &[4.0]).unwrap();
 
     let result = Series::concat(&[&a, &b, &c]).unwrap();
 
@@ -45,8 +45,8 @@ fn test_concat_three_f64_series() {
 }
 
 fn test_concat_strings() {
-    let a = crate::common::series("a", &["hello"]).unwrap();
-    let b = crate::common::series("b", &["world"]).unwrap();
+    let a = series("a", &["hello"]).unwrap();
+    let b = series("b", &["world"]).unwrap();
 
     let result = Series::concat(&[&a, &b]).unwrap();
 
@@ -59,7 +59,7 @@ fn test_concat_strings() {
 // ===========================================================================
 
 fn test_concat_single_series() {
-    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
+    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
 
     let result = Series::concat(&[&a]).unwrap();
 
@@ -68,9 +68,9 @@ fn test_concat_single_series() {
 }
 
 fn test_concat_with_empty_series() {
-    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[]).unwrap();
-    let c = crate::common::series::<i32>("c", &[3]).unwrap();
+    let a = series::<i32>("a", &[1, 2]).unwrap();
+    let b = series::<i32>("b", &[]).unwrap();
+    let c = series::<i32>("c", &[3]).unwrap();
 
     let result = Series::concat(&[&a, &b, &c]).unwrap();
 
@@ -79,8 +79,8 @@ fn test_concat_with_empty_series() {
 }
 
 fn test_concat_preserves_nulls() {
-    let a = crate::common::nullable_series::<i32>("a", &[1, 0], &[true, false]).unwrap();
-    let b = crate::common::series::<i32>("b", &[3]).unwrap();
+    let a = nullable_series::<i32>("a", &[1, 0], &[true, false]).unwrap();
+    let b = series::<i32>("b", &[3]).unwrap();
 
     let result = Series::concat(&[&a, &b]).unwrap();
 
@@ -103,8 +103,8 @@ fn test_concat_empty_slice_returns_error() {
 }
 
 fn test_concat_type_mismatch_returns_error() {
-    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
-    let b = crate::common::series("b", &["hello"]).unwrap();
+    let a = series::<i32>("a", &[1, 2]).unwrap();
+    let b = series("b", &["hello"]).unwrap();
 
     let err = Series::concat(&[&a, &b]).expect_err("concat of mismatched types should fail");
 
@@ -123,7 +123,7 @@ fn test_concat_type_mismatch_returns_error() {
 
 #[test]
 fn series_concat_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_concat_two_i32_series", test_concat_two_i32_series),
         ("test_concat_in_uses_borrowed_execution_overrides", test_concat_in_uses_borrowed_execution_overrides),
         ("test_concat_three_f64_series", test_concat_three_f64_series),

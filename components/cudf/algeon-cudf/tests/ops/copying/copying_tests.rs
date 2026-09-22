@@ -3,7 +3,7 @@ use cudf::{core::Table, ops::copying, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, explicit_bool_column, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases,
 };
 
 fn test_gather_basic() {
@@ -302,7 +302,7 @@ fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
 
 #[test]
 fn copying_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_gather_basic", test_gather_basic),
         ("test_gather_multi_column", test_gather_multi_column),
         ("test_gather_identity", test_gather_identity),

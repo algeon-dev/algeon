@@ -5,7 +5,9 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::error_context_value;
+use crate::common::{
+    column_from_device_buffer, column_from_device_buffer_nullable, error_context_value, run_named_cases,
+};
 
 // ---------------------------------------------------------------------------
 // DeviceBuffer lifecycle
@@ -183,7 +185,7 @@ fn adopt_i32_roundtrip() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[10, 20, 30];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
-    let col = crate::common::column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
+    let col = column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
@@ -193,7 +195,7 @@ fn adopt_f64_roundtrip() {
     let rt = Runtime::new().unwrap();
     let data: &[f64] = &[1.5, 2.5, 3.5];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
-    let col = crate::common::column_from_device_buffer(buf, 3, TypeId::Float64).unwrap();
+    let col = column_from_device_buffer(buf, 3, TypeId::Float64).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
@@ -222,7 +224,7 @@ fn adopt_proves_zero_copy() {
     let data: &[i32] = &[42, 99];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
     let original_ptr = buf.as_ptr().unwrap();
-    let col = crate::common::column_from_device_buffer(buf, 2, TypeId::Int32).unwrap();
+    let col = column_from_device_buffer(buf, 2, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.device_data_ptr().unwrap(), original_ptr);
 }
@@ -230,7 +232,7 @@ fn adopt_proves_zero_copy() {
 fn adopt_zero_elements() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
-    let col = crate::common::column_from_device_buffer(buf, 0, TypeId::Int32).unwrap();
+    let col = column_from_device_buffer(buf, 0, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 0);
     assert!(view.is_empty().unwrap());
@@ -239,7 +241,7 @@ fn adopt_zero_elements() {
 fn adopt_rejects_string_type() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(64).unwrap();
-    let err = crate::common::column_from_device_buffer(buf, 4, TypeId::String).expect_err("expected error");
+    let err = column_from_device_buffer(buf, 4, TypeId::String).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
@@ -273,7 +275,7 @@ fn adopt_rejects_size_mismatch() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[1, 2, 3];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
-    let err = crate::common::column_from_device_buffer(buf, 4, TypeId::Int32).expect_err("expected error");
+    let err = column_from_device_buffer(buf, 4, TypeId::Int32).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("data_buffer"));
@@ -292,8 +294,7 @@ fn adopt_rejects_size_mismatch() {
 fn adopt_rejects_row_count_exceeding_i32_max() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
-    let err = crate::common::column_from_device_buffer(buf, (i32::MAX as usize) + 1, TypeId::Int32)
-        .expect_err("expected error");
+    let err = column_from_device_buffer(buf, (i32::MAX as usize) + 1, TypeId::Int32).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
@@ -321,7 +322,7 @@ fn adopt_nullable_with_nulls() {
     mask[0] = 0x05;
     let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
 
-    let col = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 2, 4, TypeId::Int32).unwrap();
+    let col = column_from_device_buffer_nullable(data_buf, mask_buf, 2, 4, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 4);
@@ -344,7 +345,7 @@ fn adopt_nullable_all_valid() {
     mask[0] = 0x07;
     let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
 
-    let col = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 0, 3, TypeId::Int32).unwrap();
+    let col = column_from_device_buffer_nullable(data_buf, mask_buf, 0, 3, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.null_count().unwrap(), 0);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -376,8 +377,7 @@ fn adopt_nullable_rejects_null_count_exceeding_row_count() {
     let data_buf = rt.device_buffer_from_host_data(&[1i32, 2]).unwrap();
     let mask_buf = rt.device_buffer_from_host_data(&[0u8; 64]).unwrap();
 
-    let err = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 5, 2, TypeId::Int32)
-        .expect_err("expected error");
+    let err = column_from_device_buffer_nullable(data_buf, mask_buf, 5, 2, TypeId::Int32).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("2"));
@@ -388,14 +388,8 @@ fn adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract() {
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer(0).unwrap();
     let mask_buf = rt.device_buffer(0).unwrap();
-    let err = crate::common::column_from_device_buffer_nullable(
-        data_buf,
-        mask_buf,
-        (i32::MAX as usize) + 1,
-        0,
-        TypeId::Int32,
-    )
-    .expect_err("expected error");
+    let err = column_from_device_buffer_nullable(data_buf, mask_buf, (i32::MAX as usize) + 1, 0, TypeId::Int32)
+        .expect_err("expected error");
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
@@ -413,8 +407,7 @@ fn adopt_nullable_rejects_mask_too_small() {
     let data_buf = rt.device_buffer_from_host_data(&[1i32, 2, 3, 4]).unwrap();
     let mask_buf = rt.device_buffer(0).unwrap();
 
-    let err = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 1, 4, TypeId::Int32)
-        .expect_err("expected error");
+    let err = column_from_device_buffer_nullable(data_buf, mask_buf, 1, 4, TypeId::Int32).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("null_mask_buffer"));
@@ -435,8 +428,7 @@ fn adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size() {
     let data_buf = rt.device_buffer_from_host_data(&[1i32]).unwrap();
     let mask_buf = rt.device_buffer_from_host_data(&[0xffu8; 63]).unwrap();
 
-    let err = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 0, 1, TypeId::Int32)
-        .expect_err("expected error");
+    let err = column_from_device_buffer_nullable(data_buf, mask_buf, 0, 1, TypeId::Int32).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(error_context_value(&err, "resource").as_deref(), Some("null_mask_buffer"));
@@ -451,8 +443,7 @@ fn adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract() {
     let data_buf = rt.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
     let mask_buf = rt.device_buffer_from_host_data(&[0xffu8; 64]).unwrap();
 
-    let err = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 0, 4, TypeId::Int32)
-        .expect_err("expected error");
+    let err = column_from_device_buffer_nullable(data_buf, mask_buf, 0, 4, TypeId::Int32).expect_err("expected error");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
@@ -471,7 +462,7 @@ fn adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract() {
 
 #[test]
 fn device_buffer_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("new_allocates_requested_size", new_allocates_requested_size),
         ("new_zero_bytes_succeeds", new_zero_bytes_succeeds),
         (

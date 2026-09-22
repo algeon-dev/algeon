@@ -1,4 +1,4 @@
-use super::{NodeId, QueryPlan};
+use super::{NativeOptimizerChange, NodeId, QueryPlan};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const AGGREGATE_JOIN_PUSHDOWN_RULE_NAME: &str = "aggregate_join_pushdown";
@@ -98,6 +98,6 @@ pub enum AggregateJoinPushdownRejectedReason {
 #[doc(hidden)]
 pub struct AggregateJoinPushdownResult {
     pub plan: QueryPlan,
-    pub change: crate::optimizer::NativeOptimizerChange,
+    pub change: NativeOptimizerChange,
     pub diagnostics: AggregateJoinPushdownDiagnostics,
 }

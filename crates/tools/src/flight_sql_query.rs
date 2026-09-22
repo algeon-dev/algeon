@@ -10,6 +10,7 @@ use arrow::{
 };
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use futures::TryStreamExt;
+use tonic::transport::Channel;
 
 use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
@@ -64,7 +65,7 @@ fn join_sql(args: &[String]) -> Option<String> {
     (!sql.trim().is_empty()).then_some(sql)
 }
 
-async fn connect_flight_sql(url: &str) -> QueryResult<FlightSqlServiceClient<tonic::transport::Channel>> {
+async fn connect_flight_sql(url: &str) -> QueryResult<FlightSqlServiceClient<Channel>> {
     connect_with_retry(
         url,
         ConnectionRetryConfig::fixed_attempts(600, Duration::from_millis(100)),
@@ -75,10 +76,7 @@ async fn connect_flight_sql(url: &str) -> QueryResult<FlightSqlServiceClient<ton
     .await
 }
 
-async fn execute_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> QueryResult<Vec<RecordBatch>> {
+async fn execute_batches(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> QueryResult<Vec<RecordBatch>> {
     let flight_info = client.execute(sql.to_string(), None).await?;
     let mut batches = Vec::new();
     for endpoint in flight_info.endpoint {

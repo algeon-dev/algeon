@@ -3,13 +3,19 @@ use cudf::{
     ErrorCode, ErrorKind,
     core::Table,
     ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy, PreparedGroupBy},
-    testing::prelude::*,
+    testing::{
+        groupby::{
+            trigger_groupby_request_agg_count_limit_error_for_test, trigger_groupby_request_count_limit_error_for_test,
+            trigger_groupby_total_agg_handle_count_limit_error_for_test,
+        },
+        prelude::*,
+    },
 };
 
 use crate::common::{
     arm_next_groupby_negative_total_columns_fault, column_from_slice, column_from_slice_nullable,
     dataframe_from_columns, error_context_value, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases,
 };
 
 fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -32,7 +38,7 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
 }
 
 fn test_testing_hook_locks_groupby_request_count_limit_contract() {
-    let err = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test().unwrap_err();
+    let err = trigger_groupby_request_count_limit_error_for_test().unwrap_err();
 
     assert_groupby_validation_error(
         &err,
@@ -46,7 +52,7 @@ fn test_testing_hook_locks_groupby_request_count_limit_contract() {
 }
 
 fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
-    let err = cudf::testing::groupby::trigger_groupby_request_agg_count_limit_error_for_test().unwrap_err();
+    let err = trigger_groupby_request_agg_count_limit_error_for_test().unwrap_err();
 
     assert_groupby_validation_error(
         &err,
@@ -63,7 +69,7 @@ fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
 }
 
 fn test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract() {
-    let err = cudf::testing::groupby::trigger_groupby_total_agg_handle_count_limit_error_for_test().unwrap_err();
+    let err = trigger_groupby_total_agg_handle_count_limit_error_for_test().unwrap_err();
 
     assert_groupby_validation_error(
         &err,
@@ -461,7 +467,7 @@ fn test_groupby_succeeds_with_mixed_domains_and_uses_keys_provenance() {
 
 #[test]
 fn groupby_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "test_testing_hook_locks_groupby_request_count_limit_contract",
             test_testing_hook_locks_groupby_request_count_limit_contract,

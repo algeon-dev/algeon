@@ -21,7 +21,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::utils::memory::get_record_batch_memory_size,
+    common::{Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
     execution::{SessionStateBuilder, context::TaskContext},
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
@@ -100,7 +100,7 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn register_views(ctx: &SessionContext) -> datafusion::common::Result<()> {
+async fn register_views(ctx: &SessionContext) -> DataFusionResult<()> {
     ctx.sql("CREATE VIEW graph_edges AS SELECT src, dst FROM synthetic_edges").await?.collect().await?;
     ctx.sql(
         "CREATE VIEW canonical_undirected_edges AS \

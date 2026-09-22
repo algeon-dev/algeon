@@ -5,33 +5,42 @@ use datafusion::{
     physical_expr::expressions::col,
     physical_plan::{
         ExecutionPlan,
-        metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricType},
+        empty::EmptyExec,
+        metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricType, MetricsSet},
         projection::{ProjectionExec, ProjectionExpr},
     },
 };
 use query_engine::{
     contract_report::CapabilityContractReport,
+    dimension_pruning::local_dimension_pruning_resolver,
+    expr::{AggregateSpec, ColumnRef, Expr},
     mode::CapabilityEnvelopeStatus,
-    plan::QueryPlanBuilder,
-    source::{GpuResidentSource, LocalParquetSource, SourceNode},
+    optimizer::{AggregateJoinPushdownDiagnostics, NativeOptimizerDiagnostics, optimize_query_plan},
+    plan::{
+        JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NativePlanCostReason, NodeId, ProjectionOutput,
+        QueryPlan, QueryPlanBuilder,
+    },
+    rapids_backend::rapids_analysis_context,
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 
 use super::{
     CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-    NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
-    NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
+    NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
 };
 use crate::{
     capability::CapabilityReason,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
+        SERVER_CAPTURE_LOSS_METRIC_NAME,
     },
     planner::{
         NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
         NativeCapabilityContractDiagnostics, NativePlanningDiagnostics,
     },
-    report::{GpuCandidate, PlanningReport},
+    report::{GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
 };
 
 #[test]
@@ -351,7 +360,7 @@ fn aggregate_runtime_probe_summary_uses_selection_evidence_not_strategy_name_alo
             ),
             aggregate_strategy_row("prepared_sort_groupby", "partial", "selected", "selected", 500, 55),
             aggregate_strategy_row("encoded_key_partial", "partial", "selected", "selected", 600, 66),
-            algeon_datafusion::native_report::NativeAggregateStrategyMetricRow {
+            NativeAggregateStrategyMetricRow {
                 selected_strategy: "prepared_sort_groupby".to_string(),
                 execution_stage: "partial".to_string(),
                 exact_cardinality_probe_status: "measured".to_string(),
@@ -512,8 +521,8 @@ fn aggregate_strategy_row(
     prepared_sort_groupby_selection_reason: &str,
     input_rows: usize,
     strategy_operator_elapsed_ns: usize,
-) -> algeon_datafusion::native_report::NativeAggregateStrategyMetricRow {
-    algeon_datafusion::native_report::NativeAggregateStrategyMetricRow {
+) -> NativeAggregateStrategyMetricRow {
+    NativeAggregateStrategyMetricRow {
         selected_strategy: selected_strategy.to_string(),
         execution_stage: execution_stage.to_string(),
         prepared_sort_groupby_cost_model_status: prepared_sort_groupby_cost_model_status.to_string(),
@@ -552,7 +561,7 @@ fn native_datafusion_execution_report_marks_lost_metric_detail_without_changing_
         let metrics = ExecutionPlanMetricsSet::new();
         MetricBuilder::new(&metrics)
             .with_type(MetricType::Summary)
-            .counter(crate::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME, 0)
+            .counter(SERVER_CAPTURE_LOSS_METRIC_NAME, 0)
             .add(capture_loss);
         NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
             "q01",
@@ -623,7 +632,7 @@ fn native_datafusion_execution_report_projects_runtime_for_mixed_plan_despite_ca
 fn native_datafusion_execution_report_keeps_runtime_unstarted_for_pure_datafusion_candidate_baseline() {
     let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "cpu_baseline",
-        Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(Schema::empty()))),
+        Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
         capability_and_cost_declined_diagnostics(),
         NativeDataFusionRuntime::Succeeded {
             output_batches: 1,
@@ -663,8 +672,8 @@ fn capability_and_cost_declined_diagnostics() -> NativePlanningDiagnostics {
     report.push_not_supported(GpuCandidate::new("UnsupportedCandidate", 1), CapabilityReason::UnsupportedExpression);
     report.push_not_selected_by_cost(
         GpuCandidate::new("CostDeclinedCandidate", 1),
-        query_engine::plan::NativePlanCostReason::SmallSelectiveTopK,
-        algeon_datafusion::report::NativeCandidateCostEvidence {
+        NativePlanCostReason::SmallSelectiveTopK,
+        NativeCandidateCostEvidence {
             node_count: 1,
             source_count: 1,
             local_parquet_source_count: 1,
@@ -702,7 +711,7 @@ fn native_datafusion_reports_scope_admission_contract_rows_to_join_candidates() 
     ));
     report.push_not_supported(
         GpuCandidate::new("SortExec(fetch)(AggregateExec(LocalParquetScan))", 1),
-        algeon_datafusion::capability::CapabilityReason::UnsupportedExpression,
+        CapabilityReason::UnsupportedExpression,
     );
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
@@ -798,11 +807,11 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
 
 #[test]
 fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         semijoin_reduction_projection_plan(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
@@ -849,11 +858,11 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
 
 #[test]
 fn native_datafusion_planning_report_projects_projection_simplification_diagnostics() {
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         projection_simplification_identity_plan(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.diagnostics.projection_simplification.considered_count, 1);
     assert_eq!(optimizer_result.diagnostics.projection_simplification.applied_count, 1);
@@ -897,11 +906,11 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
 
 #[test]
 fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics() {
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         dynamic_filter_route_plan(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
 
@@ -947,8 +956,8 @@ fn native_datafusion_planning_report_uses_native_optimizer_stable_rule_rows() {
         input_plan_shape: "AggregateExec(HashJoinExec)".to_string(),
         input_join_diagnostics: Vec::new(),
         report,
-        native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics {
-            aggregate_join_pushdown: query_engine::optimizer::AggregateJoinPushdownDiagnostics {
+        native_optimizer: NativeOptimizerDiagnostics {
+            aggregate_join_pushdown: AggregateJoinPushdownDiagnostics {
                 considered_count: 1,
                 applied_count: 1,
                 candidates: Vec::new(),
@@ -981,7 +990,7 @@ fn planning_native_optimizer_cell(planning: &NativeDataFusionPlanningReport) -> 
     row.split('\t').nth(native_optimizer_index).expect("native_optimizer TSV cell").to_string()
 }
 
-fn semijoin_reduction_projection_plan() -> query_engine::plan::QueryPlan {
+fn semijoin_reduction_projection_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(semijoin_gpu_source("x", &["x_key", "x_payload"]));
     let y = builder.add_source(semijoin_gpu_source("y", &["y_key", "y_payload"]));
@@ -991,52 +1000,29 @@ fn semijoin_reduction_projection_plan() -> query_engine::plan::QueryPlan {
     let xy = builder.add_join(
         x,
         y,
-        query_engine::plan::JoinSpec::new(
-            query_engine::plan::JoinType::Inner,
-            vec![query_engine::plan::JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "x_key", "x_key"),
-                query_engine::expr::ColumnRef::input(1, "y_key", "y_key"),
-            )],
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
         )
         .with_output_projection(vec![
-            query_engine::plan::JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "x_key", "x_key"),
-                "x_key",
-            ),
-            query_engine::plan::JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "x_payload", "x_payload"),
-                "x_payload",
-            ),
-            query_engine::plan::JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "y_key", "y_key"),
-                "y_key",
-            ),
-            query_engine::plan::JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "y_payload", "y_payload"),
-                "y_payload",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "x_key", "x_key"), "x_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "x_payload", "x_payload"), "x_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "y_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "y_payload", "y_payload"), "y_payload"),
         ]),
         Arc::clone(&xy_schema),
     );
     let semi = builder.add_join(
         xy,
         keyset,
-        query_engine::plan::JoinSpec::new(
-            query_engine::plan::JoinType::LeftSemi,
-            vec![query_engine::plan::JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "y_key", "y_key"),
-                query_engine::expr::ColumnRef::input(1, "y_key", "y_key"),
-            )],
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "y_key", "y_key"), ColumnRef::input(1, "y_key", "y_key"))],
         )
         .with_output_projection(
             ["x_key", "x_payload", "y_key", "y_payload"]
                 .into_iter()
-                .map(|name| {
-                    query_engine::plan::JoinOutputColumn::left(
-                        query_engine::expr::ColumnRef::input(0, name, name),
-                        name,
-                    )
-                })
+                .map(|name| JoinOutputColumn::left(ColumnRef::input(0, name, name), name))
                 .collect(),
         ),
         xy_schema,
@@ -1044,7 +1030,7 @@ fn semijoin_reduction_projection_plan() -> query_engine::plan::QueryPlan {
     builder.finish_gpu_resident(semi)
 }
 
-fn projection_simplification_identity_plan() -> query_engine::plan::QueryPlan {
+fn projection_simplification_identity_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
         "identity_projection_source",
@@ -1052,26 +1038,23 @@ fn projection_simplification_identity_plan() -> query_engine::plan::QueryPlan {
     )));
     let projection = builder.add_projection(
         source,
-        vec![query_engine::plan::ProjectionOutput::new(
-            query_engine::expr::Expr::column("key"),
-            Field::new("key", DataType::Int32, false),
-        )],
+        vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::Int32, false))],
     );
     builder.finish_gpu_resident(projection)
 }
 
-fn dynamic_filter_route_plan() -> query_engine::plan::QueryPlan {
+fn dynamic_filter_route_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("left_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("right_key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("left_key", DataType::Int32, false),
         Field::new("right_key", DataType::Int32, false),
     ]));
-    let left_file = query_engine::source::LocalParquetFile::new("/tmp/dynamic-filter-left.parquet")
+    let left_file = LocalParquetFile::new("/tmp/dynamic-filter-left.parquet")
         .with_stable_id("dynamic-filter-left")
         .with_projected_row_group_bytes(vec![1024], vec![1024])
         .with_row_group_rows(vec![10]);
-    let right_file = query_engine::source::LocalParquetFile::new("/tmp/dynamic-filter-right.parquet")
+    let right_file = LocalParquetFile::new("/tmp/dynamic-filter-right.parquet")
         .with_stable_id("dynamic-filter-right")
         .with_projected_row_group_bytes(vec![64], vec![64])
         .with_row_group_rows(vec![2]);
@@ -1090,24 +1073,18 @@ fn dynamic_filter_route_plan() -> query_engine::plan::QueryPlan {
     let join = builder.add_join(
         left,
         right,
-        query_engine::plan::JoinSpec::new(
-            query_engine::plan::JoinType::Inner,
-            vec![query_engine::plan::JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "left_key", "left_key"),
-                query_engine::expr::ColumnRef::input(1, "right_key", "right_key"),
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "left_key", "left_key"),
+                ColumnRef::input(1, "right_key", "right_key"),
             )],
         )
         .with_output_projection(vec![
-            query_engine::plan::JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "left_key", "left_key"),
-                "left_key",
-            ),
-            query_engine::plan::JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "right_key", "right_key"),
-                "right_key",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_key", "right_key"), "right_key"),
         ])
-        .with_build_side(query_engine::plan::JoinSide::Right),
+        .with_build_side(JoinSide::Right),
         output_schema,
     );
     builder.finish_with_host_sink(join)
@@ -1117,15 +1094,11 @@ fn semijoin_gpu_source(name: &str, fields: &[&str]) -> SourceNode {
     SourceNode::GpuResident(GpuResidentSource::new(name, semijoin_schema(fields)))
 }
 
-fn semijoin_aggregate_keyset_source(
-    builder: &mut QueryPlanBuilder,
-    name: &str,
-    key_name: &str,
-) -> query_engine::plan::NodeId {
+fn semijoin_aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> NodeId {
     let source = builder.add_source(semijoin_gpu_source(name, &[key_name]));
     builder.add_aggregate(
         source,
-        query_engine::expr::AggregateSpec::new(vec![query_engine::expr::Expr::column(key_name)], Vec::new()),
+        AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()),
         semijoin_schema(&[key_name]),
     )
 }
@@ -1295,7 +1268,7 @@ fn accepted_capability_contract_diagnostics() -> NativeCapabilityContractDiagnos
     }
 }
 
-fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::MetricsSet {
+fn native_execution_metrics_set() -> MetricsSet {
     let metrics = ExecutionPlanMetricsSet::new();
     for (name, value) in [
         ("gpu_resident_input_handoffs", 1),

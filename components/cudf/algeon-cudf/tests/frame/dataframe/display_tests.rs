@@ -1,10 +1,10 @@
 //! Smoke tests for DataFrame Display and Debug formatting.
 
-use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
+use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns};
 
 #[test]
 fn test_display_smoke_reports_schema_metadata_without_materializing_values() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["id".to_string(), "city".to_string()],
         vec![
             column_from_slice_nullable(&[101i32, 0, 303], &[true, false, true]).unwrap(),
@@ -38,7 +38,7 @@ fn test_display_smoke_reports_schema_metadata_without_materializing_values() {
 
 #[test]
 fn test_debug_smoke_reports_schema_metadata_without_materializing_values() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![column_from_slice(&[7i32, 8, 9]).unwrap(), column_from_slice(&[11.25f64, 22.5, 33.75]).unwrap()],
     )

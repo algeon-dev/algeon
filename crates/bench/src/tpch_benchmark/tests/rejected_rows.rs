@@ -1,3 +1,11 @@
+use std::collections::BTreeMap;
+
+use query_engine::{
+    capability::{CapabilityRejectionCategory, CapabilityScope},
+    contract_report::{CapabilityDecisionId, CapabilityDecisionOwner, CapabilityDecisionRow, CapabilityDecisionStatus},
+    mode::CapabilityEnvelopeStatus,
+};
+
 use super::*;
 
 #[test]
@@ -6,19 +14,16 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
     let mut planning = not_supported_planning_row("q02");
-    planning.capability_decision_rows = vec![query_engine::contract_report::CapabilityDecisionRow {
-        execution_mode: query_engine::mode::CapabilityEnvelopeStatus::Rejected,
-        scope: query_engine::capability::CapabilityScope::Subgraph,
-        decision_id: query_engine::contract_report::CapabilityDecisionId {
-            scope: query_engine::capability::CapabilityScope::Subgraph,
-            index: 0,
-        },
-        owner: query_engine::contract_report::CapabilityDecisionOwner::Admission("bounded_pipeline"),
-        category: Some(query_engine::capability::CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope),
+    planning.capability_decision_rows = vec![CapabilityDecisionRow {
+        execution_mode: CapabilityEnvelopeStatus::Rejected,
+        scope: CapabilityScope::Subgraph,
+        decision_id: CapabilityDecisionId { scope: CapabilityScope::Subgraph, index: 0 },
+        owner: CapabilityDecisionOwner::Admission("bounded_pipeline"),
+        category: Some(CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope),
         boundary: "bounded_pipeline",
         reason: "unsupported_compiled_pipeline_envelope",
-        status: query_engine::contract_report::CapabilityDecisionStatus::Rejected,
-        facts: std::collections::BTreeMap::new(),
+        status: CapabilityDecisionStatus::Rejected,
+        facts: BTreeMap::new(),
     }];
     let report = NativeTpchBenchmarkReport {
         metadata,

@@ -1,9 +1,11 @@
 use cudf::{
     DataFrame, ErrorCode, Runtime,
     core::Table,
+    io::parquet::{ParquetTableWriteOptions, write_parquet},
     runtime::{DeviceEntryGuard, DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthStatus},
     testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope},
 };
+use cudf_sys::test_support::cudf_test_fail_next_provenance_destroy;
 
 #[test]
 fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
@@ -13,9 +15,8 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
         Table::from_columns(vec![runtime.column_from_slice(&[4_i32, 5, 6]).expect("table column")]).expect("table");
     let parquet_dir = tempfile::TempDir::new().expect("Parquet temp dir");
     let parquet_path = parquet_dir.path().join("device-health.parquet");
-    let parquet_options =
-        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&parquet_path).column_names(&["value"]).build();
-    cudf::io::parquet::write_parquet(&table, &parquet_options).expect("Parquet fixture");
+    let parquet_options = ParquetTableWriteOptions::builder().filepath(&parquet_path).column_names(&["value"]).build();
+    write_parquet(&table, &parquet_options).expect("Parquet fixture");
     let scalar = runtime.scalar(7_i32).expect("scalar");
     let buffer = runtime.device_buffer(64).expect("device buffer");
     let device = runtime.device();
@@ -25,13 +26,13 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
             device: device.ordinal() as i32,
         }));
 
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(column);
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(table);
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(scalar);
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(buffer);
 
     let snapshot = scope.health_snapshot(device);

@@ -7,7 +7,10 @@ use std::{
     time::Duration,
 };
 
-use cudf::interop::contract::{CompletionWitnessBackend, CompletionWitnessKind};
+use cudf::{
+    interop::contract::{CompletionWitnessBackend, CompletionWitnessKind, InteropErrorKind, Result as InteropResult},
+    runtime::{DeviceEntryGuard, DeviceFaultNativeStatus, DeviceHealthStatus},
+};
 
 use super::*;
 use crate::{
@@ -21,12 +24,12 @@ use crate::{
 struct FailingCompletionWitness;
 
 impl CompletionWitnessBackend for FailingCompletionWitness {
-    fn is_ready(&self) -> cudf::interop::contract::Result<bool> {
+    fn is_ready(&self) -> InteropResult<bool> {
         Ok(false)
     }
 
-    fn synchronize(&self) -> cudf::interop::contract::Result<()> {
-        Err(InteropError::new(cudf::interop::contract::InteropErrorKind::ReadinessUnavailable, "injected sync failure"))
+    fn synchronize(&self) -> InteropResult<()> {
+        Err(InteropError::new(InteropErrorKind::ReadinessUnavailable, "injected sync failure"))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -307,12 +310,12 @@ fn fatal_native_graph_destroy_is_contained_and_rejects_later_owner_work() {
     drop(graph);
 
     let snapshot = scope.health_snapshot(device);
-    assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+    assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
     let first = snapshot.first_fault().expect("fatal graph destroy fault");
     assert_eq!(first.operation(), "Graph::drop");
-    assert_eq!(first.native_status(), Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(700)));
+    assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cuda(700)));
     assert!(snapshot.quarantined_teardown_count() >= 1);
-    let error = cudf::runtime::DeviceEntryGuard::enter(device, "later_cugraph_owner_work")
+    let error = DeviceEntryGuard::enter(device, "later_cugraph_owner_work")
         .expect_err("fatal graph teardown must reject later owner-device work");
     assert_eq!(error.code(), cudf::ErrorCode::FatalCuda);
 }
@@ -346,7 +349,7 @@ fn parked_graph_event_and_runtime_chain_fail_closed_on_device_query_failure() {
     drop(parked);
 
     let snapshot = scope.health_snapshot(cudf::DeviceId::DEFAULT);
-    assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+    assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
     assert!(
         snapshot.quarantined_teardown_count() >= 3,
         "graph, event, and runtime-bound native owner must all fail closed"

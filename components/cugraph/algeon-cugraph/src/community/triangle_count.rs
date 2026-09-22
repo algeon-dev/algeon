@@ -11,6 +11,7 @@ use cugraph_sys::{
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::triangle_count_result_to_dataframe,
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
     handle::{EnteredContext, ResourceHandleLease},
@@ -134,7 +135,7 @@ impl TriangleCountResult {
     /// Convert this result to a cudf DataFrame with `"vertex"` and
     /// `"triangle_count"` columns.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::triangle_count_result_to_dataframe(self, runtime)
+        triangle_count_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("TriangleCountResult::to_dataframe"))
     }
 }

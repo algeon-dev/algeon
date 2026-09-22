@@ -25,12 +25,12 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -100,12 +100,12 @@ fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -161,12 +161,12 @@ fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decod
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -233,11 +233,11 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -246,7 +246,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
     );
     let plan = builder.finish_with_host_sink(join);
     assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_bounded_join(),
+        plan.capability_analysis(rapids_analysis_context()).admits_bounded_join(),
         "source-adjacent filter/projection hash probe plan should stay capability-admitted:\n{plan}"
     );
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
@@ -313,20 +313,20 @@ fn bounded_native_query_executes_source_adjacent_join_filter_predicate() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "partkey", "left_partkey"),
-                query_engine::expr::ColumnRef::input(1, "partkey", "right_partkey"),
+                ColumnRef::input(0, "partkey", "left_partkey"),
+                ColumnRef::input(1, "partkey", "right_partkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "partkey", "partkey"), "partkey"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "partkey", "partkey"), "partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
     assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_bounded_join(),
+        plan.capability_analysis(rapids_analysis_context()).admits_bounded_join(),
         "source-adjacent filter should stay capability-admitted:\n{plan}"
     );
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
@@ -394,11 +394,11 @@ fn bounded_native_query_defers_single_chunk_source_adjacent_filter_projection_in
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -407,7 +407,7 @@ fn bounded_native_query_defers_single_chunk_source_adjacent_filter_projection_in
     );
     let plan = builder.finish_with_host_sink(join);
     assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_bounded_join(),
+        plan.capability_analysis(rapids_analysis_context()).admits_bounded_join(),
         "single-chunk source-adjacent filter/projection hash probe plan should stay capability-admitted:\n{plan}"
     );
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -462,11 +462,11 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])
@@ -529,11 +529,11 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
                 JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    ColumnRef::input(1, "category", "category"),
                     "category",
                 ),
             ])

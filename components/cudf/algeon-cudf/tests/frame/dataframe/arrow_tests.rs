@@ -4,17 +4,37 @@ use std::sync::{Arc, Mutex};
 use arrow::{
     array::*,
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
-    datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
+    datatypes::{
+        DataType as ArrowDataType, Date32Type, Date64Type, Decimal32Type, Decimal64Type, Decimal128Type,
+        DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType, DurationSecondType, Field,
+        Float32Type, Float64Type, Int32Type, Int64Type, Schema, Time32MillisecondType, Time32SecondType,
+        Time64MicrosecondType, Time64NanosecondType, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+        TimestampNanosecondType, TimestampSecondType,
+    },
     record_batch::RecordBatch,
 };
-use cudf::{BoundaryKind, DataFrame, DataType, ErrorCode, ErrorKind, Runtime, TypeId, testing::prelude::*};
+use cudf::{
+    BoundaryKind, DataFrame, DataType, ErrorCode, ErrorKind, Runtime, TypeId,
+    frame::dataframe::GpuRecordBatch,
+    interop::arrow_host::{all_null_list_series, cudf_dtype_from_arrow_type, estimate_list_import_device_memory_bytes},
+    testing::{
+        arrow::{
+            arrow_host_import_call_count_for_test, reset_arrow_host_interop_observation_for_test,
+            trigger_arrow_large_string_array_downcast_mismatch_for_test,
+            trigger_arrow_string_array_downcast_mismatch_for_test, trigger_numeric_to_arrow_error_for_test,
+            trigger_record_batch_error_for_test,
+        },
+        prelude::*,
+    },
+};
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable, error_context_value,
+    column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable, dataframe_from_columns,
+    error_context_value, nullable_series, run_named_cases, sample_runtime, series,
 };
 
 fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     DataFrame::from_record_batch(&runtime, batch)
 }
 
@@ -69,7 +89,7 @@ fn assert_large_string_list_value(array: &LargeListArray, index: usize, expected
 
 fn assert_float32_list_value(array: &ListArray, index: usize, expected: &[Option<f32>]) {
     let values = array.value(index);
-    let floats = values.as_primitive::<arrow::datatypes::Float32Type>();
+    let floats = values.as_primitive::<Float32Type>();
     assert_eq!(floats.len(), expected.len());
     for (row, expected) in expected.iter().enumerate() {
         match expected {
@@ -84,7 +104,7 @@ fn assert_float32_list_value(array: &ListArray, index: usize, expected: &[Option
 
 fn assert_float64_large_list_value(array: &LargeListArray, index: usize, expected: &[f64]) {
     let values = array.value(index);
-    let floats = values.as_primitive::<arrow::datatypes::Float64Type>();
+    let floats = values.as_primitive::<Float64Type>();
     assert_eq!(floats.len(), expected.len());
     for (actual, expected) in floats.values().iter().zip(expected) {
         assert_eq!(actual.to_bits(), expected.to_bits());
@@ -92,21 +112,19 @@ fn assert_float64_large_list_value(array: &LargeListArray, index: usize, expecte
 }
 
 fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
-    crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale).unwrap())
+    series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale).unwrap())
 }
 
 fn nullable_decimal32_series(values: &[i32], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
-    crate::common::nullable_series("amount32", values, validity)?
-        .astype(DataType::fixed_point(TypeId::Decimal32, scale).unwrap())
+    nullable_series("amount32", values, validity)?.astype(DataType::fixed_point(TypeId::Decimal32, scale).unwrap())
 }
 
 fn nullable_decimal64_series(values: &[i64], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
-    crate::common::nullable_series("amount64", values, validity)?
-        .astype(DataType::fixed_point(TypeId::Decimal64, scale).unwrap())
+    nullable_series("amount64", values, validity)?.astype(DataType::fixed_point(TypeId::Decimal64, scale).unwrap())
 }
 
 fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeId) -> cudf::Result<cudf::Series> {
-    crate::common::series("ts", values)?.astype(duration_type)?.astype(timestamp_type)
+    series("ts", values)?.astype(duration_type)?.astype(timestamp_type)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +332,7 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
 }
 
 fn test_arrow_host_rejects_non_positive_fixed_size_list_dimension() {
-    use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
+    use cudf_dtype_from_arrow_type;
 
     let error = cudf_dtype_from_arrow_type(&ArrowDataType::FixedSizeList(
         Arc::new(Field::new("item", ArrowDataType::Float32, false)),
@@ -328,7 +346,7 @@ fn test_arrow_host_rejects_non_positive_fixed_size_list_dimension() {
 }
 
 fn test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children() {
-    use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
+    use cudf_dtype_from_arrow_type;
 
     for child in [
         ArrowDataType::Int8,
@@ -360,10 +378,10 @@ fn test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children() {
 }
 
 fn test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     let data_type = ArrowDataType::FixedSizeList(Arc::new(Field::new("item", ArrowDataType::Int8, true)), i32::MAX);
 
-    let error = cudf::interop::arrow_host::all_null_list_series(&runtime, &data_type, 2)
+    let error = all_null_list_series(&runtime, &data_type, 2)
         .expect_err("rows times dimension beyond the cudf list offset domain must fail before allocation");
 
     assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
@@ -537,7 +555,7 @@ fn test_arrow_host_schema_validation_rejects_duplicate_names_before_copy() {
 }
 
 fn test_arrow_numeric_wrapper_preserves_source_chain() {
-    let err = cudf::testing::arrow::trigger_numeric_to_arrow_error_for_test()
+    let err = trigger_numeric_to_arrow_error_for_test()
         .expect_err("expected numeric Arrow wrapper to surface a mapped error");
 
     // Arrow producer contract violation classifies as ForeignInvariantViolation.
@@ -556,8 +574,8 @@ fn test_arrow_numeric_wrapper_preserves_source_chain() {
 }
 
 fn test_to_record_batch_wrapper_preserves_source_chain() {
-    let err = cudf::testing::arrow::trigger_record_batch_error_for_test()
-        .expect_err("expected RecordBatch wrapper to surface a mapped error");
+    let err =
+        trigger_record_batch_error_for_test().expect_err("expected RecordBatch wrapper to surface a mapped error");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
@@ -574,7 +592,7 @@ fn test_to_record_batch_wrapper_preserves_source_chain() {
 }
 
 fn test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract() {
-    let err = cudf::testing::arrow::trigger_arrow_string_array_downcast_mismatch_for_test()
+    let err = trigger_arrow_string_array_downcast_mismatch_for_test()
         .expect_err("expected Utf8 downcast mismatch to surface a mapped foreign-contract error");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
@@ -591,7 +609,7 @@ fn test_arrow_string_array_downcast_mismatch_uses_stable_foreign_contract() {
 }
 
 fn test_arrow_large_string_array_downcast_mismatch_uses_same_foreign_contract_family() {
-    let err = cudf::testing::arrow::trigger_arrow_large_string_array_downcast_mismatch_for_test()
+    let err = trigger_arrow_large_string_array_downcast_mismatch_for_test()
         .expect_err("expected LargeUtf8 downcast mismatch to surface a mapped foreign-contract error");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
@@ -646,14 +664,11 @@ fn test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_s
     assert_eq!(canonical.schema().field(0).data_type(), &ArrowDataType::Decimal128(38, 2));
     assert_eq!(canonical.schema().field(1).data_type(), &ArrowDataType::Decimal128(38, 4));
 
-    let actual = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let actual = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
     assert_eq!(actual.schema(), schema);
-    let amount32 = actual.column(0).as_primitive::<arrow::datatypes::Decimal32Type>();
+    let amount32 = actual.column(0).as_primitive::<Decimal32Type>();
     assert_eq!(amount32.iter().collect::<Vec<_>>(), vec![Some(12345), None, Some(-5)]);
-    let amount64 = actual.column(1).as_primitive::<arrow::datatypes::Decimal64Type>();
+    let amount64 = actual.column(1).as_primitive::<Decimal64Type>();
     assert_eq!(amount64.iter().collect::<Vec<_>>(), vec![Some(-987654321), None, Some(42)]);
 }
 
@@ -664,7 +679,7 @@ fn test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale() {
         ArrowDataType::Decimal64(19, 2),
         ArrowDataType::Decimal64(18, 19),
     ] {
-        let error = cudf::interop::arrow_host::cudf_dtype_from_arrow_type(&data_type)
+        let error = cudf_dtype_from_arrow_type(&data_type)
             .expect_err("invalid Arrow narrow decimal metadata must be rejected before import");
         assert_eq!(error.code(), ErrorCode::UnsupportedDtype, "{data_type:?}");
         assert_eq!(error_context_value(&error, "reason").as_deref(), Some("invalid_arrow_decimal_precision_scale"));
@@ -672,9 +687,7 @@ fn test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale() {
 }
 
 fn test_round_trip_i32() {
-    let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
@@ -688,11 +701,10 @@ fn test_round_trip_i32() {
 }
 
 fn test_zero_column_export_preserves_logical_row_count() {
-    let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap()
-            .select(Vec::<&str>::new())
-            .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
+        .unwrap()
+        .select(Vec::<&str>::new())
+        .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 0);
@@ -700,14 +712,13 @@ fn test_zero_column_export_preserves_logical_row_count() {
 }
 
 fn test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count() {
-    let frame =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap()
-            .select(Vec::<&str>::new())
-            .unwrap();
+    let frame = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
+        .unwrap()
+        .select(Vec::<&str>::new())
+        .unwrap();
     let schema = Arc::new(Schema::empty());
 
-    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let gpu_batch = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
     let batch = gpu_batch.to_host_record_batch().unwrap();
 
     assert_eq!(batch.schema(), schema);
@@ -716,11 +727,8 @@ fn test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count
 }
 
 fn test_round_trip_i64() {
-    let df = crate::common::dataframe_from_columns(
-        vec!["x".to_string()],
-        vec![column_from_slice(&[100i64, 200, 300]).unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[100i64, 200, 300]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int64);
@@ -731,7 +739,7 @@ fn test_round_trip_i64() {
 }
 
 fn test_round_trip_f32_f64() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["f32_col".to_string(), "f64_col".to_string()],
         vec![column_from_slice(&[1.5f32, 2.5, 3.5]).unwrap(), column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap()],
     )
@@ -778,27 +786,15 @@ fn test_to_record_batch_exports_decimal128_date32_and_timestamp_units() {
     assert_eq!(*batch.schema().field(4).data_type(), ArrowDataType::Timestamp(TimeUnit::Microsecond, None));
     assert_eq!(*batch.schema().field(5).data_type(), ArrowDataType::Timestamp(TimeUnit::Nanosecond, None));
 
-    let amount = batch.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    let amount = batch.column(0).as_primitive::<Decimal128Type>();
     assert_eq!(amount.precision(), 38);
     assert_eq!(amount.scale(), 2);
     assert_eq!(amount.values().as_ref(), &[1234500i128, -6789000, 500]);
-    assert_eq!(
-        batch.column(1).as_primitive::<arrow::datatypes::Date32Type>().values().as_ref(),
-        &[18_262, 18_263, 18_264]
-    );
-    assert_eq!(batch.column(2).as_primitive::<arrow::datatypes::TimestampSecondType>().values().as_ref(), &[1, 2, 3]);
-    assert_eq!(
-        batch.column(3).as_primitive::<arrow::datatypes::TimestampMillisecondType>().values().as_ref(),
-        &[1_000, 2_000, 3_000]
-    );
-    assert_eq!(
-        batch.column(4).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().values().as_ref(),
-        &[1_000, 2_000, 3_000]
-    );
-    assert_eq!(
-        batch.column(5).as_primitive::<arrow::datatypes::TimestampNanosecondType>().values().as_ref(),
-        &[1_000, 2_000, 3_000]
-    );
+    assert_eq!(batch.column(1).as_primitive::<Date32Type>().values().as_ref(), &[18_262, 18_263, 18_264]);
+    assert_eq!(batch.column(2).as_primitive::<TimestampSecondType>().values().as_ref(), &[1, 2, 3]);
+    assert_eq!(batch.column(3).as_primitive::<TimestampMillisecondType>().values().as_ref(), &[1_000, 2_000, 3_000]);
+    assert_eq!(batch.column(4).as_primitive::<TimestampMicrosecondType>().values().as_ref(), &[1_000, 2_000, 3_000]);
+    assert_eq!(batch.column(5).as_primitive::<TimestampNanosecondType>().values().as_ref(), &[1_000, 2_000, 3_000]);
 }
 
 fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls() {
@@ -815,7 +811,7 @@ fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls
     assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Decimal128(38, 3));
     assert!(batch.schema().field(1).is_nullable());
 
-    let amount32 = batch.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    let amount32 = batch.column(0).as_primitive::<Decimal128Type>();
     assert_eq!(amount32.precision(), 38);
     assert_eq!(amount32.scale(), 2);
     assert!(amount32.is_valid(0));
@@ -823,7 +819,7 @@ fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls
     assert!(amount32.is_valid(2));
     assert_eq!(amount32.values().as_ref(), &[12300i128, 0, -500]);
 
-    let amount64 = batch.column(1).as_primitive::<arrow::datatypes::Decimal128Type>();
+    let amount64 = batch.column(1).as_primitive::<Decimal128Type>();
     assert_eq!(amount64.precision(), 38);
     assert_eq!(amount64.scale(), 3);
     assert!(amount64.is_valid(0));
@@ -837,11 +833,11 @@ fn test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract() {
     let frame = DataFrame::from_series([("amount", decimal64)]).unwrap();
     let schema = Arc::new(Schema::new(vec![Field::new("amount", ArrowDataType::Decimal128(38, 3), true)]));
 
-    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let gpu_batch = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
     let materialized = gpu_batch.to_host_record_batch().unwrap();
 
     assert_eq!(materialized.schema(), schema);
-    let amount = materialized.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    let amount = materialized.column(0).as_primitive::<Decimal128Type>();
     assert_eq!(amount.precision(), 38);
     assert_eq!(amount.scale(), 3);
     assert!(amount.is_valid(0));
@@ -862,13 +858,10 @@ fn test_timezone_timestamp_import_preserves_schema_contract_on_gpu_record_batch_
 
     let frame = import_record_batch(&batch).unwrap();
     assert_eq!(frame.series("event_ts").unwrap().dtype().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
 
     assert_eq!(materialized.schema(), schema);
-    let event_ts = materialized.column(0).as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+    let event_ts = materialized.column(0).as_primitive::<TimestampMicrosecondType>();
     assert_eq!(event_ts.values().as_ref(), &[1_700_000_000_000_000, 0, 1_700_000_000_000_123]);
     assert!(event_ts.is_valid(0));
     assert!(!event_ts.is_valid(1));
@@ -915,10 +908,7 @@ fn test_large_list_utf8_import_preserves_schema_contract_on_gpu_record_batch_exp
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
 
     assert_eq!(materialized.schema(), schema);
     let items = materialized.column(0).as_any().downcast_ref::<LargeListArray>().unwrap();
@@ -954,7 +944,7 @@ fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity()
     ));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(item), true)]));
     let arrays = vec![Arc::clone(&lists) as ArrayRef];
-    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let estimated = estimate_list_import_device_memory_bytes(&arrays).unwrap();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
@@ -993,15 +983,12 @@ fn test_sliced_large_list_float64_import_preserves_non_null_special_values_and_e
     let sliced = Arc::new(full.slice(1, 4));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::LargeList(item), false)]));
     let arrays = vec![Arc::clone(&sliced) as ArrayRef];
-    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let estimated = estimate_list_import_device_memory_bytes(&arrays).unwrap();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
     assert!(estimated >= frame.series("features").unwrap().device_allocated_size_bytes().unwrap());
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
 
     assert_eq!(materialized.schema(), schema);
     let features = materialized.column(0).as_any().downcast_ref::<LargeListArray>().unwrap();
@@ -1052,10 +1039,7 @@ fn test_integer_list_widths_round_trip_across_list_shapes() {
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
 
         let frame = import_record_batch(&batch).unwrap();
-        let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-            .unwrap()
-            .to_host_record_batch()
-            .unwrap();
+        let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
         assert_eq!(materialized.schema(), schema);
         assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data(), "{child_type:?}");
     }
@@ -1070,10 +1054,7 @@ fn test_integer_list_widths_round_trip_across_list_shapes() {
     let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::LargeList(item), true)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(list)]).unwrap();
     let frame = import_record_batch(&batch).unwrap();
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
     assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
 }
 
@@ -1098,10 +1079,7 @@ fn test_list_boolean_import_unpacks_bool8_and_reexports_exact_values() {
     let child = export.semantic_columns().iter().find(|column| column.id() == child).unwrap();
     assert_eq!(child.data_type().id(), rapids_interop::TypeId::Bool8);
 
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
     assert_eq!(materialized.schema(), schema);
     assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
 }
@@ -1118,10 +1096,7 @@ fn test_large_list_boolean_slice_and_zero_child_shapes_round_trip() {
     let schema = Arc::new(Schema::new(vec![Field::new("flags", ArrowDataType::LargeList(Arc::clone(&item)), true)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(sliced)]).unwrap();
     let frame = import_record_batch(&batch).unwrap();
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
     let expected = LargeListArray::new(
         item,
         OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 2, 2])),
@@ -1142,10 +1117,7 @@ fn test_large_list_boolean_slice_and_zero_child_shapes_round_trip() {
         let schema = Arc::new(Schema::new(vec![Field::new("flags", lists.data_type().clone(), true)]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
         let frame = import_record_batch(&batch).unwrap();
-        let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
-            .unwrap()
-            .to_host_record_batch()
-            .unwrap();
+        let materialized = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
         assert_eq!(materialized.schema(), schema);
         assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
     }
@@ -1162,7 +1134,7 @@ fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
     ));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), true)]));
     let arrays = vec![Arc::clone(&lists) as ArrayRef];
-    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let estimated = estimate_list_import_device_memory_bytes(&arrays).unwrap();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
@@ -1178,16 +1150,16 @@ fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
     assert_float32_list_value(features, 0, &[Some(1.0), Some(2.0)]);
     assert_float32_list_value(features, 2, &[Some(5.0), Some(6.0)]);
 
-    let fixed = cudf::frame::dataframe::GpuRecordBatch::new(frame, schema).unwrap().to_host_record_batch().unwrap();
+    let fixed = GpuRecordBatch::new(frame, schema).unwrap().to_host_record_batch().unwrap();
     let features = fixed.column(0).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
     assert_eq!(features.value_length(), 2);
     assert!(features.is_valid(0));
     assert!(features.is_null(1));
     assert!(features.is_valid(2));
     let first = features.value(0);
-    assert_eq!(first.as_primitive::<arrow::datatypes::Float32Type>().values(), &[1.0, 2.0]);
+    assert_eq!(first.as_primitive::<Float32Type>().values(), &[1.0, 2.0]);
     let third = features.value(2);
-    assert_eq!(third.as_primitive::<arrow::datatypes::Float32Type>().values(), &[5.0, 6.0]);
+    assert_eq!(third.as_primitive::<Float32Type>().values(), &[5.0, 6.0]);
 }
 
 fn test_sliced_fixed_size_list_float32_import_uses_active_child_range() {
@@ -1201,7 +1173,7 @@ fn test_sliced_fixed_size_list_float32_import_uses_active_child_range() {
     let sliced = Arc::new(lists.slice(1, 2));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
     let arrays = vec![Arc::clone(&sliced) as ArrayRef];
-    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let estimated = estimate_list_import_device_memory_bytes(&arrays).unwrap();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
@@ -1230,7 +1202,7 @@ fn test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema() {
         false,
     )]));
 
-    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+    let error = GpuRecordBatch::new(frame, claimed_schema)
         .expect_err("List<Int64> must not claim a List<Float32> schema contract");
 
     assert_eq!(error.code(), ErrorCode::UnsupportedDtype);
@@ -1257,7 +1229,7 @@ fn test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema() {
         false,
     )]));
 
-    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+    let error = GpuRecordBatch::new(frame, claimed_schema)
         .expect_err("List<String> must be rejected before Float32-based host memory estimation");
 
     assert_eq!(error.code(), ErrorCode::UnsupportedDtype);
@@ -1284,7 +1256,7 @@ fn test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schem
         false,
     )]));
 
-    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+    let error = GpuRecordBatch::new(frame, claimed_schema)
         .expect_err("a nullable list child must not claim a non-nullable child schema");
 
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
@@ -1316,7 +1288,7 @@ fn test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construct
     let claimed_schema =
         Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 3), false)]));
 
-    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+    let error = GpuRecordBatch::new(frame, claimed_schema)
         .expect_err("a retained FixedSizeList dimension must match every cudf list row");
 
     assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
@@ -1343,7 +1315,7 @@ fn test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_le
     let claimed_schema =
         Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
 
-    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+    let error = GpuRecordBatch::new(frame, claimed_schema)
         .expect_err("equal total child length must not hide variable list row widths");
 
     assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
@@ -1367,18 +1339,15 @@ fn test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows() {
     let frame = import_record_batch(&source_batch).unwrap();
     let fixed_schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), true)]));
 
-    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&fixed_schema))
-        .unwrap()
-        .to_host_record_batch()
-        .unwrap();
+    let materialized = GpuRecordBatch::new(frame, Arc::clone(&fixed_schema)).unwrap().to_host_record_batch().unwrap();
 
     assert_eq!(materialized.schema(), fixed_schema);
     let features = materialized.column(0).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
     assert!(features.is_valid(0));
     assert!(features.is_null(1));
     assert!(features.is_valid(2));
-    assert_eq!(features.value(0).as_primitive::<arrow::datatypes::Int32Type>().values(), &[1, 2]);
-    assert_eq!(features.value(2).as_primitive::<arrow::datatypes::Int32Type>().values(), &[3, 4]);
+    assert_eq!(features.value(0).as_primitive::<Int32Type>().values(), &[1, 2]);
+    assert_eq!(features.value(2).as_primitive::<Int32Type>().values(), &[3, 4]);
 }
 
 fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
@@ -1454,46 +1423,16 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
         assert!(arr.is_valid(2));
     }
 
-    assert_eq!(
-        round_trip.column(0).as_primitive::<arrow::datatypes::Decimal128Type>().values().as_ref(),
-        &[12345i128, 0, -67890]
-    );
-    assert_eq!(
-        round_trip.column(1).as_primitive::<arrow::datatypes::Date32Type>().values().as_ref(),
-        &[18_262, 0, 18_264]
-    );
-    assert_eq!(
-        round_trip.column(2).as_primitive::<arrow::datatypes::TimestampSecondType>().values().as_ref(),
-        &[1, 0, 3]
-    );
-    assert_eq!(
-        round_trip.column(3).as_primitive::<arrow::datatypes::TimestampMillisecondType>().values().as_ref(),
-        &[1_000, 0, 3_000]
-    );
-    assert_eq!(
-        round_trip.column(4).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().values().as_ref(),
-        &[1_000, 0, 3_000]
-    );
-    assert_eq!(
-        round_trip.column(5).as_primitive::<arrow::datatypes::TimestampNanosecondType>().values().as_ref(),
-        &[1_000, 0, 3_000]
-    );
-    assert_eq!(
-        round_trip.column(6).as_primitive::<arrow::datatypes::DurationSecondType>().values().as_ref(),
-        &[4, 0, 6]
-    );
-    assert_eq!(
-        round_trip.column(7).as_primitive::<arrow::datatypes::DurationMillisecondType>().values().as_ref(),
-        &[4_000, 0, 6_000]
-    );
-    assert_eq!(
-        round_trip.column(8).as_primitive::<arrow::datatypes::DurationMicrosecondType>().values().as_ref(),
-        &[4_000, 0, 6_000]
-    );
-    assert_eq!(
-        round_trip.column(9).as_primitive::<arrow::datatypes::DurationNanosecondType>().values().as_ref(),
-        &[4_000, 0, 6_000]
-    );
+    assert_eq!(round_trip.column(0).as_primitive::<Decimal128Type>().values().as_ref(), &[12345i128, 0, -67890]);
+    assert_eq!(round_trip.column(1).as_primitive::<Date32Type>().values().as_ref(), &[18_262, 0, 18_264]);
+    assert_eq!(round_trip.column(2).as_primitive::<TimestampSecondType>().values().as_ref(), &[1, 0, 3]);
+    assert_eq!(round_trip.column(3).as_primitive::<TimestampMillisecondType>().values().as_ref(), &[1_000, 0, 3_000]);
+    assert_eq!(round_trip.column(4).as_primitive::<TimestampMicrosecondType>().values().as_ref(), &[1_000, 0, 3_000]);
+    assert_eq!(round_trip.column(5).as_primitive::<TimestampNanosecondType>().values().as_ref(), &[1_000, 0, 3_000]);
+    assert_eq!(round_trip.column(6).as_primitive::<DurationSecondType>().values().as_ref(), &[4, 0, 6]);
+    assert_eq!(round_trip.column(7).as_primitive::<DurationMillisecondType>().values().as_ref(), &[4_000, 0, 6_000]);
+    assert_eq!(round_trip.column(8).as_primitive::<DurationMicrosecondType>().values().as_ref(), &[4_000, 0, 6_000]);
+    assert_eq!(round_trip.column(9).as_primitive::<DurationNanosecondType>().values().as_ref(), &[4_000, 0, 6_000]);
 }
 
 fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
@@ -1525,27 +1464,20 @@ fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
     assert_eq!(df.series("time_us").unwrap().dtype().unwrap().id(), TypeId::DurationMicroseconds);
     assert_eq!(df.series("time_ns").unwrap().dtype().unwrap().id(), TypeId::DurationNanoseconds);
 
-    let materialized =
-        cudf::frame::dataframe::GpuRecordBatch::new(df, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
+    let materialized = GpuRecordBatch::new(df, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
     assert_eq!(materialized.schema().as_ref(), schema.as_ref());
     assert_eq!(
-        materialized.column(0).as_primitive::<arrow::datatypes::Date64Type>().values().as_ref(),
+        materialized.column(0).as_primitive::<Date64Type>().values().as_ref(),
         &[1_577_836_800_000, 1_580_428_800_000]
     );
+    assert_eq!(materialized.column(1).as_primitive::<Time32SecondType>().values().as_ref(), &[1, 86_399]);
+    assert_eq!(materialized.column(2).as_primitive::<Time32MillisecondType>().values().as_ref(), &[1_000, 86_399_000]);
     assert_eq!(
-        materialized.column(1).as_primitive::<arrow::datatypes::Time32SecondType>().values().as_ref(),
-        &[1, 86_399]
-    );
-    assert_eq!(
-        materialized.column(2).as_primitive::<arrow::datatypes::Time32MillisecondType>().values().as_ref(),
-        &[1_000, 86_399_000]
-    );
-    assert_eq!(
-        materialized.column(3).as_primitive::<arrow::datatypes::Time64MicrosecondType>().values().as_ref(),
+        materialized.column(3).as_primitive::<Time64MicrosecondType>().values().as_ref(),
         &[1_000_000, 86_399_000_000]
     );
     assert_eq!(
-        materialized.column(4).as_primitive::<arrow::datatypes::Time64NanosecondType>().values().as_ref(),
+        materialized.column(4).as_primitive::<Time64NanosecondType>().values().as_ref(),
         &[1_000_000_000, 86_399_000_000_000]
     );
 }
@@ -1628,7 +1560,7 @@ fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
 // ---------------------------------------------------------------------------
 
 fn test_round_trip_nullable_i32() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string()],
         vec![column_from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap()],
     )
@@ -1656,7 +1588,7 @@ fn test_round_trip_nullable_i32() {
 }
 
 fn test_round_trip_nullable_f64() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["v".to_string()],
         vec![column_from_slice_nullable(&[1.1f64, 0.0, 3.3, 0.0], &[true, false, true, false]).unwrap()],
     )
@@ -1687,11 +1619,8 @@ fn test_round_trip_nullable_f64() {
 // ---------------------------------------------------------------------------
 
 fn test_round_trip_bool8() {
-    let df = crate::common::dataframe_from_columns(
-        vec!["flag".to_string()],
-        vec![column_from_slice(&[true, false, true]).unwrap()],
-    )
-    .unwrap();
+    let df = dataframe_from_columns(vec!["flag".to_string()], vec![column_from_slice(&[true, false, true]).unwrap()])
+        .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Boolean);
@@ -1707,7 +1636,7 @@ fn test_round_trip_bool8() {
 }
 
 fn test_round_trip_nullable_bool8() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["flag".to_string()],
         vec![column_from_slice_nullable(&[true, false, true], &[true, false, true]).unwrap()],
     )
@@ -1728,8 +1657,8 @@ fn test_round_trip_nullable_bool8() {
 }
 
 fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
-    let lhs = crate::common::nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
-    let rhs = crate::common::nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
+    let lhs = nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
+    let rhs = nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
     let flag = lhs.eq(&rhs).unwrap();
     let df = DataFrame::from_series([("flag", flag)]).unwrap();
 
@@ -1749,7 +1678,7 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
 // ---------------------------------------------------------------------------
 
 fn test_schema_preserved_multi_column() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["id".to_string(), "score".to_string(), "active".to_string()],
         vec![
             column_from_slice(&[1i32, 2]).unwrap(),
@@ -1797,7 +1726,7 @@ fn test_from_record_batch_creates_dataframe() {
 }
 
 fn test_from_record_batch_binds_caller_runtime_provenance() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     let expected_id = runtime.testing_execution_domain_id();
     let expected_stream = runtime.stream().testing_raw_handle_value();
     let expected_mr = runtime.memory_resource().testing_raw_handle_value();
@@ -1865,11 +1794,9 @@ fn test_from_record_batch_nullable_primitive_slice_import_preserves_offset_nulls
 // ---------------------------------------------------------------------------
 
 fn test_round_trip_string_only() {
-    let df = crate::common::dataframe_from_columns(
-        vec!["name".to_string()],
-        vec![column_from_strs(&["alice", "bob", "charlie"]).unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["name".to_string()], vec![column_from_strs(&["alice", "bob", "charlie"]).unwrap()])
+            .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
@@ -1890,7 +1817,7 @@ fn test_round_trip_string_only() {
 }
 
 fn test_round_trip_mixed_string_and_numeric() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["city".to_string(), "pop".to_string()],
         vec![
             column_from_strs(&["tokyo", "london", "paris"]).unwrap(),
@@ -1915,7 +1842,7 @@ fn test_round_trip_mixed_string_and_numeric() {
 }
 
 fn test_round_trip_nullable_string() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["tag".to_string()],
         vec![column_from_strs_nullable(&["hello", "", "world"], &[true, false, true]).unwrap()],
     )
@@ -1943,11 +1870,7 @@ fn test_round_trip_nullable_string() {
 }
 
 fn test_round_trip_string_with_empty_values() {
-    let df = crate::common::dataframe_from_columns(
-        vec!["s".to_string()],
-        vec![column_from_strs(&["", "data", ""]).unwrap()],
-    )
-    .unwrap();
+    let df = dataframe_from_columns(vec!["s".to_string()], vec![column_from_strs(&["", "data", ""]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let df2 = import_record_batch(&batch).unwrap();
@@ -1956,11 +1879,9 @@ fn test_round_trip_string_with_empty_values() {
 }
 
 fn test_round_trip_string_unicode() {
-    let df = crate::common::dataframe_from_columns(
-        vec!["text".to_string()],
-        vec![column_from_strs(&["héllo", "日本語", "🚀🎉"]).unwrap()],
-    )
-    .unwrap();
+    let df =
+        dataframe_from_columns(vec!["text".to_string()], vec![column_from_strs(&["héllo", "日本語", "🚀🎉"]).unwrap()])
+            .unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
@@ -2072,14 +1993,14 @@ fn test_from_record_batch_string_view_slice_import_uses_logical_range() {
 }
 
 fn test_gpu_record_batch_accepts_utf8_view_schema_contract() {
-    let frame = crate::common::dataframe_from_columns(
+    let frame = dataframe_from_columns(
         vec!["s".to_string()],
         vec![column_from_strs_nullable(&["x", "", "longer-than-inline"], &[true, false, true]).unwrap()],
     )
     .unwrap();
     let schema = Arc::new(Schema::new(vec![Field::new("s", ArrowDataType::Utf8View, true)]));
 
-    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let gpu_batch = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
     let materialized = gpu_batch.to_host_record_batch().unwrap();
 
     assert_eq!(materialized.schema(), schema);
@@ -2089,8 +2010,7 @@ fn test_gpu_record_batch_accepts_utf8_view_schema_contract() {
 }
 
 fn test_round_trip_empty_string_schema() {
-    let df =
-        crate::common::dataframe_from_columns(vec!["s".to_string()], vec![column_from_strs(&[]).unwrap()]).unwrap();
+    let df = dataframe_from_columns(vec!["s".to_string()], vec![column_from_strs(&[]).unwrap()]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
@@ -2125,38 +2045,38 @@ fn batches_from_ranges(ranges: &[std::ops::Range<i64>]) -> Vec<RecordBatch> {
 }
 
 fn test_from_record_batches_matches_per_batch_import() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     let batches = batches_from_ranges(&[0..3, 3..8, 8..15]);
 
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     DataFrame::from_record_batches(&runtime, &batches[..1]).unwrap();
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 1);
 
     let staged = DataFrame::from_record_batches(&runtime, &batches).unwrap();
 
     assert_eq!(staged.num_rows(), 15);
     assert_eq!(staged.column_names(), vec!["id", "score"]);
     let round_trip = staged.to_record_batch().unwrap();
-    let ids = round_trip.column(0).as_primitive::<arrow::datatypes::Int64Type>();
+    let ids = round_trip.column(0).as_primitive::<Int64Type>();
     assert_eq!(ids.values(), &(0..15).collect::<Vec<i64>>()[..]);
-    let scores = round_trip.column(1).as_primitive::<arrow::datatypes::Float64Type>();
+    let scores = round_trip.column(1).as_primitive::<Float64Type>();
     assert_eq!(scores.values(), &(0..15).map(|value| value as f64 * 0.5).collect::<Vec<f64>>()[..]);
 }
 
 fn test_from_record_batches_supports_sliced_batches() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     let full = batches_from_ranges(std::slice::from_ref(&(0..10))).remove(0);
     let batches = vec![full.slice(1, 4), full.slice(6, 3)];
 
     let staged = DataFrame::from_record_batches(&runtime, &batches).unwrap();
 
     let round_trip = staged.to_record_batch().unwrap();
-    let ids = round_trip.column(0).as_primitive::<arrow::datatypes::Int64Type>();
+    let ids = round_trip.column(0).as_primitive::<Int64Type>();
     assert_eq!(ids.values(), &[1, 2, 3, 4, 6, 7, 8][..]);
 }
 
 fn test_from_record_batches_crosses_staging_slab_boundaries() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     // 3 batches x 1.5M rows x 8 bytes = 36 MB total, crossing the default
     // 16 MiB staging slab several times within and across batches.
     let per_batch: i64 = 1_500_000;
@@ -2178,7 +2098,7 @@ fn test_from_record_batches_crosses_staging_slab_boundaries() {
 }
 
 fn test_from_record_batches_nullable_and_string_fallback() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     let batch_one = RecordBatch::try_from_iter_with_nullable(vec![
         ("n", Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef, true),
         ("s", Arc::new(StringArray::from(vec![Some("a"), Some("b")])) as ArrayRef, true),
@@ -2193,14 +2113,14 @@ fn test_from_record_batches_nullable_and_string_fallback() {
     let staged = DataFrame::from_record_batches(&runtime, &[batch_one, batch_two]).unwrap();
 
     let round_trip = staged.to_record_batch().unwrap();
-    let numbers = round_trip.column(0).as_primitive::<arrow::datatypes::Int64Type>();
+    let numbers = round_trip.column(0).as_primitive::<Int64Type>();
     assert_eq!(numbers.iter().collect::<Vec<_>>(), vec![Some(1), None, Some(3)]);
     let strings = round_trip.column(1).as_any().downcast_ref::<StringArray>().unwrap();
     assert_eq!(strings.iter().collect::<Vec<_>>(), vec![Some("a"), Some("b"), None]);
 }
 
 fn test_from_record_batches_rejects_empty_input() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
 
     let error = DataFrame::from_record_batches(&runtime, &[]).unwrap_err();
 
@@ -2208,7 +2128,7 @@ fn test_from_record_batches_rejects_empty_input() {
 }
 
 fn test_from_record_batches_rejects_schema_mismatch() {
-    let runtime = crate::common::sample_runtime();
+    let runtime = sample_runtime();
     let ints = RecordBatch::try_from_iter(vec![("v", Arc::new(Int64Array::from(vec![1i64])) as ArrayRef)]).unwrap();
     let floats =
         RecordBatch::try_from_iter(vec![("v", Arc::new(Float64Array::from(vec![1.0f64])) as ArrayRef)]).unwrap();
@@ -2220,7 +2140,7 @@ fn test_from_record_batches_rejects_schema_mismatch() {
 
 #[test]
 fn arrow_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "test_arrow_datatype_try_from_type_id_supported_mappings",
             test_arrow_datatype_try_from_type_id_supported_mappings,

@@ -10,7 +10,10 @@ use super::{
     DeviceId,
     device_health::{self, DeviceFaultKind},
 };
-use crate::core::error::{self, Error, ErrorCode, Result};
+use crate::{
+    core::error::{self, Error, ErrorCode, Result},
+    testing::device_safety::{cuda_get_device, cuda_set_device},
+};
 
 /// Thread-scoped proof that the current host thread entered one owner device.
 ///
@@ -126,7 +129,7 @@ impl DeviceEntryGuard {
         }
 
         let mut current = 0;
-        let get_status = crate::testing::device_safety::cuda_get_device(&mut current);
+        let get_status = cuda_get_device(&mut current);
         if get_status != cudf_sys::CUDF_SUCCESS {
             device_health::record_fault(owner, DeviceFaultKind::CurrentDeviceQueryFailed, operation, Some(get_status));
             poison_thread_authority(ThreadAuthorityPoison { device: owner, operation, native_status: get_status });
@@ -135,7 +138,7 @@ impl DeviceEntryGuard {
         let previous = DeviceId::from_validated_ordinal_raw(current);
 
         if previous != owner {
-            let set_status = crate::testing::device_safety::cuda_set_device(owner.ordinal_raw());
+            let set_status = cuda_set_device(owner.ordinal_raw());
             if set_status != cudf_sys::CUDF_SUCCESS {
                 device_health::record_fault(
                     owner,
@@ -178,7 +181,7 @@ impl Drop for DeviceEntryGuard {
         });
 
         if let Some(restore_device) = restore_device {
-            let status = crate::testing::device_safety::cuda_set_device(restore_device.ordinal_raw());
+            let status = cuda_set_device(restore_device.ordinal_raw());
             if status != cudf_sys::CUDF_SUCCESS {
                 device_health::record_fault(
                     restore_device,

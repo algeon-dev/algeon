@@ -1,4 +1,4 @@
-use crate::core::error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_KEYS_COUNT};
+use crate::core::error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_KEYS_COUNT, limit_validation_error};
 
 pub(super) fn unsupported_sort_validation_error(
     operation: &'static str,
@@ -26,7 +26,7 @@ pub(super) fn sort_option_count_mismatch_error(
 }
 
 pub(super) fn sort_key_count_limit_error(operation: &'static str, keys_count: usize) -> Error {
-    crate::core::error::limit_validation_error(
+    limit_validation_error(
         operation,
         "number of sort keys exceeds i32::MAX",
         "sort_keys",

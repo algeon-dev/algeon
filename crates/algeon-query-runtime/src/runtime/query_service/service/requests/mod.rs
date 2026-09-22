@@ -1,5 +1,7 @@
 //! Shared admission-submission preamble and placed-admission commit.
 
+#[cfg(test)]
+use std::sync;
 use std::{
     collections::BTreeMap,
     sync::{Arc, MutexGuard, atomic::Ordering},
@@ -7,16 +9,25 @@ use std::{
 };
 
 use query_planning::{
-    admission::AttemptRequirement,
+    admission::{AttemptRequirement, ExecutionCapability},
     error::{QueryError, QueryErrorCode, Result},
 };
 
 use crate::{
-    observability::{AdmissionLifecycleState, AdmissionRequestId, RuntimeObservationHandle},
+    observability::{
+        AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionWaitFact, AttemptId, RuntimeObservationHandle,
+    },
     runtime::{
         ExecutionCancellation,
         backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
         backend_lifecycle::ObservationPermit,
+        query_service::service::{
+            placement::required_capabilities_for_placement,
+            transaction::{
+                AdmissionEnvelope, AdmissionTransactionProbe, pause_after_rollback_accounting,
+                publication_deadline_error,
+            },
+        },
     },
 };
 
@@ -29,7 +40,7 @@ const ADMISSION_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10)
 use super::{
     super::{
         admission::{
-            AdmissionRequest, AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry,
+            AdmissionRequest, AdmissionState, AdmissionTicket, DeviceAdmissionEntries, DeviceAdmissionEntry,
             PendingPreflightReservation, PlacedQuery, QueryCompletion, admission_cancellation_or_deadline_error,
             admission_queue_full_error, finish_removed_request_error, service_overloaded_error,
         },
@@ -128,14 +139,14 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptRequirement>,
     pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
     pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
-    pub(in crate::runtime::query_service) attempt_id: crate::observability::AttemptId,
+    pub(in crate::runtime::query_service) attempt_id: AttemptId,
     pub(in crate::runtime::query_service) completion: QueryCompletion,
     pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
     pub(in crate::runtime::query_service) admission_wait: Duration,
     pub(in crate::runtime::query_service) deadline: Instant,
     pub(in crate::runtime::query_service) execution_cancellation: ExecutionCancellation,
-    pub(in crate::runtime::query_service) admission_wait_fact: Option<crate::observability::AttemptAdmissionWaitFact>,
-    pub(in crate::runtime::query_service) lifecycle_ticket: super::super::admission::AdmissionTicket,
+    pub(in crate::runtime::query_service) admission_wait_fact: Option<AttemptAdmissionWaitFact>,
+    pub(in crate::runtime::query_service) lifecycle_ticket: AdmissionTicket,
 }
 
 struct PreparedSubmission {
@@ -146,17 +157,17 @@ struct PreparedSubmission {
     submitted_plan_capability_evidence: Option<AttemptRequirement>,
     request: QueryAdmissionRequest,
     observation: RuntimeObservationHandle,
-    attempt_id: crate::observability::AttemptId,
+    attempt_id: AttemptId,
     admission_request_id: AdmissionRequestId,
     completion: QueryCompletion,
     requirement: AttemptRequirement,
-    required_capabilities: Vec<query_planning::admission::ExecutionCapability>,
+    required_capabilities: Vec<ExecutionCapability>,
     candidate_ordinals: Vec<usize>,
 }
 
 struct AdmissionPublication {
     observation: RuntimeObservationHandle,
-    attempt_id: crate::observability::AttemptId,
+    attempt_id: AttemptId,
     completion: QueryCompletion,
     admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     submitted_plan_capability_evidence: Option<AttemptRequirement>,
@@ -165,7 +176,7 @@ struct AdmissionPublication {
     admission_wait: Duration,
     deadline: Instant,
     execution_cancellation: ExecutionCancellation,
-    admission_wait_fact: Option<crate::observability::AttemptAdmissionWaitFact>,
+    admission_wait_fact: Option<AttemptAdmissionWaitFact>,
 }
 
 impl QueryService {
@@ -183,7 +194,7 @@ impl QueryService {
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut request = request;
         let mut observation_owner = request.take_runtime_observation();
-        let attempt_id = observation_owner.attempt_id.unwrap_or_else(crate::observability::AttemptId::mint);
+        let attempt_id = observation_owner.attempt_id.unwrap_or_else(AttemptId::mint);
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
@@ -244,7 +255,7 @@ impl QueryService {
             },
         };
         let requested_at = Instant::now();
-        let required_capabilities = super::placement::required_capabilities_for_placement(&requirement);
+        let required_capabilities = required_capabilities_for_placement(&requirement);
         let candidate_ordinals = self.compatible_devices_for_capabilities(&required_capabilities)?;
         Ok(PreparedSubmission {
             queue_deadline,
@@ -345,7 +356,7 @@ impl QueryService {
         &self,
         request: AdmissionRequest,
         pending: PendingPreflightReservation,
-    ) -> Result<std::sync::MutexGuard<'_, AdmissionState>> {
+    ) -> Result<MutexGuard<'_, AdmissionState>> {
         let mut state = self.lock_admission()?;
         let error = if let Some(error) = self.admission_terminal_rejection(&state) {
             record_admission_lifecycle(
@@ -442,24 +453,19 @@ impl QueryService {
             lifecycle_ticket,
         } = commit;
         #[cfg(test)]
-        let probe =
-            self.inner.admission_transaction_probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let probe = self.inner.admission_transaction_probe.lock().unwrap_or_else(sync::PoisonError::into_inner).clone();
         // Production installs no probe; the admission transaction hooks are
         // inlined no-ops over a constant `None`.
         #[cfg(not(test))]
-        let probe: Option<Arc<super::transaction::AdmissionTransactionProbe>> = None;
+        let probe: Option<Arc<AdmissionTransactionProbe>> = None;
         #[cfg(test)]
         if self.inner.direct_placement_resolution_failure.swap(false, Ordering::AcqRel)
-            && let Some(pause) = self
-                .inner
-                .direct_provisional_cleanup_pause
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
+            && let Some(pause) =
+                self.inner.direct_provisional_cleanup_pause.lock().unwrap_or_else(sync::PoisonError::into_inner).take()
         {
             let mut lifecycle_ticket = lifecycle_ticket;
-            let super::super::admission::PlacedQuery { device_ordinal: _, memory_grant } = placed_query;
-            let state = self.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let PlacedQuery { device_ordinal: _, memory_grant } = placed_query;
+            let state = self.inner.admission.lock().unwrap_or_else(sync::PoisonError::into_inner);
             lifecycle_ticket.transition_to_cleanup().expect("injected resolution failure accounts provisional cleanup");
             self.inner.notify_admission_available();
             drop(state);
@@ -475,7 +481,7 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        let envelope = super::transaction::AdmissionEnvelope::acquire(
+        let envelope = AdmissionEnvelope::acquire(
             &self.inner,
             placed_query,
             lifecycle_ticket,
@@ -577,9 +583,9 @@ impl QueryService {
     fn publish_admission_envelope(
         &self,
         mut state: MutexGuard<'_, AdmissionState>,
-        mut envelope: super::transaction::AdmissionEnvelope,
+        mut envelope: AdmissionEnvelope,
         publication: AdmissionPublication,
-        probe: &Option<Arc<super::transaction::AdmissionTransactionProbe>>,
+        probe: &Option<Arc<AdmissionTransactionProbe>>,
     ) -> Result<QueryHandle> {
         let AdmissionPublication {
             observation,
@@ -616,7 +622,7 @@ impl QueryService {
             );
             self.inner.notify_admission_available();
             drop(state);
-            super::transaction::pause_after_rollback_accounting(probe.as_deref());
+            pause_after_rollback_accounting(probe.as_deref());
             drop(envelope);
             self.inner.notify_admission_available();
             completion.finish_error(&error);
@@ -636,13 +642,13 @@ impl QueryService {
             drop(state);
             // Reverse-order component release happens outside the admission
             // mutex: the grant drop invokes the ledger release hook.
-            super::transaction::pause_after_rollback_accounting(probe.as_deref());
+            pause_after_rollback_accounting(probe.as_deref());
             drop(envelope);
             self.inner.notify_admission_available();
             completion.finish_error(&error);
             return Err(error);
         }
-        if let Some(error) = super::transaction::publication_deadline_error(deadline, probe.as_deref()) {
+        if let Some(error) = publication_deadline_error(deadline, probe.as_deref()) {
             envelope.preaccount_rollback_cleanup(&mut state);
             record_admission_lifecycle(
                 &observation,
@@ -654,7 +660,7 @@ impl QueryService {
             );
             self.inner.notify_admission_available();
             drop(state);
-            super::transaction::pause_after_rollback_accounting(probe.as_deref());
+            pause_after_rollback_accounting(probe.as_deref());
             drop(envelope);
             self.inner.notify_admission_available();
             completion.finish_timeout(&error);
@@ -664,7 +670,7 @@ impl QueryService {
             envelope.preaccount_rollback_cleanup(&mut state);
             self.inner.notify_admission_available();
             drop(state);
-            super::transaction::pause_after_rollback_accounting(probe.as_deref());
+            pause_after_rollback_accounting(probe.as_deref());
             drop(envelope);
             self.inner.notify_admission_available();
             completion.finish_error(&error);
@@ -688,7 +694,7 @@ impl QueryService {
                 self.inner.notify_admission_available();
                 drop(state);
                 self.inner.close_unknown_isolation_admission("attempt finalizer unavailable during admission publish");
-                super::transaction::pause_after_rollback_accounting(probe.as_deref());
+                pause_after_rollback_accounting(probe.as_deref());
                 drop(envelope);
                 self.inner.notify_admission_available();
                 return Err(error);

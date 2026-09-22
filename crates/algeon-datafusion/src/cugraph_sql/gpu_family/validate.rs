@@ -3,7 +3,8 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::{
     catalog::{Session, TableProvider},
-    common::{Result, ScalarValue, TableReference},
+    common::{DataFusionError, Result as DataFusionResult, ScalarValue, TableReference},
+    execution::SessionState,
     logical_expr::{Expr, lit},
 };
 use serde_json::{Map, Value};
@@ -477,7 +478,7 @@ fn build_validate_spec(
     table_name: &str,
     call: &ValidateCallOptions,
     config: &CugraphSqlConfig,
-) -> Result<CugraphAlgorithmSpec> {
+) -> DataFusionResult<CugraphAlgorithmSpec> {
     let mut args = vec![lit(table_name)];
     if algorithm.requires_source_vertex() {
         if let Some(source_vertex) = &call.source_vertex {
@@ -504,7 +505,7 @@ async fn resolve_table_provider(
 ) -> std::result::Result<Arc<dyn TableProvider>, String> {
     let session_state = state
         .as_any()
-        .downcast_ref::<datafusion::execution::SessionState>()
+        .downcast_ref::<SessionState>()
         .ok_or_else(|| "cuGraph validation requires a DataFusion SessionState for catalog resolution".to_string())?;
     let schema = session_state
         .schema_for_ref(table_ref.clone())
@@ -516,7 +517,7 @@ async fn resolve_table_provider(
         .ok_or_else(|| format!("No table named '{}' for cuGraph edge source", table_ref))
 }
 
-fn validation_error_code(error: &datafusion::common::DataFusionError) -> &'static str {
+fn validation_error_code(error: &DataFusionError) -> &'static str {
     match structured_error_code(error) {
         Some(ErrorCode::UnsupportedOperator) => ERROR_UNSUPPORTED_OPTION,
         Some(ErrorCode::InvalidExecutionPlan) | None => ERROR_INVALID_ARGUMENT,
@@ -524,7 +525,7 @@ fn validation_error_code(error: &datafusion::common::DataFusionError) -> &'stati
     }
 }
 
-fn vertex_domain_error_code(error: &datafusion::common::DataFusionError) -> &'static str {
+fn vertex_domain_error_code(error: &DataFusionError) -> &'static str {
     match structured_error_code(error) {
         Some(ErrorCode::UnsupportedType) => ERROR_UNSUPPORTED_VERTEX_DTYPE,
         Some(ErrorCode::InvalidExecutionPlan) | None => ERROR_VERTEX_DTYPE_MISMATCH,
@@ -532,7 +533,7 @@ fn vertex_domain_error_code(error: &datafusion::common::DataFusionError) -> &'st
     }
 }
 
-fn similarity_pair_error_code(error: &datafusion::common::DataFusionError) -> &'static str {
+fn similarity_pair_error_code(error: &DataFusionError) -> &'static str {
     match structured_error_code(error) {
         Some(ErrorCode::FieldNotFound) => ERROR_COLUMN_NOT_FOUND,
         Some(ErrorCode::InvalidExecutionPlan) | None => ERROR_VERTEX_DTYPE_MISMATCH,
@@ -540,7 +541,7 @@ fn similarity_pair_error_code(error: &datafusion::common::DataFusionError) -> &'
     }
 }
 
-fn structured_error_code(error: &datafusion::common::DataFusionError) -> Option<ErrorCode> {
+fn structured_error_code(error: &DataFusionError) -> Option<ErrorCode> {
     error.find_algeon_error().map(|error| error.code())
 }
 

@@ -11,7 +11,10 @@ use parquet::{
 };
 
 use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpcds_parquet_dataset};
-use crate::{ALGEON_PARQUET_DIR_ENV, metadata::DatasetFingerprint};
+use crate::{
+    ALGEON_PARQUET_DIR_ENV,
+    metadata::{DatasetFingerprint, WorkloadDatasetMetadata},
+};
 
 /// Canonical TPC-DS table names in registration/report order.
 pub const TPCDS_TABLES: &[&str] = &[
@@ -156,8 +159,8 @@ impl TpcdsDatasetMetadata {
     }
 
     /// Converts TPC-DS metadata into the shared report dataset header shape.
-    pub fn to_neutral_metadata(&self) -> crate::metadata::WorkloadDatasetMetadata {
-        crate::metadata::WorkloadDatasetMetadata {
+    pub fn to_neutral_metadata(&self) -> WorkloadDatasetMetadata {
+        WorkloadDatasetMetadata {
             workload: "tpcds",
             root: self.root.clone(),
             scale_factor: Some(self.scale_factor.clone()),

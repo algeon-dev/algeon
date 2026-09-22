@@ -66,6 +66,7 @@ use crate::{
         error::{
             self, Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result,
         },
+        native_teardown::drop_device_owned_handle,
         table::{Table, TableView},
         types::TypeId,
     },
@@ -314,7 +315,7 @@ unsafe impl Sync for MixedJoinSizeDataHandle {}
 
 impl Drop for HashJoinHandle {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self._domain.device_id(),
             "HashJoinHandle::drop",
@@ -325,7 +326,7 @@ impl Drop for HashJoinHandle {
 
 impl Drop for FilteredJoinHandle {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self._domain.device_id(),
             "FilteredJoinHandle::drop",
@@ -336,7 +337,7 @@ impl Drop for FilteredJoinHandle {
 
 impl Drop for FilteredJoinProbeHandle {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self._domain.device_id(),
             "FilteredJoinProbeHandle::drop",
@@ -347,7 +348,7 @@ impl Drop for FilteredJoinProbeHandle {
 
 impl Drop for ConditionalFullJoinSizeDataHandle {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self._domain.device_id(),
             "ConditionalFullJoinSizeDataHandle::drop",
@@ -358,7 +359,7 @@ impl Drop for ConditionalFullJoinSizeDataHandle {
 
 impl Drop for MixedJoinSizeDataHandle {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self._domain.device_id(),
             "MixedJoinSizeDataHandle::drop",

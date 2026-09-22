@@ -4,7 +4,7 @@ use std::fmt;
 
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
+    password_hash::{Error as PasswordHashErrorKind, PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
 };
 use rand::{TryRng, rngs::SysRng};
 
@@ -55,7 +55,7 @@ pub fn verify_password(password: &str, phc_string: &str) -> Result<bool, Passwor
     let parsed = PasswordHash::new(phc_string).map_err(|error| PasswordHashError::InvalidHash(error.to_string()))?;
     match Argon2::default().verify_password(password.as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(PasswordHashErrorKind::Password) => Ok(false),
         Err(error) => Err(PasswordHashError::InvalidHash(error.to_string())),
     }
 }

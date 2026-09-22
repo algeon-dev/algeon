@@ -2,18 +2,19 @@
 
 use arrow::datatypes::DataType;
 
-use super::super::{
-    parquet::{LocalParquetSource, SourceColumnRef},
-    reader_predicate_decimal_raw_for_integer_value, reader_predicate_expr_references_decimal_column,
-    reader_predicate_integer_literal_raw, reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_raw,
-};
 use crate::{
     backend::AnalysisContext,
     datatypes::{
         arrow_decimal_scale_to_cudf_scale, is_narrow_decimal_carry_type, is_supported_list_carry_type,
         is_timestamp_with_timezone,
     },
-    expr::{Expr, LiteralValue},
+    expr::{BinaryOp, Expr, LiteralValue},
+    source::{
+        parquet::{LocalParquetSource, SourceColumnRef},
+        reader_predicate_decimal_raw_for_integer_value, reader_predicate_expr_references_decimal_column,
+        reader_predicate_integer_literal_raw, reader_predicate_rescale_decimal_raw,
+        reader_predicate_unsigned_literal_raw,
+    },
 };
 
 pub(in crate::source) fn reader_predicate_root_is_supported(expr: &Expr) -> bool {
@@ -117,8 +118,7 @@ pub(in crate::source) fn reader_predicate_expr_is_supported(
     }
 }
 
-fn reader_predicate_binary_operator_is_supported(op: crate::expr::BinaryOp) -> bool {
-    use crate::expr::BinaryOp;
+fn reader_predicate_binary_operator_is_supported(op: BinaryOp) -> bool {
     matches!(
         op,
         BinaryOp::Add
@@ -140,8 +140,7 @@ fn reader_predicate_binary_operator_is_supported(op: crate::expr::BinaryOp) -> b
     )
 }
 
-fn reader_predicate_operator_outputs_boolean(op: crate::expr::BinaryOp) -> bool {
-    use crate::expr::BinaryOp;
+fn reader_predicate_operator_outputs_boolean(op: BinaryOp) -> bool {
     matches!(
         op,
         BinaryOp::Eq
@@ -169,11 +168,10 @@ fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
 fn reader_predicate_binary_operand_types_are_supported(
     source: &LocalParquetSource,
     left: &Expr,
-    op: crate::expr::BinaryOp,
+    op: BinaryOp,
     right: &Expr,
     ctx: AnalysisContext<'_>,
 ) -> bool {
-    use crate::expr::BinaryOp;
     if matches!(op, BinaryOp::And | BinaryOp::Or) {
         return true;
     }
@@ -338,7 +336,7 @@ pub(in crate::source) fn reader_predicate_source_contract_shape_is_supported(
     expr: &Expr,
 ) -> bool {
     match expr {
-        Expr::Binary { left, op: crate::expr::BinaryOp::And | crate::expr::BinaryOp::Or, right, .. } => {
+        Expr::Binary { left, op: BinaryOp::And | BinaryOp::Or, right, .. } => {
             reader_predicate_source_contract_shape_is_supported(source, left)
                 && reader_predicate_source_contract_shape_is_supported(source, right)
         },
@@ -387,18 +385,11 @@ pub(in crate::source) fn reader_predicate_source_contract_shape_is_supported(
 fn reader_predicate_source_contract_comparison_is_supported(
     source: &LocalParquetSource,
     column: &Expr,
-    op: crate::expr::BinaryOp,
+    op: BinaryOp,
     literal: &Expr,
 ) -> bool {
-    matches!(
-        op,
-        crate::expr::BinaryOp::Eq
-            | crate::expr::BinaryOp::NotEq
-            | crate::expr::BinaryOp::Lt
-            | crate::expr::BinaryOp::LtEq
-            | crate::expr::BinaryOp::Gt
-            | crate::expr::BinaryOp::GtEq
-    ) && reader_predicate_source_contract_column_type(source, column).is_some()
+    matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq)
+        && reader_predicate_source_contract_column_type(source, column).is_some()
         && reader_predicate_source_contract_literal_is_supported(literal)
 }
 
@@ -452,12 +443,12 @@ fn reader_predicate_source_contract_literal_is_supported(expr: &Expr) -> bool {
     )
 }
 
-fn invert_reader_op(op: crate::expr::BinaryOp) -> crate::expr::BinaryOp {
+fn invert_reader_op(op: BinaryOp) -> BinaryOp {
     match op {
-        crate::expr::BinaryOp::Lt => crate::expr::BinaryOp::Gt,
-        crate::expr::BinaryOp::LtEq => crate::expr::BinaryOp::GtEq,
-        crate::expr::BinaryOp::Gt => crate::expr::BinaryOp::Lt,
-        crate::expr::BinaryOp::GtEq => crate::expr::BinaryOp::LtEq,
+        BinaryOp::Lt => BinaryOp::Gt,
+        BinaryOp::LtEq => BinaryOp::GtEq,
+        BinaryOp::Gt => BinaryOp::Lt,
+        BinaryOp::GtEq => BinaryOp::LtEq,
         _ => op,
     }
 }

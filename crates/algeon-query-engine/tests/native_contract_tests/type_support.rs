@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{Decimal32Type, Decimal64Type, validate_decimal_precision_and_scale};
-use query_engine::datatypes::is_narrow_decimal_carry_type;
+use arrow::datatypes::{Decimal32Type, Decimal64Type, UnionFields, UnionMode, validate_decimal_precision_and_scale};
+use query_engine::{
+    datatypes::is_narrow_decimal_carry_type, exec::preflight_query_plan, rapids_backend::rapids_analysis_context,
+};
 
 use super::*;
 
@@ -35,7 +37,7 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
 
 #[test]
 fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     let cases = [
         (DataType::Decimal32(9, 2), TypeId::Decimal32, -2),
         (DataType::Decimal32(9, -1), TypeId::Decimal32, 1),
@@ -84,7 +86,7 @@ fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() 
 
 #[test]
 fn timestamp_with_timezone_type_support_policy_is_carry_only() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     let timestamp_tz = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
     assert!(is_supported_arrow_type(&timestamp_tz));
@@ -96,7 +98,7 @@ fn timestamp_with_timezone_type_support_policy_is_carry_only() {
 
 #[test]
 fn temporal_type_support_policy_accepts_date64_and_time_types() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     let cases = [
         (DataType::Date64, TypeId::TimestampMilliseconds),
         (DataType::Time32(TimeUnit::Second), TypeId::DurationSeconds),
@@ -114,7 +116,7 @@ fn temporal_type_support_policy_accepts_date64_and_time_types() {
 
 #[test]
 fn basic_list_type_support_policy_is_exact_and_carry_only() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     let supported_children = [
         DataType::Boolean,
         DataType::Int8,
@@ -152,7 +154,7 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
         DataType::List(Arc::new(Field::new("nested", DataType::Int32, true))),
         DataType::Struct(Fields::empty()),
         DataType::Map(Arc::new(Field::new("entries", DataType::Struct(Fields::empty()), false)), false),
-        DataType::Union(arrow::datatypes::UnionFields::empty(), arrow::datatypes::UnionMode::Sparse),
+        DataType::Union(UnionFields::empty(), UnionMode::Sparse),
     ];
     for child in unsupported_children {
         for list in [
@@ -179,7 +181,7 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
 
 #[test]
 fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     for child in [
         DataType::Int8,
         DataType::Int16,
@@ -596,7 +598,7 @@ fn projection_preflight_accepts_equivalent_list_child_names() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
     let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("tags")], output_schema));
 
-    query_engine::exec::preflight_query_plan(&builder.finish_with_host_sink(projection))
+    preflight_query_plan(&builder.finish_with_host_sink(projection))
         .expect("list child field names do not require a native cast");
 }
 
@@ -604,12 +606,12 @@ fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilde
     let mut builder = QueryPlanBuilder::new();
     let root = build_root(&mut builder);
     let plan = builder.finish_with_host_sink(root);
-    query_engine::exec::preflight_query_plan(&plan).unwrap_err()
+    preflight_query_plan(&plan).unwrap_err()
 }
 
 #[test]
 fn decimal128_cast_support_uses_type_support_policy() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     let valid_source = DataType::Decimal128(20, -1);
     let valid_target = DataType::Decimal128(38, 2);
     let float64_target = DataType::Float64;
@@ -640,7 +642,7 @@ fn decimal128_cast_support_uses_type_support_policy() {
 
 #[test]
 fn float64_to_int64_cast_support_is_explicit_and_not_implicit() {
-    let ctx = query_engine::rapids_backend::rapids_analysis_context();
+    let ctx = rapids_analysis_context();
     let float64_source = DataType::Float64;
     let int64_target = DataType::Int64;
     let int32_target = DataType::Int32;

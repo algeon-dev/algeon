@@ -1,4 +1,4 @@
-use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
+use arrow::datatypes::{DataType as ArrowDataType, Fields, TimeUnit};
 use query_engine::{
     error::QueryErrorCode,
     materialization_sizing::{
@@ -127,9 +127,7 @@ fn unsupported_partial_column_dtype_is_rejected() {
     // materialize sizing path. The admission gate's dtype loop is expected to
     // reject plans that project these into the partial state, but the helper
     // remains a defense-in-depth check.
-    for dtype in
-        [ArrowDataType::Binary, ArrowDataType::Float16, ArrowDataType::Struct(arrow::datatypes::Fields::empty())]
-    {
+    for dtype in [ArrowDataType::Binary, ArrowDataType::Float16, ArrowDataType::Struct(Fields::empty())] {
         let error = partial_aggregate_upper_bound_bytes(
             PartialAggregateShape::Grouped { input_rows: 10 },
             &[fixed_column(dtype.clone())],

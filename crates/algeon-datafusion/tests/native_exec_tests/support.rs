@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use algeon_datafusion::{native_exec::AlgeonNativeExecutionConfig, planner::AlgeonNativeOptimizerConfig};
 use arrow::{
@@ -16,9 +16,9 @@ use datafusion::{
     },
     execution::object_store::ObjectStoreUrl,
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
-    logical_expr::Operator,
+    logical_expr::{JoinType, Operator},
     physical_expr::{
-        LexOrdering, PhysicalSortExpr,
+        LexOrdering, Partitioning, PhysicalSortExpr,
         aggregate::AggregateExprBuilder,
         expressions::{TryCastExpr, binary, col, lit},
     },
@@ -33,6 +33,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+use futures::executor::block_on;
 use workloads::tpch::TPCH_TABLES;
 
 use crate::tpch_session::tpch_report_session_config;
@@ -46,7 +47,7 @@ pub(super) fn native_optimizer_config() -> AlgeonNativeOptimizerConfig {
 }
 
 pub(super) fn parquet_scan_with_object_store_url(
-    path: &std::path::Path,
+    path: &Path,
     object_store_url: ObjectStoreUrl,
 ) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
@@ -62,10 +63,7 @@ pub(super) fn parquet_scan_with_object_store_url(
 /// A partition-grouped scan in its observable DataFusion 55 shape: the
 /// partition column lives in the table schema (not the file schema) and the
 /// scan declares the matching hash output partitioning.
-pub(super) fn parquet_scan_with_partition_field(
-    path: &std::path::Path,
-    partition_field: Field,
-) -> Arc<dyn ExecutionPlan> {
+pub(super) fn parquet_scan_with_partition_field(path: &Path, partition_field: Field) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
@@ -81,12 +79,12 @@ pub(super) fn parquet_scan_with_partition_field(
         .with_file_groups(file_scan.file_groups.clone())
         .with_projection_indices(Some(projected_indices))
         .unwrap()
-        .with_output_partitioning(Some(datafusion::physical_expr::Partitioning::Hash(vec![partition_expr], 1)))
+        .with_output_partitioning(Some(Partitioning::Hash(vec![partition_expr], 1)))
         .build();
     DataSourceExec::from_data_source(file_scan)
 }
 
-pub(super) fn parquet_scan_with_declared_output_ordering(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn parquet_scan_with_declared_output_ordering(path: &Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let ordering = LexOrdering::new([PhysicalSortExpr::new(
         col("key", &scan.schema()).unwrap(),
@@ -100,12 +98,12 @@ pub(super) fn parquet_scan_with_declared_output_ordering(path: &std::path::Path)
     DataSourceExec::from_data_source(file_scan)
 }
 
-pub(super) fn join_aggregate_sort_sql_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn join_aggregate_sort_sql_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
     super::support_core::join_aggregate_sort_sql_plan_with_limit(left, right, false)
 }
 
 pub(super) fn single_partition_sql_plan_with_parquet_tables(
-    tables: &[(&str, &std::path::Path)],
+    tables: &[(&str, &Path)],
     sql: &str,
 ) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
@@ -117,14 +115,13 @@ pub(super) fn single_partition_sql_plan_with_parquet_tables(
             .with_target_partitions(1),
     );
     for (name, path) in tables {
-        futures::executor::block_on(ctx.register_parquet(*name, path.to_str().unwrap(), ParquetReadOptions::default()))
-            .unwrap();
+        block_on(ctx.register_parquet(*name, path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     }
-    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
-    futures::executor::block_on(df.create_physical_plan()).unwrap()
+    let df = block_on(ctx.sql(sql)).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }
 
-pub(super) fn stddev_sort_sql_plan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn stddev_sort_sql_plan(path: &Path) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
         SessionConfig::new()
             .with_repartition_file_scans(false)
@@ -132,34 +129,28 @@ pub(super) fn stddev_sort_sql_plan(path: &std::path::Path) -> Arc<dyn ExecutionP
             .with_repartition_sorts(false)
             .with_target_partitions(1),
     );
-    futures::executor::block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()))
-        .unwrap();
+    block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     let sql = "
 SELECT key, stddev_samp(m00) AS stdev
 FROM bench
 GROUP BY key
 ORDER BY key
 ";
-    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
-    futures::executor::block_on(df.create_physical_plan()).unwrap()
+    let df = block_on(ctx.sql(sql)).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }
 
-pub(super) fn tpch_sql_plan(root: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
+pub(super) fn tpch_sql_plan(root: &Path, sql: &str) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(tpch_report_session_config());
     for table in TPCH_TABLES {
         let path = root.join(format!("{table}.parquet"));
-        futures::executor::block_on(ctx.register_parquet(
-            *table,
-            path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        ))
-        .unwrap();
+        block_on(ctx.register_parquet(*table, path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     }
-    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
-    futures::executor::block_on(df.create_physical_plan()).unwrap()
+    let df = block_on(ctx.sql(sql)).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }
 
-pub(super) fn root_hash_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn root_hash_join_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
     let left = parquet_scan(left);
     let right = parquet_scan(right);
     let left_schema = left.schema();
@@ -170,7 +161,7 @@ pub(super) fn root_hash_join_plan(left: &std::path::Path, right: &std::path::Pat
             right,
             vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
             None,
-            &datafusion::logical_expr::JoinType::Inner,
+            &JoinType::Inner,
             Some(vec![
                 left_schema.index_of("key").unwrap(),
                 left_schema.index_of("l_m00").unwrap(),
@@ -184,7 +175,7 @@ pub(super) fn root_hash_join_plan(left: &std::path::Path, right: &std::path::Pat
     )
 }
 
-pub(super) fn root_left_semi_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn root_left_semi_join_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
     let left = parquet_scan(left);
     let right = parquet_scan(right);
     let left_schema = left.schema();
@@ -195,7 +186,7 @@ pub(super) fn root_left_semi_join_plan(left: &std::path::Path, right: &std::path
             right,
             vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
             None,
-            &datafusion::logical_expr::JoinType::LeftSemi,
+            &JoinType::LeftSemi,
             None,
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
@@ -205,7 +196,7 @@ pub(super) fn root_left_semi_join_plan(left: &std::path::Path, right: &std::path
     )
 }
 
-pub(super) fn root_left_anti_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn root_left_anti_join_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
     let left = parquet_scan(left);
     let right = parquet_scan(right);
     let left_schema = left.schema();
@@ -216,7 +207,7 @@ pub(super) fn root_left_anti_join_plan(left: &std::path::Path, right: &std::path
             right,
             vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
             None,
-            &datafusion::logical_expr::JoinType::LeftAnti,
+            &JoinType::LeftAnti,
             None,
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
@@ -231,7 +222,7 @@ pub(super) fn root_left_anti_join_plan(left: &std::path::Path, right: &std::path
 /// already-built right input, so a case can pass a plain scan or one wrapped
 /// in a `FilterExec`.
 pub(super) fn root_null_aware_left_anti_join_plan(
-    left: &std::path::Path,
+    left: &Path,
     right: Arc<dyn ExecutionPlan>,
 ) -> Arc<dyn ExecutionPlan> {
     let left = parquet_scan(left);
@@ -243,7 +234,7 @@ pub(super) fn root_null_aware_left_anti_join_plan(
             right,
             vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
             None,
-            &datafusion::logical_expr::JoinType::LeftAnti,
+            &JoinType::LeftAnti,
             None,
             PartitionMode::CollectLeft,
             NullEquality::NullEqualsNothing,
@@ -268,10 +259,10 @@ pub(super) fn filter_scan_to_empty_at_runtime(scan: Arc<dyn ExecutionPlan>) -> A
     Arc::new(FilterExec::try_new(predicate, scan).unwrap())
 }
 
-pub(super) fn root_nested_loop_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+pub(super) fn root_nested_loop_join_plan(left: &Path, right: &Path) -> Arc<dyn ExecutionPlan> {
     let left = parquet_scan(left);
     let right = parquet_scan(right);
-    Arc::new(NestedLoopJoinExec::try_new(left, right, None, &datafusion::logical_expr::JoinType::Inner, None).unwrap())
+    Arc::new(NestedLoopJoinExec::try_new(left, right, None, &JoinType::Inner, None).unwrap())
 }
 
 pub(super) fn aggregate_sort_limit_plan(
@@ -429,7 +420,7 @@ pub(super) fn unsupported_try_cast_projection_aggregate_sort_limit_plan(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
-pub(super) fn write_sorted_parquet_file(path: &std::path::Path) {
+pub(super) fn write_sorted_parquet_file(path: &Path) {
     let schema = parquet_file_schema();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -456,7 +447,7 @@ pub(super) fn null_aware_anti_join_left_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true), Field::new("payload", DataType::Int32, false)]))
 }
 
-pub(super) fn write_null_aware_anti_join_left_parquet_file(path: &std::path::Path) {
+pub(super) fn write_null_aware_anti_join_left_parquet_file(path: &Path) {
     let schema = null_aware_anti_join_left_schema();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -476,7 +467,7 @@ pub(super) fn null_aware_anti_join_right_schema() -> Arc<Schema> {
     ]))
 }
 
-pub(super) fn write_null_aware_anti_join_right_parquet_file(path: &std::path::Path, keys: Vec<Option<i32>>) {
+pub(super) fn write_null_aware_anti_join_right_parquet_file(path: &Path, keys: Vec<Option<i32>>) {
     let schema = null_aware_anti_join_right_schema();
     let payloads = (0..keys.len() as i32).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(

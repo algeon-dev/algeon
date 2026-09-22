@@ -7,13 +7,14 @@ use std::{
 };
 
 use datafusion::{
-    common::DataFusionError,
+    common::{DataFusionError, config::ConfigOptions},
     execution::{SessionState, SessionStateBuilder},
     sql::{
         parser::{DFParserBuilder, Statement as DfSqlStatement},
         sqlparser::{ast::Statement as SqlStatement, dialect::dialect_from_str},
     },
 };
+use query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunkPlanningMode};
 
 use super::{
     ALGEON_EXPLAIN_COVERAGE_FUNCTION, COVERAGE_VALIDATOR_RECURSION_REASON_CODE, GPU_COVERAGE_REJECTION_REASON_FACT,
@@ -22,8 +23,8 @@ use super::{
     recursion_guard::query_mentions_coverage_table_function,
 };
 use crate::{
-    error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
+    error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics, Result},
+    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy, NativePlanningDiagnostics},
     session::installed_algeon_native_optimizer_config,
 };
 
@@ -82,7 +83,7 @@ impl QueryGpuRejection {
     }
 }
 
-pub(super) fn optimizer_config_for_validation(state: &SessionState) -> crate::error::Result<ValidationOptimizerConfig> {
+pub(super) fn optimizer_config_for_validation(state: &SessionState) -> Result<ValidationOptimizerConfig> {
     let config = match installed_algeon_native_optimizer_config(state) {
         Some(config) => config,
         None => {
@@ -108,8 +109,8 @@ struct StableNativeValidationPolicy {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     max_source_reads_in_flight: usize,
-    source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
-    statistical_aggregate_execution_mode: query_engine::mode::StatisticalAggregateExecutionMode,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
 }
 
 pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizerConfig) -> QueryGpuValidatedUnder {
@@ -247,7 +248,7 @@ pub(super) fn classify_physical_planning_error(error: &DataFusionError) -> Query
 
 pub(super) fn planning_did_io_for_physical_error(
     phase: QueryGpuRejectionPhase,
-    diagnostics: Option<&crate::planner::NativePlanningDiagnostics>,
+    diagnostics: Option<&NativePlanningDiagnostics>,
 ) -> bool {
     diagnostics.is_some_and(planning_diagnostics_did_io) || phase == QueryGpuRejectionPhase::PlanningIo
 }
@@ -262,7 +263,7 @@ fn fingerprint_debug(value: &impl std::fmt::Debug) -> String {
 /// extensions. Attempt-local bindings carry admission handles and cancellation
 /// state but cannot change coverage planning; including their debug output
 /// would make otherwise identical SQL surfaces report different evidence.
-fn fingerprint_session_config(config: &datafusion::common::config::ConfigOptions) -> String {
+fn fingerprint_session_config(config: &ConfigOptions) -> String {
     let mut entries = config.entries().into_iter().map(|entry| (entry.key, entry.value)).collect::<Vec<_>>();
     entries.sort_unstable();
     fingerprint_debug(&entries)

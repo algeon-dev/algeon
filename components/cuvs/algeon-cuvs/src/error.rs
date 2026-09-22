@@ -5,6 +5,7 @@ use std::{
     fmt,
 };
 
+use cudf::interop::contract::{InteropError, InteropErrorKind};
 use cuvs_sys::cuvsError_t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -270,9 +271,7 @@ pub(crate) fn from_cudf(operation: &'static str, error: cudf::Error) -> Error {
     mapped.set_source(error)
 }
 
-pub(crate) fn from_interop(operation: &'static str, error: cudf::interop::contract::InteropError) -> Error {
-    use cudf::interop::contract::InteropErrorKind;
-
+pub(crate) fn from_interop(operation: &'static str, error: InteropError) -> Error {
     let kind = match error.kind() {
         InteropErrorKind::UnsupportedType
         | InteropErrorKind::UnsupportedLayout

@@ -40,16 +40,13 @@ fn hash_partition_aggregate_input(
         };
 
         let input_rows = frame.num_rows() as u64;
-        let (observation, plan_execution_id, parent_span_id) =
-            crate::observability::stage_context_from_execution(execution.context());
-        let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(execution.context());
+        let stage_guard = RuntimeOperatorStageGuard::start(
             observation,
             plan_execution_id,
             parent_span_id,
-            crate::observability::RuntimeOperatorStageKind::HashPartition,
-            crate::observability::RuntimeOperatorStageIdentity::new()
-                .with_node_id(node_id.to_string())
-                .with_input_rows(input_rows),
+            RuntimeOperatorStageKind::HashPartition,
+            RuntimeOperatorStageIdentity::new().with_node_id(node_id.to_string()).with_input_rows(input_rows),
         );
         match frame
             .with_execution(&token.execution_overrides())
@@ -93,8 +90,8 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
 ) -> Result<ResidentGpuFrame> {

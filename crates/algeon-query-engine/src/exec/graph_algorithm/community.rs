@@ -1,16 +1,19 @@
+use cugraph::random::RngState;
+
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     ecg_params, leiden_params, louvain_params, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
     run_with_cugraph_graph, spectral_clustering_params, table_graph_options,
 };
+use crate::plan::{GraphAlgorithmParams, GraphAlgorithmSpec};
 
 pub(super) fn execute_louvain(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::Louvain(params) = &spec.params else {
+    let GraphAlgorithmParams::Louvain(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.louvain",
@@ -49,11 +52,11 @@ pub(super) fn execute_louvain(
 
 pub(super) fn execute_leiden(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::Leiden(params) = &spec.params else {
+    let GraphAlgorithmParams::Leiden(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.leiden",
@@ -74,7 +77,7 @@ pub(super) fn execute_leiden(
         options,
         "algeon_datafusion_cugraph_leiden",
         |runtime, entered, graph| {
-            let mut rng_state = cugraph::random::RngState::new(entered, seed).map_err(map_cugraph_error(
+            let mut rng_state = RngState::new(entered, seed).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.leiden_rng",
                 "failed to create cuGraph RNG state for Leiden",
             ))?;
@@ -97,11 +100,11 @@ pub(super) fn execute_leiden(
 
 pub(super) fn execute_ecg(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::Ecg(params) = &spec.params else {
+    let GraphAlgorithmParams::Ecg(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.ecg",
@@ -122,7 +125,7 @@ pub(super) fn execute_ecg(
         options,
         "algeon_datafusion_cugraph_ecg",
         |runtime, entered, graph| {
-            let mut rng_state = cugraph::random::RngState::new(entered, seed).map_err(map_cugraph_error(
+            let mut rng_state = RngState::new(entered, seed).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.ecg_rng",
                 "failed to create cuGraph RNG state for ECG",
             ))?;
@@ -145,11 +148,11 @@ pub(super) fn execute_ecg(
 
 pub(super) fn execute_spectral_modularity_maximization(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::SpectralModularityMaximization(params) = &spec.params else {
+    let GraphAlgorithmParams::SpectralModularityMaximization(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.spectral_modularity_maximization",
@@ -170,7 +173,7 @@ pub(super) fn execute_spectral_modularity_maximization(
         options,
         "algeon_datafusion_cugraph_spectral_modularity_maximization",
         |runtime, entered, graph| {
-            let mut rng_state = cugraph::random::RngState::new(entered, seed).map_err(map_cugraph_error(
+            let mut rng_state = RngState::new(entered, seed).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.spectral_modularity_maximization_rng",
                 "failed to create cuGraph RNG state for SpectralModularityMaximization",
             ))?;

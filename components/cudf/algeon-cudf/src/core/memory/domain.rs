@@ -16,7 +16,7 @@ use super::{
 use crate::{
     DeviceId,
     core::error::{self, Result},
-    runtime::{device_guard::DeviceGuard, stream::CudaStream},
+    runtime::{self, device_guard::DeviceGuard, stream::CudaStream},
 };
 
 /// A live reservation attached to a CUDA stream.
@@ -432,7 +432,7 @@ impl StreamReservationLease {
 impl Drop for ReservationArenaHandle {
     fn drop(&mut self) {
         let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        crate::runtime::drop_device_resource(&mut raw, self.device, "ReservationArenaHandle::drop", |owned| {
+        runtime::drop_device_resource(&mut raw, self.device, "ReservationArenaHandle::drop", |owned| {
             let status = unsafe { cudf_sys::cudf_reservation_arena_destroy(owned) };
             if status != cudf_sys::CUDF_SUCCESS {
                 record_native_teardown_failure(self.device, "ReservationArenaHandle::drop", status);
@@ -444,7 +444,7 @@ impl Drop for ReservationArenaHandle {
 impl Drop for QueryMemoryDomainHandle {
     fn drop(&mut self) {
         let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        crate::runtime::drop_device_resource(&mut raw, self.device, "QueryMemoryDomainHandle::drop", |owned| {
+        runtime::drop_device_resource(&mut raw, self.device, "QueryMemoryDomainHandle::drop", |owned| {
             let status = unsafe { cudf_sys::cudf_query_memory_domain_destroy(owned) };
             if status != cudf_sys::CUDF_SUCCESS {
                 record_native_teardown_failure(self.device, "QueryMemoryDomainHandle::drop", status);
@@ -456,7 +456,7 @@ impl Drop for QueryMemoryDomainHandle {
 impl Drop for CurrentResourceRouteLease {
     fn drop(&mut self) {
         let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        crate::runtime::drop_device_resource(&mut raw, self.device, "CurrentResourceRouteLease::drop", |owned| {
+        runtime::drop_device_resource(&mut raw, self.device, "CurrentResourceRouteLease::drop", |owned| {
             let status = unsafe { cudf_sys::cudf_current_resource_route_destroy(owned) };
             if status != cudf_sys::CUDF_SUCCESS {
                 record_native_teardown_failure(self.device, "CurrentResourceRouteLease::drop", status);
@@ -468,7 +468,7 @@ impl Drop for CurrentResourceRouteLease {
 impl Drop for ReservationHandle {
     fn drop(&mut self) {
         let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        crate::runtime::drop_device_resource(&mut raw, self.device, "ReservationHandle::drop", |owned| {
+        runtime::drop_device_resource(&mut raw, self.device, "ReservationHandle::drop", |owned| {
             let status = unsafe { cudf_sys::cudf_reservation_detach(owned) };
             if status != cudf_sys::CUDF_SUCCESS {
                 record_native_teardown_failure(self.device, "ReservationHandle::drop", status);

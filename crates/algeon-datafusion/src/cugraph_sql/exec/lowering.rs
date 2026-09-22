@@ -1,5 +1,16 @@
 use std::sync::Arc;
 
+use query_engine::{
+    admission::AttemptCapabilityEvidence,
+    error::QueryErrorKind,
+    exec::preflight_query_plan,
+    expr::Expr,
+    plan::{
+        GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, NodeId, QueryPlan,
+        graph_result_schema_for_vertex_type,
+    },
+};
+
 use super::{
     BinaryOp, CaseWhen, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds,
     CugraphBfsOutputMode, CugraphGpuFrame, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
@@ -43,8 +54,8 @@ pub(super) fn preflight_cugraph_query_plan(definition: &CugraphPlanDefinition) -
         ..definition.clone()
     };
     let plan = cugraph_schema_query_plan(&definition)?;
-    query_engine::exec::preflight_query_plan(&plan).map_err(|error| {
-        if error.kind() == query_engine::error::QueryErrorKind::Unsupported {
+    preflight_query_plan(&plan).map_err(|error| {
+        if error.kind() == QueryErrorKind::Unsupported {
             return DataFusionError::from(
                 Error::new(
                     ErrorCode::RequiredGpuOperationUnsupported,
@@ -110,7 +121,7 @@ pub(super) fn graph_algorithm_execution_context(context: &ExecutionContext) -> R
 }
 
 pub(super) struct CugraphQueryPlan {
-    plan: query_engine::plan::QueryPlan,
+    plan: QueryPlan,
     inputs: GpuResidentInputMap,
 }
 
@@ -140,7 +151,7 @@ pub(super) fn cugraph_query_plan(
     Ok(CugraphQueryPlan { plan, inputs })
 }
 
-pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> Result<query_engine::plan::QueryPlan> {
+pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> Result<QueryPlan> {
     let CugraphPlanDefinition {
         spec,
         edge_schema,
@@ -253,7 +264,7 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
                     spec.output_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
                         plan_error(format!("cuGraph output projection index {index} is out of range"))
                     })?;
-                Ok(ProjectionOutput::new(query_engine::expr::Expr::column(field.name()), field))
+                Ok(ProjectionOutput::new(Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
         root = builder.add_projection(root, outputs);
@@ -269,9 +280,9 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
 
 pub(super) fn cugraph_execution_capability_evidence(
     definition: &CugraphPlanDefinition,
-) -> Result<(query_engine::plan::QueryPlan, query_engine::admission::AttemptCapabilityEvidence)> {
+) -> Result<(QueryPlan, AttemptCapabilityEvidence)> {
     let plan = cugraph_schema_query_plan(definition)?;
-    let mut graph_evidence = query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    let mut graph_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
     graph_evidence.attest_cugraph_graph_execution_scope(&plan);
     Ok((plan, graph_evidence))
 }
@@ -298,7 +309,7 @@ pub(super) fn bind_predicate_gpu_inputs(
 pub(super) fn native_graph_spec(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
-    predicate_nodes: &[query_engine::plan::NodeId],
+    predicate_nodes: &[NodeId],
     bfs_path_output_rows: Option<u64>,
     vertex_type: &DataType,
 ) -> GraphAlgorithmSpec {
@@ -309,7 +320,7 @@ pub(super) fn native_graph_spec(
     }
     let algorithm = native_algorithm(spec.algorithm);
     let params = native_algorithm_params(&spec.params, predicate_nodes, bfs_path_output_rows);
-    let output_schema = query_engine::plan::graph_result_schema_for_vertex_type(algorithm, &params, vertex_type);
+    let output_schema = graph_result_schema_for_vertex_type(algorithm, &params, vertex_type);
     GraphAlgorithmSpec::new(
         algorithm,
         edge_columns,
@@ -456,7 +467,7 @@ pub(super) fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
 
 pub(super) fn native_algorithm_params(
     params: &CugraphAlgorithmParams,
-    predicate_nodes: &[query_engine::plan::NodeId],
+    predicate_nodes: &[NodeId],
     bfs_path_output_rows: Option<u64>,
 ) -> GraphAlgorithmParams {
     match params {
@@ -619,20 +630,18 @@ pub(super) fn native_algorithm_params(
         },
         CugraphAlgorithmParams::Similarity(params) => {
             let vertex_pairs_node = predicate_nodes.first().copied().expect("similarity vertex-pairs node missing");
-            GraphAlgorithmParams::Similarity(query_engine::plan::GraphSimilarityParams::new(
-                query_engine::plan::GraphVertexPairInput::new(
-                    vertex_pairs_node,
-                    params.vertex_pairs.first_vertex_col.clone(),
-                    params.vertex_pairs.second_vertex_col.clone(),
-                ),
-            ))
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
+                vertex_pairs_node,
+                params.vertex_pairs.first_vertex_col.clone(),
+                params.vertex_pairs.second_vertex_col.clone(),
+            )))
         },
     }
 }
 
 fn native_betweenness_seeds(
     seeds: &CugraphBetweennessSeeds,
-    predicate_nodes: &[query_engine::plan::NodeId],
+    predicate_nodes: &[NodeId],
 ) -> NativeGraphBetweennessSeeds {
     match seeds.vertices.first() {
         Some(CugraphVertexSelector::Int64(_)) => NativeGraphBetweennessSeeds::I64(
@@ -658,7 +667,7 @@ fn native_betweenness_seeds(
 
 pub(super) fn native_bfs_params(
     params: &super::CugraphBfsParams,
-    predicate_nodes: &[query_engine::plan::NodeId],
+    predicate_nodes: &[NodeId],
     path_output_rows: Option<u64>,
 ) -> GraphBfsParams {
     let mut native = GraphBfsParams::new(params.source.as_i64().unwrap_or(0), params.depth_limit);
@@ -694,7 +703,7 @@ pub(super) fn native_bfs_params(
     native.return_target_info = params.output.return_target_info;
     if params.output.mode == CugraphBfsOutputMode::Path {
         native.endpoint_policy = GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
-        native.path_output = Some(query_engine::plan::GraphBfsPathOutput::new(
+        native.path_output = Some(GraphBfsPathOutput::new(
             path_output_rows.expect("bounded BFS path plan must carry an output row bound"),
         ));
     }
@@ -775,7 +784,7 @@ mod tests {
             cugraph_execution_capability_evidence(&definition).expect("cuGraph plan must expose a capability evidence");
 
         let runtime_plan = cugraph_schema_query_plan(&definition).expect("prepared runtime graph plan must build");
-        let mut runtime_evidence = query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&runtime_plan);
+        let mut runtime_evidence = AttemptCapabilityEvidence::for_query_plan(&runtime_plan);
         runtime_evidence.attest_cugraph_graph_execution_scope(&runtime_plan);
 
         assert_eq!(
@@ -820,12 +829,10 @@ mod tests {
         let runtime_plan =
             cugraph_schema_query_plan(&definition).expect("runtime plan must build with the same source bounds");
 
-        let source_metadata = |plan: &query_engine::plan::QueryPlan| {
+        let source_metadata = |plan: &QueryPlan| {
             plan.nodes().iter().find_map(|node| match &node.kind {
                 PlanNode::Source(source) => match source.as_ref() {
-                    query_engine::source::SourceNode::GpuResident(source)
-                        if source.input_name == CUGRAPH_EDGE_INPUT_NAME =>
-                    {
+                    SourceNode::GpuResident(source) if source.input_name == CUGRAPH_EDGE_INPUT_NAME => {
                         Some((source.row_count_upper_bound, source.graph_vertex_upper_bound))
                     },
                     _ => None,
@@ -835,8 +842,7 @@ mod tests {
         };
         assert_eq!(source_metadata(&admission_plan), Some((Some(5), Some(11))));
         assert_eq!(source_metadata(&runtime_plan), Some((Some(5), Some(11))));
-        let mut expected_runtime_evidence =
-            query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&runtime_plan);
+        let mut expected_runtime_evidence = AttemptCapabilityEvidence::for_query_plan(&runtime_plan);
         expected_runtime_evidence.attest_cugraph_graph_execution_scope(&runtime_plan);
         assert_eq!(
             admission_evidence, expected_runtime_evidence,

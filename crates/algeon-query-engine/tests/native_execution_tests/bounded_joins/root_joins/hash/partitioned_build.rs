@@ -60,10 +60,10 @@ fn partitioned_build_join_output_schema() -> Arc<Schema> {
 
 fn partitioned_build_join_projection() -> Vec<JoinOutputColumn> {
     vec![
-        JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-        JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-        JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "payload", "payload"), "payload"),
-        JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+        JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+        JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+        JoinOutputColumn::left(ColumnRef::input(0, "payload", "payload"), "payload"),
+        JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
     ]
 }
 
@@ -90,10 +90,7 @@ fn expected_qty_total(batch: &RecordBatch, matched_order_ids: &[i32], rows_per_r
     (rows, total)
 }
 
-fn partitioned_build_decision<'a>(
-    metrics: &'a QueryMetrics,
-    node_id: &str,
-) -> &'a query_engine::metrics::JoinStrategyDecisionMetrics {
+fn partitioned_build_decision<'a>(metrics: &'a QueryMetrics, node_id: &str) -> &'a JoinStrategyDecisionMetrics {
     metrics
         .join_strategy_decisions
         .iter()
@@ -281,8 +278,11 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let fact =
-        builder.add_source(SourceNode::LocalParquet(join_left_source(&fact_path, &fact_schema, &["order_id", "qty", "payload"])));
+    let fact = builder.add_source(SourceNode::LocalParquet(join_left_source(
+        &fact_path,
+        &fact_schema,
+        &["order_id", "qty", "payload"],
+    )));
     let first_dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &first_dim_path,
         &first_dim_schema,
@@ -293,9 +293,9 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
         first_dim,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "payload", "payload"), "payload"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "payload", "payload"), "payload"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&inner_schema),
@@ -377,7 +377,8 @@ fn bounded_native_query_reports_typed_failure_when_a_skewed_build_partition_cann
     let row_groups = 8;
     let rows_per_row_group = 256;
     // Every build row shares one key, so no partition count can split it.
-    let build_schema = write_partitioned_build_payload_parquet(&build_path, row_groups, rows_per_row_group, true, |_| 1);
+    let build_schema =
+        write_partitioned_build_payload_parquet(&build_path, row_groups, rows_per_row_group, true, |_| 1);
     let probe_schema = write_join_right_keys_parquet(&runtime, &probe_path, &[1, 2]);
     let mut build_source = join_left_source(&build_path, &build_schema, &["order_id", "qty", "payload"]);
     build_source.files[0].row_group_rows = Some(vec![25_000_000; row_groups]);
@@ -482,9 +483,7 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
     // least once beside the accumulated partitions, with a backoff between
     // halvings, so the deadline elapses inside the recovery tree while build
     // partitions are resident.
-    let cancellation = query_engine::runtime::ExecutionCancellation::with_deadline(Some(
-        std::time::Instant::now() + std::time::Duration::from_millis(150),
-    ));
+    let cancellation = ExecutionCancellation::with_deadline(Some(Instant::now() + Duration::from_millis(150)));
     let context =
         backend_context_with_memory_control_policy(build_recovery_policy(14 * 1024 * 1024, row_groups_per_chunk));
     let evidence = capability_evidence_for_fixture_plan(&plan).unwrap();

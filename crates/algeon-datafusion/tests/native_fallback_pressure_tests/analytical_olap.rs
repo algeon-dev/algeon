@@ -1,3 +1,5 @@
+use algeon_datafusion::native_report::NativeDataFusionPlanningRow;
+
 use super::*;
 
 #[tokio::test]
@@ -85,10 +87,7 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_planning_row_has_family_free_rejection_diagnostics(
-    query_id: &str,
-    row: &algeon_datafusion::native_report::NativeDataFusionPlanningRow,
-) {
+fn assert_planning_row_has_family_free_rejection_diagnostics(query_id: &str, row: &NativeDataFusionPlanningRow) {
     for gate in &row.capability_decision_rows {
         assert_no_legacy_rejection_terms(query_id, &gate.to_stable_kv_row());
     }

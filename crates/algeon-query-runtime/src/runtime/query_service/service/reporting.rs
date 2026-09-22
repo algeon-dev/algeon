@@ -6,19 +6,29 @@ use std::{
     time::{Duration, Instant},
 };
 
+use gpu::inventory::device_telemetry_snapshots_for_ordinals;
 use query_planning::error::Result;
 #[cfg(test)]
 use query_planning::error::{QueryError, QueryErrorCode};
 
-#[cfg(test)]
-use super::super::admission::AdmissionState;
 use super::{
     super::config::{QueryExecutionConfig, QueueBounds},
     QueryService,
 };
+#[cfg(test)]
+use crate::runtime::deadline::DeadlineMutexLockError;
+#[cfg(test)]
+use crate::runtime::deadline::deadline_remaining;
+#[cfg(test)]
+use crate::runtime::deadline::mutex_lock_until;
+#[cfg(test)]
+use crate::runtime::query_service::admission::AdmissionState;
 use crate::runtime::{
+    DeviceFacts, DeviceResourceProfile,
+    cache::{CacheSourceEventSnapshot, DeviceCacheReport},
     gpu::{
-        self, AlgeonNvmlTelemetry, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceTelemetrySnapshot, GpuTelemetry,
+        self, AlgeonNvmlTelemetry, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceTelemetrySnapshot,
+        GpuTelemetry, LedgerSnapshot, registry::EngineDeviceHealthIdentity,
     },
     gpu_execution_pool::{GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
     query_service::{QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot},
@@ -29,11 +39,11 @@ impl QueryService {
     pub fn backend_device_startup_facts(
         &self,
     ) -> Vec<(
-        crate::runtime::DeviceFacts,
+        DeviceFacts,
         u64,
         cudf::DeviceMemoryManagerInstallationState,
-        crate::runtime::gpu::registry::EngineDeviceHealthIdentity,
-        crate::runtime::DeviceResourceProfile,
+        EngineDeviceHealthIdentity,
+        DeviceResourceProfile,
     )> {
         self.inner
             .resources
@@ -76,7 +86,7 @@ impl QueryService {
     /// Returns physical allocation-domain usage and cache activity for every
     /// cache-enabled device.  It is diagnostic-only and never participates in
     /// admission; `device_ledger_reports` remains the ownership authority.
-    pub fn device_cache_reports(&self) -> Result<Vec<crate::runtime::cache::DeviceCacheReport>> {
+    pub fn device_cache_reports(&self) -> Result<Vec<DeviceCacheReport>> {
         let Some(resources) = &self.inner.resources else {
             return Ok(Vec::new());
         };
@@ -86,7 +96,7 @@ impl QueryService {
     /// Returns bounded source-cache state-machine observations across enabled
     /// device domains. They are correlation diagnostics, never admission or
     /// residency accounting inputs.
-    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<crate::runtime::cache::CacheSourceEventSnapshot>> {
+    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
         let Some(resources) = &self.inner.resources else {
             return Ok(Vec::new());
         };
@@ -142,10 +152,7 @@ impl QueryService {
         let Some(resources) = &self.inner.resources else {
             return Vec::new();
         };
-        gpu::inventory::device_telemetry_snapshots_for_ordinals(
-            telemetry,
-            resources.devices.telemetry_device_ordinals(),
-        )
+        device_telemetry_snapshots_for_ordinals(telemetry, resources.devices.telemetry_device_ordinals())
     }
 
     /// Returns one device memory allocation-failure report for each installed service device.
@@ -209,9 +216,9 @@ impl QueryService {
     #[cfg(test)]
     fn wait_for_release_commits_until(&self, deadline: Instant) -> Result<()> {
         let operation = "query_engine.query_service.wait_for_stream_pools_idle";
-        let mut state = match crate::runtime::deadline::mutex_lock_until(&self.inner.admission, deadline) {
+        let mut state = match mutex_lock_until(&self.inner.admission, deadline) {
             Ok(state) => state,
-            Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => {
+            Err(DeadlineMutexLockError::Poisoned) => {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
@@ -219,7 +226,7 @@ impl QueryService {
                 )
                 .with_fact("reason", "admission_mutex_poisoned"));
             },
-            Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
+            Err(DeadlineMutexLockError::TimedOut) => {
                 return Err(stream_pool_release_commit_timeout(operation, None));
             },
         };
@@ -227,7 +234,7 @@ impl QueryService {
             if state.lifecycle.is_quiescent() {
                 return Ok(());
             }
-            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+            let Some(remaining) = deadline_remaining(deadline) else {
                 return Err(stream_pool_release_commit_timeout(operation, Some(&state)));
             };
             let (next, timeout) = self.inner.admission_available.wait_timeout(state, remaining).map_err(|_error| {
@@ -409,9 +416,7 @@ impl QueryService {
 
     /// One atomic snapshot per device ledger, for placement, reports, and
     /// metrics. Admission-only services expose their synthetic ledger.
-    pub(in crate::runtime::query_service) fn device_ledger_snapshots(
-        &self,
-    ) -> Result<Vec<crate::runtime::gpu::LedgerSnapshot>> {
+    pub(in crate::runtime::query_service) fn device_ledger_snapshots(&self) -> Result<Vec<LedgerSnapshot>> {
         let Some(resources) = &self.inner.resources else {
             return self
                 .inner

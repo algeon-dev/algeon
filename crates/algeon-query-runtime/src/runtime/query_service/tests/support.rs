@@ -1,4 +1,17 @@
-use crate::runtime::gpu::DeviceLedger;
+use query_planning::{
+    admission::ExecutionCapability,
+    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    chunk::SourceChunkPlanningOptions,
+    dynamic_filter::DynamicFilterExecutionOptions,
+};
+use crate::{
+    observability::{RuntimeTimelineEvent, SealedRuntimeObservationSnapshot},
+    runtime::{
+        DeviceCapabilities,
+        gpu::{DeviceLedger, GrantIdentity},
+        query_service::service::TestPauseHandle,
+    },
+};
 
 #[derive(Clone, Debug)]
 struct AdmissionTestController {
@@ -19,7 +32,7 @@ impl AdmissionTestController {
     fn new_with_device_capabilities(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
-        device_capabilities: crate::runtime::DeviceCapabilities,
+        device_capabilities: DeviceCapabilities,
     ) -> Result<Self> {
         QueryService::new_for_admission_tests(
             config,
@@ -89,7 +102,7 @@ impl AdmissionTestController {
         self.service.inner.reset_pending_preflight_resolver_calls();
     }
 
-    fn pause_pending_preflight(&self) -> crate::runtime::query_service::service::TestPauseHandle {
+    fn pause_pending_preflight(&self) -> TestPauseHandle {
         self.service.inner.pause_pending_preflight_for_test()
     }
 
@@ -174,7 +187,7 @@ impl AdmissionTestHandle {
         self.handle.device_ordinal()
     }
 
-    fn grant_identity(&self) -> crate::runtime::gpu::GrantIdentity {
+    fn grant_identity(&self) -> GrantIdentity {
         self.handle.grant_identity().expect("admitted handle owns a live grant identity")
     }
 
@@ -194,21 +207,21 @@ impl AdmissionTestHandle {
         self.handle.statistical_aggregate_execution_mode()
     }
 
-    fn dynamic_filter_execution_options(&self) -> query_planning::dynamic_filter::DynamicFilterExecutionOptions {
+    fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
         self.handle.dynamic_filter_execution_options()
     }
 
-    fn keyed_hash_join_strategy_options(&self) -> query_planning::capability::KeyedHashJoinStrategyOptions {
+    fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
         self.handle.keyed_hash_join_strategy_options()
     }
 
     fn aggregate_strategy_execution_options(
         &self,
-    ) -> query_planning::capability::AggregateStrategyExecutionOptions {
+    ) -> AggregateStrategyExecutionOptions {
         self.handle.aggregate_strategy_execution_options()
     }
 
-    fn source_chunk_planning_options(&self) -> query_planning::chunk::SourceChunkPlanningOptions {
+    fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
         self.handle.source_chunk_planning_options()
     }
 
@@ -277,13 +290,13 @@ fn requirement() -> AttemptRequirement {
 /// for tests asserting that per-device entries are not collapsed together.
 fn distinct_capability_requirement() -> AttemptRequirement {
     AttemptRequirement::from_parts(
-        vec![query_planning::admission::ExecutionCapability::new("test_distinct_operator")],
+        vec![ExecutionCapability::new("test_distinct_operator")],
         Vec::new(),
     )
 }
 
 fn observed_admission_events(owner: &RuntimeObservationOwner) -> Vec<(AdmissionRequestId, AdmissionLifecycleState)> {
-    let collect = |events: &[crate::observability::RuntimeTimelineEvent]| {
+    let collect = |events: &[RuntimeTimelineEvent]| {
         events
             .iter()
             .filter_map(|event| match &event.payload {
@@ -302,7 +315,7 @@ fn observed_admission_events(owner: &RuntimeObservationOwner) -> Vec<(AdmissionR
 }
 fn wait_for_sealed_observation(
     owner: &RuntimeObservationOwner,
-) -> crate::observability::SealedRuntimeObservationSnapshot {
+) -> SealedRuntimeObservationSnapshot {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         if let Some(snapshot) = owner.sealed_snapshot() {
@@ -322,7 +335,7 @@ fn non_gds_deployment() -> DeploymentIoCapability {
 fn test_ledger(
     managed_capacity_bytes: u64,
     max_active_attempts: usize,
-    device_capabilities: crate::runtime::DeviceCapabilities,
+    device_capabilities: DeviceCapabilities,
 ) -> DeviceLedger {
     test_ledger_for_ordinal(0, managed_capacity_bytes, max_active_attempts, device_capabilities)
 }
@@ -330,7 +343,7 @@ fn test_ledger_for_ordinal(
     device_ordinal: usize,
     managed_capacity_bytes: u64,
     max_active_attempts: usize,
-    device_capabilities: crate::runtime::DeviceCapabilities,
+    device_capabilities: DeviceCapabilities,
 ) -> DeviceLedger {
     let max_active_attempts = max_active_attempts.max(1);
     let floor =
@@ -348,7 +361,7 @@ fn test_ledger_with_explicit_profile(
     managed_capacity_bytes: u64,
     default_query_limit_bytes: u64,
     max_active_attempts: usize,
-    device_capabilities: crate::runtime::DeviceCapabilities,
+    device_capabilities: DeviceCapabilities,
 ) -> DeviceLedger {
     let max_active_attempts = max_active_attempts.max(1);
     let source_work = 1usize;

@@ -5,7 +5,26 @@
 //! one scoped control-plane smoke test, and one advanced owned/core access
 //! smoke test.
 
-use crate::common::column_from_slice;
+use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+use cudf::testing::{
+    arrow::trigger_numeric_to_arrow_error_for_test,
+    column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test,
+    concatenate::trigger_concatenate_column_count_limit_error_for_test,
+    core::{
+        adopt_owned_memory_resource_for_test, trigger_truthful_error_contract_for_test,
+        validity_to_host_null_mask_bytes,
+    },
+    dataframe::trigger_dataframe_row_range_overflow_error_for_test,
+    dictionary::trigger_match_dictionaries_result_count_mismatch_for_test,
+    factorization::trigger_factorize_empty_row_code_dtype_error_for_test,
+    groupby::trigger_groupby_request_count_limit_error_for_test,
+    interop::trigger_interop_projection_negative_offset_for_test,
+    join::trigger_merge_reassembly_key_count_error_for_test,
+    series::trigger_series_row_range_overflow_error_for_test,
+    sorting::trigger_sort_key_count_limit_error_for_test,
+};
+
+use crate::common::{column_from_slice, series, unnamed_series};
 
 #[test]
 fn crate_root_doc_workflow_smoke() {
@@ -29,7 +48,7 @@ fn host_column_data_is_reachable_from_its_owner_module() {
     use cudf::{Series, frame::HostColumnData};
 
     fn build_series<T: HostColumnData>(name: &str, data: &[T]) -> cudf::Result<Series> {
-        crate::common::series(name, data)
+        series(name, data)
     }
 
     let strings = build_series("names", &["alice", "bob"]).unwrap();
@@ -121,7 +140,7 @@ fn datetime_extract_surface_is_publicly_importable() {
 
     fn assert_component(_: DatetimeComponent) {}
 
-    let ts = crate::common::series("ts", &[0i32, 10_561])
+    let ts = series("ts", &[0i32, 10_561])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -147,7 +166,7 @@ fn string_like_and_slice_surface_is_publicly_importable() {
     let options = StringSliceOptions::new(Some(1), Some(3)).with_step(1);
     assert_options(options);
 
-    let s = crate::common::series("s", &["abc", "axc", "abbc"]).unwrap();
+    let s = series("s", &["abc", "axc", "abbc"]).unwrap();
     let view = s.as_column().testing_view().unwrap();
     let low_level = strings::like(&view, "a_c", None).unwrap();
     let high_level = s.str().slice(options).unwrap();
@@ -306,7 +325,7 @@ fn factorization_surface_smoke() {
 
     fn assert_factorized_types(_: &Factorized, _: &Codebook, _: &EncodedSeries) {}
 
-    let series = crate::common::series("kind", &["a", "b", "a"]).unwrap();
+    let series = series("kind", &["a", "b", "a"]).unwrap();
     let factorized = series.factorize().unwrap();
     assert_factorized_types(&factorized, factorized.codebook(), factorized.row_codes());
 
@@ -322,7 +341,7 @@ fn factorization_surface_smoke() {
 fn scalar_reduction_prepared_surface_is_publicly_reexported() {
     use cudf::{ReduceAgg, ScalarReductionOutput, ScalarReductionOutputShape, SeriesPreparedScalarReduction, TypeId};
 
-    let s = crate::common::series::<i32>("value", &[10, 40, 30]).unwrap();
+    let s = series::<i32>("value", &[10, 40, 30]).unwrap();
     let prepared: SeriesPreparedScalarReduction<'_> = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
     let shape: &ScalarReductionOutputShape = prepared.output_shape();
     let output: ScalarReductionOutput = prepared.execute().unwrap();
@@ -360,8 +379,8 @@ fn scoped_control_plane_smoke() {
 fn advanced_owned_and_high_level_ops_smoke() {
     use cudf::DataFrame;
 
-    let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30]).unwrap();
-    let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0]).unwrap();
+    let ids = unnamed_series::<i32>(&[10, 20, 30]).unwrap();
+    let scores = unnamed_series::<f64>(&[1.0, 2.0, 3.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
     let gather_map = cudf::Series::from_column(column_from_slice(&[2i32, 0]).unwrap()).unwrap();
 
@@ -407,29 +426,25 @@ fn frame_submodules_expose_specialized_high_level_types() {
     let _factorization = DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen);
 
     let frame = DataFrame::from_series([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
-    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "id",
-        arrow::datatypes::DataType::Int32,
-        false,
-    )]));
+    let schema = std::sync::Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int32, false)]));
     let batch = GpuRecordBatch::new(frame, schema).unwrap();
     assert_eq!(batch.num_rows(), 3);
 }
 
 #[test]
 fn testing_submodules_expose_domain_scoped_hooks() {
-    let _ = cudf::testing::arrow::trigger_numeric_to_arrow_error_for_test;
-    let _ = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test;
-    let _ = cudf::testing::concatenate::trigger_concatenate_column_count_limit_error_for_test;
-    let _ = cudf::testing::core::adopt_owned_memory_resource_for_test;
-    let _ = cudf::testing::core::trigger_truthful_error_contract_for_test;
-    let _ = cudf::testing::core::validity_to_host_null_mask_bytes;
-    let _ = cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test;
-    let _ = cudf::testing::dictionary::trigger_match_dictionaries_result_count_mismatch_for_test;
-    let _ = cudf::testing::factorization::trigger_factorize_empty_row_code_dtype_error_for_test;
-    let _ = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test;
-    let _ = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test;
-    let _ = cudf::testing::join::trigger_merge_reassembly_key_count_error_for_test;
-    let _ = cudf::testing::series::trigger_series_row_range_overflow_error_for_test;
-    let _ = cudf::testing::sorting::trigger_sort_key_count_limit_error_for_test;
+    let _ = trigger_numeric_to_arrow_error_for_test;
+    let _ = trigger_column_view_fixed_width_host_byte_range_overflow_for_test;
+    let _ = trigger_concatenate_column_count_limit_error_for_test;
+    let _ = adopt_owned_memory_resource_for_test;
+    let _ = trigger_truthful_error_contract_for_test;
+    let _ = validity_to_host_null_mask_bytes;
+    let _ = trigger_dataframe_row_range_overflow_error_for_test;
+    let _ = trigger_match_dictionaries_result_count_mismatch_for_test;
+    let _ = trigger_factorize_empty_row_code_dtype_error_for_test;
+    let _ = trigger_groupby_request_count_limit_error_for_test;
+    let _ = trigger_interop_projection_negative_offset_for_test;
+    let _ = trigger_merge_reassembly_key_count_error_for_test;
+    let _ = trigger_series_row_range_overflow_error_for_test;
+    let _ = trigger_sort_key_count_limit_error_for_test;
 }

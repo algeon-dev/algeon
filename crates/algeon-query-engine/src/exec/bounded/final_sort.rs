@@ -26,6 +26,12 @@ use topk_candidate::*;
 use topk_level::*;
 
 use super::compiled::lanes::AggregateLaneDispatch;
+use crate::{
+    exec::retry::{ResourceFailureRecovery, backoff_before_retry, resource_failure_recovery},
+    observability::{
+        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
+    },
+};
 
 pub(super) fn execute_final_sort_limit_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -60,16 +66,13 @@ pub(super) fn execute_final_sort_node_with_retry(
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
     let input_rows = input.frame.num_rows() as u64;
-    let (observation, plan_execution_id, parent_span_id) =
-        crate::observability::stage_context_from_execution(final_sort.execution.context());
-    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(final_sort.execution.context());
+    let stage_guard = RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
         parent_span_id,
-        crate::observability::RuntimeOperatorStageKind::FinalSort,
-        crate::observability::RuntimeOperatorStageIdentity::new()
-            .with_node_id(node_id.to_string())
-            .with_input_rows(input_rows),
+        RuntimeOperatorStageKind::FinalSort,
+        RuntimeOperatorStageIdentity::new().with_node_id(node_id.to_string()).with_input_rows(input_rows),
     );
 
     if let Some(limit) = limit {
@@ -110,7 +113,7 @@ pub(super) fn execute_final_sort_node_with_retry(
             if max_attempts > 1
                 && let Some(limit) = limit
             {
-                if let Err(backoff_error) = crate::exec::retry::backoff_before_retry(
+                if let Err(backoff_error) = backoff_before_retry(
                     final_sort.execution.context(),
                     "query_engine.exec.bounded.final_sort_hierarchical_topk_retry",
                 ) {
@@ -277,9 +280,7 @@ impl FinalSortExecutor<'_, '_, '_> {
     }
 
     fn attach_final_sort_resource_facts(&self, error: QueryError, attempt: usize) -> QueryError {
-        if crate::exec::retry::resource_failure_recovery(&error)
-            == crate::exec::retry::ResourceFailureRecovery::NotResource
-        {
+        if resource_failure_recovery(&error) == ResourceFailureRecovery::NotResource {
             return error;
         }
 

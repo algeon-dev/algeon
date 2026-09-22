@@ -31,15 +31,15 @@ use cudf::{
     },
     frame::dataframe::{GpuRecordBatch, HostBatchCursorConfig},
     ops::expr::col,
-    runtime::QueryStageKind,
-    testing::{self, prelude::*},
+    runtime::{BindingExtensionInitError, QueryStageKind},
+    testing::{self, core::adopt_owned_memory_resource_for_test, prelude::*},
 };
 use cudf_sys::test_support;
 use rapids_interop::{CompletionAuthority, ReadStartAuthority};
 
 use crate::common::{
     dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    lock_event_observation, reset_exec_observation, reset_sync_observation, sample_runtime,
+    lock_event_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
 };
 
 fn assert_frame_residency(df: &DataFrame, expected_id: u64, expected_stream: usize, expected_mr: usize) {
@@ -56,8 +56,7 @@ fn stats_memory_resource() -> DeviceMemoryResource {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create stats memory resource");
     // SAFETY: the hook returned one newly owned resource for the current
     // device, and this test transfers its sole ownership to cudf.
-    unsafe { cudf::testing::core::adopt_owned_memory_resource_for_test(raw, device) }
-        .expect("failed to adopt stats memory resource")
+    unsafe { adopt_owned_memory_resource_for_test(raw, device) }.expect("failed to adopt stats memory resource")
 }
 
 fn allocation_count(resource: &DeviceMemoryResource) -> i64 {
@@ -223,7 +222,7 @@ impl Drop for DestructorCycleA {
             },
         );
         let outcome = match nested {
-            Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+            Err(BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
             _ => "unexpected destructor-cycle lookup outcome".to_string(),
         };
         let _ = self.outcome.send(outcome);
@@ -241,7 +240,7 @@ impl Drop for DestructorCycleB {
             },
         );
         let outcome = match nested {
-            Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+            Err(BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
             _ => "unexpected destructor-cycle lookup outcome".to_string(),
         };
         let _ = self.outcome.send(outcome);
@@ -255,7 +254,7 @@ impl Drop for DestructorReentrantBindingExtension {
             "binding_extension_nested_destruction",
             || -> std::result::Result<Self, ()> { panic!("destruction-time reinitialization must not run a factory") },
         );
-        if let Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) = nested {
+        if let Err(BindingExtensionInitError::Lifecycle(error)) = nested {
             *self.observed.lock().expect("observed destruction error lock") = Some(error);
         }
     }
@@ -489,7 +488,7 @@ fn binding_extension_factory_error_is_retryable() {
         "binding_extension_factory_error",
         || -> std::result::Result<BindingExtensionDropCounter, &'static str> { Err("expected factory error") },
     );
-    assert!(matches!(first, Err(cudf::runtime::BindingExtensionInitError::Factory("expected factory error"))));
+    assert!(matches!(first, Err(BindingExtensionInitError::Factory("expected factory error"))));
 
     let retry = runtime
         .get_or_try_init_binding_extension("binding_extension_factory_retry", || {
@@ -510,7 +509,7 @@ fn binding_extension_reentrancy_and_execution_poison_fail_closed() {
                         Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
                     });
                 let error = match nested {
-                    Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error,
+                    Err(BindingExtensionInitError::Lifecycle(error)) => error,
                     _ => panic!("nested initialization must return a lifecycle error"),
                 };
                 assert!(error.to_string().contains("nested_binding_extension_initialization"));
@@ -636,7 +635,7 @@ fn binding_extension_factory_cross_type_cycle_returns_instead_of_deadlocking() {
                             Ok::<_, ()>(FactoryCycleB)
                         });
                     let message = match nested {
-                        Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+                        Err(BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
                         _ => "unexpected factory-cycle lookup outcome".to_string(),
                     };
                     outcome.send(message).expect("send factory cycle A outcome");
@@ -660,7 +659,7 @@ fn binding_extension_factory_cross_type_cycle_returns_instead_of_deadlocking() {
                             Ok::<_, ()>(FactoryCycleA)
                         });
                     let message = match nested {
-                        Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+                        Err(BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
                         _ => "unexpected factory-cycle lookup outcome".to_string(),
                     };
                     outcome.send(message).expect("send factory cycle B outcome");
@@ -782,7 +781,7 @@ fn binding_extension_factory_panic_poisons_lifecycle() {
         Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
     });
     let error = match retry {
-        Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error,
+        Err(BindingExtensionInitError::Lifecycle(error)) => error,
         _ => panic!("panicking factory must poison the stable lifecycle slot"),
     };
     assert!(error.to_string().contains("binding_extension_factory_panicked"));
@@ -2294,7 +2293,7 @@ fn owned_transfer_export_is_an_observable_boundary() {
 
 #[test]
 fn query_backend_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "binding_extension_is_shared_only_by_the_exact_execution_binding",
             binding_extension_is_shared_only_by_the_exact_execution_binding,

@@ -7,7 +7,10 @@ use std::collections::BTreeMap;
 use super::{
     AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue, NodeId, QueryError, model::CapabilityDecision,
 };
-use crate::expr::DatePart;
+use crate::{
+    error::Result,
+    expr::{ColumnQualifier, DatePart},
+};
 
 // Stable report facts for an expression capability miss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +37,7 @@ pub(super) fn expression_rejection_decision(
 }
 
 pub(super) fn validation_result_decision(
-    result: crate::error::Result<()>,
+    result: Result<()>,
     reason: &'static str,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CapabilityDecision {
@@ -62,7 +65,7 @@ pub(super) fn validation_error_decision(
 pub(super) fn validate_aggregate_expr_capability(
     aggregate_expr: &AggregateExpr,
     is_scalar_aggregate: bool,
-) -> Result<(), ExpressionCapabilityRejection> {
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     if aggregate_expr.distinct && aggregate_expr.function != AggregateFunction::Count {
         return Err(ExpressionCapabilityRejection {
             reason: "distinct_aggregate_requires_count",
@@ -96,7 +99,9 @@ fn is_count_star_expr(expr: &Expr) -> bool {
         || matches!(expr, Expr::Alias { expr, .. } if is_count_star_expr(expr))
 }
 
-pub(super) fn validate_named_column_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+pub(super) fn validate_named_column_expr_capability(
+    expr: &Expr,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
         Expr::Column(_) => Ok(()),
         Expr::Alias { expr, .. } => validate_column_expr_capability(expr),
@@ -107,7 +112,7 @@ pub(super) fn validate_named_column_expr_capability(expr: &Expr) -> Result<(), E
     }
 }
 
-pub(super) fn validate_column_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+pub(super) fn validate_column_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
         Expr::Column(_) => Ok(()),
         Expr::Alias { expr, .. } => validate_column_expr_capability(expr),
@@ -118,7 +123,7 @@ pub(super) fn validate_column_expr_capability(expr: &Expr) -> Result<(), Express
     }
 }
 
-pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+pub(super) fn validate_general_expr_capability(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
         Expr::Column(_) => Ok(()),
         Expr::Literal(value) => validate_literal_capability(value, "literal"),
@@ -219,13 +224,11 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
     }
 }
 
-pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+pub(super) fn validate_join_residual_expr_capability(
+    expr: &Expr,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
-        Expr::Column(column)
-            if matches!(column.qualifier(), Some(crate::expr::ColumnQualifier::Input { index: 0 | 1 })) =>
-        {
-            Ok(())
-        },
+        Expr::Column(column) if matches!(column.qualifier(), Some(ColumnQualifier::Input { index: 0 | 1 })) => Ok(()),
         Expr::Column(_) => Err(ExpressionCapabilityRejection {
             reason: "join_residual_column_must_be_input_qualified",
             expression_family: "column",
@@ -282,13 +285,11 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
     }
 }
 
-pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+pub(super) fn validate_post_join_residual_expr_capability(
+    expr: &Expr,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match expr {
-        Expr::Column(column)
-            if matches!(column.qualifier(), Some(crate::expr::ColumnQualifier::Input { index: 0 | 1 })) =>
-        {
-            Ok(())
-        },
+        Expr::Column(column) if matches!(column.qualifier(), Some(ColumnQualifier::Input { index: 0 | 1 })) => Ok(()),
         Expr::Column(_) => Err(ExpressionCapabilityRejection {
             reason: "join_residual_column_must_be_input_qualified",
             expression_family: "column",
@@ -365,7 +366,7 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
     }
 }
 
-fn validate_extract_field_capability(field: DatePart) -> Result<(), ExpressionCapabilityRejection> {
+fn validate_extract_field_capability(field: DatePart) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match field {
         DatePart::Year | DatePart::Month | DatePart::Day | DatePart::Minute => Ok(()),
         DatePart::Hour | DatePart::Second | DatePart::Millisecond | DatePart::Microsecond | DatePart::Nanosecond => {
@@ -374,7 +375,9 @@ fn validate_extract_field_capability(field: DatePart) -> Result<(), ExpressionCa
     }
 }
 
-fn validate_post_join_extract_field_capability(field: DatePart) -> Result<(), ExpressionCapabilityRejection> {
+fn validate_post_join_extract_field_capability(
+    field: DatePart,
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match field {
         DatePart::Year | DatePart::Month | DatePart::Day => Ok(()),
         DatePart::Minute
@@ -389,7 +392,7 @@ fn validate_post_join_extract_field_capability(field: DatePart) -> Result<(), Ex
     }
 }
 
-fn validate_date_trunc_field_capability(field: DatePart) -> Result<(), ExpressionCapabilityRejection> {
+fn validate_date_trunc_field_capability(field: DatePart) -> std::result::Result<(), ExpressionCapabilityRejection> {
     match field {
         DatePart::Day
         | DatePart::Hour
@@ -408,7 +411,7 @@ fn validate_date_trunc_field_capability(field: DatePart) -> Result<(), Expressio
 fn validate_in_list_capability(
     list: &[Expr],
     expression_family: &'static str,
-) -> Result<(), ExpressionCapabilityRejection> {
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     if list.is_empty() {
         return Err(ExpressionCapabilityRejection { reason: "in_list_must_not_be_empty", expression_family });
     }
@@ -430,7 +433,7 @@ fn validate_in_list_capability(
 fn validate_literal_capability(
     value: &LiteralValue,
     expression_family: &'static str,
-) -> Result<(), ExpressionCapabilityRejection> {
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     if matches!(value, LiteralValue::IntervalMonthDayNano { .. }) {
         return Err(ExpressionCapabilityRejection {
             reason: "interval_literal_requires_datetime_interval_arithmetic",
@@ -444,7 +447,7 @@ fn validate_interval_binary_expr_capability(
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
-) -> Result<(), ExpressionCapabilityRejection> {
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     let left_interval = expr_is_interval_literal(left);
     let right_interval = expr_is_interval_literal(right);
     if left_interval == right_interval {
@@ -472,7 +475,7 @@ fn validate_join_interval_binary_expr_capability(
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
-) -> Result<(), ExpressionCapabilityRejection> {
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     let left_interval = expr_is_interval_literal(left);
     let right_interval = expr_is_interval_literal(right);
     if left_interval == right_interval {
@@ -498,7 +501,7 @@ fn validate_join_interval_binary_expr_capability(
     validate_join_residual_expr_capability(if left_interval { right } else { left })
 }
 
-fn validate_fixed_day_interval_literal(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+fn validate_fixed_day_interval_literal(expr: &Expr) -> std::result::Result<(), ExpressionCapabilityRejection> {
     let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, nanoseconds, .. }) = expr else {
         return Err(ExpressionCapabilityRejection {
             reason: "interval_arithmetic_requires_interval_literal",
@@ -519,7 +522,7 @@ fn validate_post_join_interval_binary_expr_capability(
     left: &Expr,
     op: BinaryOp,
     right: &Expr,
-) -> Result<(), ExpressionCapabilityRejection> {
+) -> std::result::Result<(), ExpressionCapabilityRejection> {
     let left_interval = expr_is_interval_literal(left);
     let right_interval = expr_is_interval_literal(right);
     if left_interval == right_interval {

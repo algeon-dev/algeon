@@ -57,28 +57,15 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
     assert_final_sort_prepare_budget_event(
         metrics,
         "query_engine.final_sort.topk_prepare",
-        "final_sort_topk_chunk",
+        "final_sort_topk_stream_chunk",
         None,
     );
     assert_final_sort_materialize_budget_event(
         metrics,
         "query_engine.final_sort.topk_materialize",
-        "final_sort_topk_chunk",
+        "final_sort_topk_stream_chunk",
         None,
     );
-    assert_final_sort_prepare_budget_event(
-        metrics,
-        "query_engine.final_sort.topk_prepare",
-        "final_sort_topk_merge",
-        None,
-    );
-    assert_final_sort_materialize_budget_event(
-        metrics,
-        "query_engine.final_sort.topk_materialize",
-        "final_sort_topk_merge",
-        None,
-    );
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };

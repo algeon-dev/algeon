@@ -13,6 +13,7 @@ use cugraph_sys::{
 use crate::{
     array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::{core_number_result_to_dataframe, k_core_result_to_dataframe},
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
     handle::{EnteredContext, ResourceHandleLease},
@@ -221,7 +222,7 @@ impl CoreNumberResult {
     ///
     /// Returns columns `"vertex"` and `"core_number"`.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::core_number_result_to_dataframe(self, runtime)
+        core_number_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("CoreNumberResult::to_dataframe"))
     }
 }
@@ -325,8 +326,7 @@ impl KCoreResult {
     /// Returns `"source"` and `"destination"` columns, plus `"weight"` when
     /// the native result contains an edge-weight column.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::k_core_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("KCoreResult::to_dataframe"))
+        k_core_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("KCoreResult::to_dataframe"))
     }
 }
 

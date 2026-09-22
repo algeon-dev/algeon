@@ -1,11 +1,16 @@
-use super::{
-    super::{
-        helpers::{invalid, plan_node, single_input_resource, single_output_resource},
-        resource::CompiledGpuResourcePayload,
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use crate::{
+    error::Result,
+    exec::bounded::{
+        compiled::{
+            helpers::{invalid, plan_node, single_input_resource, single_output_resource},
+            resource::CompiledGpuResourcePayload,
+        },
+        execute_bounded_edge_normalize_from_input,
     },
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
+    pipeline::PipelineTask,
+    plan::PlanNode,
 };
-use crate::{error::Result, pipeline::PipelineTask, plan::PlanNode};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn execute_edge_normalize_task(
@@ -32,12 +37,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id));
         };
-        let frame = crate::exec::bounded::execute_bounded_edge_normalize_from_input(
-            &mut self.execution,
-            node_id,
-            edge_normalize,
-            *frame,
-        )?;
+        let frame = execute_bounded_edge_normalize_from_input(&mut self.execution, node_id, edge_normalize, *frame)?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
 }

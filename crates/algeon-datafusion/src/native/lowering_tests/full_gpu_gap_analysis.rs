@@ -1,3 +1,5 @@
+use query_engine::plan::{ShiftDirection, WindowFunction};
+
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -383,12 +385,12 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
                 plan.nodes().iter().any(|node| {
                     matches!(
                         &node.kind,
-                        query_engine::plan::PlanNode::Window(window)
+                        PlanNode::Window(window)
                             if window
                                 .spec
                                 .functions
                                 .iter()
-                                .any(|function| matches!(function, query_engine::plan::WindowFunction::RowNumber { .. }))
+                                .any(|function| matches!(function, WindowFunction::RowNumber { .. }))
                     )
                 }),
                 "window_row_number should lower to native RowNumber IR"
@@ -400,12 +402,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             assert!(
                 observed.iter().any(|function| matches!(
                     function,
-                    query_engine::plan::WindowFunction::LagLead {
-                        offset: 1,
-                        default: None,
-                        direction: query_engine::plan::ShiftDirection::Lag,
-                        ..
-                    }
+                    WindowFunction::LagLead { offset: 1, default: None, direction: ShiftDirection::Lag, .. }
                 )),
                 "window_lag should lower to LagLead with offset=1, default=NULL, direction=Lag; got {observed:#?}"
             );
@@ -416,10 +413,10 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             assert!(
                 observed.iter().any(|function| matches!(
                     function,
-                    query_engine::plan::WindowFunction::LagLead {
+                    WindowFunction::LagLead {
                         offset: 2,
-                        default: Some(query_engine::expr::LiteralValue::Int64(0)),
-                        direction: query_engine::plan::ShiftDirection::Lag,
+                        default: Some(LiteralValue::Int64(0)),
+                        direction: ShiftDirection::Lag,
                         ..
                     }
                 )),
@@ -432,12 +429,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             assert!(
                 observed.iter().any(|function| matches!(
                     function,
-                    query_engine::plan::WindowFunction::LagLead {
-                        offset: 1,
-                        default: None,
-                        direction: query_engine::plan::ShiftDirection::Lead,
-                        ..
-                    }
+                    WindowFunction::LagLead { offset: 1, default: None, direction: ShiftDirection::Lead, .. }
                 )),
                 "window_lead should lower to LagLead with offset=1, default=NULL, direction=Lead; got {observed:#?}"
             );
@@ -447,7 +439,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
             assert!(
                 matches!(
                     &plan.root_node().kind,
-                    query_engine::plan::PlanNode::Limit(limit) if limit.spec.skip == 2 && limit.spec.fetch.is_none()
+                    PlanNode::Limit(limit) if limit.spec.skip == 2 && limit.spec.fetch.is_none()
                 ),
                 "offset_without_limit should lower to an offset-only native Limit"
             );
@@ -458,8 +450,7 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
                 plan.nodes().iter().any(|node| {
                     matches!(
                         &node.kind,
-                        query_engine::plan::PlanNode::Source(source)
-                            if matches!(source.as_ref(), query_engine::source::SourceNode::LiteralBatch(_))
+                        PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(_))
                     )
                 }),
                 "{} should lower to a native literal batch source",
@@ -470,14 +461,14 @@ fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) 
     }
 }
 
-fn collect_lag_lead_functions(plan: &query_engine::plan::QueryPlan) -> Vec<query_engine::plan::WindowFunction> {
+fn collect_lag_lead_functions(plan: &QueryPlan) -> Vec<WindowFunction> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
-            query_engine::plan::PlanNode::Window(window) => Some(window.spec.functions.clone()),
+            PlanNode::Window(window) => Some(window.spec.functions.clone()),
             _ => None,
         })
         .flatten()
-        .filter(|function| matches!(function, query_engine::plan::WindowFunction::LagLead { .. }))
+        .filter(|function| matches!(function, WindowFunction::LagLead { .. }))
         .collect()
 }

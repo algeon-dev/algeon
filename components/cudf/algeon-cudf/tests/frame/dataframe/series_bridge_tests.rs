@@ -6,15 +6,17 @@ use std::sync::Arc;
 
 use cudf::{DataFrame, ErrorCode, ErrorKind, Series, TypeId, testing::prelude::*};
 
-use crate::common::{assert_duplicate_name_error, assert_missing_column_error, error_context_value};
+use crate::common::{
+    assert_duplicate_name_error, assert_missing_column_error, error_context_value, run_named_cases, series,
+};
 
 // ---------------------------------------------------------------------------
 // from_series: happy path
 // ---------------------------------------------------------------------------
 
 fn test_from_series_happy_path_dynamic_iterator() {
-    let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
-    let scores = crate::common::series::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
+    let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
+    let scores = series::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
 
     let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
@@ -30,7 +32,7 @@ fn test_from_series_happy_path_dynamic_iterator() {
 }
 
 fn test_from_series_single_column() {
-    let vals = crate::common::series::<i64>("x", &[100, 200]).unwrap();
+    let vals = series::<i64>("x", &[100, 200]).unwrap();
     let df = DataFrame::from_series([("x", vals)]).unwrap();
 
     assert_eq!(df.num_columns(), 1);
@@ -38,7 +40,7 @@ fn test_from_series_single_column() {
 }
 
 fn test_from_series_empty_series() {
-    let empty = crate::common::series::<i32>("e", &[]).unwrap();
+    let empty = series::<i32>("e", &[]).unwrap();
     let df = DataFrame::from_series([("e", empty)]).unwrap();
 
     assert_eq!(df.num_columns(), 1);
@@ -50,8 +52,8 @@ fn test_from_series_empty_series() {
 // ---------------------------------------------------------------------------
 
 fn test_from_series_rejects_duplicate_names() {
-    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
-    let b = crate::common::series::<i32>("b", &[3, 4]).unwrap();
+    let a = series::<i32>("a", &[1, 2]).unwrap();
+    let b = series::<i32>("b", &[3, 4]).unwrap();
 
     let result = DataFrame::from_series([("x", a), ("x", b)]);
 
@@ -65,8 +67,8 @@ fn test_from_series_rejects_duplicate_names() {
 // ---------------------------------------------------------------------------
 
 fn test_from_series_rejects_length_mismatch_dynamic_iterator() {
-    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let b = crate::common::series::<i32>("b", &[1, 2]).unwrap();
+    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = series::<i32>("b", &[1, 2]).unwrap();
 
     let result = DataFrame::from_series([("x", a), ("y", b)]);
 
@@ -84,8 +86,8 @@ fn test_from_series_rejects_length_mismatch_dynamic_iterator() {
 // ---------------------------------------------------------------------------
 
 fn test_from_series_happy_path() {
-    let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
-    let names = crate::common::series("names", &["a", "b", "c"]).unwrap();
+    let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
+    let names = series("names", &["a", "b", "c"]).unwrap();
 
     let pairs = vec![("id".to_string(), ids), ("name".to_string(), names)];
     let df = DataFrame::from_series(pairs).unwrap();
@@ -96,8 +98,8 @@ fn test_from_series_happy_path() {
 }
 
 fn test_from_series_with_str_keys() {
-    let a = crate::common::series::<i32>("a", &[10, 20]).unwrap();
-    let b = crate::common::series::<f64>("b", &[1.0, 2.0]).unwrap();
+    let a = series::<i32>("a", &[10, 20]).unwrap();
+    let b = series::<f64>("b", &[1.0, 2.0]).unwrap();
 
     // Using &str keys (not String) to test Into<String> flexibility.
     let pairs = vec![("alpha", a), ("beta", b)];
@@ -115,8 +117,8 @@ fn test_from_series_empty_iterator() {
 }
 
 fn test_from_series_rejects_duplicates() {
-    let a = crate::common::series::<i32>("a", &[1]).unwrap();
-    let b = crate::common::series::<i32>("b", &[2]).unwrap();
+    let a = series::<i32>("a", &[1]).unwrap();
+    let b = series::<i32>("b", &[2]).unwrap();
 
     let result = DataFrame::from_series(vec![("dup", a), ("dup", b)]);
 
@@ -125,8 +127,8 @@ fn test_from_series_rejects_duplicates() {
 }
 
 fn test_from_series_rejects_length_mismatch() {
-    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let b = crate::common::series::<i32>("b", &[1]).unwrap();
+    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = series::<i32>("b", &[1]).unwrap();
 
     let result = DataFrame::from_series(vec![("x", a), ("y", b)]);
 
@@ -139,7 +141,7 @@ fn test_from_series_rejects_length_mismatch() {
 // ---------------------------------------------------------------------------
 
 fn test_series_returns_series_values() {
-    let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
+    let ids = series::<i32>("ids", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", ids)]).unwrap();
 
     let s = df.series("id").unwrap();
@@ -148,7 +150,7 @@ fn test_series_returns_series_values() {
 }
 
 fn test_series_shares_arc_with_dataframe() {
-    let ids = crate::common::series::<i32>("ids", &[10, 20, 30]).unwrap();
+    let ids = series::<i32>("ids", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("id", ids)]).unwrap();
 
     let s = df.series("id").unwrap();
@@ -161,7 +163,7 @@ fn test_series_shares_arc_with_dataframe() {
 }
 
 fn test_series_nonexistent_column_returns_error() {
-    let a = crate::common::series::<i32>("a", &[1]).unwrap();
+    let a = series::<i32>("a", &[1]).unwrap();
     let df = DataFrame::from_series([("x", a)]).unwrap();
 
     let result = df.series("nonexistent");
@@ -174,7 +176,7 @@ fn test_series_nonexistent_column_returns_error() {
 // ---------------------------------------------------------------------------
 
 fn test_round_trip_from_explicit_columns_to_series() {
-    let original = crate::common::series::<f64>("orig", &[1.0, 2.0, 3.0]).unwrap();
+    let original = series::<f64>("orig", &[1.0, 2.0, 3.0]).unwrap();
     let original_ptr = original.testing_view().unwrap().device_data_ptr().unwrap();
 
     let df = DataFrame::from_series([("val", original)]).unwrap();
@@ -188,8 +190,8 @@ fn test_round_trip_from_explicit_columns_to_series() {
 }
 
 fn test_round_trip_from_series_to_series() {
-    let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
-    let b = crate::common::series::<i64>("b", &[100, 200]).unwrap();
+    let a = series::<i32>("a", &[1, 2]).unwrap();
+    let b = series::<i64>("b", &[100, 200]).unwrap();
     let a_ptr = a.testing_view().unwrap().device_data_ptr().unwrap();
     let b_ptr = b.testing_view().unwrap().device_data_ptr().unwrap();
 
@@ -210,7 +212,7 @@ fn test_round_trip_from_series_to_series() {
 // ---------------------------------------------------------------------------
 
 fn test_from_series_preserves_arc_sharing() {
-    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let s = series::<i32>("x", &[1, 2, 3]).unwrap();
     let arc_before = s.clone().into_inner();
 
     let df = DataFrame::from_series([("x", s)]).unwrap();
@@ -222,7 +224,7 @@ fn test_from_series_preserves_arc_sharing() {
 
 #[test]
 fn series_bridge_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_from_series_happy_path_dynamic_iterator", test_from_series_happy_path_dynamic_iterator),
         ("test_from_series_single_column", test_from_series_single_column),
         ("test_from_series_empty_series", test_from_series_empty_series),

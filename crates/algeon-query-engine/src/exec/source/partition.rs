@@ -1,9 +1,12 @@
 use std::time::Instant;
 
+use cudf::core::Scalar as CudfScalar;
+
 use super::{
     ArrowDataType, DataFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame, LiteralValue, LocalParquetSource,
     QueryError, QueryErrorCode, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
 };
+use crate::datatypes::arrow_decimal_scale_to_cudf_scale;
 
 pub(super) fn inject_partition_columns(
     context: &ExecutionContext,
@@ -79,7 +82,7 @@ pub(super) fn partition_value_series(
         LiteralValue::Float64(value) => context.runtime()?.scalar(*value),
         LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => context.runtime()?.string_scalar(value),
         LiteralValue::Decimal128 { raw, scale, .. } => {
-            context.runtime()?.decimal128_raw_scalar(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            context.runtime()?.decimal128_raw_scalar(*raw, arrow_decimal_scale_to_cudf_scale(*scale))
         },
         LiteralValue::Date32(value) => {
             context.runtime()?.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days)
@@ -126,7 +129,7 @@ pub(super) fn partition_value_series(
     })
 }
 
-fn null_partition_value_scalar(context: &ExecutionContext, data_type: &ArrowDataType) -> Result<cudf::core::Scalar> {
+fn null_partition_value_scalar(context: &ExecutionContext, data_type: &ArrowDataType) -> Result<CudfScalar> {
     let scalar = match data_type {
         ArrowDataType::Boolean => context.runtime()?.null_scalar::<bool>(),
         ArrowDataType::Int8 => context.runtime()?.null_scalar::<i8>(),
@@ -143,7 +146,7 @@ fn null_partition_value_scalar(context: &ExecutionContext, data_type: &ArrowData
             context.runtime()?.null_string_scalar()
         },
         ArrowDataType::Decimal128(_precision, scale) => {
-            context.runtime()?.null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            context.runtime()?.null_decimal128_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Date32 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
         ArrowDataType::Date64 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),

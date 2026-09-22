@@ -1,3 +1,5 @@
+use query_engine::pipeline::{AcceptedInputForm, PipelineTaskKind};
+
 /// Join → Limit → Projection over throwaway paths.
 ///
 // The retired projection/global-limit recognizer no longer decides this
@@ -136,16 +138,16 @@ fn composed_pipeline_admits_projection_over_join_limit() {
     assert_eq!(plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Limit(_))).count(), 1);
     let admission =
         bounded_pipeline_admission(&plan).unwrap().expect("single-join limit projection should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::ComposedPipeline);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ComposedPipeline);
     // The retired single-join post-root envelope no longer decides this shape;
     // the compiled `Limit` task takes one complete resident frame.
     let limit_task = admission
         .pipeline()
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Limit)
+        .find(|task| task.kind() == PipelineTaskKind::Limit)
         .expect("one limit task");
-    assert_eq!(limit_task.accepted_input_form(), query_engine::pipeline::AcceptedInputForm::Frame);
+    assert_eq!(limit_task.accepted_input_form(), AcceptedInputForm::Frame);
 }
 
 #[test]
@@ -156,5 +158,5 @@ fn composed_pipeline_admits_a_filtered_source_scan_shared_by_several_joins() {
     let admission = bounded_pipeline_admission(&plan)
         .unwrap()
         .expect("a filtered dimension scan shared by several joins should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::ComposedPipeline);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ComposedPipeline);
 }

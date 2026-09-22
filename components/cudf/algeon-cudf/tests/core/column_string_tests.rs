@@ -1,11 +1,14 @@
 //! Tests for string column creation and reading.
 
-use cudf::{ErrorCode, ErrorKind, Runtime, TypeId, testing::prelude::*};
+use cudf::{
+    ErrorCode, ErrorKind, Result, Runtime, TypeId,
+    testing::{ColumnView, column::adopt_owned_column_view_for_test, prelude::*},
+};
 use cudf_sys::test_support;
 
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, reset_exec_observation,
+    last_exec_stream_value, nullable_series, reset_exec_observation, run_named_cases,
 };
 
 fn test_from_strs_basic() {
@@ -92,14 +95,14 @@ fn test_from_strs_nullable_roundtrip() {
     assert_eq!(mask, vec![true, false, true, false]);
 }
 
-fn synthetic_string_view_without_children() -> cudf::Result<cudf::testing::ColumnView<'static>> {
+fn synthetic_string_view_without_children() -> Result<ColumnView<'static>> {
     let runtime = Runtime::new()?;
     let mut raw = std::ptr::null_mut();
     let status = unsafe { test_support::cudf_test_column_view_create_synthetic_string_without_children(2, &mut raw) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create synthetic string column view");
     // SAFETY: the hook returned a fresh owned view for `runtime`'s current
     // device, and the adapter transfers its unique destruction to cudf.
-    unsafe { cudf::testing::column::adopt_owned_column_view_for_test(raw, &runtime) }
+    unsafe { adopt_owned_column_view_for_test(raw, &runtime) }
 }
 
 fn test_to_host_validity_for_sliced_nullable_string_column_is_normalized_to_slice() {
@@ -188,7 +191,7 @@ fn test_to_optional_strings_distinguishes_null_from_empty() {
 }
 
 fn test_series_to_optional_strings_distinguishes_null_from_empty() {
-    let series = crate::common::nullable_series("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
+    let series = nullable_series("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
 
     let result = series.to_optional_strings().unwrap();
     assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);
@@ -294,7 +297,7 @@ fn test_from_strs_nullable_no_nulls() {
 
 #[test]
 fn column_string_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_from_strs_basic", test_from_strs_basic),
         ("test_from_strs_roundtrip", test_from_strs_roundtrip),
         ("test_from_strs_empty_strings", test_from_strs_empty_strings),

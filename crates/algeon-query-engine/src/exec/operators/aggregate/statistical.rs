@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use arrow::datatypes::Schema as ArrowSchema;
+
 use super::{
     AggregateExecutionStage, AggregateExpr, AggregateFunction, AggregateSpec, AggregateStrategyCapabilityDecision,
     AggregateStrategyExecutionOptions, ArrowDataType, ArrowSchemaRef, AvgStateAliases, BinaryOp, CaseWhen, CudfAggSpec,
@@ -18,6 +20,7 @@ use super::{
     record_single_grouped_aggregate_strategy_decision_with_metrics,
     select_partial_aggregate_strategy_decision_with_options,
 };
+use crate::naming::{first_available_numeric_suffix_from, unique_alias_with_suffix};
 
 const STATISTICAL_MOMENTS_FACT: &str = "algebraic_moments";
 
@@ -453,7 +456,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
 fn gpu_native_statistical_decision(
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::Schema,
+    input_schema: &ArrowSchema,
     input_rows: u64,
     stage: AggregateExecutionStage,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
@@ -775,7 +778,7 @@ fn statistical_state_aliases_for_names(
     if statistical_aliases_available(spec, input_names, &aliases) {
         return aliases;
     }
-    let suffix = crate::naming::first_available_numeric_suffix_from(1, |suffix| {
+    let suffix = first_available_numeric_suffix_from(1, |suffix| {
         let aliases = statistical_state_aliases_with_suffix(index, Some(suffix));
         !statistical_aliases_available(spec, input_names, &aliases)
     });
@@ -814,9 +817,7 @@ fn statistical_aliases_available(
 }
 
 fn unique_internal_column_name(frame: &DataFrame, spec: &AggregateSpec, base: String) -> String {
-    crate::naming::unique_alias_with_suffix(base.as_str(), |candidate| {
-        !internal_column_name_available(frame, spec, candidate)
-    })
+    unique_alias_with_suffix(base.as_str(), |candidate| !internal_column_name_available(frame, spec, candidate))
 }
 
 fn internal_column_name_available(frame: &DataFrame, spec: &AggregateSpec, candidate: &str) -> bool {

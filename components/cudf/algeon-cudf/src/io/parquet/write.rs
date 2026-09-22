@@ -9,13 +9,13 @@ use std::{
 
 use typed_builder::TypedBuilder;
 
-use super::super::{path_to_cstring, resolve_write_execution};
 use crate::{
     core::{
         error::{self, FACT_COLUMN_INDEX, Result},
         schema,
-        table::Table,
+        table::{Table, TableView},
     },
+    io::{path_to_cstring, resolve_write_execution},
     runtime::Runtime,
 };
 
@@ -79,7 +79,7 @@ pub fn write_parquet(table: &Table, options: &ParquetTableWriteOptions) -> Resul
 }
 
 pub(crate) fn write_parquet_with_exec(
-    table: &crate::core::TableView<'_>,
+    table: &TableView<'_>,
     options: &ParquetTableWriteOptions,
     exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<()> {

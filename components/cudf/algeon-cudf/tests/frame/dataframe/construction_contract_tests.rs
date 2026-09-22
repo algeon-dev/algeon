@@ -4,7 +4,7 @@
 //! constructors take explicit output names, and `Series` values are nameless.
 use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*};
 
-use crate::common::{assert_duplicate_name_error, column_from_slice, error_context_value};
+use crate::common::{assert_duplicate_name_error, column_from_slice, error_context_value, run_named_cases, series};
 
 fn assert_length_mismatch_contract(
     err: &cudf::Error,
@@ -26,8 +26,8 @@ fn assert_length_mismatch_contract(
 // ---------------------------------------------------------------------------
 
 fn test_from_series_uses_explicit_names() {
-    let x = crate::common::series::<i32>("source_x", &[1, 2, 3]).unwrap();
-    let y = crate::common::series::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
+    let x = series::<i32>("source_x", &[1, 2, 3]).unwrap();
+    let y = series::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
 
     let df = DataFrame::from_series([("x", x), ("y", y)]).unwrap();
 
@@ -38,15 +38,15 @@ fn test_from_series_uses_explicit_names() {
 
 fn test_from_series_accepts_unnamed_series() {
     let unnamed = Series::from_column(column_from_slice(&[3i32, 4]).unwrap()).unwrap();
-    let named = crate::common::series::<i32>("a", &[1, 2]).unwrap();
+    let named = series::<i32>("a", &[1, 2]).unwrap();
 
     let df = DataFrame::from_series([("left", named), ("right", unnamed)]).unwrap();
     assert_eq!(df.column_names(), vec!["left", "right"]);
 }
 
 fn test_from_series_rejects_duplicate_names() {
-    let a1 = crate::common::series::<i32>("left", &[1, 2]).unwrap();
-    let a2 = crate::common::series::<i32>("right", &[3, 4]).unwrap();
+    let a1 = series::<i32>("left", &[1, 2]).unwrap();
+    let a2 = series::<i32>("right", &[3, 4]).unwrap();
 
     let err = DataFrame::from_series([("dup", a1), ("dup", a2)]).unwrap_err();
     assert_duplicate_name_error(&err, "dup");
@@ -71,15 +71,15 @@ fn test_runtime_empty_dataframe_creates_explicit_zero_by_zero_frame() {
 }
 
 fn test_from_series_mismatched_lengths() {
-    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let b = crate::common::series::<i32>("b", &[1, 2]).unwrap();
+    let a = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = series::<i32>("b", &[1, 2]).unwrap();
 
     let err = DataFrame::from_series([("x", a), ("y", b)]).unwrap_err();
     assert_length_mismatch_contract(&err, "dataframe::from_series", "y", "2", "3");
 }
 
 fn test_dataframe_series_accessor_uses_schema_name_not_original_series_name() {
-    let source = crate::common::series::<i32>("source_name", &[7, 8, 9]).unwrap();
+    let source = series::<i32>("source_name", &[7, 8, 9]).unwrap();
 
     let df = DataFrame::from_series([("schema_name", source)]).unwrap();
     let projected = df.series("schema_name").unwrap();
@@ -92,8 +92,8 @@ fn test_dataframe_series_accessor_uses_schema_name_not_original_series_name() {
 // ---------------------------------------------------------------------------
 
 fn test_dataframe_macro_uses_from_series() {
-    let x = crate::common::series::<i32>("src", &[1, 2]).unwrap();
-    let y = crate::common::series::<f64>("src", &[3.0, 4.0]).unwrap();
+    let x = series::<i32>("src", &[1, 2]).unwrap();
+    let y = series::<f64>("src", &[3.0, 4.0]).unwrap();
 
     let df = cudf::dataframe! { "a" => x, "b" => y }.unwrap();
     assert_eq!(df.column_names(), vec!["a", "b"]);
@@ -101,7 +101,7 @@ fn test_dataframe_macro_uses_from_series() {
 
 #[test]
 fn construction_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_from_series_uses_explicit_names", test_from_series_uses_explicit_names),
         ("test_from_series_accepts_unnamed_series", test_from_series_accepts_unnamed_series),
         ("test_from_series_rejects_duplicate_names", test_from_series_rejects_duplicate_names),

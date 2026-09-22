@@ -1,5 +1,13 @@
 use std::sync::Arc;
 
+use query_engine::{
+    capability::CapabilityEnvelope,
+    dimension_pruning::local_dimension_pruning_resolver,
+    optimizer::{NativeOptimizerOptions, ProjectionSimplificationRejectedReason, optimize_query_plan},
+    plan::{NodeId, QueryPlan},
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -8,23 +16,21 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
 
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     assert!(
-        !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_keyless_conditional_join_input_subplan_pipeline()
+        !plan.capability_analysis(rapids_analysis_context()).admits_keyless_conditional_join_input_subplan_pipeline()
     );
     assert!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+        plan.capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none());
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
     let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
     );
     assert!(
         preaggregate_leaf_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
 
@@ -48,26 +54,20 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         // itself.
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
-        assert!(
-            !plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join(),
-            "{variant:?}"
-        );
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join(), "{variant:?}");
         assert!(
             !plan
-                .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+                .capability_analysis(rapids_analysis_context())
                 .admits_keyless_conditional_join_input_subplan_pipeline(),
             "{variant:?}"
         );
         assert!(
             !plan
-                .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+                .capability_analysis(rapids_analysis_context())
                 .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(
-            unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(),
-            "{variant:?}"
-        );
+        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
     }
 
     // A fetch limit after the root turns the tail into sort+fetch, which is the
@@ -79,27 +79,23 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     let limit_after_root_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
     );
+    assert!(!limit_after_root_plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     assert!(
         !limit_after_root_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
-            .admits_root_join()
-    );
-    assert!(
-        !limit_after_root_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_input_subplan_pipeline()
     );
     assert!(
         !limit_after_root_plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
     let admission = bounded_pipeline_admission(&limit_after_root_plan)
         .expect("bounded admission should not fail")
         .expect("LimitAfterRoot should be admitted through the root TopK join/aggregate envelope");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
     assert!(
-        unsupported_facts(&limit_after_root_plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(),
+        unsupported_facts(&limit_after_root_plan, rapids_analysis_context()).is_none(),
         "LimitAfterRoot is admitted, not a support gap"
     );
 }
@@ -108,10 +104,10 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
 fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_uses_capability_evidence() {
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert_eq!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+        plan.capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         analysis.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
@@ -138,24 +134,23 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
 fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_native_optimizer() {
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         plan,
-        &query_engine::optimizer::NativeOptimizerOptions::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
 
     assert!(
         optimized
             .plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         "projection simplification must preserve bounded aggregate-over-join input wrappers"
     );
     assert!(
         optimized.diagnostics.projection_simplification.candidates.iter().any(|candidate| {
-            candidate.rejected_reason
-                == Some(query_engine::optimizer::ProjectionSimplificationRejectedReason::ShapeContract)
+            candidate.rejected_reason == Some(ProjectionSimplificationRejectedReason::ShapeContract)
         }),
         "protected projection wrappers should be reported as shape-contract rejections"
     );
@@ -166,11 +161,11 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_rejects_b
     let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
     );
     let CapabilityDecision::Rejected { reason, facts } =
@@ -204,7 +199,7 @@ pub(crate) enum AggregateOverJoinSubplanInputsVariant {
 
 pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     variant: AggregateOverJoinSubplanInputsVariant,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let left_join_schema = aggregate_over_join_subplan_join_subtree_schema();
     let right_join_schema = aggregate_over_join_subplan_join_subtree_schema();
     let left_aggregate_schema = Arc::new(Schema::new(vec![
@@ -448,7 +443,7 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
     label: &str,
     nested_unsupported_join: bool,
     preaggregate_leaf_function: Option<AggregateFunction>,
-) -> query_engine::plan::NodeId {
+) -> NodeId {
     let partsupp_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("ps_suppkey", DataType::Int32, false),

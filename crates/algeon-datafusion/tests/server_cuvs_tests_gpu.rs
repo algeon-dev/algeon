@@ -1,22 +1,32 @@
 #[path = "server_gpu_fixture.rs"]
 mod server_gpu_fixture;
 
-use std::{fs::File, net::TcpListener, path::Path, sync::OnceLock, time::Duration};
+use std::{
+    fs::File,
+    net::{SocketAddr, TcpListener},
+    path::Path,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use algeon_datafusion::{
     backend::GpuMemoryOwnership,
     gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION,
-    server::{Result as ServerResult, ServerConfig, serve_with_listener},
+    server::{
+        ALGEON_SERVER_CONFIG_FILE_ENV, Result as ServerResult, ServerConfig, init_cuda_device, serve_with_listener,
+    },
 };
 use arrow::{
-    array::{Array, ArrayRef, Float32Array, Int64Array},
+    array::{Array, ArrayRef, Float32Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
-use tonic::transport::Endpoint;
+use server_gpu_fixture::lock_async;
+use tokio::{task::JoinHandle, time::sleep};
+use tonic::transport::{Channel, Endpoint};
 
 const KNN_OPTIONS: &str = r#"{
   "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -41,15 +51,13 @@ fn test_server_config() -> ServerConfig {
     let path = dir.path().join("server.toml");
     std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
     let path = path.to_string_lossy().into_owned();
-    ServerConfig::from_env_get(|name| {
-        (name == algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone())
-    })
-    .expect("explicit test device profile")
+    ServerConfig::from_env_get(|name| (name == ALGEON_SERVER_CONFIG_FILE_ENV).then(|| path.clone()))
+        .expect("explicit test device profile")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
-    let _guard = crate::server_gpu_fixture::lock_async().await;
+    let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
@@ -67,11 +75,8 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     )
     .await;
     let metadata = single_batch(&metadata);
-    let operations = metadata
-        .column(0)
-        .as_any()
-        .downcast_ref::<arrow::array::StringArray>()
-        .expect("metadata function_name must be Utf8");
+    let operations =
+        metadata.column(0).as_any().downcast_ref::<StringArray>().expect("metadata function_name must be Utf8");
     assert_eq!(
         (0..operations.len()).map(|row| operations.value(row)).collect::<Vec<_>>(),
         vec!["cuvs_brute_force_knn", "cuvs_kmeans", "cuvs_pca"],
@@ -116,7 +121,7 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_flight_sql_executes_parquet_cuvs_relations() {
-    let _guard = crate::server_gpu_fixture::lock_async().await;
+    let _guard = lock_async().await;
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let parquet_path = temp_dir.path().join("vector_input.parquet");
     write_vector_parquet(&parquet_path);
@@ -164,7 +169,7 @@ async fn bounded_flight_sql_executes_parquet_cuvs_relations() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_bounded_flight_sql_executes_cuvs() {
-    let _guard = crate::server_gpu_fixture::lock_async().await;
+    let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
@@ -184,7 +189,7 @@ async fn default_bounded_flight_sql_executes_cuvs() {
     assert_nonempty(&batches);
 }
 
-async fn register_vector_views(client: &mut FlightSqlServiceClient<tonic::transport::Channel>) {
+async fn register_vector_views(client: &mut FlightSqlServiceClient<Channel>) {
     execute_batches(
         client,
         "CREATE VIEW dataset_vectors AS \
@@ -226,11 +231,11 @@ fn write_vector_parquet(path: &Path) {
 fn warm_cuda_once() {
     static CUDA_WARM: OnceLock<()> = OnceLock::new();
     CUDA_WARM.get_or_init(|| {
-        let _ = algeon_datafusion::server::init_cuda_device(0);
+        let _ = init_cuda_device(0);
     });
 }
 
-fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
+fn free_local_addr() -> (TcpListener, SocketAddr) {
     warm_cuda_once();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
     let addr = listener.local_addr().expect("test listener address");
@@ -238,7 +243,7 @@ fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
 }
 
 struct ScopedServer {
-    handle: tokio::task::JoinHandle<ServerResult<()>>,
+    handle: JoinHandle<ServerResult<()>>,
 }
 
 impl ScopedServer {
@@ -253,15 +258,15 @@ impl Drop for ScopedServer {
     }
 }
 
-async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
+async fn connect_with_retry(addr: SocketAddr) -> FlightSqlServiceClient<Channel> {
     let uri = format!("http://{addr}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut backoff = Duration::from_millis(10);
     loop {
         match Endpoint::from_shared(uri.clone()).expect("Flight endpoint").connect().await {
             Ok(channel) => return FlightSqlServiceClient::new(channel),
-            Err(error) if std::time::Instant::now() < deadline => {
-                tokio::time::sleep(backoff).await;
+            Err(error) if Instant::now() < deadline => {
+                sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_millis(500));
                 let _ = error;
             },
@@ -270,10 +275,7 @@ async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClien
     }
 }
 
-async fn execute_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> Vec<RecordBatch> {
+async fn execute_batches(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> Vec<RecordBatch> {
     let info = client.execute(sql.to_string(), None).await.expect("Flight SQL statement");
     let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
     client

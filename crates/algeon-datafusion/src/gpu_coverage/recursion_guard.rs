@@ -5,9 +5,10 @@ use std::ops::ControlFlow;
 use datafusion::sql::sqlparser::ast::{
     AccessExpr, Array as SqlArray, Assignment, Expr as SqlExpr, ExprWithAlias, ExprWithAliasAndOrderBy, Fetch,
     Function as SqlFunction, FunctionArg, FunctionArgExpr, FunctionArgumentClause, FunctionArguments, GroupByExpr,
-    Join as SqlJoin, JoinConstraint, JoinOperator, LimitClause, Map as SqlMap, ObjectName, ObjectNamePart, OrderByExpr,
-    OrderByKind, PipeOperator, PivotValueSource, Query as SqlQuery, Select as SqlSelect, SelectItem, SetExpr,
-    Subscript, TableFactor, TableSample, TableWithJoins, Visit, Visitor, WindowSpec, WindowType,
+    Join as SqlJoin, JoinConstraint, JoinOperator, LimitClause, Map as SqlMap, NamedWindowDefinition, NamedWindowExpr,
+    ObjectName, ObjectNamePart, OrderBy, OrderByExpr, OrderByKind, PipeOperator, PivotValueSource, Query as SqlQuery,
+    Select as SqlSelect, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, Subscript, TableFactor, TableSample,
+    TableWithJoins, Visit, Visitor, WindowSpec, WindowType,
 };
 
 use super::ALGEON_EXPLAIN_COVERAGE_FUNCTION;
@@ -91,10 +92,8 @@ fn select_item_mentions_coverage_table_function(item: &SelectItem) -> bool {
         | SelectItem::ExprWithAlias { expr, .. }
         | SelectItem::ExprWithAliases { expr, .. } => expr_mentions_coverage_table_function(expr),
         SelectItem::QualifiedWildcard(kind, _) => match kind {
-            datafusion::sql::sqlparser::ast::SelectItemQualifiedWildcardKind::Expr(expr) => {
-                expr_mentions_coverage_table_function(expr)
-            },
-            datafusion::sql::sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(_) => false,
+            SelectItemQualifiedWildcardKind::Expr(expr) => expr_mentions_coverage_table_function(expr),
+            SelectItemQualifiedWildcardKind::ObjectName(_) => false,
         },
         SelectItem::Wildcard(_) => false,
     }
@@ -236,7 +235,7 @@ fn group_by_mentions_coverage_table_function(group_by: &GroupByExpr) -> bool {
     }
 }
 
-fn order_by_mentions_coverage_table_function(order_by: &datafusion::sql::sqlparser::ast::OrderBy) -> bool {
+fn order_by_mentions_coverage_table_function(order_by: &OrderBy) -> bool {
     match &order_by.kind {
         OrderByKind::All(_) => false,
         OrderByKind::Expressions(exprs) => exprs.iter().any(order_by_expr_mentions_coverage_table_function),
@@ -457,14 +456,10 @@ fn window_type_mentions_coverage_table_function(window: &WindowType) -> bool {
     }
 }
 
-fn named_window_definition_mentions_coverage_table_function(
-    definition: &datafusion::sql::sqlparser::ast::NamedWindowDefinition,
-) -> bool {
+fn named_window_definition_mentions_coverage_table_function(definition: &NamedWindowDefinition) -> bool {
     match &definition.1 {
-        datafusion::sql::sqlparser::ast::NamedWindowExpr::NamedWindow(_) => false,
-        datafusion::sql::sqlparser::ast::NamedWindowExpr::WindowSpec(spec) => {
-            window_spec_mentions_coverage_table_function(spec)
-        },
+        NamedWindowExpr::NamedWindow(_) => false,
+        NamedWindowExpr::WindowSpec(spec) => window_spec_mentions_coverage_table_function(spec),
     }
 }
 

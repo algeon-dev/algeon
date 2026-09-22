@@ -6,6 +6,7 @@ use cugraph_sys::{cugraph_error_t, cugraph_paths_result_t, cugraph_sssp};
 
 use crate::{
     array::DeviceArray,
+    cudf_interop::sssp_result_to_dataframe,
     error::{Error, ErrorKind, Result, check_error},
     graph::{Forward, Graph},
     handle::EnteredContext,
@@ -166,8 +167,7 @@ impl SsspResult {
     /// Returns `vertex` and `distance` columns, plus a `predecessor` column
     /// when predecessors were computed.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::sssp_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("SsspResult::to_dataframe"))
+        sssp_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("SsspResult::to_dataframe"))
     }
 }
 

@@ -1,6 +1,15 @@
 use std::collections::BTreeMap;
 
-use super::super::*;
+use crate::{
+    exec::{
+        edge_null_filter::{EdgeNullFilterScope, filter_null_edge_rows},
+        nvtx::{NvtxRange, graph_build_range},
+        *,
+    },
+    graph_observation::GraphMeasuredPeakProvenance,
+    metrics::GraphAlgorithmRuntimeMetrics,
+    plan::{GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmSpec},
+};
 
 pub(in crate::exec) mod bounded_betweenness;
 #[path = "build.rs"]
@@ -47,12 +56,10 @@ use structure::*;
 use traversal::{execute_bfs, execute_sssp};
 use validation::*;
 
-use super::super::nvtx::{NvtxRange, graph_build_range};
-
 pub(in crate::exec) fn execute_graph_algorithm(
     context: &ExecutionContext,
     node_id: NodeId,
-    node: &crate::plan::GraphAlgorithmNode,
+    node: &GraphAlgorithmNode,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     metrics: &ExecutionMetrics,
@@ -62,7 +69,7 @@ pub(in crate::exec) fn execute_graph_algorithm(
 
 pub(in crate::exec) fn graph_empty_input_prevalidated(
     context: &ExecutionContext,
-    node: &crate::plan::GraphAlgorithmNode,
+    node: &GraphAlgorithmNode,
     sanitized_edges: &DataFrame,
     side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
     input_rows: u64,
@@ -75,7 +82,7 @@ pub(in crate::exec) fn graph_empty_input_prevalidated(
 fn execute_prepared_graph_algorithm(
     context: &ExecutionContext,
     node_id: NodeId,
-    node: &crate::plan::GraphAlgorithmNode,
+    node: &GraphAlgorithmNode,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     metrics: &ExecutionMetrics,
@@ -84,11 +91,11 @@ fn execute_prepared_graph_algorithm(
     let input_columns = input.num_columns() as u64;
     let input_graph_residency = input.graph_residency().cloned();
     let prior_null_edge_rows_dropped = metrics.null_edge_rows_dropped(node.input);
-    let null_filter_scope = super::super::edge_null_filter::EdgeNullFilterScope {
+    let null_filter_scope = EdgeNullFilterScope {
         weight: node.spec.algorithm.consumes_weight(),
         edge_id: node.spec.edge_columns.edge_id.is_some(),
     };
-    let filtered_input = super::super::edge_null_filter::filter_null_edge_rows(
+    let filtered_input = filter_null_edge_rows(
         context,
         node_id,
         "graph_edge_null_filter",
@@ -135,7 +142,7 @@ fn execute_prepared_graph_algorithm(
 pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     context: &ExecutionContext,
     node_id: NodeId,
-    node: &crate::plan::GraphAlgorithmNode,
+    node: &GraphAlgorithmNode,
     runtime_spec: RuntimeGraphSpecResolution,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
@@ -191,7 +198,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
         measured_peak_provenance,
     );
     let boundary_delta = boundary_delta(&boundary_before, &metrics.boundary());
-    metrics.record_graph_algorithm_runtime(crate::metrics::GraphAlgorithmRuntimeMetrics {
+    metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
         query_id: None,
         node_id: node_id.to_string(),
         algorithm: node.spec.algorithm.as_str().to_string(),
@@ -229,19 +236,17 @@ fn max_graph_peak(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     }
 }
 
-fn graph_peak_measurement(
-    cache_scope_high_water_bytes: Option<u64>,
-) -> (Option<u64>, crate::graph_observation::GraphMeasuredPeakProvenance) {
+fn graph_peak_measurement(cache_scope_high_water_bytes: Option<u64>) -> (Option<u64>, GraphMeasuredPeakProvenance) {
     match cache_scope_high_water_bytes {
-        Some(peak) => (Some(peak), crate::graph_observation::GraphMeasuredPeakProvenance::CacheScopeHighWater),
-        None => (None, crate::graph_observation::GraphMeasuredPeakProvenance::Unavailable),
+        Some(peak) => (Some(peak), GraphMeasuredPeakProvenance::CacheScopeHighWater),
+        None => (None, GraphMeasuredPeakProvenance::Unavailable),
     }
 }
 
 fn record_graph_claim_peak_on_error(
     metrics: &ExecutionMetrics,
     node_id: NodeId,
-    algorithm: crate::plan::GraphAlgorithm,
+    algorithm: GraphAlgorithm,
     cache_scope_peak_bytes: Option<u64>,
 ) {
     let (measured_peak_bytes, measured_peak_provenance) = graph_peak_measurement(cache_scope_peak_bytes);
@@ -270,43 +275,40 @@ pub(super) struct GraphAlgorithmExecutionInputs {
     pub(super) side_inputs: BTreeMap<NodeId, GpuDataFrame>,
 }
 
-type GraphAlgorithmExecutor = fn(
-    &ExecutionContext,
-    &crate::plan::GraphAlgorithmSpec,
-    GraphAlgorithmExecutionInputs,
-) -> Result<GraphAlgorithmExecutionResult>;
+type GraphAlgorithmExecutor =
+    fn(&ExecutionContext, &GraphAlgorithmSpec, GraphAlgorithmExecutionInputs) -> Result<GraphAlgorithmExecutionResult>;
 
-const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmExecutor)] = &[
-    (crate::plan::GraphAlgorithm::PageRank, execute_pagerank),
-    (crate::plan::GraphAlgorithm::PersonalizedPageRank, execute_personalized_pagerank),
-    (crate::plan::GraphAlgorithm::Bfs, execute_bfs),
-    (crate::plan::GraphAlgorithm::Louvain, execute_louvain),
-    (crate::plan::GraphAlgorithm::EigenvectorCentrality, execute_eigenvector_centrality),
-    (crate::plan::GraphAlgorithm::KatzCentrality, execute_katz_centrality),
-    (crate::plan::GraphAlgorithm::Hits, execute_hits),
-    (crate::plan::GraphAlgorithm::BetweennessCentrality, execute_betweenness_centrality),
-    (crate::plan::GraphAlgorithm::EdgeBetweennessCentrality, execute_edge_betweenness_centrality),
-    (crate::plan::GraphAlgorithm::Sssp, execute_sssp),
-    (crate::plan::GraphAlgorithm::DegreesAll, execute_degrees_all),
-    (crate::plan::GraphAlgorithm::InDegreesAll, execute_in_degrees_all),
-    (crate::plan::GraphAlgorithm::OutDegreesAll, execute_out_degrees_all),
-    (crate::plan::GraphAlgorithm::WeaklyConnectedComponents, execute_weakly_connected_components),
-    (crate::plan::GraphAlgorithm::StronglyConnectedComponents, execute_strongly_connected_components),
-    (crate::plan::GraphAlgorithm::TriangleCountAll, execute_triangle_count_all),
-    (crate::plan::GraphAlgorithm::CoreNumber, execute_core_number),
-    (crate::plan::GraphAlgorithm::KCore, execute_k_core),
-    (crate::plan::GraphAlgorithm::MinimumSpanningTree, execute_minimum_spanning_tree),
-    (crate::plan::GraphAlgorithm::Leiden, execute_leiden),
-    (crate::plan::GraphAlgorithm::Ecg, execute_ecg),
-    (crate::plan::GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
-    (crate::plan::GraphAlgorithm::ForceAtlas2, execute_force_atlas2),
-    (crate::plan::GraphAlgorithm::Jaccard, execute_similarity),
-    (crate::plan::GraphAlgorithm::Sorensen, execute_similarity),
-    (crate::plan::GraphAlgorithm::Overlap, execute_similarity),
-    (crate::plan::GraphAlgorithm::Cosine, execute_similarity),
+const GRAPH_ALGORITHM_EXECUTORS: &[(GraphAlgorithm, GraphAlgorithmExecutor)] = &[
+    (GraphAlgorithm::PageRank, execute_pagerank),
+    (GraphAlgorithm::PersonalizedPageRank, execute_personalized_pagerank),
+    (GraphAlgorithm::Bfs, execute_bfs),
+    (GraphAlgorithm::Louvain, execute_louvain),
+    (GraphAlgorithm::EigenvectorCentrality, execute_eigenvector_centrality),
+    (GraphAlgorithm::KatzCentrality, execute_katz_centrality),
+    (GraphAlgorithm::Hits, execute_hits),
+    (GraphAlgorithm::BetweennessCentrality, execute_betweenness_centrality),
+    (GraphAlgorithm::EdgeBetweennessCentrality, execute_edge_betweenness_centrality),
+    (GraphAlgorithm::Sssp, execute_sssp),
+    (GraphAlgorithm::DegreesAll, execute_degrees_all),
+    (GraphAlgorithm::InDegreesAll, execute_in_degrees_all),
+    (GraphAlgorithm::OutDegreesAll, execute_out_degrees_all),
+    (GraphAlgorithm::WeaklyConnectedComponents, execute_weakly_connected_components),
+    (GraphAlgorithm::StronglyConnectedComponents, execute_strongly_connected_components),
+    (GraphAlgorithm::TriangleCountAll, execute_triangle_count_all),
+    (GraphAlgorithm::CoreNumber, execute_core_number),
+    (GraphAlgorithm::KCore, execute_k_core),
+    (GraphAlgorithm::MinimumSpanningTree, execute_minimum_spanning_tree),
+    (GraphAlgorithm::Leiden, execute_leiden),
+    (GraphAlgorithm::Ecg, execute_ecg),
+    (GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
+    (GraphAlgorithm::ForceAtlas2, execute_force_atlas2),
+    (GraphAlgorithm::Jaccard, execute_similarity),
+    (GraphAlgorithm::Sorensen, execute_similarity),
+    (GraphAlgorithm::Overlap, execute_similarity),
+    (GraphAlgorithm::Cosine, execute_similarity),
 ];
 
-fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> Result<GraphAlgorithmExecutor> {
+fn graph_algorithm_executor(algorithm: GraphAlgorithm) -> Result<GraphAlgorithmExecutor> {
     GRAPH_ALGORITHM_EXECUTORS
         .iter()
         .find(|(registered, _)| *registered == algorithm)

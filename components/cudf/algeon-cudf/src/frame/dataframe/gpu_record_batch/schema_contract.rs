@@ -5,11 +5,12 @@ use arrow::{
     array::{Array, ArrayRef, PrimitiveArray},
     compute::cast,
     datatypes::{
-        DataType as ArrowDataType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
-        DurationSecondType, SchemaRef, Time32MillisecondType, Time32SecondType, Time64MicrosecondType,
-        Time64NanosecondType, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
-        TimestampSecondType,
+        ArrowPrimitiveType, ArrowTimestampType, DataType as ArrowDataType, DurationMicrosecondType,
+        DurationMillisecondType, DurationNanosecondType, DurationSecondType, SchemaRef, Time32MillisecondType,
+        Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimeUnit, TimestampMicrosecondType,
+        TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
     },
+    error::ArrowError,
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 
@@ -24,6 +25,7 @@ use crate::{
         schema,
         types::TypeId,
     },
+    internal::resolve::missing_column_error,
     interop::arrow_host::{ArrowHostSchema, cudf_dtype_can_export_to_arrow_type, validate_arrow_schema},
 };
 
@@ -52,7 +54,7 @@ pub(super) fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -
 
     for (index, (field, frame_name)) in mapped.fields().iter().zip(frame_names.iter()).enumerate() {
         if field.name() != *frame_name {
-            return Err(crate::internal::resolve::missing_column_error(operation, field.name())
+            return Err(missing_column_error(operation, field.name())
                 .with_detail("field_name", field.name().to_string())
                 .with_detail("expected_column_name", (*frame_name).to_string())
                 .with_detail("field_index", index.to_string())
@@ -215,7 +217,7 @@ fn time_array_with_schema_type(column: &dyn Array, expected_type: &ArrowDataType
 }
 
 fn duration_to_time32_values<D>(column: &dyn Array, expected_type: &ArrowDataType) -> Result<Vec<Option<i32>>>
-where D: arrow::datatypes::ArrowPrimitiveType<Native = i64> {
+where D: ArrowPrimitiveType<Native = i64> {
     let array = column.as_any().downcast_ref::<PrimitiveArray<D>>().ok_or_else(|| {
         duration_time_layout_error(
             "duration column has an unexpected Arrow primitive layout",
@@ -248,7 +250,7 @@ where D: arrow::datatypes::ArrowPrimitiveType<Native = i64> {
 }
 
 fn duration_to_time64_values<D>(column: &dyn Array, expected_type: &ArrowDataType) -> Result<Vec<Option<i64>>>
-where D: arrow::datatypes::ArrowPrimitiveType<Native = i64> {
+where D: ArrowPrimitiveType<Native = i64> {
     let array = column.as_any().downcast_ref::<PrimitiveArray<D>>().ok_or_else(|| {
         duration_time_layout_error(
             "duration column has an unexpected Arrow primitive layout",
@@ -279,7 +281,7 @@ fn duration_time_layout_error(
 }
 
 fn timestamp_array_with_timezone<T>(column: &dyn Array, timezone: Option<Arc<str>>) -> Result<PrimitiveArray<T>>
-where T: arrow::datatypes::ArrowTimestampType {
+where T: ArrowTimestampType {
     let array = column.as_any().downcast_ref::<PrimitiveArray<T>>().ok_or_else(|| {
         error::foreign_invariant_violation(
             "dataframe::GpuRecordBatch::to_host_record_batch",
@@ -295,7 +297,7 @@ where T: arrow::datatypes::ArrowTimestampType {
     Ok(array.clone().with_timezone_opt(timezone))
 }
 
-fn map_arrow_schema_contract_error(operation: &'static str, error: arrow::error::ArrowError) -> Error {
+fn map_arrow_schema_contract_error(operation: &'static str, error: ArrowError) -> Error {
     error::foreign_invariant_violation(
         operation,
         error.to_string(),

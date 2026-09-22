@@ -9,6 +9,7 @@ use super::{
     sql_top_level_order_by_covers_output_columns, stable_tsv_field, unsupported_category,
     write_workload_dataset_metadata,
 };
+use crate::report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE};
 
 /// Stable top-level parity outcome for one query row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -704,15 +705,10 @@ fn planning_outcome_diagnostics(
     accepted: bool,
 ) -> (Option<CandidateOutcomeKind>, Option<String>, Option<String>) {
     if accepted {
-        if diagnostics
-            .report
-            .outcomes()
-            .iter()
-            .any(|outcome| matches!(outcome, crate::report::CandidateOutcome::Deferred { .. }))
-        {
+        if diagnostics.report.outcomes().iter().any(|outcome| matches!(outcome, CandidateOutcome::Deferred { .. })) {
             return (
                 Some(CandidateOutcomeKind::Deferred),
-                Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
+                Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
                 None,
             );
         }
@@ -720,22 +716,22 @@ fn planning_outcome_diagnostics(
     }
     for outcome in diagnostics.report.outcomes() {
         match outcome {
-            crate::report::CandidateOutcome::Selected { .. } => {},
-            crate::report::CandidateOutcome::Deferred { .. } => {
+            CandidateOutcome::Selected { .. } => {},
+            CandidateOutcome::Deferred { .. } => {
                 return (
                     Some(CandidateOutcomeKind::Deferred),
-                    Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
+                    Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
                     None,
                 );
             },
-            crate::report::CandidateOutcome::NotSupported { candidate, capability_reason } => {
+            CandidateOutcome::NotSupported { candidate, capability_reason } => {
                 return (
                     Some(CandidateOutcomeKind::NotSupported),
                     Some(capability_reason.code().to_string()),
                     unsupported_category(plan, candidate, *capability_reason),
                 );
             },
-            crate::report::CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {
+            CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {
                 return (Some(CandidateOutcomeKind::NotSelectedByCost), Some(cost_reason.code().to_string()), None);
             },
         }

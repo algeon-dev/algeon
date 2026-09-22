@@ -6,6 +6,8 @@ use std::{
     time::Instant,
 };
 
+use algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot;
+
 use super::*;
 
 pub(super) const QUERY_COLUMNS: &[&str] = &[
@@ -208,7 +210,7 @@ pub(super) fn write_outputs(
     device_samples: &[DeviceSampleRow],
     makespan_ms: f64,
     effective_active_max: usize,
-    bfs_singleflight: algeon_datafusion::native_exec::GraphBfsSingleflightSnapshot,
+    bfs_singleflight: GraphBfsSingleflightSnapshot,
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
     write_query_rows(&queries_path, query_rows)?;

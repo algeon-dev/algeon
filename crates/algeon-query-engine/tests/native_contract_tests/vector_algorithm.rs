@@ -4,16 +4,18 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use query_engine::{
     admission::bounded_pipeline_decision,
     capability::CapabilityDecision,
+    dimension_pruning::local_dimension_pruning_resolver,
     exec::preflight_query_plan,
     expr::{ColumnRef, Expr},
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     plan::{
         CUVS_OPERATION_REGISTRY, CuvsOperation, CuvsOutputContract, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
-        JoinType, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams,
-        VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams,
-        VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options, vector_brute_force_knn_output_schema,
-        vector_kmeans_output_schema, vector_pca_output_schema,
+        JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm,
+        VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
+        VectorKMeansParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options,
+        vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
     },
+    rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
 };
 
@@ -134,8 +136,8 @@ fn vector_optimizer_rewrite_remaps_relation_bindings_and_ordered_inputs() {
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     )
     .plan;
     preflight_query_plan(&optimized).expect("rewritten vector bindings should remain valid");
@@ -417,7 +419,7 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
         vector_pca_output_schema(DataType::Int64, 1),
     );
     let capability = plan
-        .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+        .capability_analysis(rapids_analysis_context())
         .nodes
         .into_iter()
         .find(|node| node.node_id == plan.root_id())
@@ -434,12 +436,8 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
 fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker() {
     for plan in [knn_plan(false), knn_plan(true)] {
         assert!(plan.contains_vector_algorithm());
-        let decision = bounded_pipeline_decision(
-            &plan,
-            Default::default(),
-            query_engine::rapids_backend::rapids_analysis_context(),
-        )
-        .expect("bounded admission should classify vector plan");
+        let decision = bounded_pipeline_decision(&plan, Default::default(), rapids_analysis_context())
+            .expect("bounded admission should classify vector plan");
         assert!(decision.admission().is_none());
         let projection = decision.rejection_projection().expect("vector plan should have a bounded rejection");
         // The compiler owns vector coverage: it reports the structural
@@ -483,7 +481,7 @@ fn knn_plan_with_k(k: usize) -> QueryPlan {
     builder.finish_with_host_sink(root)
 }
 
-fn knn_spec(dataset: query_engine::plan::NodeId, queries: query_engine::plan::NodeId) -> VectorAlgorithmSpec {
+fn knn_spec(dataset: NodeId, queries: NodeId) -> VectorAlgorithmSpec {
     VectorAlgorithmSpec::new(
         VectorAlgorithm::BruteForceKnn,
         VectorAlgorithmParams::BruteForceKnn(VectorBruteForceKnnParams::new(
@@ -528,7 +526,7 @@ fn pca_plan_with_schema(schema: SchemaRef, n_components: usize, output_schema: S
     builder.finish_with_host_sink(root)
 }
 
-fn joined_vector_relation(builder: &mut QueryPlanBuilder) -> query_engine::plan::NodeId {
+fn joined_vector_relation(builder: &mut QueryPlanBuilder) -> NodeId {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("x", DataType::Float32, false),

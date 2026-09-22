@@ -5,6 +5,7 @@ use rapids_interop::{CompletionWitnessBackend, InteropError, InteropErrorKind, L
 use super::{SHARED_COMPLETION_WITNESS_READY_OP, SHARED_COMPLETION_WITNESS_SYNC_OP};
 use crate::{
     core::error::Result,
+    interop::map_cudf_error,
     runtime::{CudaEvent, DeviceId, device_guard::DeviceGuard},
 };
 
@@ -25,35 +26,19 @@ impl SharedCudaCompletionWitnessState {
 impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
     fn is_ready(&self) -> rapids_interop::Result<bool> {
         let _guard = DeviceGuard::new(self.device()).map_err(|error| {
-            super::super::map_cudf_error(
-                InteropErrorKind::ReadinessUnavailable,
-                SHARED_COMPLETION_WITNESS_READY_OP,
-                error,
-            )
+            map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_READY_OP, error)
         })?;
         self.event.is_ready().map_err(|error| {
-            super::super::map_cudf_error(
-                InteropErrorKind::ReadinessUnavailable,
-                SHARED_COMPLETION_WITNESS_READY_OP,
-                error,
-            )
+            map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_READY_OP, error)
         })
     }
 
     fn synchronize(&self) -> rapids_interop::Result<()> {
         let _guard = DeviceGuard::new(self.device()).map_err(|error| {
-            super::super::map_cudf_error(
-                InteropErrorKind::ReadinessUnavailable,
-                SHARED_COMPLETION_WITNESS_SYNC_OP,
-                error,
-            )
+            map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_SYNC_OP, error)
         })?;
         self.event.synchronize().map_err(|error| {
-            super::super::map_cudf_error(
-                InteropErrorKind::ReadinessUnavailable,
-                SHARED_COMPLETION_WITNESS_SYNC_OP,
-                error,
-            )
+            map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_SYNC_OP, error)
         })
     }
 
@@ -88,9 +73,8 @@ pub(super) fn producer_readiness_binding_from_export(
 ) -> std::result::Result<ProducerReadinessBinding, InteropError> {
     match export.readiness() {
         LeaseReadiness::DeviceStreamOrdered { raw, device } => {
-            let device = DeviceId::new(device as usize).map_err(|error| {
-                super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
-            })?;
+            let device = DeviceId::new(device as usize)
+                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
             Ok(ProducerReadinessBinding::Stream { raw, device })
         },
         LeaseReadiness::HostVisible => Err(InteropError::new(
@@ -100,9 +84,8 @@ pub(super) fn producer_readiness_binding_from_export(
         .with_context("operation", operation)
         .with_context("readiness", "host_visible")),
         LeaseReadiness::DeviceEventOrdered { raw, device } => {
-            let device = DeviceId::new(device as usize).map_err(|error| {
-                super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
-            })?;
+            let device = DeviceId::new(device as usize)
+                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
             Ok(ProducerReadinessBinding::Event { raw, device })
         },
     }

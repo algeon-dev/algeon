@@ -15,6 +15,17 @@ use datafusion::{
 };
 
 use super::*;
+use crate::{
+    error::Result as AdapterResult,
+    gpu_functions::{
+        GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION,
+        is_builtin_gpu_metadata_table_source,
+    },
+    server::{
+        attempt::{AlgeonAttempt, AttemptOptions},
+        coordinator::QueryKey,
+    },
+};
 
 /// after physical optimization runs (during `DataFrame::execute_stream`).
 pub(super) struct QueryPlanning {
@@ -63,7 +74,7 @@ impl DatafusionAlgeonFlightSqlService {
         &self,
         plan: &LogicalPlan,
         operation: &'static str,
-    ) -> crate::server::adapter_error::Result<()> {
+    ) -> AdapterResult<()> {
         if matches!(plan, LogicalPlan::DescribeTable(_)) {
             return Ok(());
         }
@@ -74,7 +85,7 @@ impl DatafusionAlgeonFlightSqlService {
             match node {
                 LogicalPlan::TableScan(scan)
                     if table_reference_is_information_schema(&scan.table_name)
-                        || crate::gpu_functions::is_builtin_gpu_metadata_table_source(&scan.source) =>
+                        || is_builtin_gpu_metadata_table_source(&scan.source) =>
                 {
                     saw_metadata_scan = true;
                 },
@@ -178,7 +189,7 @@ impl DatafusionAlgeonFlightSqlService {
     /// releasable before the coordinator has the identical sealed report.
     pub(super) fn register_attempt_report_handoff(
         &self,
-        attempt: &crate::server::attempt::AlgeonAttempt,
+        attempt: &AlgeonAttempt,
         terminal: CoordinatorReportHandoffTerminal,
     ) {
         let key = terminal.key().clone();
@@ -188,8 +199,8 @@ impl DatafusionAlgeonFlightSqlService {
     #[cfg(test)]
     pub(super) fn register_attempt_report_handoff_for_test(
         &self,
-        key: crate::server::coordinator::QueryKey,
-        attempt: &crate::server::attempt::AlgeonAttempt,
+        key: QueryKey,
+        attempt: &AlgeonAttempt,
         terminal: CoordinatorReportHandoffTerminal,
     ) {
         self.register_attempt_report_handoff_for_key(key, attempt, terminal);
@@ -197,8 +208,8 @@ impl DatafusionAlgeonFlightSqlService {
 
     fn register_attempt_report_handoff_for_key(
         &self,
-        key: crate::server::coordinator::QueryKey,
-        attempt: &crate::server::attempt::AlgeonAttempt,
+        key: QueryKey,
+        attempt: &AlgeonAttempt,
         terminal: CoordinatorReportHandoffTerminal,
     ) {
         let coordinator = Arc::clone(&self.coordinator);
@@ -259,7 +270,7 @@ impl DatafusionAlgeonFlightSqlService {
         let mut attempt = match execution_domain {
             StatementExecutionDomain::Metadata => None,
             StatementExecutionDomain::Data => {
-                match self.admission.begin_attempt(crate::server::attempt::AttemptOptions {
+                match self.admission.begin_attempt(AttemptOptions {
                     query_id: Some(query_id.clone()),
                     trace_context: correlation_id.clone(),
                     deadline: None,
@@ -448,7 +459,7 @@ impl DatafusionAlgeonFlightSqlService {
         started_at: Instant,
     ) -> Result<FlightInfo, Status> {
         self.expire_stale_tickets(Instant::now());
-        let mut attempt = match self.admission.begin_attempt(crate::server::attempt::AttemptOptions {
+        let mut attempt = match self.admission.begin_attempt(AttemptOptions {
             query_id: Some(query_id.clone()),
             trace_context: correlation_id.clone(),
             deadline: None,
@@ -577,13 +588,9 @@ fn object_name_is_information_schema(name: &ObjectName) -> bool {
 
 fn object_name_is_builtin_gpu_metadata_function(name: &ObjectName) -> bool {
     name.0.last().and_then(ObjectNamePart::as_ident).is_some_and(|ident| {
-        [
-            crate::gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION,
-            crate::gpu_functions::GPU_DESCRIBE_FUNCTION_FUNCTION,
-            crate::gpu_functions::GPU_VALIDATE_CALL_FUNCTION,
-        ]
-        .iter()
-        .any(|function| ident.value.eq_ignore_ascii_case(function))
+        [GPU_LIST_FUNCTIONS_FUNCTION, GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_VALIDATE_CALL_FUNCTION]
+            .iter()
+            .any(|function| ident.value.eq_ignore_ascii_case(function))
     })
 }
 

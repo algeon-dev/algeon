@@ -1,9 +1,12 @@
 use std::path::Path;
 
-use super::super::{cudf_query_error, cudf_query_error_without_source, *};
+use crate::{
+    exec::source::{cudf_query_error, cudf_query_error_without_source, *},
+    source::{ParquetSourceLocation, redacted_path_diagnostic},
+};
 
 pub(in crate::exec::source) fn path_fact(path: &Path) -> String {
-    crate::source::redacted_path_diagnostic(path)
+    redacted_path_diagnostic(path)
 }
 
 pub(in crate::exec::source) fn source_has_object_store_location(source: &LocalParquetSource) -> bool {
@@ -24,7 +27,7 @@ pub(in crate::exec::source) fn cudf_error_for_source(
 }
 
 pub(in crate::exec::source) fn cudf_error_for_location(
-    location: &crate::source::ParquetSourceLocation,
+    location: &ParquetSourceLocation,
     operation: &'static str,
     message: &'static str,
     error: cudf::Error,

@@ -3,12 +3,18 @@ use std::{sync::Arc, time::Duration};
 use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions};
 use query_engine::{
     error::QueryErrorCode,
+    observability::RuntimeObservationHandle,
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind,
         GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig,
-        QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
+        QueryHandle, QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
     },
+};
+use tokio::{
+    spawn,
+    sync::Barrier,
+    time::{Instant, sleep, timeout},
 };
 
 fn non_gds_deployment() -> DeploymentIoCapability {
@@ -333,13 +339,12 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
         "two live attempts must exhaust exactly the two configured attempt lanes",
     );
 
-    let entered = Arc::new(tokio::sync::Barrier::new(3));
-    let release = Arc::new(tokio::sync::Barrier::new(3));
-    let spawn_job = |handle: Arc<query_engine::runtime::QueryHandle>,
-                     observation: query_engine::observability::RuntimeObservationHandle| {
+    let entered = Arc::new(Barrier::new(3));
+    let release = Arc::new(Barrier::new(3));
+    let spawn_job = |handle: Arc<QueryHandle>, observation: RuntimeObservationHandle| {
         let entered = Arc::clone(&entered);
         let release = Arc::clone(&release);
-        tokio::spawn(async move {
+        spawn(async move {
             handle
                 .gpu_executor()
                 .unwrap()
@@ -354,9 +359,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     };
     let first_job = spawn_job(Arc::clone(&first), first_context.context().runtime_observation().clone());
     let second_job = spawn_job(Arc::clone(&second), second_context.context().runtime_observation().clone());
-    tokio::time::timeout(Duration::from_secs(10), entered.wait())
-        .await
-        .expect("both same-device GPU jobs must start concurrently");
+    timeout(Duration::from_secs(10), entered.wait()).await.expect("both same-device GPU jobs must start concurrently");
 
     let pool_reports = session.gpu_execution_pool_reports().unwrap();
     let [pool] = pool_reports.as_slice() else {
@@ -366,7 +369,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert_eq!(pool.active_query_jobs, 2);
     assert_eq!(pool.active_jobs, 2);
 
-    tokio::time::timeout(Duration::from_secs(10), release.wait())
+    timeout(Duration::from_secs(10), release.wait())
         .await
         .expect("both same-device GPU jobs must reach the release barrier");
     let first_scope = first_job.await.unwrap();
@@ -433,13 +436,12 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
 
     let first_context = first.acquire_context().unwrap();
     let second_context = second.acquire_context().unwrap();
-    let entered = Arc::new(tokio::sync::Barrier::new(3));
-    let release = Arc::new(tokio::sync::Barrier::new(3));
-    let spawn_job = |handle: Arc<query_engine::runtime::QueryHandle>,
-                     observation: query_engine::observability::RuntimeObservationHandle| {
+    let entered = Arc::new(Barrier::new(3));
+    let release = Arc::new(Barrier::new(3));
+    let spawn_job = |handle: Arc<QueryHandle>, observation: RuntimeObservationHandle| {
         let entered = Arc::clone(&entered);
         let release = Arc::clone(&release);
-        tokio::spawn(async move {
+        spawn(async move {
             handle
                 .gpu_executor()
                 .unwrap()
@@ -454,7 +456,7 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
     };
     let first_job = spawn_job(Arc::clone(&first), first_context.context().runtime_observation().clone());
     let second_job = spawn_job(Arc::clone(&second), second_context.context().runtime_observation().clone());
-    tokio::time::timeout(Duration::from_secs(10), entered.wait())
+    timeout(Duration::from_secs(10), entered.wait())
         .await
         .expect("both default-cap GPU jobs must overlap without per-query tuning");
 
@@ -464,7 +466,7 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
     };
     assert_eq!(pool.active_query_jobs, 2);
 
-    tokio::time::timeout(Duration::from_secs(10), release.wait())
+    timeout(Duration::from_secs(10), release.wait())
         .await
         .expect("both default-cap GPU jobs must reach the release barrier");
     first_job.await.unwrap();
@@ -525,9 +527,9 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     let first = first_session.admit_query().unwrap();
     let first_sequence = first.admission_sequence();
     let queued_session = second_session.clone();
-    let queued = tokio::spawn(async move { queued_session.admit_async_with_request(Default::default()).await });
+    let queued = spawn(async move { queued_session.admit_async_with_request(Default::default()).await });
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let first_snapshot = first_session.admission_snapshot().unwrap();
         let second_snapshot = second_session.admission_snapshot().unwrap();
@@ -536,15 +538,15 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
             break;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            Instant::now() < deadline,
             "second cloned session did not queue behind the first session's admission: first={first_snapshot:?}, second={second_snapshot:?}"
         );
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        sleep(Duration::from_millis(25)).await;
     }
 
     first.finish();
     drop(first);
-    let queued = tokio::time::timeout(Duration::from_secs(10), queued)
+    let queued = timeout(Duration::from_secs(10), queued)
         .await
         .expect("queued cloned-session admission must wake after the shared slot is released")
         .expect("queued cloned-session task must not panic")
@@ -553,14 +555,14 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     queued.finish();
     drop(queued);
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let snapshot = second_session.admission_snapshot().unwrap();
         if snapshot.active_queries == 0 && snapshot.queued_queries == 0 {
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "shared admission ledger did not drain: {snapshot:?}");
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(Instant::now() < deadline, "shared admission ledger did not drain: {snapshot:?}");
+        sleep(Duration::from_millis(25)).await;
     }
 
     drop(first_session);

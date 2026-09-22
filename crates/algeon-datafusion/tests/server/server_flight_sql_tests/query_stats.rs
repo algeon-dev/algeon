@@ -69,7 +69,7 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_stats() {
     let (listener, addr) = free_local_addr();
     let env = std::collections::BTreeMap::from([(
-        algeon_datafusion::server::ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+        ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
         "no_datafusion_cpu".to_string(),
     )]);
     let mut config = test_server_config_with_env(env);
@@ -109,7 +109,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
         Some("projected")
     );
     assert_eq!(
-        status.metadata().get(algeon_datafusion::server::REASON_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        status.metadata().get(REASON_METADATA_KEY).and_then(|value| value.to_str().ok()),
         Some("unsupported_type")
     );
     let payload = get_query_stats_raw(&mut client, &query_id).await;
@@ -129,7 +129,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
 async fn strict_flight_executes_basic_list_limit_natively() {
     let (listener, addr) = free_local_addr();
     let env = std::collections::BTreeMap::from([(
-        algeon_datafusion::server::ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+        ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
         "no_datafusion_cpu".to_string(),
     )]);
     let mut config = test_server_config_with_env(env);
@@ -287,7 +287,7 @@ async fn get_query_stats_returns_transaction_structured_error() {
     let mut client = connect_with_retry(addr).await;
 
     let error = client
-        .execute("select 1 as one".to_string(), Some(prost::bytes::Bytes::from_static(b"txn")))
+        .execute("select 1 as one".to_string(), Some(Bytes::from_static(b"txn")))
         .await
         .unwrap_err();
     let status = unwrap_flight_status(error);

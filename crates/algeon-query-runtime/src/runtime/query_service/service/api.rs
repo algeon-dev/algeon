@@ -1,6 +1,9 @@
 //! Public request/snapshot DTOs for query-service admission.
 
-use std::time::{Duration, Instant};
+use std::{
+    fmt, mem,
+    time::{Duration, Instant},
+};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
@@ -44,7 +47,7 @@ use query_planning::admission::AttemptRequirement;
 
 use crate::{
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
-    observability::{RuntimeObservationHandle, RuntimeObservationOwner},
+    observability::{AttemptId, RuntimeObservationHandle, RuntimeObservationOwner},
     runtime::{ExecutionCancellation, query_service::config::QueueBounds},
 };
 
@@ -387,7 +390,7 @@ pub(in crate::runtime::query_service::service) struct AdmissionObservation {
     /// Present only for an engine-minted attempt binding. This is the identity
     /// that may receive a post-callback allocator correlation after a physical
     /// domain has been admitted.
-    pub(in crate::runtime::query_service::service) attempt_id: Option<crate::observability::AttemptId>,
+    pub(in crate::runtime::query_service::service) attempt_id: Option<AttemptId>,
 }
 
 impl AdmissionObservation {
@@ -411,8 +414,8 @@ impl QueryActivityLease {
     }
 }
 
-impl std::fmt::Debug for QueryActivityLease {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for QueryActivityLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("QueryActivityLease").finish_non_exhaustive()
     }
 }
@@ -534,7 +537,7 @@ impl QueryAdmissionRequest {
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        let (handle, owner, attempt_finalizer_slot, attempt_id) = match std::mem::take(&mut self.runtime_observation) {
+        let (handle, owner, attempt_finalizer_slot, attempt_id) = match mem::take(&mut self.runtime_observation) {
             RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None, None),
             RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None, None),
             RuntimeObservationAttachment::Handle(handle) => (handle, None, None, None),
@@ -559,7 +562,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::observability::RuntimeObservationConfig;
+    use crate::{
+        attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
+        observability::RuntimeObservationConfig,
+        runtime::BackendLifecycle,
+    };
 
     fn explicit_sink_capability_evidence() -> AttemptRequirement {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
@@ -595,14 +602,14 @@ mod tests {
 
     #[test]
     fn attempt_binding_attaches_observation_and_release_together() {
-        let lifecycle = crate::runtime::BackendLifecycle::new();
-        let attempt = crate::attempt::AttemptOwner::begin(
-            crate::attempt::BeginAttemptRequest {
+        let lifecycle = BackendLifecycle::new();
+        let attempt = AttemptOwner::begin(
+            BeginAttemptRequest {
                 observation: RuntimeObservationConfig::bounded(8, 8 * 1024),
-                ..crate::attempt::BeginAttemptRequest::default()
+                ..BeginAttemptRequest::default()
             },
             lifecycle.try_begin_observation().expect("attempt observation permit"),
-            std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
+            Arc::new(AttemptBackendCounters::default()),
             None,
         );
         let attempt_id = attempt.owner.attempt_id();

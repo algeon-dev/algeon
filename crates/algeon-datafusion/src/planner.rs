@@ -15,6 +15,7 @@
 //! [`crate::report::CandidateOutcome`].
 
 use datafusion::physical_plan::ExecutionPlan;
+use query_engine::metrics::QueryId;
 pub use query_engine::{
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::StatisticalAggregateExecutionMode,
@@ -23,7 +24,11 @@ pub use query_engine::{
     source::SourceDiagnostics,
 };
 
-use crate::native_exec::AlgeonNativeExecutionConfig;
+use crate::{
+    error::{Error, ErrorCode, Result},
+    final_plan_observation::observe_final_plan,
+    native_exec::AlgeonNativeExecutionConfig,
+};
 
 pub(crate) mod native;
 
@@ -76,7 +81,7 @@ mod execution_mode_tests {
             .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
 
         let error = config.validate().expect_err("contradictory policies must reject before planning");
-        assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
         assert_eq!(error.fact_value("reason"), Some("relational_native_rewrite_disabled_with_cpu_reject"));
     }
 }
@@ -142,7 +147,7 @@ pub enum AlgeonGpuExecutionMode {
 /// around native fragments are conservative [`FinalPlanDisposition::Mixed`]
 /// plans rather than being treated as native-only.
 pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
-    crate::final_plan_observation::observe_final_plan(plan).disposition()
+    observe_final_plan(plan).disposition()
 }
 
 /// DataFusion-facing native optimizer configuration.
@@ -218,7 +223,7 @@ impl AlgeonNativeOptimizerConfig {
     /// Return the canonical product mode represented by this configuration.
     ///
     /// A disabled relational rewrite combined with CPU rejection is invalid.
-    pub fn execution_mode(&self) -> crate::error::Result<AlgeonGpuExecutionMode> {
+    pub fn execution_mode(&self) -> Result<AlgeonGpuExecutionMode> {
         match (self.relational_native_rewrite_policy, self.datafusion_cpu_execution_policy) {
             (RelationalNativeRewritePolicy::Enabled, DataFusionCpuExecutionPolicy::Allow) => {
                 Ok(AlgeonGpuExecutionMode::NativePreferred)
@@ -229,14 +234,12 @@ impl AlgeonNativeOptimizerConfig {
             (RelationalNativeRewritePolicy::Enabled, DataFusionCpuExecutionPolicy::Reject) => {
                 Ok(AlgeonGpuExecutionMode::NativeRequired)
             },
-            (RelationalNativeRewritePolicy::Disabled, DataFusionCpuExecutionPolicy::Reject) => {
-                Err(crate::error::Error::new(
-                    crate::error::ErrorCode::InvalidRequest,
-                    "algeon_datafusion.planner.config",
-                    "relational native rewrite cannot be disabled when DataFusion CPU execution is rejected",
-                )
-                .with_fact("reason", "relational_native_rewrite_disabled_with_cpu_reject"))
-            },
+            (RelationalNativeRewritePolicy::Disabled, DataFusionCpuExecutionPolicy::Reject) => Err(Error::new(
+                ErrorCode::InvalidRequest,
+                "algeon_datafusion.planner.config",
+                "relational native rewrite cannot be disabled when DataFusion CPU execution is rejected",
+            )
+            .with_fact("reason", "relational_native_rewrite_disabled_with_cpu_reject")),
         }
     }
     /// Apply one canonical product mode without storing parallel mode state.
@@ -254,7 +257,7 @@ impl AlgeonNativeOptimizerConfig {
         }
     }
     /// Reject contradictory optimizer policies before planning begins.
-    pub fn validate(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         self.execution_mode().map(|_| ())
     }
 
@@ -270,7 +273,7 @@ impl AlgeonNativeOptimizerConfig {
     }
 
     /// Attach a query id to the native execution config only when the caller has not supplied one.
-    pub(crate) fn with_query_id_if_absent(mut self, query_id: impl Into<query_engine::metrics::QueryId>) -> Self {
+    pub(crate) fn with_query_id_if_absent(mut self, query_id: impl Into<QueryId>) -> Self {
         self.native_execution_config = self.native_execution_config.with_query_id_if_absent(query_id);
         self
     }

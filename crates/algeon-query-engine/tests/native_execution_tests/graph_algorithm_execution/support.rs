@@ -1,3 +1,5 @@
+use query_engine::plan::graph_result_schema_for_vertex_type;
+
 fn int32_graph_spec(
     algorithm: GraphAlgorithm,
     edge_columns: GraphEdgeColumnBindings,
@@ -14,7 +16,7 @@ fn graph_spec_for_vertex_type(
     params: GraphAlgorithmParams,
     vertex_type: &DataType,
 ) -> GraphAlgorithmSpec {
-    let output_schema = query_engine::plan::graph_result_schema_for_vertex_type(algorithm, &params, vertex_type);
+    let output_schema = graph_result_schema_for_vertex_type(algorithm, &params, vertex_type);
     GraphAlgorithmSpec::new(algorithm, edge_columns, graph_options, params, output_schema)
 }
 
@@ -23,7 +25,7 @@ fn int32_stable_graph_result_schema(algorithm: GraphAlgorithm) -> Arc<Schema> {
 }
 
 fn stable_graph_result_schema_for_vertex_type(algorithm: GraphAlgorithm, vertex_type: &DataType) -> Arc<Schema> {
-    query_engine::plan::graph_result_schema_for_vertex_type(
+    graph_result_schema_for_vertex_type(
         algorithm,
         &algorithm.definition().default_params(),
         vertex_type,

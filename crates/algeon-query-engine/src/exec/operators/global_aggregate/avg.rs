@@ -1,4 +1,4 @@
-use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use arrow::datatypes::{DECIMAL128_MAX_PRECISION, SchemaRef as ArrowSchemaRef};
 
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
@@ -6,6 +6,7 @@ use super::{
     budgeted_value, cudf_query_error, cudf_query_error_with_budget_details, execution_overrides,
     frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
 };
+use crate::expr::CaseWhen;
 
 pub(in crate::exec) fn finalize_avg_output_columns(
     context: &ExecutionContext,
@@ -64,10 +65,7 @@ fn finalize_avg_output_columns_impl(
             let avg_divide = Expr::binary_with_output_type(sum, BinaryOp::Divide, count, division_type);
             let avg = Expr::cast(avg_divide, field.data_type().clone());
             let nullable_value = Expr::case(
-                vec![crate::expr::CaseWhen::new(
-                    count_is_zero,
-                    Expr::literal(LiteralValue::Null(field.data_type().clone())),
-                )],
+                vec![CaseWhen::new(count_is_zero, Expr::literal(LiteralValue::Null(field.data_type().clone())))],
                 avg,
             );
             lower_expr(&nullable_value).map(|lowered| (alias, lowered))
@@ -106,7 +104,7 @@ pub(in crate::exec) fn avg_sum_state_data_type(
         ArrowDataType::Float32 | ArrowDataType::Float64 => Ok(ArrowDataType::Float64),
         ArrowDataType::Decimal128(_, output_scale) => match input_type {
             ArrowDataType::Decimal128(_, input_scale) => {
-                Ok(ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *input_scale))
+                Ok(ArrowDataType::Decimal128(DECIMAL128_MAX_PRECISION, *input_scale))
             },
             ArrowDataType::Int8
             | ArrowDataType::Int16
@@ -117,9 +115,7 @@ pub(in crate::exec) fn avg_sum_state_data_type(
             | ArrowDataType::UInt32
             | ArrowDataType::UInt64
             | ArrowDataType::Float32
-            | ArrowDataType::Float64 => {
-                Ok(ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale))
-            },
+            | ArrowDataType::Float64 => Ok(ArrowDataType::Decimal128(DECIMAL128_MAX_PRECISION, *output_scale)),
             _ => Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "query_engine.aggregate.avg_state_type",
@@ -152,9 +148,7 @@ fn avg_division_data_type(state_sum_type: &ArrowDataType, avg_output_type: &Arro
             | ArrowDataType::UInt32
             | ArrowDataType::UInt64
             | ArrowDataType::Float32
-            | ArrowDataType::Float64 => {
-                Ok(ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale))
-            },
+            | ArrowDataType::Float64 => Ok(ArrowDataType::Decimal128(DECIMAL128_MAX_PRECISION, *output_scale)),
             _ => Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "query_engine.aggregate.avg_division_type",
@@ -175,7 +169,7 @@ fn avg_division_data_type(state_sum_type: &ArrowDataType, avg_output_type: &Arro
 
 fn avg_count_output_data_type(avg_output_type: &ArrowDataType) -> ArrowDataType {
     match avg_output_type {
-        ArrowDataType::Decimal128(_, _) => ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, 0),
+        ArrowDataType::Decimal128(_, _) => ArrowDataType::Decimal128(DECIMAL128_MAX_PRECISION, 0),
         _ => avg_output_type.clone(),
     }
 }

@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use arrow::{
     array::{Array, Int32Array, PrimitiveArray},
+    buffer::{NullBuffer, ScalarBuffer},
+    datatypes::Int32Type,
     record_batch::RecordBatch,
 };
 
@@ -11,9 +13,9 @@ use crate::{
 };
 
 pub(crate) fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
-    let buffer = arrow::buffer::ScalarBuffer::from(vec![1i32]);
-    let null_buffer = arrow::buffer::NullBuffer::from(vec![true, false]);
-    PrimitiveArray::<arrow::datatypes::Int32Type>::try_new(buffer, Some(null_buffer))
+    let buffer = ScalarBuffer::from(vec![1i32]);
+    let null_buffer = NullBuffer::from(vec![true, false]);
+    PrimitiveArray::<Int32Type>::try_new(buffer, Some(null_buffer))
         .map(|_| ())
         .map_err(super::map_numeric_to_arrow_error)
 }
@@ -61,7 +63,7 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    use super::super::{call_count_since, reset_call_count_baseline};
+    use crate::interop::arrow_host::{call_count_since, reset_call_count_baseline};
 
     #[test]
     fn resetting_one_call_count_observer_does_not_rewind_another() {

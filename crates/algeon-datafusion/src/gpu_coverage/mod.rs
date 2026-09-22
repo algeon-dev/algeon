@@ -46,7 +46,7 @@ use self::{
     },
 };
 use crate::{
-    final_plan_observation::observe_final_plan, planner::AlgeonNativePhysicalOptimizerRule,
+    error::Result, final_plan_observation::observe_final_plan, planner::AlgeonNativePhysicalOptimizerRule,
     session::AlgeonSessionStateBuilderExt,
 };
 pub use crate::{planner::FinalPlanCoverage, report::CandidateOutcomeKind};
@@ -81,7 +81,7 @@ pub(crate) use self::{
 pub fn validate_query<'a>(
     ctx: &'a SessionContext,
     sql: impl AsRef<str> + Send + 'a,
-) -> BoxFuture<'a, crate::error::Result<QueryGpuCoverage>> {
+) -> BoxFuture<'a, Result<QueryGpuCoverage>> {
     Box::pin(async move {
         let sql = sql.as_ref();
         let mut planning_state_builder = SessionStateBuilder::new_from_existing(ctx.state());

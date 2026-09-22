@@ -1,5 +1,10 @@
 use std::{path::Path, sync::Arc};
 
+use query_engine::{
+    error::QueryError, exec::output::QueryExecutionResult, expr::ColumnRef, plan::QueryPlan,
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[path = "join_test_support/mixed_aggregate.rs"]
@@ -24,17 +29,11 @@ pub(super) fn join_right_source(path: &Path, schema: &Arc<Schema>, columns: &[&s
 }
 
 pub(super) fn join_order_id_key() -> JoinKey {
-    JoinKey::new(
-        query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
-        query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
-    )
+    JoinKey::new(ColumnRef::input(0, "order_id", "left_order_id"), ColumnRef::input(1, "order_id", "right_order_id"))
 }
 
 pub(super) fn id_join_key() -> JoinKey {
-    JoinKey::new(
-        query_engine::expr::ColumnRef::input(0, "id", "left_id"),
-        query_engine::expr::ColumnRef::input(1, "id", "right_id"),
-    )
+    JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))
 }
 
 pub(super) fn right_order_id_times_ten() -> Expr {
@@ -61,7 +60,7 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
     right_schema: &Arc<Schema>,
     join_type: JoinType,
     build_side: JoinSide,
-) -> query_engine::exec::output::QueryExecutionResult {
+) -> QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -73,15 +72,12 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
         right,
         JoinSpec::new(join_type, vec![])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )])
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(build_side),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -93,7 +89,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> query_engine::exec::output::QueryExecutionResult {
+) -> QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -105,15 +101,12 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
         left,
         right,
         JoinSpec::new(join_type, vec![join_order_id_key()])
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )])
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -129,7 +122,7 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
     threshold_aggregate_schema: Arc<Schema>,
     output_schema: Arc<Schema>,
     gpu_sink: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let lineitem = builder.add_source(SourceNode::LocalParquet(join_left_source(
         lineitem_path,
@@ -148,8 +141,8 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
         anti_orders,
         JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&left_subplan_schema),
@@ -176,9 +169,9 @@ pub(super) fn keyless_conditional_join_input_subplan_plan(
                 Expr::input_column(1, "threshold", "threshold"),
             ))
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "threshold", "threshold"), "threshold"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "threshold", "threshold"), "threshold"),
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
@@ -201,7 +194,7 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     grouped_fact_schema: &Arc<Schema>,
     scalar_fact_schema: &Arc<Schema>,
     supplier_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("qty", DataType::Int64, false),
@@ -227,11 +220,8 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         grouped_supplier,
         JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                    "ps_partkey",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -260,10 +250,7 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         scalar_partsupp,
         scalar_supplier,
         JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )])
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(JoinSide::Right),
         scalar_join_schema,
     );
@@ -288,11 +275,8 @@ pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
                 Expr::input_column(1, "threshold", "threshold"),
             ))
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                    "ps_partkey",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "value", "value"), "value"),
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
@@ -329,16 +313,10 @@ pub(super) fn supplier_cost_supplier_source(path: &Path, schema: &Arc<Schema>) -
 }
 
 pub(super) fn supplier_cost_suppkey_join_key(left_name: &str, right_name: &str) -> JoinKey {
-    JoinKey::new(
-        query_engine::expr::ColumnRef::input(0, left_name, left_name),
-        query_engine::expr::ColumnRef::input(1, right_name, right_name),
-    )
+    JoinKey::new(ColumnRef::input(0, left_name, left_name), ColumnRef::input(1, right_name, right_name))
 }
 
-pub(super) fn assert_empty_bounded_filtered_join_result(
-    result: &query_engine::exec::output::QueryExecutionResult,
-    join_type: &str,
-) {
+pub(super) fn assert_empty_bounded_filtered_join_result(result: &QueryExecutionResult, join_type: &str) {
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("empty bounded filtered join should return host output");
     };
@@ -368,7 +346,7 @@ pub(super) fn execute_left_only_residual_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> query_engine::exec::output::QueryExecutionResult {
+) -> QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -381,10 +359,7 @@ pub(super) fn execute_left_only_residual_join(
         right,
         JoinSpec::new(join_type, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )])
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
@@ -405,7 +380,7 @@ pub(super) fn execute_bounded_left_only_residual_join(
     left_schema: &Arc<Schema>,
     right_schema: &Arc<Schema>,
     join_type: JoinType,
-) -> query_engine::exec::output::QueryExecutionResult {
+) -> QueryExecutionResult {
     let output_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
@@ -418,24 +393,17 @@ pub(super) fn execute_bounded_left_only_residual_join(
         right,
         JoinSpec::new(join_type, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )])
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
 
-pub(super) fn residual_validation_error(
-    join_type: JoinType,
-    keys: Vec<JoinKey>,
-    residual: Expr,
-) -> query_engine::error::QueryError {
+pub(super) fn residual_validation_error(join_type: JoinType, keys: Vec<JoinKey>, residual: Expr) -> QueryError {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
     residual_validation_error_with_schema(join_type, keys, residual, schema, vec!["id"])
 }
@@ -446,7 +414,7 @@ pub(super) fn residual_validation_error_with_schema(
     residual: Expr,
     schema: Arc<Schema>,
     read_columns: Vec<&str>,
-) -> query_engine::error::QueryError {
+) -> QueryError {
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, true),
         Field::new("right_id", DataType::Int32, true),
@@ -470,8 +438,8 @@ pub(super) fn residual_validation_error_with_schema(
         left,
         right,
         JoinSpec::new(join_type, keys).with_residual_predicate(residual).with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "id", "left_id"), "left_id"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "id", "right_id"), "right_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
         ]),
         output_schema,
     );
@@ -484,7 +452,7 @@ pub(super) fn residual_validation_error_with_schema(
     }
 }
 
-pub(super) fn assert_bounded_join_rejection_contract(error: &query_engine::error::QueryError) {
+pub(super) fn assert_bounded_join_rejection_contract(error: &QueryError) {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.operation(), "query_engine.bounded.plan");
     assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));

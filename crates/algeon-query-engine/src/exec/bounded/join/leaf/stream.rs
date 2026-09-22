@@ -8,7 +8,10 @@ use super::{
     read_join_leaf_source_chunk_attempt, record_chunk_retry_error, record_dynamic_filter_reader_predicate_rows,
     source_chunk_batch_target_bytes, source_chunk_batches, split_retryable_chunk, start_next_required_join_leaf_read,
 };
-use crate::exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
+use crate::exec::{
+    bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+    retry::backoff_before_retry,
+};
 
 /// Exposes a deferred Parquet leaf as a pull-based resident frame stream.
 ///
@@ -76,7 +79,7 @@ impl ResidentFrameStreamSource for JoinLeafSourceFrameStreamSource {
                         (left, right, 1)
                     };
                     execution.metrics().record_source_chunk_retry();
-                    if let Err(error) = crate::exec::retry::backoff_before_retry(
+                    if let Err(error) = backoff_before_retry(
                         execution.context(),
                         "query_engine.exec.bounded.join_leaf_stream_source_split_retry",
                     ) {
@@ -170,10 +173,7 @@ where
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
-            crate::exec::retry::backoff_before_retry(
-                execution.context(),
-                "query_engine.exec.bounded.join_leaf_stream_batch_split_retry",
-            )?;
+            backoff_before_retry(execution.context(), "query_engine.exec.bounded.join_leaf_stream_batch_split_retry")?;
             stream_join_leaf_source_batch_or_split_with_consumer(execution, stream, left, consume)?;
             stream_join_leaf_source_batch_or_split_with_consumer(execution, stream, right, consume)
         },
@@ -260,10 +260,7 @@ where
                 && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
             {
                 execution.metrics().record_source_chunk_retry();
-                crate::exec::retry::backoff_before_retry(
-                    execution.context(),
-                    "query_engine.exec.bounded.join_leaf_stream_split_retry",
-                )?;
+                backoff_before_retry(execution.context(), "query_engine.exec.bounded.join_leaf_stream_split_retry")?;
                 let left = execute_source_chunk_with_consumer_retry(
                     execution,
                     stream,

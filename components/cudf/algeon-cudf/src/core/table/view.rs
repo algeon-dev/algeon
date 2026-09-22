@@ -11,6 +11,7 @@ use crate::{
     core::{
         column::ColumnView,
         error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_TABLE_COLUMN_COUNT, Result},
+        native_teardown::drop_device_owned_handle,
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -330,11 +331,8 @@ impl<'a> TableView<'a> {
 
 impl Drop for TableView<'_> {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
-            self.handle.as_ptr(),
-            self.domain.device_id(),
-            "TableView::drop",
-            |owned| unsafe { cudf_sys::cudf_table_view_destroy(owned) },
-        );
+        drop_device_owned_handle(self.handle.as_ptr(), self.domain.device_id(), "TableView::drop", |owned| unsafe {
+            cudf_sys::cudf_table_view_destroy(owned)
+        });
     }
 }

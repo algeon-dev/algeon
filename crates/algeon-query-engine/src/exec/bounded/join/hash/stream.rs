@@ -9,6 +9,10 @@ use super::{
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
     release_bounded_root_hash_join_build_state, side_metric,
 };
+use crate::{
+    exec::retry::{is_retryable_resource_error, record_retryable_resource_error},
+    metrics::{JoinOperatorMetrics, OperatorMetrics},
+};
 
 #[expect(
     clippy::too_many_arguments,
@@ -146,9 +150,9 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         }
     }
     execution.metrics().add_operator_time(timer.elapsed());
-    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(OperatorMetrics::join(
         node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: reusable_hash_join_execution_strategy(node, build).to_string(),
@@ -281,9 +285,9 @@ impl RootHashJoinMaterializeStreamSource {
             let left_bytes = left.bytes;
             let right_bytes = right.bytes;
             execution.metrics().add_operator_time(timer.elapsed());
-            execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+            execution.metrics().record_operator_metrics(OperatorMetrics::join(
                 self.node_id,
-                crate::metrics::JoinOperatorMetrics {
+                JoinOperatorMetrics {
                     query_id: None,
                     join_type: self.node.spec.join_type.to_string(),
                     execution_strategy: reusable_hash_join_execution_strategy(&self.node, build).to_string(),
@@ -368,14 +372,14 @@ impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
 }
 
 pub(in crate::exec::bounded::join::hash) fn is_retryable_join_stream_slice_error(error: &QueryError) -> bool {
-    crate::exec::retry::is_retryable_resource_error(error)
+    is_retryable_resource_error(error)
 }
 
 pub(in crate::exec::bounded::join::hash) fn record_join_stream_slice_retry_error(
     error: &QueryError,
     metrics: &ExecutionMetrics,
 ) {
-    crate::exec::retry::record_retryable_resource_error(error, metrics);
+    record_retryable_resource_error(error, metrics);
 }
 
 pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_stream_chunk_rows(

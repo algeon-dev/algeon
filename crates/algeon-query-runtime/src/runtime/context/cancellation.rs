@@ -8,9 +8,10 @@ use std::{
     time::Instant,
 };
 
-use query_planning::error::{QueryError, Result};
+use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::ExecutionContext;
+use crate::observability::{PlanExecutionId, RuntimeExecutionStageContext, RuntimeObservationHandle, RuntimeSpanId};
 
 /// Shared cooperative cancellation flag for native query execution.
 ///
@@ -69,16 +70,12 @@ impl ExecutionCancellation {
     /// Returns a structured native error if cancellation has been requested.
     pub fn check(&self, operation: &'static str) -> Result<()> {
         if self.cancellation_requested() {
-            return Err(QueryError::new(
-                query_planning::error::QueryErrorCode::Cancelled,
-                operation,
-                "native query execution was cancelled",
-            )
-            .with_fact("cancellation_requested", true));
+            return Err(QueryError::new(QueryErrorCode::Cancelled, operation, "native query execution was cancelled")
+                .with_fact("cancellation_requested", true));
         }
         if self.is_expired() {
             return Err(QueryError::new(
-                query_planning::error::QueryErrorCode::Cancelled,
+                QueryErrorCode::Cancelled,
                 operation,
                 "native query execution deadline expired",
             )
@@ -99,14 +96,10 @@ impl Default for ExecutionCancellation {
     }
 }
 
-impl crate::observability::RuntimeExecutionStageContext for ExecutionContext {
+impl RuntimeExecutionStageContext for ExecutionContext {
     fn runtime_operator_stage_context(
         &self,
-    ) -> (
-        crate::observability::RuntimeObservationHandle,
-        Option<crate::observability::PlanExecutionId>,
-        Option<crate::observability::RuntimeSpanId>,
-    ) {
+    ) -> (RuntimeObservationHandle, Option<PlanExecutionId>, Option<RuntimeSpanId>) {
         let observation = self.runtime_observation().clone();
         let (plan_execution_id, parent_span_id) = self
             .runtime_execution_scope()

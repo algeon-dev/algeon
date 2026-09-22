@@ -1,5 +1,7 @@
 use std::{path::Path, sync::Arc};
 
+use query_engine::{error::Result as QueryEngineResult, plan::QueryPlan};
+
 use super::*;
 
 pub(super) fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
@@ -15,7 +17,7 @@ pub(super) fn partition_column_query_plan(
     first_path: &Path,
     second_path: &Path,
     file_schema: Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let source_schema = Arc::new(Schema::new(
         file_schema
             .fields()
@@ -68,7 +70,7 @@ pub(super) fn partition_passthrough_query_plan(
     file_schema: Arc<Schema>,
     partition_columns: Vec<PartitionColumn>,
     partition_values: Vec<Vec<LiteralValue>>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     assert_eq!(paths.len(), partition_values.len());
     let partition_names = partition_columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
     let source_schema = Arc::new(Schema::new(
@@ -184,7 +186,7 @@ pub(super) fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 pub(super) fn execute_admitted_with_peak(
     context: &BackendQueryContext,
     plan: &QueryPlan,
-) -> (query_engine::error::Result<QueryOutput>, QueryMetrics, u64) {
+) -> (QueryEngineResult<QueryOutput>, QueryMetrics, u64) {
     let admitted = context.admit_plan(plan).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),

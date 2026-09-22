@@ -1,4 +1,5 @@
 use super::*;
+use crate::interop::arrow_host::cudf_dtype_from_arrow_type;
 
 /// Source-level schema used for validation and typed empty outputs.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +54,7 @@ impl SourceColumn {
     /// Create a list source column with its complete Arrow child schema.
     pub fn new_list(name: impl Into<String>, arrow_data_type: ArrowDataType, nullable: bool) -> Result<Self> {
         let name = checked_name(name.into(), OP_COLUMN_NEW, "source column")?;
-        let data_type = crate::interop::arrow_host::cudf_dtype_from_arrow_type(&arrow_data_type)
+        let data_type = cudf_dtype_from_arrow_type(&arrow_data_type)
             .map_err(|error| error.reanchor(OP_COLUMN_NEW).with_column(name.clone()))?;
         if data_type.id() != TypeId::List {
             return Err(Error::new_with(

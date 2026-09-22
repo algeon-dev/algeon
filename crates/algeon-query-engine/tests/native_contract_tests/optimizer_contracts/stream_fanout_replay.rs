@@ -2,7 +2,7 @@
 fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
     let plan = shared_projected_probe_fanout_plan();
     let original_node_count = plan.node_count();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.stream_fanout_replay.considered_count, 1);
@@ -18,14 +18,14 @@ fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
 #[test]
 fn disabled_native_optimizer_keeps_stream_fanout_replay_off() {
     let plan = shared_projected_probe_fanout_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
     assert!(result.diagnostics.stream_fanout_replay.is_empty());
 }
 
-fn shared_projected_probe_fanout_plan() -> query_engine::plan::QueryPlan {
+fn shared_projected_probe_fanout_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(gpu_source("fact", &["key", "qty"]));
     let prefix_dim = builder.add_source(gpu_source("prefix_dim", &["key"]));

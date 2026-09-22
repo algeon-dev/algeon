@@ -8,6 +8,7 @@ use super::{
     record_final_sort_retry_error, reduce_merge_fan_in, sort_lane_fan_out, sort_lane_params,
     sort_topk_candidate_with_budget, split_sort_candidate_ranges, stream_candidate_chunk_hint, topk_candidate_rows,
 };
+use crate::exec::retry::backoff_before_retry;
 
 #[derive(Clone, Copy)]
 struct TopKCandidatePlan {
@@ -119,10 +120,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                     if is_retryable_final_sort_error(&error) && initial_attempt <= 1 && self.max_attempts > 1 =>
                 {
                     record_final_sort_retry_error(&error, self.execution.metrics());
-                    crate::exec::retry::backoff_before_retry(
-                        self.execution.context(),
-                        "query_engine.exec.bounded.final_sort_lane_retry",
-                    )?;
+                    backoff_before_retry(self.execution.context(), "query_engine.exec.bounded.final_sort_lane_retry")?;
                     self.initial_topk_candidates(
                         &input,
                         TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
@@ -167,7 +165,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                         {
                             merge_fan_in = reduced_fan_in;
                             attempt += 1;
-                            crate::exec::retry::backoff_before_retry(
+                            backoff_before_retry(
                                 self.execution.context(),
                                 "query_engine.exec.bounded.hierarchical_topk_merge_retry",
                             )?;
@@ -430,7 +428,7 @@ impl FinalSortExecutor<'_, '_, '_> {
                         {
                             merge_fan_in = reduced_fan_in;
                             attempt += 1;
-                            crate::exec::retry::backoff_before_retry(
+                            backoff_before_retry(
                                 self.execution.context(),
                                 "query_engine.exec.bounded.hierarchical_topk_stream_merge_retry",
                             )?;

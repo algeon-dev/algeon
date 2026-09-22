@@ -1,4 +1,5 @@
 use super::{DataFrame, ExecutionContext, ExecutionOverrides, QueryError, QueryErrorCode, Result, cudf_query_error};
+use crate::plan::GraphAlgorithmSpec;
 
 /// Runs the runtime graph vertex-count probe on the attempt's own runtime.
 ///
@@ -9,7 +10,7 @@ use super::{DataFrame, ExecutionContext, ExecutionOverrides, QueryError, QueryEr
 pub(in crate::exec) fn runtime_graph_statistics_probe(
     context: &ExecutionContext,
     frame: &DataFrame,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
 ) -> Result<u64> {
     let runtime = context.runtime()?;
     runtime_graph_statistics_probe_in_runtime(&runtime, frame, spec)
@@ -19,7 +20,7 @@ pub(in crate::exec) fn runtime_graph_statistics_probe(
 fn runtime_graph_statistics_probe_in_runtime(
     runtime: &cudf::Runtime,
     frame: &DataFrame,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
 ) -> Result<u64> {
     let operation = GRAPH_STATISTICS_OPERATION;
     let source = frame

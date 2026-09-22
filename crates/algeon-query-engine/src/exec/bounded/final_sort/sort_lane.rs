@@ -26,7 +26,13 @@ use super::{
     execute_limit_spec_with_token, final_sort_runtime_facts, finalize_final_sort_output_reservation,
     reserve_final_sort_output_bytes, sort_topk_candidate_with_budget,
 };
-use crate::exec::bounded::compiled::lanes::AggregateLaneDispatch;
+use crate::{
+    error::QueryError,
+    exec::{
+        bounded::compiled::lanes::AggregateLaneDispatch,
+        retry::{ResourceFailureRecovery, resource_failure_recovery},
+    },
+};
 
 /// Owned sort identity shared by every lane candidate of one fan-out.
 pub(super) struct SortLaneParams {
@@ -215,12 +221,8 @@ fn lane_candidate_frame(
         })
 }
 
-fn attach_lane_candidate_resource_facts(
-    error: crate::error::QueryError,
-    params: &SortLaneParams,
-) -> crate::error::QueryError {
-    if crate::exec::retry::resource_failure_recovery(&error) == crate::exec::retry::ResourceFailureRecovery::NotResource
-    {
+fn attach_lane_candidate_resource_facts(error: QueryError, params: &SortLaneParams) -> QueryError {
+    if resource_failure_recovery(&error) == ResourceFailureRecovery::NotResource {
         return error;
     }
     error

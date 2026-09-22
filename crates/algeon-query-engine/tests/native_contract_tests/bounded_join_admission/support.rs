@@ -1,3 +1,25 @@
+use query_engine::{
+    admission::{
+        CompiledBoundedPipelineSupport, CompiledJoinExecutionStrategy, bounded_join_modeled_facts,
+        compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+    },
+    capability::{
+        CapabilityDecision, CapabilityEnvelope, CapabilityRejectionOwner, EdgeConsumer, JoinExecutionCapability,
+        join_node_execution_capability, keyed_residual_left_match_join_capable, keyed_residual_mixed_join_capable,
+        partitioned_keyed_residual_join_supported,
+    },
+    dimension_pruning::local_dimension_pruning_resolver,
+    error::QueryErrorCode,
+    exec::preflight_bounded_query_plan,
+    expr::Expr,
+    optimizer::{NativeOptimizerOptions, optimize_query_plan},
+    pipeline::{
+        AcceptedInputForm, AggregateExecutionStage, CompiledPipeline, OrderingScope, PipelineTaskKind,
+        ResidentDataForm, ResourceSharing, SinkBoundaryKind, SortStrategy, compile_pipeline,
+    },
+    plan::{EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphEdgeColumnBindings},
+};
+
 fn assert_rejection_reason_is_family_free(reason: &str, label: &str) {
     for token in ["envelope", "_shape", "family", "topology", "recognizer", "catalogue", "whitelist"] {
         assert!(
@@ -12,15 +34,15 @@ fn bounded_preflight_rejection_reports_caller_visible_sink() {
     // A rejected join plan reports the caller-visible sink as a diagnostic
     // fact only; the fact never selects a second decision.
     let (plan, _) = compositional_edge_normalize_plan();
-    let error = query_engine::exec::preflight_bounded_query_plan(
+    let error = preflight_bounded_query_plan(
         &plan,
-        query_engine::mode::StatisticalAggregateExecutionMode::default(),
+        StatisticalAggregateExecutionMode::default(),
     )
     .expect_err("edge normalization must not preflight");
     assert_eq!(error.fact_value("caller_visible_sink"), Some("host_arrow"));
 }
 
-fn admitted_artifact_for(plan: &query_engine::plan::QueryPlan) -> query_engine::admission::BoundedPipelineAdmission {
+fn admitted_artifact_for(plan: &QueryPlan) -> BoundedPipelineAdmission {
     bounded_pipeline_admission(plan)
         .expect("artifact fixture should not fail admission")
         .expect("artifact fixture should be admitted")
@@ -33,11 +55,11 @@ fn bounded_artifact_binding_matches_decided_plan_and_mode() {
     let mut builder = QueryPlanBuilder::new();
     let (join, _) = compositional_inner_join_base(&mut builder);
     let plan = builder.finish_with_host_sink(join);
-    let mode = query_engine::mode::StatisticalAggregateExecutionMode::default();
+    let mode = StatisticalAggregateExecutionMode::default();
 
     let admission = admitted_artifact_for(&plan);
     assert!(admission.matches(&plan, mode));
-    assert_eq!(admission.sink_kind(), query_engine::pipeline::SinkBoundaryKind::HostArrowMaterialization);
+    assert_eq!(admission.sink_kind(), SinkBoundaryKind::HostArrowMaterialization);
     assert_eq!(admission.statistical_aggregate_execution_mode(), mode);
     assert!(admission.scope().matches(&plan));
 }
@@ -49,7 +71,7 @@ fn bounded_artifact_binding_rejects_mismatched_plan_and_mode() {
     let mut builder = QueryPlanBuilder::new();
     let (join, _) = compositional_inner_join_base(&mut builder);
     let plan = builder.finish_with_host_sink(join);
-    let mode = query_engine::mode::StatisticalAggregateExecutionMode::default();
+    let mode = StatisticalAggregateExecutionMode::default();
     let admission = admitted_artifact_for(&plan);
 
     let aliased = compositional_alias_join_plan();
@@ -59,7 +81,7 @@ fn bounded_artifact_binding_rejects_mismatched_plan_and_mode() {
     assert_eq!(projection.reason, "compiled_pipeline_sink_output_plan_node_mismatch");
     assert_rejection_reason_is_family_free(projection.reason, "artifact binding rejection");
 
-    let other_mode = query_engine::mode::StatisticalAggregateExecutionMode::DataFusionExactHostWelford;
+    let other_mode = StatisticalAggregateExecutionMode::DataFusionExactHostWelford;
     assert!(mode != other_mode, "binding test needs two distinct execution modes");
     assert!(!admission.matches(&plan, other_mode));
     let projection =
@@ -82,22 +104,22 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit should compile");
     pipeline.validate().expect("compiler output satisfies the fused top-k binding");
 
     let sort_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::FinalSort)
+        .find(|task| task.kind() == PipelineTaskKind::FinalSort)
         .expect("one final sort task");
     let fused = sort_task.sort_strategy().expect("sort feeding a single limit fuses");
     let (limit_task_id, limit_node_id) = match fused {
-        query_engine::pipeline::SortStrategy::FusedTopK { limit_task, limit_node } => {
+        SortStrategy::FusedTopK { limit_task, limit_node } => {
             (limit_task, limit_node)
         },
-        query_engine::pipeline::SortStrategy::FullSort => {
+        SortStrategy::FullSort => {
             panic!("sort feeding a single limit must fuse, got {fused:?}")
         },
     };
@@ -108,7 +130,7 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     let limit_index =
         tasks.iter().position(|task| task.id() == limit_task_id).expect("fused limit task exists");
     tasks[limit_index] = tasks[limit_index].clone().with_sort_strategy(fused);
-    let rebuilt = query_engine::pipeline::CompiledPipeline::new(
+    let rebuilt = CompiledPipeline::new(
         tasks,
         pipeline.edges().to_vec(),
         pipeline.barriers().to_vec(),
@@ -116,7 +138,7 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
         pipeline.sink().clone(),
     );
     let error = rebuilt.validate().expect_err("two producers must not claim one fused limit");
-    assert_eq!(error.code(), query_engine::error::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("first_sort_task"), Some(sort_task.id().to_string()).as_deref());
     assert_eq!(error.fact_value("second_sort_task"), Some(limit_task_id.to_string()).as_deref());
     assert_eq!(error.fact_value("limit_task"), Some(limit_task_id.to_string()).as_deref());
@@ -138,16 +160,16 @@ fn bounded_offset_only_limit_runs_below_a_full_sort() {
     let limit = builder.add_limit(sort, LimitSpec::offset(1), Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort offset should compile");
     let sort_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::FinalSort)
+        .find(|task| task.kind() == PipelineTaskKind::FinalSort)
         .expect("one final sort task");
     assert!(
-        matches!(sort_task.sort_strategy(), Some(query_engine::pipeline::SortStrategy::FullSort)),
+        matches!(sort_task.sort_strategy(), Some(SortStrategy::FullSort)),
         "offset-only limit must not fuse into top-k, got {:?}",
         sort_task.sort_strategy()
     );
@@ -171,13 +193,13 @@ fn bounded_sort_strategy_records_fused_binding_once() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit should compile");
     let limit_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Limit)
+        .find(|task| task.kind() == PipelineTaskKind::Limit)
         .expect("one limit task");
     let strategies = pipeline
         .tasks()
@@ -190,10 +212,10 @@ fn bounded_sort_strategy_records_fused_binding_once() {
             pipeline
                 .tasks()
                 .iter()
-                .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::FinalSort)
+                .find(|task| task.kind() == PipelineTaskKind::FinalSort)
                 .expect("one final sort task")
                 .id(),
-            query_engine::pipeline::SortStrategy::FusedTopK { limit_task: limit_task.id(), limit_node: limit },
+            SortStrategy::FusedTopK { limit_task: limit_task.id(), limit_node: limit },
         )],
         "exactly the sort task records the fused binding"
     );
@@ -222,8 +244,8 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(filter);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit filter should compile");
     let task_id = |kind| {
         pipeline.tasks().iter().find(|task| task.kind() == kind).expect("task exists").id()
@@ -238,16 +260,16 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
             .ordering()
     };
     for kind in [
-        query_engine::pipeline::PipelineTaskKind::FinalSort,
-        query_engine::pipeline::PipelineTaskKind::Limit,
-        query_engine::pipeline::PipelineTaskKind::Unary,
+        PipelineTaskKind::FinalSort,
+        PipelineTaskKind::Limit,
+        PipelineTaskKind::Unary,
     ] {
         let ordering = ordering_of(kind).expect("sorted frames stay ordered");
-        assert_eq!(ordering.scope(), query_engine::pipeline::OrderingScope::Global);
+        assert_eq!(ordering.scope(), OrderingScope::Global);
         assert_eq!(ordering.keys().len(), 1);
         assert!(matches!(
             &ordering.keys()[0].expr,
-            query_engine::expr::Expr::Column(column) if column.name() == "right_value"
+            Expr::Column(column) if column.name() == "right_value"
         ));
     }
 
@@ -266,14 +288,14 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
         )],
     );
     let dropped_plan = dropped.finish_with_host_sink(projection);
-    let dropped_analysis = dropped_plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let dropped_analysis = dropped_plan.capability_analysis(rapids_analysis_context());
     let dropped_pipeline =
-        query_engine::pipeline::compile_pipeline(&dropped_plan, &dropped_analysis)
+        compile_pipeline(&dropped_plan, &dropped_analysis)
             .expect("key-dropping projection should compile");
     let projection_task = dropped_pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Unary)
+        .find(|task| task.kind() == PipelineTaskKind::Unary)
         .expect("one projection task");
     assert_eq!(
         dropped_pipeline
@@ -300,9 +322,9 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
         ])),
     );
     let aggregate_plan = aggregated.finish_with_host_sink(aggregate);
-    let aggregate_analysis = aggregate_plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let aggregate_analysis = aggregate_plan.capability_analysis(rapids_analysis_context());
     let aggregate_pipeline =
-        query_engine::pipeline::compile_pipeline(&aggregate_plan, &aggregate_analysis)
+        compile_pipeline(&aggregate_plan, &aggregate_analysis)
             .expect("grouped aggregate should compile");
     assert!(
         aggregate_pipeline.resources().iter().all(|resource| resource.ordering().is_none()),
@@ -329,23 +351,23 @@ fn bounded_aggregate_task_records_single_stage() {
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("grouped aggregate should compile");
     let aggregate_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Aggregate)
+        .find(|task| task.kind() == PipelineTaskKind::Aggregate)
         .expect("one aggregate task");
     assert_eq!(
         aggregate_task.aggregate_stage(),
-        Some(query_engine::pipeline::AggregateExecutionStage::Single)
+        Some(AggregateExecutionStage::Single)
     );
     assert!(
         pipeline.tasks().iter().all(|task| !matches!(
             task.aggregate_stage(),
-            Some(query_engine::pipeline::AggregateExecutionStage::Partial)
-                | Some(query_engine::pipeline::AggregateExecutionStage::FinalMerge)
+            Some(AggregateExecutionStage::Partial)
+                | Some(AggregateExecutionStage::FinalMerge)
         )),
         "no compiled edge carries partial state"
     );
@@ -381,7 +403,7 @@ fn bounded_aggregate_state_and_max_rows_are_node_facts() {
         Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)])),
     );
     let plan = builder.finish_with_host_sink(limit);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     let node_fact = |id| {
         analysis.nodes.iter().find(|node| node.node_id == id).expect("node capability exists")
@@ -433,17 +455,17 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
         Arc::clone(&key_schema),
     );
     let plan = builder.finish_with_host_sink(anti);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     let build_edge = analysis
         .edges
         .iter()
         .find(|edge| {
             edge.producer == grouped
-                && edge.consumer == query_engine::capability::EdgeConsumer::Node(anti)
+                && edge.consumer == EdgeConsumer::Node(anti)
         })
         .expect("aggregate build edge exists");
-    let query_engine::capability::CapabilityDecision::Rejected { reason, facts } = &build_edge.decision else {
+    let CapabilityDecision::Rejected { reason, facts } = &build_edge.decision else {
         panic!("grouped-measure anti build should reject the build edge");
     };
     assert_eq!(*reason, "left_anti_build_requires_dedup_aggregate");
@@ -498,16 +520,16 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
     );
     let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     let probe_edge = analysis
         .edges
         .iter()
         .find(|edge| {
-            edge.producer == left && edge.consumer == query_engine::capability::EdgeConsumer::Node(anti)
+            edge.producer == left && edge.consumer == EdgeConsumer::Node(anti)
         })
         .expect("probe edge exists");
-    let query_engine::capability::CapabilityDecision::Rejected { reason, facts } = &probe_edge.decision else {
+    let CapabilityDecision::Rejected { reason, facts } = &probe_edge.decision else {
         panic!("non-dedup anti probe should reject the probe edge");
     };
     assert_eq!(*reason, "left_anti_probe_requires_dedup_proven_input");
@@ -539,12 +561,12 @@ fn bounded_admission_ignores_unreachable_node_rejection() {
 
     let unreachable = plan.unreachable_node_ids();
     assert!(unreachable.contains(&detached), "fixture must keep the bad projection detached: {unreachable:?}");
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     assert!(
         analysis.nodes.iter().any(|node| node.node_id == detached
             && matches!(
                 node.executable,
-                query_engine::capability::CapabilityDecision::Rejected { .. }
+                CapabilityDecision::Rejected { .. }
             )),
         "fixture must carry a detached node rejection"
     );
@@ -597,13 +619,13 @@ fn bounded_compiled_aggregate_task_runs_single_stage_without_partial_edges() {
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline =
-        query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("join grouped aggregate compiles");
+        compile_pipeline(&plan, &analysis).expect("join grouped aggregate compiles");
     let aggregate_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Aggregate)
+        .find(|task| task.kind() == PipelineTaskKind::Aggregate)
         .expect("one aggregate task");
     assert_eq!(aggregate_task.aggregate_stage(), Some(AggregateExecutionStage::Single));
     assert!(

@@ -17,10 +17,13 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
+#[cfg(feature = "cugraph")]
+use query_engine::plan::row_bounds::query_plan_hard_row_upper_bound;
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
-    plan::QueryPlan,
+    admission::{AttemptCapabilityEvidence, AttemptExecutionScope, AttemptProducerOccurrence},
+    error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput, preflight_bounded_query_plan},
+    plan::{DeferredGraphExecutionScopeIdentity, QueryPlan},
     runtime::{
         ExecutionContext,
         resident::{GpuResidentInputMap, GpuResultHandle},
@@ -46,7 +49,7 @@ use super::{
 };
 use crate::{
     attempt::AlgeonAttemptExtension,
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     native_exec::graph::graph_execution_plan,
 };
 
@@ -75,7 +78,7 @@ pub struct AlgeonNativeComposedExec {
 impl AlgeonNativeComposedExec {
     #[cfg(feature = "cugraph")]
     pub(crate) fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        query_engine::plan::row_bounds::query_plan_hard_row_upper_bound(&self.plan)
+        query_plan_hard_row_upper_bound(&self.plan)
     }
 
     /// Create composed native execution from GPU-resident producer children.
@@ -88,7 +91,7 @@ impl AlgeonNativeComposedExec {
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
         execution_config: AlgeonNativeExecutionConfig,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         Self::try_new_with_cache(plan, gpu_inputs, execution_config, None)
     }
 
@@ -97,7 +100,7 @@ impl AlgeonNativeComposedExec {
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
         execution_config: AlgeonNativeExecutionConfig,
         eq_properties: EquivalenceProperties,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         Self::try_new_with_cache(plan, gpu_inputs, execution_config, Some(eq_properties))
     }
 
@@ -106,7 +109,7 @@ impl AlgeonNativeComposedExec {
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
         execution_config: AlgeonNativeExecutionConfig,
         eq_properties: Option<EquivalenceProperties>,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         // Constructor validation preserves the composed execution contract: the final consumer must
         // host-materialize, every child must be a GPU-resident producer, and required/provided GPU
         // input names must match exactly.
@@ -276,25 +279,25 @@ struct CompletedComposedAdmissionEvidence {
 
 struct PreparedProducerCapabilityEvidence {
     aggregate: AttemptCapabilityEvidence,
-    output_scope: query_engine::admission::AttemptExecutionScope,
-    deferred_output_identity: Option<query_engine::plan::DeferredGraphExecutionScopeIdentity>,
+    output_scope: AttemptExecutionScope,
+    deferred_output_identity: Option<DeferredGraphExecutionScopeIdentity>,
 }
 
 fn prepared_producer_capability_evidence(
     input: &dyn ExecutionPlan,
     tickets: &[Arc<super::admission::QueryAdmissionTicket>],
-) -> query_engine::error::Result<PreparedProducerCapabilityEvidence> {
+) -> QueryEngineResult<PreparedProducerCapabilityEvidence> {
     let producer = gpu_resident_producer(input).ok_or_else(|| {
-        query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+        QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
             "algeon_datafusion.native_composed.admission_evidence",
             "a prepared composed input is not a GPU-resident producer",
         )
         .with_fact("reason", "composed_admission_producer_missing")
     })?;
     let output_evidence = producer.gpu_result_capability_evidence().map_err(|error| {
-        query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+        QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
             "algeon_datafusion.native_composed.admission_evidence",
             "a prepared composed producer did not expose its output capability evidence",
         )
@@ -302,8 +305,8 @@ fn prepared_producer_capability_evidence(
         .with_source(error)
     })?;
     let output_scope = output_evidence.execution_scopes().last().cloned().ok_or_else(|| {
-        query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+        QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
             "algeon_datafusion.native_composed.admission_evidence",
             "a prepared composed producer's evidence has no execution scope to bind an occurrence to",
         )
@@ -342,13 +345,13 @@ pub(crate) fn composed_admission_capability_evidence(
 fn resolve_composed_admission_capability_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
-) -> query_engine::error::Result<AttemptCapabilityEvidence> {
+) -> QueryEngineResult<AttemptCapabilityEvidence> {
     let mut consumer_evidence = AttemptCapabilityEvidence::for_query_plan(consumer_plan);
     let mut evidence = Vec::with_capacity(prepared_gpu_inputs.len());
     for input in prepared_gpu_inputs {
         let input_name = gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
-            query_engine::error::QueryError::new(
-                query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
                 "algeon_datafusion.native_composed.admission_evidence",
                 "a prepared composed producer is missing its stable runtime occurrence identity",
             )
@@ -357,7 +360,7 @@ fn resolve_composed_admission_capability_evidence(
         let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
         let producer_evidence = prepared_producer_capability_evidence(input.as_ref(), &tickets)?;
         consumer_evidence.push_producer_occurrence(
-            query_engine::admission::AttemptProducerOccurrence::new(
+            AttemptProducerOccurrence::new(
                 input_name,
                 producer_evidence.output_scope.execution_scope_fingerprint(),
                 producer_evidence.output_scope.output_schema_fingerprint(),
@@ -371,7 +374,7 @@ fn resolve_composed_admission_capability_evidence(
 }
 
 fn prepared_composed_admission_error(
-    mut error: query_engine::error::QueryError,
+    mut error: QueryError,
     consumer_plan: &QueryPlan,
     execution_config: Option<&AlgeonNativeExecutionConfig>,
 ) -> DataFusionError {
@@ -617,17 +620,14 @@ impl ExecutionPlan for AlgeonNativeComposedExec {
                 // artifact to execution instead of deciding again there.
                 let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
                 let bounded_admission = if execution_config.memory_control_policy().is_bounded() {
-                    query_engine::exec::preflight_bounded_query_plan(
-                        &gpu_plan,
-                        execution_config.statistical_aggregate_execution_mode(),
-                    )
-                    .map_err(|error| {
-                        DataFusionError::from(Error::from_native(
-                            "algeon_datafusion.native_composed.bounded_preflight",
-                            "failed to preflight the resolved bounded native executable plan before admission",
-                            error,
-                        ))
-                    })?
+                    preflight_bounded_query_plan(&gpu_plan, execution_config.statistical_aggregate_execution_mode())
+                        .map_err(|error| {
+                            DataFusionError::from(Error::from_native(
+                                "algeon_datafusion.native_composed.bounded_preflight",
+                                "failed to preflight the resolved bounded native executable plan before admission",
+                                error,
+                            ))
+                        })?
                 } else {
                     None
                 };
@@ -883,7 +883,7 @@ impl AlgeonNativeComposedGpuProducerExec {
         execution_config: AlgeonNativeExecutionConfig,
         metrics_capture: Option<NativeExecutionMetricsCapture>,
         eq_properties: EquivalenceProperties,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
             return Err(Error::new(
@@ -1140,7 +1140,7 @@ fn validate_composed_gpu_inputs(
     plan: &QueryPlan,
     gpu_inputs: &[Arc<dyn ExecutionPlan>],
     operation: &'static str,
-) -> crate::error::Result<()> {
+) -> Result<()> {
     if gpu_inputs.is_empty() {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,

@@ -1,7 +1,7 @@
 use std::ptr::{self, NonNull};
 
 use super::*;
-use crate::core::error;
+use crate::core::{error, native_teardown::drop_device_owned_handle};
 
 /// Cumulative keyed mixed semi/anti membership for a retained logical-left frame.
 ///
@@ -33,7 +33,7 @@ unsafe impl Send for DataFrameMixedLeftJoinState {}
 
 impl Drop for DataFrameMixedLeftJoinState {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self.domain.device_id(),
             "MixedLeftJoinState::drop",

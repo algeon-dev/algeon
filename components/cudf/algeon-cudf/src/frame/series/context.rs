@@ -8,23 +8,32 @@ use super::{
 };
 use crate::{
     core::{
-        column::ColumnView,
+        column::{Column, ColumnView},
         error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         row_range,
         scalar::{IntoRuntimeScalar, Scalar},
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
-    frame::factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized},
+    frame::{
+        dataframe::DataFrame,
+        factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized},
+    },
     internal::temp_table::TempTableView,
     ops::{
         binary::{self, BinaryOperator},
         concatenate,
+        copying::gather_impl,
         datetime::{self, DatetimeComponent},
         factorization,
-        groupby::GroupByAgg,
+        filter::{apply_boolean_mask_impl, validate_boolean_mask},
+        groupby::{
+            AggregationRequest, GroupByAgg, GroupByAggregationOutput, groupby_aggregate_impl,
+            value_counts_result_columns,
+        },
         reduction::{self, ReduceAgg, ScanAgg, ScanType},
         replace::{self, FillPolicy},
-        sorting::SortOptions,
+        search::contains_impl,
+        sorting::{SortExecution, SortKeyConfig, SortOptions, sort_table_impl},
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
         strings::{self, StringSliceOptions, StripSide},
         unary::{self, UnaryOperator},
@@ -36,13 +45,8 @@ use crate::{
     },
 };
 
-type StringScalarColumnOp = fn(
-    &crate::core::column::ColumnView<'_>,
-    &Scalar,
-    &Arc<ExecutionDomain>,
-    &cudf_sys::cudf_exec_options_t,
-    &'static str,
-) -> Result<crate::core::column::Column>;
+type StringScalarColumnOp =
+    fn(&ColumnView<'_>, &Scalar, &Arc<ExecutionDomain>, &cudf_sys::cudf_exec_options_t, &'static str) -> Result<Column>;
 
 fn factorization_key_order(order: DictionaryKeyOrder) -> factorization::KeyOrder {
     match order {
@@ -102,12 +106,9 @@ macro_rules! series_context_op {
     };
 }
 
-fn value_counts_from_groupby_output(
-    gb: crate::ops::groupby::GroupByAggregationOutput,
-    operation: &'static str,
-) -> Result<crate::DataFrame> {
-    let (key_col, count_col) = crate::ops::groupby::value_counts_result_columns(gb, operation)?;
-    crate::DataFrame::from_series([
+fn value_counts_from_groupby_output(gb: GroupByAggregationOutput, operation: &'static str) -> Result<DataFrame> {
+    let (key_col, count_col) = value_counts_result_columns(gb, operation)?;
+    DataFrame::from_series([
         (SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string(), Series::from_column(key_col)?),
         (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
     ])
@@ -331,11 +332,11 @@ impl Series {
         let cv = self.column.view()?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.enter_execution()?;
-        let sorted = crate::ops::sorting::sort_table_impl(
+        let sorted = sort_table_impl(
             ttv.table(),
-            crate::ops::sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
+            SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             options.stable,
-            crate::ops::sorting::SortExecution::new(&output_domain, exec_options.options(), operation),
+            SortExecution::new(&output_domain, exec_options.options(), operation),
         )?
         .with_execution_domain(output_domain);
         let mut cols = sorted.into_columns()?;
@@ -562,8 +563,7 @@ impl Series {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         if len == 0 {
             let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-            let empty =
-                crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
+            let empty = Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
             return Series::from_column(empty);
         }
 
@@ -573,7 +573,7 @@ impl Series {
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.enter_execution()?;
-        let result = crate::ops::copying::gather_impl(
+        let result = gather_impl(
             ttv.table(),
             &map_view,
             cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
@@ -603,15 +603,14 @@ impl Series {
 
         if idx_cv.is_empty()? {
             let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-            let empty =
-                crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
+            let empty = Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
             return Series::from_column(empty);
         }
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.enter_execution()?;
-        let result = crate::ops::copying::gather_impl(
+        let result = gather_impl(
             ttv.table(),
             &idx_cv,
             cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
@@ -636,7 +635,7 @@ impl Series {
     ) -> Result<Series> {
         let (output_domain, mut consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let mask_cv = mask.view().map_err(|e| e.reanchor(operation))?;
-        crate::ops::filter::validate_boolean_mask(&mask_cv, self.len(), "series length", operation)?;
+        validate_boolean_mask(&mask_cv, self.len(), "series length", operation)?;
 
         ExecutionDomain::require_same_device_for_mixed_inputs(
             self.column.execution_domain(),
@@ -648,13 +647,7 @@ impl Series {
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![cv])?;
         let exec_options = output_domain.enter_execution()?;
-        let result = crate::ops::filter::apply_boolean_mask_impl(
-            ttv.table(),
-            &mask_cv,
-            &output_domain,
-            exec_options.options(),
-            operation,
-        )?;
+        let result = apply_boolean_mask_impl(ttv.table(), &mask_cv, &output_domain, exec_options.options(), operation)?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
     }
@@ -715,16 +708,16 @@ impl Series {
         &self,
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
-    ) -> Result<crate::DataFrame> {
+    ) -> Result<DataFrame> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
 
         let keys_view = self.column.view().map_err(|e| e.reanchor(operation))?;
         let values_view = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TempTableView::from_column_views(vec![keys_view])?;
         let aggs = [GroupByAgg::Count { include_nulls: false }];
-        let requests = [crate::ops::groupby::AggregationRequest { values: &values_view, aggregations: &aggs }];
+        let requests = [AggregationRequest { values: &values_view, aggregations: &aggs }];
         let exec_options = output_domain.enter_execution()?;
-        let gb = crate::ops::groupby::groupby_aggregate_impl(
+        let gb = groupby_aggregate_impl(
             ttv.table(),
             &requests,
             NullPolicy::Exclude,
@@ -736,7 +729,7 @@ impl Series {
         value_counts_from_groupby_output(gb, operation)
     }
 
-    fn value_counts_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<crate::DataFrame> {
+    fn value_counts_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.value_counts_with_context(ctx, "series::with_execution::value_counts")
     }
 
@@ -909,11 +902,11 @@ impl Series {
 
     series_context_op!(unary fn string_unary_in_context(
     op: fn(
-        &crate::core::column::ColumnView<'_>,
+        &ColumnView<'_>,
         &Arc<ExecutionDomain>,
         &cudf_sys::cudf_exec_options_t,
         &'static str,
-    ) -> Result<crate::core::column::Column>),
+    ) -> Result<Column>),
     caller_op |cv, output_domain, exec, operation| op(
         &cv,
         &output_domain,
@@ -923,12 +916,7 @@ impl Series {
 
     pub(super) fn string_unary_with_context(
         &self,
-        op: fn(
-            &crate::core::column::ColumnView<'_>,
-            &Arc<ExecutionDomain>,
-            &cudf_sys::cudf_exec_options_t,
-            &'static str,
-        ) -> Result<crate::core::column::Column>,
+        op: fn(&ColumnView<'_>, &Arc<ExecutionDomain>, &cudf_sys::cudf_exec_options_t, &'static str) -> Result<Column>,
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Series> {
@@ -1134,7 +1122,7 @@ impl Series {
         .map_err(annotate_type_context)?;
         consumer_fence.order_input(values.column.execution_domain()).map_err(annotate_type_context)?;
         let exec_options = output_domain.enter_execution()?;
-        let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec_options.options(), operation)
+        let col = contains_impl(&values_cv, &cv, &output_domain, exec_options.options(), operation)
             .map_err(annotate_type_context)?;
         Series::from_column(col)
     }
@@ -1236,7 +1224,7 @@ impl Series {
         fn drop_duplicates_in() -> Result<Series> => drop_duplicates_in_context;
 
         /// Count the frequency of each distinct non-null value using the explicit execution-context override.
-        fn value_counts_in() -> Result<crate::DataFrame> => value_counts_in_context;
+        fn value_counts_in() -> Result<DataFrame> => value_counts_in_context;
 
         /// Replace null values using another series with the explicit execution-context override.
         fn fillna_with_series_in(other: &Series) -> Result<Series> => fillna_with_series_in_context;

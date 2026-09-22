@@ -1,5 +1,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
+use algeon_datafusion::native_report::{
+    format_native_aggregate_strategy_metric_rows, format_native_dynamic_filter_runtime_metric_rows,
+    format_native_join_strategy_metric_rows, format_native_task_operator_metric_rows,
+    format_native_task_runtime_metric_rows,
+};
+
 #[cfg(test)]
 use super::config::bench_queries_from_csv;
 use super::*;
@@ -533,25 +539,23 @@ fn join_partitioning_status(metrics: &NativeDataFusionExecutionMetrics) -> Strin
 }
 
 fn format_join_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    algeon_datafusion::native_report::format_native_join_strategy_metric_rows(&metrics.join_strategy_rows)
+    format_native_join_strategy_metric_rows(&metrics.join_strategy_rows)
 }
 
 fn format_aggregate_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    algeon_datafusion::native_report::format_native_aggregate_strategy_metric_rows(&metrics.aggregate_strategy_rows)
+    format_native_aggregate_strategy_metric_rows(&metrics.aggregate_strategy_rows)
 }
 
 fn format_dynamic_filter_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    algeon_datafusion::native_report::format_native_dynamic_filter_runtime_metric_rows(
-        &metrics.dynamic_filter_runtime_rows,
-    )
+    format_native_dynamic_filter_runtime_metric_rows(&metrics.dynamic_filter_runtime_rows)
 }
 
 fn format_task_operator_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    algeon_datafusion::native_report::format_native_task_operator_metric_rows(&metrics.task_operator_rows)
+    format_native_task_operator_metric_rows(&metrics.task_operator_rows)
 }
 
 fn format_task_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    algeon_datafusion::native_report::format_native_task_runtime_metric_rows(&metrics.task_runtime_rows)
+    format_native_task_runtime_metric_rows(&metrics.task_runtime_rows)
 }
 
 fn metric_field(

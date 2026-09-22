@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
+use crate::runtime::BoundaryObserverRef;
 
 struct DeviceTableProjection<'a> {
     columns: Vec<SemanticColumn>,
@@ -18,7 +19,7 @@ struct HostTableProjection {
 pub(super) struct DeviceTableExportContext<'a> {
     operation: &'static str,
     placement: ExecutionPlacement,
-    observer: Option<crate::runtime::BoundaryObserverRef>,
+    observer: Option<BoundaryObserverRef>,
     default_device: i32,
     readiness: ProducerReadiness<'a>,
 }

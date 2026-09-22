@@ -1,12 +1,26 @@
 use std::{sync::Arc, time::Duration};
 
+use arrow::record_batch::RecordBatch;
+
 use super::*;
+#[cfg(test)]
+use crate::server::{
+    backend::{
+        AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
+        GpuMemoryOwnership,
+    },
+    native_exec::AlgeonNativeExecutionConfig,
+};
+use crate::server::{
+    config::{ServerConfig, ServerObservabilityConfig},
+    io_lifecycle::ServerIoLifecycle,
+};
 
 pub struct DatafusionAlgeonFlightSqlService {
     pub(super) ctx: Arc<SessionContext>,
     pub(super) native_optimizer_config: AlgeonNativeOptimizerConfig,
     pub(super) admission: Arc<QueryAdmission>,
-    pub(super) io_lifecycle: Arc<crate::server::io_lifecycle::ServerIoLifecycle>,
+    pub(super) io_lifecycle: Arc<ServerIoLifecycle>,
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) coordinator: Arc<QueryCoordinator>,
     pub(super) runtime_observation_config: RuntimeObservationConfig,
@@ -124,7 +138,7 @@ impl DatafusionAlgeonFlightSqlService {
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
     ) -> Self {
-        let io_lifecycle = Arc::new(crate::server::io_lifecycle::ServerIoLifecycle::new());
+        let io_lifecycle = Arc::new(ServerIoLifecycle::new());
         Self::new_with_io_lifecycle(
             ctx,
             native_optimizer_config,
@@ -141,7 +155,7 @@ impl DatafusionAlgeonFlightSqlService {
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
         auth: AuthInterceptor,
-        io_lifecycle: Arc<crate::server::io_lifecycle::ServerIoLifecycle>,
+        io_lifecycle: Arc<ServerIoLifecycle>,
     ) -> Self {
         let native_execution_config = native_optimizer_config
             .native_execution_config()
@@ -149,7 +163,7 @@ impl DatafusionAlgeonFlightSqlService {
             .with_io_lifecycle(io_lifecycle.handle())
             .with_host_output_memory_pool_accounting(true);
         let native_optimizer_config = native_optimizer_config.with_native_execution_config(native_execution_config);
-        let observability_config = crate::server::config::ServerObservabilityConfig::default();
+        let observability_config = ServerObservabilityConfig::default();
         Self {
             ctx,
             native_optimizer_config,
@@ -166,7 +180,7 @@ impl DatafusionAlgeonFlightSqlService {
         }
     }
 
-    pub(crate) fn with_server_config_diagnostics(mut self, config: &crate::server::config::ServerConfig) -> Self {
+    pub(crate) fn with_server_config_diagnostics(mut self, config: &ServerConfig) -> Self {
         self.runtime_observation_config = config.observability.runtime_observation_config();
         self.coordinator = QueryCoordinator::new(QueryCoordinatorConfig::from_observability(&config.observability));
         self
@@ -190,7 +204,7 @@ impl DatafusionAlgeonFlightSqlService {
     pub(super) async fn build_get_tables_response(
         &self,
         query: CommandGetTables,
-    ) -> Result<(Arc<Schema>, arrow::record_batch::RecordBatch), Status> {
+    ) -> Result<(Arc<Schema>, RecordBatch), Status> {
         let include_schema = query.include_schema;
         let filters = GetTablesPrefilters::from(&query);
         let mut builder = GetTablesBuilder::from(query);
@@ -349,7 +363,7 @@ impl DatafusionAlgeonFlightSqlService {
         &self.admission
     }
 
-    pub(crate) fn io_lifecycle(&self) -> &Arc<crate::server::io_lifecycle::ServerIoLifecycle> {
+    pub(crate) fn io_lifecycle(&self) -> &Arc<ServerIoLifecycle> {
         &self.io_lifecycle
     }
 
@@ -369,26 +383,25 @@ impl DatafusionAlgeonFlightSqlService {
 #[cfg(test)]
 pub(super) struct BoundedTestFlightSqlService {
     service: DatafusionAlgeonFlightSqlService,
-    _backend: crate::server::backend::AlgeonGpuBackend,
+    _backend: AlgeonGpuBackend,
 }
 
 #[cfg(test)]
-pub(super) fn default_test_backend() -> crate::server::backend::AlgeonGpuBackend {
-    crate::server::backend::AlgeonGpuBackend::builder()
-        .with_native_execution_config(crate::server::native_exec::AlgeonNativeExecutionConfig::bounded(
+pub(super) fn default_test_backend() -> AlgeonGpuBackend {
+    AlgeonGpuBackend::builder()
+        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
             256 * 1024 * 1024,
             64 * 1024 * 1024,
             2,
             3,
             1,
         ))
-        .devices([crate::server::backend::AlgeonGpuDeviceConfig::new(
-            crate::server::backend::AlgeonGpuDeviceProfile::new(0).with_memory_limit(
-                crate::server::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 },
-            ),
-            crate::server::backend::GpuMemoryOwnership::WholeDeviceExclusive,
+        .devices([AlgeonGpuDeviceConfig::new(
+            AlgeonGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
+            GpuMemoryOwnership::WholeDeviceExclusive,
         )])
-        .queue_policy(crate::server::backend::AlgeonGpuQueuePolicy::default())
+        .queue_policy(AlgeonGpuQueuePolicy::default())
         .build()
         .expect("flight test backend should build")
 }

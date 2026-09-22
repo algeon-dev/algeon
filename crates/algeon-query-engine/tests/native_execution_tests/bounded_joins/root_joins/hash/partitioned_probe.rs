@@ -30,10 +30,10 @@ fn partitioned_probe_retry_plan(runtime: &cudf::Runtime, dir: &Path, rows_per_ch
             .with_build_side(JoinSide::Right)
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    ColumnRef::input(0, "order_id", "order_id"),
                     "order_id",
                 ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ]),
         Arc::clone(&probe_schema),
     );

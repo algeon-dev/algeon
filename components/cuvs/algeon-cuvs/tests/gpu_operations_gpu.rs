@@ -14,12 +14,13 @@ use arrow::{
 };
 use cudf::{
     DataFrame, DeviceMemoryResource, ErrorCode, Runtime, TypeId,
+    core::Table,
     frame::dataframe::GpuRecordBatch,
     interop::{
         contract::{
             ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
             IncompleteDropBehavior, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
-            ReadStartBinding,
+            ReadStartBinding, Result as InteropResult,
         },
         cuda_explicit_completion_required_lease_backend,
     },
@@ -36,11 +37,11 @@ struct TrackingWitness {
 }
 
 impl CompletionWitnessBackend for TrackingWitness {
-    fn is_ready(&self) -> cudf::interop::contract::Result<bool> {
+    fn is_ready(&self) -> InteropResult<bool> {
         Ok(false)
     }
 
-    fn synchronize(&self) -> cudf::interop::contract::Result<()> {
+    fn synchronize(&self) -> InteropResult<()> {
         self.synchronizations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -61,7 +62,7 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
         _export: &LeaseExportContext,
         _read_start: ReadStartBinding,
         _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseActivation> {
+    ) -> InteropResult<LeaseActivation> {
         Ok(LeaseActivation::noop())
     }
 
@@ -73,18 +74,14 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
+    ) -> InteropResult<LeaseCompletionResult> {
         Ok(LeaseCompletionResult::Completed(CompletionWitness::with_backend(
             CompletionWitnessKind::ConsumerStream,
             Arc::new(TrackingWitness { synchronizations: Arc::clone(&self.synchronizations) }),
         )))
     }
 
-    fn drop_incomplete(
-        &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<()> {
+    fn drop_incomplete(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> InteropResult<()> {
         self.synchronizations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -225,7 +222,7 @@ fn finite_fixed_size_list_witness_activates_validated_tensor() {
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).expect("record batch");
     let frame = cudf::DataFrame::from_record_batch(&runtime, &batch).expect("device dataframe");
-    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, schema).expect("GPU record batch");
+    let gpu_batch = GpuRecordBatch::new(frame, schema).expect("GPU record batch");
     let validated = gpu_batch.try_prepare_fixed_size_list_float32_export(0).expect("finite vector export");
 
     assert_eq!(validated.rows(), 3);
@@ -248,7 +245,7 @@ fn fixed_size_list_witness_rejects_non_finite_child_values() {
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).expect("record batch");
     let frame = cudf::DataFrame::from_record_batch(&runtime, &batch).expect("device dataframe");
-    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, schema).expect("GPU record batch");
+    let gpu_batch = GpuRecordBatch::new(frame, schema).expect("GPU record batch");
 
     let error = gpu_batch
         .try_prepare_fixed_size_list_float32_export(0)
@@ -307,7 +304,7 @@ fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
 #[test]
 fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
     let (runtime, resources, _reservation) = resources();
-    let table = cudf::core::Table::from_columns(vec![
+    let table = Table::from_columns(vec![
         runtime.column_from_slice(&[1.0_f32, 2.0, 3.0]).expect("first"),
         runtime.column_from_slice(&[4.0_f32, 5.0, 6.0]).expect("second"),
     ])
@@ -461,7 +458,7 @@ fn pca_packs_prepared_table_and_returns_device_dataframe() {
     let (runtime, resources, _reservation) = resources();
     let rows = 6;
     let columns = 3;
-    let table = cudf::core::Table::from_columns(vec![
+    let table = Table::from_columns(vec![
         runtime.column_from_slice(&[1.0_f32, 4.0, 2.0, 3.0, -1.0, 3.5]).expect("first"),
         runtime.column_from_slice(&[2.0_f32, 5.0, 1.0, 6.0, 0.5, 5.0]).expect("second"),
         runtime.column_from_slice(&[3.0_f32, 6.0, 4.0, 5.0, 2.0, 6.5]).expect("third"),

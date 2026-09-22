@@ -950,11 +950,9 @@ fn sort_preserving_merge_with_same_name_different_index_ordering_is_rejected() {
     write_numeric_parquet_file(&path);
     let sort_plan = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
     let sort = sort_plan.downcast_ref::<SortExec>().expect("helper returns SortExec");
-    let merge_ordering = LexOrdering::new([PhysicalSortExpr::new(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("sum_x00", 0)),
-        sort.expr()[0].options,
-    )])
-    .expect("SPM ordering should be non-empty");
+    let merge_ordering =
+        LexOrdering::new([PhysicalSortExpr::new(Arc::new(Column::new("sum_x00", 0)), sort.expr()[0].options)])
+            .expect("SPM ordering should be non-empty");
     let merge: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(merge_ordering, sort_plan));
 
     let result = lower_physical_plan_to_native(merge);

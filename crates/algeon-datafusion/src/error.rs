@@ -15,6 +15,7 @@ use std::{
 };
 
 use datafusion::common::DataFusionError;
+use query_engine::error::QueryError;
 
 mod code;
 
@@ -646,11 +647,7 @@ impl Error {
     ///
     /// `operation` should be the stable dotted id for the adapter operation, and
     /// `message` should be human-facing adapter context.
-    pub(crate) fn from_native(
-        operation: &'static str,
-        message: impl Into<String>,
-        source: query_engine::error::QueryError,
-    ) -> Self {
+    pub(crate) fn from_native(operation: &'static str, message: impl Into<String>, source: QueryError) -> Self {
         let code = code_for_native_error(&source);
         let mut error = Self::new(code, operation, message)
             .with_log_safe_fact("native_code", source.code())
@@ -675,7 +672,7 @@ impl Error {
     pub(crate) fn from_native_with_blocking_diagnostics(
         operation: &'static str,
         message: impl Into<String>,
-        source: query_engine::error::QueryError,
+        source: QueryError,
     ) -> Self {
         const CLIENT_FACTS: &[&str] = &[
             "field",
@@ -853,7 +850,7 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
 // native `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because
 // the adapter has no shape-specific code. The exact native code remains
 // available in the `native_code` fact attached by `Error::from_native`.
-fn code_for_native_error(error: &query_engine::error::QueryError) -> ErrorCode {
+fn code_for_native_error(error: &QueryError) -> ErrorCode {
     adapter_code_for_native_error(error.code())
 }
 
@@ -861,7 +858,7 @@ fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
     if let Some(error) = error.downcast_ref::<Error>() {
         return normalize_diagnostic_message(error.message());
     }
-    if let Some(error) = error.downcast_ref::<query_engine::error::QueryError>() {
+    if let Some(error) = error.downcast_ref::<QueryError>() {
         return normalize_diagnostic_message(error.message());
     }
     if let Some(error) = error.downcast_ref::<DataFusionError>() {
@@ -883,7 +880,7 @@ fn diagnostic_source_path<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a
     if let Some(error) = error.downcast_ref::<Error>() {
         return error.fact_value("path");
     }
-    error.downcast_ref::<query_engine::error::QueryError>().and_then(|error| error.fact_value("path"))
+    error.downcast_ref::<QueryError>().and_then(|error| error.fact_value("path"))
 }
 
 /// Returns human-facing text for the current DataFusion error layer.
@@ -922,7 +919,9 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::error::ArrowError;
+    use cudf::{ErrorCode as CudfErrorCode, io::parquet::RemoteParquetSource, testing::error::new_with_for_test};
     use datafusion::common::Diagnostic;
+    use query_engine::{error::QueryErrorCode, native_error::cudf_query_error};
 
     use super::*;
 
@@ -1125,8 +1124,8 @@ mod tests {
 
     #[test]
     fn foreign_wrappers_only_expose_audited_classification_facts() {
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::InvalidPlan,
+        let native = QueryError::new(
+            QueryErrorCode::InvalidPlan,
             "query_engine.test.safe_projection",
             "native-message-must-stay-hidden",
         )
@@ -1144,8 +1143,8 @@ mod tests {
             assert!(!rendered.contains(hidden), "{rendered}");
         }
 
-        let cudf = cudf::io::parquet::RemoteParquetSource::s3("gs://user:password@bucket/private.parquet")
-            .expect_err("non-s3 scheme must fail");
+        let cudf =
+            RemoteParquetSource::s3("gs://user:password@bucket/private.parquet").expect_err("non-s3 scheme must fail");
         let cudf_adapter = Error::from_cudf("algeon_datafusion.test.safe_projection", "wrapped cudf error", cudf);
         let projection = cudf_adapter.facts().log_safe_projection();
         assert_eq!(
@@ -1157,8 +1156,8 @@ mod tests {
 
     #[test]
     fn blocking_native_diagnostics_reach_display_without_unrelated_facts() {
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+        let native = QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
             "query_engine.admission.composed_consumer",
             "a composed graph attempt lacks a complete ordered memory schedule",
         )
@@ -1183,8 +1182,8 @@ mod tests {
         assert_eq!(adapter.fact_value("path"), Some("/private/customer.parquet"));
         assert!(DataFusionError::from(adapter).to_string().contains("stage=prepared_composed_admission"));
 
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::ServiceOverloaded,
+        let native = QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
             "query_engine.query_service.admission",
             "the complete requirement exceeds every compatible device capacity",
         )
@@ -1216,8 +1215,8 @@ mod tests {
 
     #[test]
     fn error_debug_omits_native_and_cudf_source_payloads_but_keeps_typed_access() {
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::InvalidPlan,
+        let native = QueryError::new(
+            QueryErrorCode::InvalidPlan,
             "query_engine.test.debug_source",
             "native-source-message-secret",
         )
@@ -1225,7 +1224,7 @@ mod tests {
         let native_adapter = Error::from_native("algeon_datafusion.test.debug_source", "native wrapper", native);
         let native_source = native_adapter
             .source_error()
-            .and_then(|source| source.downcast_ref::<query_engine::error::QueryError>())
+            .and_then(|source| source.downcast_ref::<QueryError>())
             .expect("native source must remain typed");
         assert_eq!(native_source.fact_value("literal"), Some("native-source-fact-secret"));
         let native_debug = format!("{native_adapter:?}");
@@ -1233,8 +1232,8 @@ mod tests {
         assert!(!native_debug.contains("native-source-message-secret"), "{native_debug}");
         assert!(!native_debug.contains("native-source-fact-secret"), "{native_debug}");
 
-        let cudf = cudf::testing::error::new_with_for_test(
-            cudf::ErrorCode::ForeignInvalidArgument,
+        let cudf = new_with_for_test(
+            CudfErrorCode::ForeignInvalidArgument,
             "cudf.test.debug_source",
             "cudf-source-detail-secret client_secret=cudf-secret-value",
         );
@@ -1259,12 +1258,9 @@ mod tests {
 
     #[test]
     fn native_error_status_projection_agrees_with_the_engine_for_every_code() {
-        for native_code in query_engine::error::QueryErrorCode::ALL {
-            let native = query_engine::error::QueryError::new(
-                *native_code,
-                "query_engine.test.status_projection",
-                "native status projection test",
-            );
+        for native_code in QueryErrorCode::ALL {
+            let native =
+                QueryError::new(*native_code, "query_engine.test.status_projection", "native status projection test");
             let adapter = Error::from_native(
                 "algeon_datafusion.test.status_projection",
                 "adapter status projection test",
@@ -1419,12 +1415,8 @@ mod tests {
 
     #[test]
     fn source_diagnostics_render_project_errors_by_message_not_structured_display() {
-        let native = query_engine::error::QueryError::new(
-            query_engine::error::QueryErrorCode::CudfDependencyFailure,
-            "query_engine.test",
-            "native root cause",
-        )
-        .with_fact("native_fact", "value");
+        let native = QueryError::new(QueryErrorCode::CudfDependencyFailure, "query_engine.test", "native root cause")
+            .with_fact("native_fact", "value");
         let adapter = Error::from_native("algeon_datafusion.test", "adapter wrapper", native);
         let error = DataFusionError::External(Box::new(adapter));
 
@@ -1439,12 +1431,12 @@ mod tests {
 
     #[test]
     fn log_diagnostics_keep_one_bounded_redacted_cudf_cause() {
-        let cudf = cudf::testing::error::new_with_for_test(
-            cudf::ErrorCode::ForeignInvalidArgument,
+        let cudf = new_with_for_test(
+            CudfErrorCode::ForeignInvalidArgument,
             "cudf.test.log_diagnostics",
             "CUDF failure at: /home/customer/cudf/reader.cu:518: Parquet header parsing failed with code(s) 0x400",
         );
-        let native = query_engine::native_error::cudf_query_error(
+        let native = cudf_query_error(
             "query_engine.test.log_diagnostics",
             "failed to read bounded native local parquet source chunk with cudf",
             cudf,
@@ -1486,7 +1478,7 @@ mod tests {
     }
 
     fn cudf_allocation_error_for_test(
-        code: cudf::ErrorCode,
+        code: CudfErrorCode,
         failure_source: Option<cudf::CudfErrorFailureSource>,
         with_budget_scope: bool,
     ) -> cudf::Error {
@@ -1533,7 +1525,7 @@ mod tests {
             "algeon_datafusion.test.allocation_attribution",
             "wrapped cudf failure",
             cudf_allocation_error_for_test(
-                cudf::ErrorCode::OutOfMemory,
+                CudfErrorCode::OutOfMemory,
                 Some(cudf::CudfErrorFailureSource::Physical),
                 true,
             ),
@@ -1548,7 +1540,7 @@ mod tests {
             "algeon_datafusion.test.allocation_attribution",
             "wrapped cudf failure",
             cudf_allocation_error_for_test(
-                cudf::ErrorCode::OutOfMemory,
+                CudfErrorCode::OutOfMemory,
                 Some(cudf::CudfErrorFailureSource::ReservationLimit),
                 true,
             ),
@@ -1563,7 +1555,7 @@ mod tests {
             "algeon_datafusion.test.allocation_attribution",
             "wrapped cudf failure",
             cudf_allocation_error_for_test(
-                cudf::ErrorCode::OutOfMemory,
+                CudfErrorCode::OutOfMemory,
                 Some(cudf::CudfErrorFailureSource::Unknown),
                 true,
             ),
@@ -1577,7 +1569,7 @@ mod tests {
         let error = Error::from_cudf(
             "algeon_datafusion.test.allocation_attribution",
             "wrapped cudf failure",
-            cudf_allocation_error_for_test(cudf::ErrorCode::IoFailure, None, true),
+            cudf_allocation_error_for_test(CudfErrorCode::IoFailure, None, true),
         );
 
         assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
@@ -1587,32 +1579,32 @@ mod tests {
     fn adapter_and_native_boundaries_agree_on_cudf_allocation_attribution() {
         let cases = [
             (
-                cudf::ErrorCode::OutOfMemory,
+                CudfErrorCode::OutOfMemory,
                 Some(cudf::CudfErrorFailureSource::Physical),
                 true,
                 ErrorCode::DeviceOutOfMemory,
-                query_engine::error::QueryErrorCode::DeviceOutOfMemory,
+                QueryErrorCode::DeviceOutOfMemory,
             ),
             (
-                cudf::ErrorCode::OutOfMemory,
+                CudfErrorCode::OutOfMemory,
                 Some(cudf::CudfErrorFailureSource::ReservationLimit),
                 true,
                 ErrorCode::QueryMemoryLimitExceeded,
-                query_engine::error::QueryErrorCode::QueryMemoryLimitExceeded,
+                QueryErrorCode::QueryMemoryLimitExceeded,
             ),
             (
-                cudf::ErrorCode::OutOfMemory,
+                CudfErrorCode::OutOfMemory,
                 Some(cudf::CudfErrorFailureSource::Unknown),
                 true,
                 ErrorCode::DeviceAllocationFailed,
-                query_engine::error::QueryErrorCode::DeviceAllocationFailed,
+                QueryErrorCode::DeviceAllocationFailed,
             ),
             (
-                cudf::ErrorCode::IoFailure,
+                CudfErrorCode::IoFailure,
                 None,
                 true,
                 ErrorCode::CudfDependencyFailure,
-                query_engine::error::QueryErrorCode::CudfDependencyFailure,
+                QueryErrorCode::CudfDependencyFailure,
             ),
         ];
 
@@ -1625,7 +1617,7 @@ mod tests {
                 cudf_allocation_error_for_test(code, failure_source, with_budget_scope),
             );
             assert_eq!(adapter.code(), expected_adapter, "adapter mismatch for case {index}");
-            let native = query_engine::native_error::cudf_query_error(
+            let native = cudf_query_error(
                 "query_engine.test.allocation_attribution",
                 "wrapped cudf failure",
                 cudf_allocation_error_for_test(code, failure_source, with_budget_scope),

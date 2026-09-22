@@ -2,14 +2,19 @@
 
 use std::collections::BTreeSet;
 
+use arrow::datatypes::DataType;
+
 use super::{
     SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, contiguous_row_group_position_range,
     row_group::RowGroupMetadata,
 };
 use crate::{
+    datatypes::arrow_fixed_width_byte_size,
     error::{QueryError, QueryErrorCode, Result},
     plan::NodeId,
-    source::{LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType},
+    source::{
+        LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, SourceColumnRef, parquet_file_stable_id_fact,
+    },
 };
 
 #[doc(hidden)]
@@ -52,7 +57,7 @@ pub fn validate_selected_row_groups(
                 "selected parquet row group is outside file metadata",
             )
             .with_fact("path", file.location.diagnostic_location())
-            .with_fact("stable_id", crate::source::parquet_file_stable_id_fact(file))
+            .with_fact("stable_id", parquet_file_stable_id_fact(file))
             .with_fact("file_index", file_index)
             .with_fact("row_group_position", row_group_position)
             .with_fact("row_group", row_group)
@@ -81,13 +86,13 @@ pub fn validate_position_delete_planned_row_groups(
         )
         .with_fact("reason", "position_deletes_require_row_group_rows")
         .with_fact("path", file.location.diagnostic_location())
-        .with_fact("stable_id", crate::source::parquet_file_stable_id_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
     contiguous_row_group_position_range(row_groups, &row_group_rows).map(|_range| ()).map_err(|error| {
         error
             .with_fact("path", file.location.diagnostic_location())
-            .with_fact("stable_id", crate::source::parquet_file_stable_id_fact(file))
+            .with_fact("stable_id", parquet_file_stable_id_fact(file))
             .with_fact("file_index", file_index)
     })
 }
@@ -277,7 +282,7 @@ pub fn exact_source_read_preflight_bytes(
     let row_count = if zero_column_count { 1 } else { known_row_count? };
     if zero_column_count {
         return Some(exact_source_read_required_budget_bytes(
-            exact_fixed_width_column_upper_bound_bytes(&arrow::datatypes::DataType::Int64, false, row_count, sizing)?,
+            exact_fixed_width_column_upper_bound_bytes(&DataType::Int64, false, row_count, sizing)?,
             sizing,
         ));
     }
@@ -302,7 +307,7 @@ pub fn exact_source_read_required_budget_bytes(retained_output_bytes: u64, sizin
 
 #[doc(hidden)]
 pub fn exact_fixed_width_column_upper_bound_bytes(
-    data_type: &arrow::datatypes::DataType,
+    data_type: &DataType,
     nullable: bool,
     row_count: u64,
     sizing: SourceReadSizing<'_>,
@@ -310,7 +315,7 @@ pub fn exact_fixed_width_column_upper_bound_bytes(
     if !sizing.supports_type(data_type) {
         return None;
     }
-    let element_size = crate::datatypes::arrow_fixed_width_byte_size(data_type)?;
+    let element_size = arrow_fixed_width_byte_size(data_type)?;
     let data_bytes = row_count.checked_mul(element_size)?;
     let mask_bytes = if nullable { null_mask_allocation_size_bytes(row_count) } else { 0 };
     data_bytes.checked_add(mask_bytes)
@@ -339,13 +344,13 @@ pub fn projected_and_pure_filter_file_columns_overlap(source: &LocalParquetSourc
         .projected_output_column_source_refs
         .iter()
         .filter_map(|source_ref| match source_ref {
-            crate::source::SourceColumnRef::File(index) => Some(*index),
-            crate::source::SourceColumnRef::Partition(_) | crate::source::SourceColumnRef::MissingNull(_) => None,
+            SourceColumnRef::File(index) => Some(*index),
+            SourceColumnRef::Partition(_) | SourceColumnRef::MissingNull(_) => None,
         })
         .collect::<BTreeSet<_>>();
     source.pure_filter_column_source_refs.iter().any(|source_ref| match source_ref {
-        crate::source::SourceColumnRef::File(index) => projected.contains(index),
-        crate::source::SourceColumnRef::Partition(_) | crate::source::SourceColumnRef::MissingNull(_) => false,
+        SourceColumnRef::File(index) => projected.contains(index),
+        SourceColumnRef::Partition(_) | SourceColumnRef::MissingNull(_) => false,
     })
 }
 

@@ -11,7 +11,10 @@ use parquet::{
 };
 
 use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
-use crate::{ALGEON_PARQUET_DIR_ENV, metadata::DatasetFingerprint};
+use crate::{
+    ALGEON_PARQUET_DIR_ENV,
+    metadata::{DatasetFingerprint, WorkloadDatasetMetadata},
+};
 
 /// Canonical TPC-H table names in fixture discovery order.
 pub const TPCH_TABLES: &[&str] =
@@ -149,8 +152,8 @@ impl TpchDatasetMetadata {
         format_table_metadata(&self.tables, |table| table.row_group_count as u64)
     }
 
-    pub fn to_neutral_metadata(&self) -> crate::metadata::WorkloadDatasetMetadata {
-        crate::metadata::WorkloadDatasetMetadata {
+    pub fn to_neutral_metadata(&self) -> WorkloadDatasetMetadata {
+        WorkloadDatasetMetadata {
             workload: "tpch",
             root: self.root.clone(),
             scale_factor: Some(self.scale_factor.clone()),

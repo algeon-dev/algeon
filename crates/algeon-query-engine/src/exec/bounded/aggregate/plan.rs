@@ -6,6 +6,7 @@ use super::{
     topk_candidate_rows, unsupported_bounded_shape, validate_aggregate_capability, validate_final_aggregate_capability,
     validate_projection_capability,
 };
+use crate::{rapids_backend::rapids_analysis_context, source::SourceNode};
 
 pub(in crate::exec::bounded) type ProjectionStage<'a> = (&'a ProjectionNode, &'a ArrowSchemaRef);
 
@@ -164,7 +165,7 @@ impl<'a> BoundedPlan<'a> {
                 "non_local_parquet_source",
             ));
         };
-        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref() else {
+        let SourceNode::LocalParquet(source) = source_node.as_ref() else {
             return Err(unsupported_bounded_shape(
                 "bounded aggregate execution currently supports only local parquet sources",
                 "non_local_parquet_source",
@@ -229,7 +230,7 @@ impl<'a> BoundedPlan<'a> {
                 "non_local_parquet_source",
             ));
         };
-        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref() else {
+        let SourceNode::LocalParquet(source) = source_node.as_ref() else {
             return Err(unsupported_bounded_shape(
                 "bounded aggregate subplan currently supports only local parquet sources",
                 "non_local_parquet_source",
@@ -254,7 +255,7 @@ impl<'a> BoundedPlan<'a> {
     }
 
     pub(in crate::exec::bounded) fn validate_capabilities(&self) -> Result<()> {
-        let ctx = crate::rapids_backend::rapids_analysis_context();
+        let ctx = rapids_analysis_context();
         if let Some(filter) = self.filter {
             lower_expr(&filter.predicate)?;
         }
@@ -312,7 +313,7 @@ fn validate_bounded_unary_stage_capability(stage: &BoundedUnaryStage<'_>) -> Res
             lower_expr(&node.predicate)?;
         },
         BoundedUnaryStage::Projection { node, output_schema, .. } => {
-            validate_projection_capability(node, output_schema, crate::rapids_backend::rapids_analysis_context())?;
+            validate_projection_capability(node, output_schema, rapids_analysis_context())?;
         },
     }
     Ok(())

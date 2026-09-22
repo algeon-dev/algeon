@@ -5,6 +5,8 @@ use std::{
     ptr,
 };
 
+use cudf_sys::test_support;
+
 use crate::{
     helpers::*,
     support::{
@@ -140,7 +142,7 @@ fn test_io_read_parquet_from_host_buffer_empty_buffer_rejected() {
 #[test]
 fn test_non_io_runtime_error_maps_to_unknown() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::test_support::cudf_test_throw_runtime_error() };
+    let status = unsafe { test_support::cudf_test_throw_runtime_error() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_UNKNOWN);
     assert!(last_error_message().contains("non-io runtime failure"));
@@ -149,7 +151,7 @@ fn test_non_io_runtime_error_maps_to_unknown() {
 #[test]
 fn test_bad_alloc_maps_to_out_of_memory() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::test_support::cudf_test_throw_bad_alloc() };
+    let status = unsafe { test_support::cudf_test_throw_bad_alloc() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(!last_error_message().is_empty());
@@ -158,7 +160,7 @@ fn test_bad_alloc_maps_to_out_of_memory() {
 #[test]
 fn test_bad_alloc_publishes_copyable_typed_error_detail() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::test_support::cudf_test_throw_bad_alloc() };
+    let status = unsafe { test_support::cudf_test_throw_bad_alloc() };
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
 
     let detail = unsafe {
@@ -184,7 +186,7 @@ fn test_bad_alloc_publishes_copyable_typed_error_detail() {
 #[test]
 fn test_invalid_argument_maps_to_invalid_argument() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::test_support::cudf_test_throw_invalid_argument() };
+    let status = unsafe { test_support::cudf_test_throw_invalid_argument() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
     assert!(last_error_message().contains("invalid argument"));
@@ -195,15 +197,13 @@ fn test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap() {
     let _shim_state = lock_shim_state();
     let mut out = usize::MAX;
 
-    let add_status =
-        unsafe { cudf_sys::test_support::cudf_test_checked_owning_handle_size_add(usize::MAX, 1, &mut out) };
+    let add_status = unsafe { test_support::cudf_test_checked_owning_handle_size_add(usize::MAX, 1, &mut out) };
     assert_eq!(add_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
     assert_eq!(out, 0, "failed checked addition must leave a deterministic output");
     assert!(last_error_message().contains("overflow"));
 
     out = usize::MAX;
-    let mul_status =
-        unsafe { cudf_sys::test_support::cudf_test_checked_owning_handle_size_mul(usize::MAX, 2, &mut out) };
+    let mul_status = unsafe { test_support::cudf_test_checked_owning_handle_size_mul(usize::MAX, 2, &mut out) };
     assert_eq!(mul_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
     assert_eq!(out, 0, "failed checked multiplication must leave a deterministic output");
     assert!(last_error_message().contains("overflow"));

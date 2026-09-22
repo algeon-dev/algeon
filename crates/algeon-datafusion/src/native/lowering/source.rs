@@ -4,10 +4,11 @@ use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
     common::Constraint,
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, filter::FilterExec},
 };
 use query_engine::{
-    expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder,
+    expr::Expr as NativeExpr,
+    plan::{NodeId, QueryPlanBuilder as NativeQueryPlanBuilder},
     source::SourceDiagnostics as NativeSourceDiagnostics,
 };
 
@@ -91,7 +92,7 @@ pub(super) enum SourceUnprojectedFilterOutput {
 
 pub(super) fn project_scan_output_columns(
     builder: &mut NativeQueryPlanBuilder,
-    input_node: query_engine::plan::NodeId,
+    input_node: NodeId,
     input_schema: SchemaRef,
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
@@ -205,7 +206,7 @@ pub(super) fn source_unique_key_columns(
 
 pub(super) fn required_source_scan_output_indices(
     source_schema: SchemaRef,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     required_output_fields: &RequiredFields,
 ) -> Result<Vec<usize>, CapabilityReason> {
     if let Some(filter) = filter
@@ -222,7 +223,7 @@ pub(super) fn required_source_scan_output_indices(
 
 pub(super) fn add_source_filter_projection(
     builder: &mut NativeQueryPlanBuilder,
-    filtered_node: query_engine::plan::NodeId,
+    filtered_node: NodeId,
     scan_output: &LoweredNativeInput,
     filter_schema: SchemaRef,
     projection: &[usize],
@@ -238,7 +239,7 @@ pub(super) fn add_source_filter_projection(
             let input_index = projection.get(*output_index).copied().ok_or(CapabilityReason::UnsupportedExpression)?;
             let input_binding = scan_output.binding_for_frontend_index(input_index)?;
             Ok(alias_if_needed(
-                query_engine::expr::Expr::column(input_binding.native_name.as_str()),
+                NativeExpr::column(input_binding.native_name.as_str()),
                 output_binding.native_name.as_str(),
             ))
         })
@@ -250,7 +251,7 @@ pub(super) fn add_source_filter_projection(
 pub(super) fn lower_source_filter_and_projection(
     builder: &mut NativeQueryPlanBuilder,
     scan_output: LoweredNativeInput,
-    filter: &datafusion::physical_plan::filter::FilterExec,
+    filter: &FilterExec,
     reader_pushdown_covers_filter: bool,
     required_output_fields: &RequiredFields,
     unprojected_output: SourceUnprojectedFilterOutput,

@@ -25,11 +25,14 @@ use query_engine::{
         AttemptCapabilityEvidence, BoundedPipelineAdmission, CompiledBoundedPipelineSupport, bounded_pipeline_decision,
         compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
+    capability::CapabilityRejectionProjection,
     dynamic_filter::DynamicFilterProducer,
     error::Result,
     exec::{
-        CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest, materialize_gpu_result_to_host,
+        CompiledGpuTaskExecutor, CompiledPipelineScheduler, QueryExecutionRequest,
+        execute_query_plan as execute_engine_query_plan, materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
+        preflight_bounded_query_plan,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, GroupingSetsSpec,
@@ -48,6 +51,7 @@ use query_engine::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
+    rapids_backend::rapids_analysis_context,
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
@@ -62,24 +66,14 @@ use query_engine::{
 };
 
 fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
-    bounded_pipeline_decision(
-        plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )?
-    .into_execution_admission()
+    bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
+        .into_execution_admission()
 }
 
-fn bounded_pipeline_rejection_projection(
-    plan: &QueryPlan,
-) -> Result<Option<query_engine::capability::CapabilityRejectionProjection>> {
-    Ok(bounded_pipeline_decision(
-        plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )?
-    .rejection_projection()
-    .cloned())
+fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
+    Ok(bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())?
+        .rejection_projection()
+        .cloned())
 }
 
 fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
@@ -174,7 +168,7 @@ mod cudf {
         }
 
         pub(super) fn acquire_context_for_plan(self: &Arc<Self>, plan: &QueryPlan) -> Result<PipelineTestContext> {
-            query_engine::exec::preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+            preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             self.acquire_context_with_evidence_items([evidence])
         }
@@ -184,7 +178,7 @@ mod cudf {
             plan: &QueryPlan,
             owner: RuntimeObservationOwner,
         ) -> Result<PipelineTestContext> {
-            query_engine::exec::preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
+            preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default())?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
@@ -244,7 +238,7 @@ impl Deref for PipelineTestContext {
 }
 
 fn execute_query_plan(context: &PipelineTestContext, plan: &QueryPlan) -> Result<QueryExecutionResult> {
-    let outcome = query_engine::exec::execute_query_plan(context.context.context(), QueryExecutionRequest::new(plan));
+    let outcome = execute_engine_query_plan(context.context.context(), QueryExecutionRequest::new(plan));
     let (result, metrics, _observation) = outcome.into_parts();
     result.map(|output| QueryExecutionResult::new(output, metrics))
 }
@@ -254,7 +248,7 @@ fn execute_query_plan_with_gpu_inputs(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<QueryExecutionResult> {
-    let outcome = query_engine::exec::execute_query_plan(
+    let outcome = execute_engine_query_plan(
         context.context.context(),
         QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
     );

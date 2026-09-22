@@ -2,11 +2,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt::Write, sync::Arc};
 
-use crate::server::{
-    attempt::{AlgeonAttempt, AttemptOptions},
-    backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuQueuePolicy},
-    config::ServerConfig,
-    error::{Result, ServerError},
+use tokio::task::spawn_blocking;
+
+use crate::{
+    error::Result,
+    server::{
+        attempt::{AlgeonAttempt, AttemptOptions},
+        backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuQueuePolicy},
+        config::ServerConfig,
+        error::{Result as ServerResult, ServerError},
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -39,10 +44,7 @@ impl QueryAdmission {
     /// invocation. The test-only admission projection intentionally has no
     /// runtime backend, so CPU-only unit fixtures return `None`; every
     /// server-built admission facade returns one concrete attempt.
-    pub(crate) fn begin_attempt(
-        &self,
-        options: AttemptOptions,
-    ) -> crate::server::adapter_error::Result<Option<AlgeonAttempt>> {
+    pub(crate) fn begin_attempt(&self, options: AttemptOptions) -> Result<Option<AlgeonAttempt>> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => backend.begin_attempt(options).map(Some),
             #[cfg(test)]
@@ -71,7 +73,7 @@ impl QueryAdmission {
         }
     }
 
-    fn close_and_wait_for_quiescence_blocking_until(&self, deadline: std::time::Instant) -> Result<()> {
+    fn close_and_wait_for_quiescence_blocking_until(&self, deadline: std::time::Instant) -> ServerResult<()> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
                 backend.close_and_wait_until(deadline).map(|_snapshot| ()).map_err(|error| {
@@ -90,21 +92,21 @@ impl QueryAdmission {
     pub(crate) async fn close_and_wait_for_quiescence_until(
         self: &Arc<Self>,
         deadline: std::time::Instant,
-    ) -> Result<()> {
+    ) -> ServerResult<()> {
         let admission = Arc::clone(self);
-        tokio::task::spawn_blocking(move || admission.close_and_wait_for_quiescence_blocking_until(deadline))
-            .await
-            .map_err(|error| {
+        spawn_blocking(move || admission.close_and_wait_for_quiescence_blocking_until(deadline)).await.map_err(
+            |error| {
                 ServerError::shutdown_with_source(
                     "query_admission_cleanup_task_failed",
                     "query admission shutdown cleanup task failed",
                     error,
                 )
-            })?
+            },
+        )?
     }
 
     #[cfg(test)]
-    pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
+    pub fn try_acquire(&self) -> ServerResult<Option<QueryAdmissionPermit>> {
         let QueryAdmissionBackend::TestOnly { closed } = &self.backend else {
             panic!("test admission permits only exist for the test-only backend");
         };
@@ -156,7 +158,7 @@ impl QueryAdmission {
         }
     }
 
-    pub fn diagnostics_payload(&self) -> Result<String> {
+    pub fn diagnostics_payload(&self) -> ServerResult<String> {
         let mut output = String::new();
         let _ = writeln!(output, "# algeon_admission_stats=1");
         match &self.backend {
@@ -279,9 +281,25 @@ fn payload_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use arrow::array::ArrayRef;
+    use datafusion::{
+        execution::SessionStateBuilder,
+        prelude::{ParquetReadOptions, SessionContext},
+    };
     use futures::StreamExt;
+    use parquet::arrow::ArrowWriter;
 
     use super::*;
+    use crate::server::{
+        adapter_error::ErrorCode as ServerErrorCode,
+        backend::{AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership},
+        backend_from_server_config,
+        config::{
+            ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_CONFIG_FILE_ENV,
+            ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+            ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+        },
+    };
 
     fn write_holder_parquet(path: &std::path::Path) {
         use arrow::{
@@ -293,11 +311,11 @@ mod tests {
         let schema = std::sync::Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             std::sync::Arc::clone(&schema),
-            vec![std::sync::Arc::new(Int64Array::from(vec![1, 2])) as arrow::array::ArrayRef],
+            vec![std::sync::Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
         )
         .expect("holder fixture batch");
         let file = std::fs::File::create(path).expect("holder fixture file");
-        let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("holder writer");
+        let mut writer = ArrowWriter::try_new(file, schema, None).expect("holder writer");
         writer.write(&batch).expect("write holder fixture");
         writer.close().expect("close holder fixture");
     }
@@ -305,7 +323,7 @@ mod tests {
     fn server_config_with_test_device_profile(
         mut env: std::collections::BTreeMap<&'static str, String>,
         memory_limit_bytes: Option<u64>,
-    ) -> crate::server::Result<ServerConfig> {
+    ) -> ServerResult<ServerConfig> {
         let config_file = tempfile::NamedTempFile::new().expect("create server config fixture");
         let profile = match memory_limit_bytes {
             Some(memory_limit_bytes) => format!(
@@ -314,10 +332,7 @@ mod tests {
             None => "[[admission.device_profiles]]\ndevice_ordinal = 0\n".to_string(),
         };
         std::fs::write(config_file.path(), profile).expect("write server config fixture");
-        env.insert(
-            crate::server::config::ALGEON_SERVER_CONFIG_FILE_ENV,
-            config_file.path().to_string_lossy().into_owned(),
-        );
+        env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, config_file.path().to_string_lossy().into_owned());
         ServerConfig::from_env_get(|name| env.get(name).cloned())
     }
 
@@ -326,7 +341,7 @@ mod tests {
             .gpu_devices
             .iter()
             .copied()
-            .map(|ordinal| (ordinal, crate::server::backend::GpuMemoryOwnership::WholeDeviceExclusive))
+            .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
             .collect();
         config
     }
@@ -334,9 +349,9 @@ mod tests {
     #[test]
     fn server_backend_partitions_budget_and_sizes_stream_pool() {
         let env = std::collections::BTreeMap::from([
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
@@ -344,10 +359,7 @@ mod tests {
         let profile = devices[0].profile();
         assert_eq!(profile.max_active_attempts(), 2);
         assert_eq!(profile.device_ordinal(), 0);
-        assert_eq!(
-            profile.memory_limit(),
-            crate::server::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 }
-        );
+        assert_eq!(profile.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
         assert_eq!(profile.default_query_limit_bytes(), None);
         assert_eq!(
             config
@@ -363,14 +375,14 @@ mod tests {
     #[test]
     fn server_config_rejects_removed_legacy_cache_profile_env_before_backend_projection() {
         let env = std::collections::BTreeMap::from([
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             ("ALGEON_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", "2048".to_string()),
         ]);
         let error = server_config_with_test_device_profile(env, None)
             .expect_err("removed cache profile configuration must fail before backend construction");
 
-        assert_eq!(error.code(), crate::server::adapter_error::ErrorCode::InvalidRequest);
+        assert_eq!(error.code(), ServerErrorCode::InvalidRequest);
         assert_eq!(error.operation(), "algeon_datafusion.server.config");
         assert_eq!(error.fact_value("config_field"), Some("ALGEON_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES"));
         assert!(error.message().contains("removed by the resource-only admission contract"));
@@ -379,9 +391,9 @@ mod tests {
     #[test]
     fn server_backend_honors_queue_wait_bound_env() {
         let env = std::collections::BTreeMap::from([
-            (crate::server::config::ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "250".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            (ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "250".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
@@ -391,16 +403,14 @@ mod tests {
     #[test]
     fn server_backend_preserves_multi_gpu_device_subset() {
         let env = std::collections::BTreeMap::from([
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
         let mut config = server_config_with_test_device_profile(env, Some(2048)).unwrap();
         config.gpu_devices = vec![0, 1];
         config.gpu_device_profiles = vec![
-            crate::server::backend::AlgeonGpuDeviceProfile::new(0)
-                .with_memory_limit(crate::server::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 2048 }),
-            crate::server::backend::AlgeonGpuDeviceProfile::new(1)
-                .with_memory_limit(crate::server::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+            AlgeonGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 2048 }),
+            AlgeonGpuDeviceProfile::new(1).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
         ];
         let config = declare_test_gpu_ownership(config);
 
@@ -414,15 +424,15 @@ mod tests {
         const HOLDER_QUERY_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
         let env = std::collections::BTreeMap::from([
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
-            (crate::server::config::ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
+            (ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
         let mut config = declare_test_gpu_ownership(
             server_config_with_test_device_profile(env, Some(HOLDER_DEVICE_CAP_BYTES)).unwrap(),
         );
         config.gpu_device_profiles[0] =
             config.gpu_device_profiles[0].clone().with_default_query_limit_bytes(HOLDER_QUERY_CAP_BYTES);
-        let backend = crate::server::backend_from_server_config(&config).unwrap();
+        let backend = backend_from_server_config(&config).unwrap();
         let admission = QueryAdmission::from_backend(&backend);
 
         // Hold one admitted execution through the canonical attempt
@@ -432,15 +442,15 @@ mod tests {
         let holder_path = holder_dir.path().join("holder.parquet");
         write_holder_parquet(&holder_path);
         let holder_state = backend
-            .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+            .install_on(SessionStateBuilder::new_with_default_features())
             .expect("holder session should install")
             .build();
-        let holder_ctx = datafusion::prelude::SessionContext::new_with_state(holder_state);
+        let holder_ctx = SessionContext::new_with_state(holder_state);
         holder_ctx
             .register_parquet(
                 "holder_t",
                 holder_path.to_str().expect("utf8 holder path"),
-                datafusion::prelude::ParquetReadOptions::default(),
+                ParquetReadOptions::default(),
             )
             .await
             .expect("holder table should register");

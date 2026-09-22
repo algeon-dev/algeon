@@ -35,7 +35,7 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
 };
 
-use crate::error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind, Result};
 
 pub(crate) mod defaults {
     use super::{ClosedUnitF64, IterationCount, NonNegativeF64, NonZeroU32, PositiveF64};
@@ -86,7 +86,7 @@ impl IterationCount {
     /// # Errors
     ///
     /// Returns [`ErrorKind::InvalidInput`] if `value` is zero.
-    pub fn new(value: u32) -> crate::error::Result<Self> {
+    pub fn new(value: u32) -> Result<Self> {
         NonZeroU32::new(value).map(IterationCount).ok_or_else(|| {
             Error::new(ErrorKind::InvalidInput, "IterationCount::new")
                 .with_message("iteration count must be greater than zero")
@@ -128,9 +128,9 @@ impl From<IterationCount> for usize {
 }
 
 impl TryFrom<IterationCount> for i32 {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(count: IterationCount) -> crate::error::Result<i32> {
+    fn try_from(count: IterationCount) -> Result<i32> {
         i32::try_from(count.get()).map_err(|_| {
             Error::new(ErrorKind::InvalidInput, "IterationCount::try_into<i32>")
                 .with_message("iteration count exceeds i32::MAX")
@@ -140,17 +140,17 @@ impl TryFrom<IterationCount> for i32 {
 }
 
 impl TryFrom<u32> for IterationCount {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: u32) -> crate::error::Result<Self> {
+    fn try_from(value: u32) -> Result<Self> {
         Self::new(value)
     }
 }
 
 impl TryFrom<i32> for IterationCount {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: i32) -> crate::error::Result<Self> {
+    fn try_from(value: i32) -> Result<Self> {
         if value <= 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "IterationCount::try_from<i32>")
                 .with_message("iteration count must be greater than zero")
@@ -161,9 +161,9 @@ impl TryFrom<i32> for IterationCount {
 }
 
 impl TryFrom<usize> for IterationCount {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: usize) -> crate::error::Result<Self> {
+    fn try_from(value: usize) -> Result<Self> {
         let val_u32 = u32::try_from(value).map_err(|_| {
             Error::new(ErrorKind::InvalidInput, "IterationCount::try_from<usize>")
                 .with_message("iteration count exceeds u32::MAX")
@@ -198,7 +198,7 @@ impl BfsDepthLimit {
     /// # Errors
     ///
     /// Returns [`ErrorKind::InvalidInput`] if `value` is zero.
-    pub fn new(value: usize) -> crate::error::Result<Self> {
+    pub fn new(value: usize) -> Result<Self> {
         NonZeroUsize::new(value).map(BfsDepthLimit).ok_or_else(|| {
             Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::new")
                 .with_message("BFS depth limit must be greater than zero")
@@ -234,25 +234,25 @@ impl From<BfsDepthLimit> for usize {
 }
 
 impl TryFrom<usize> for BfsDepthLimit {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: usize) -> crate::error::Result<Self> {
+    fn try_from(value: usize) -> Result<Self> {
         Self::new(value)
     }
 }
 
 impl TryFrom<u32> for BfsDepthLimit {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: u32) -> crate::error::Result<Self> {
+    fn try_from(value: u32) -> Result<Self> {
         Self::new(value as usize)
     }
 }
 
 impl TryFrom<i32> for BfsDepthLimit {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: i32) -> crate::error::Result<Self> {
+    fn try_from(value: i32) -> Result<Self> {
         if value <= 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::try_from<i32>")
                 .with_message("BFS depth limit must be greater than zero")
@@ -292,7 +292,7 @@ impl PositiveF64 {
     ///
     /// Returns [`ErrorKind::InvalidInput`] if `value` is not finite and
     /// positive (i.e., `<= 0.0`, `NaN`, or infinity).
-    pub fn new(value: f64) -> crate::error::Result<Self> {
+    pub fn new(value: f64) -> Result<Self> {
         if !value.is_finite() || value <= 0.0 {
             return Err(Error::new(ErrorKind::InvalidInput, "PositiveF64::new")
                 .with_message("value must be a finite number greater than zero")
@@ -320,9 +320,9 @@ impl From<PositiveF64> for f64 {
 }
 
 impl TryFrom<f64> for PositiveF64 {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: f64) -> crate::error::Result<Self> {
+    fn try_from(value: f64) -> Result<Self> {
         Self::new(value)
     }
 }
@@ -354,7 +354,7 @@ impl UnitF64 {
     ///
     /// Returns [`ErrorKind::InvalidInput`] if `value` is not in the open
     /// interval `(0.0, 1.0)` or is not finite.
-    pub fn new(value: f64) -> crate::error::Result<Self> {
+    pub fn new(value: f64) -> Result<Self> {
         if !value.is_finite() || value <= 0.0 || value >= 1.0 {
             return Err(Error::new(ErrorKind::InvalidInput, "UnitF64::new")
                 .with_message("value must be in the open interval (0.0, 1.0)")
@@ -382,9 +382,9 @@ impl From<UnitF64> for f64 {
 }
 
 impl TryFrom<f64> for UnitF64 {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: f64) -> crate::error::Result<Self> {
+    fn try_from(value: f64) -> Result<Self> {
         Self::new(value)
     }
 }
@@ -418,7 +418,7 @@ impl NonNegativeF64 {
     ///
     /// Returns [`ErrorKind::InvalidInput`] if `value` is negative, `NaN`, or
     /// infinite.
-    pub fn new(value: f64) -> crate::error::Result<Self> {
+    pub fn new(value: f64) -> Result<Self> {
         if !value.is_finite() || value < 0.0 {
             return Err(Error::new(ErrorKind::InvalidInput, "NonNegativeF64::new")
                 .with_message("value must be a finite non-negative number")
@@ -446,9 +446,9 @@ impl From<NonNegativeF64> for f64 {
 }
 
 impl TryFrom<f64> for NonNegativeF64 {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: f64) -> crate::error::Result<Self> {
+    fn try_from(value: f64) -> Result<Self> {
         Self::new(value)
     }
 }
@@ -481,7 +481,7 @@ impl ClosedUnitF64 {
     ///
     /// Returns [`ErrorKind::InvalidInput`] if `value` is not in the closed
     /// interval `[0.0, 1.0]` or is not finite.
-    pub fn new(value: f64) -> crate::error::Result<Self> {
+    pub fn new(value: f64) -> Result<Self> {
         if !(0.0..=1.0).contains(&value) {
             return Err(Error::new(ErrorKind::InvalidInput, "ClosedUnitF64::new")
                 .with_message("value must be in the closed interval [0.0, 1.0]")
@@ -509,9 +509,9 @@ impl From<ClosedUnitF64> for f64 {
 }
 
 impl TryFrom<f64> for ClosedUnitF64 {
-    type Error = crate::error::Error;
+    type Error = Error;
 
-    fn try_from(value: f64) -> crate::error::Result<Self> {
+    fn try_from(value: f64) -> Result<Self> {
         Self::new(value)
     }
 }

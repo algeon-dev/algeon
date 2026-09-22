@@ -106,6 +106,19 @@ compatibility belong in `crates/algeon-query-engine`.
 - Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners from existing code. Ask only if unresolved ownership affects the contract.
 - The ledger is integer accounting, not a residency oracle; model aggregate partial/final state explicitly.
 
+## Imports
+
+- Import items in the file's top `use` block, or in `mod tests` when only tests
+  use them. Reach variants and associated functions through the imported type.
+- Use `super::` only for the direct parent; use `crate::` above it.
+- On name collisions, the local item keeps the bare name and foreign items use
+  an origin prefix, such as `CudfDataType`, `ArrowDataType`, or
+  `DataFusionResult`. Prefix both sides when both are foreign. Keep the local
+  `Result` bare; use `std::result::Result` inline only when its arity differs.
+- Inline paths are otherwise limited to visibility qualifiers, attributes,
+  doc links, calls through imported modules, sibling private modules, and enum
+  translation matches. Gate imports with the same `cfg` as their uses.
+
 ## Build and test
 
 Use `--workspace --all-features` in every Cargo build, check, lint, and test

@@ -1,10 +1,11 @@
 use super::*;
+use crate::report_workload::RelationalExecutionSelection;
 
 #[test]
 fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q01".to_string()],
-        native_execution: crate::report_workload::RelationalExecutionSelection::strict_native(),
+        native_execution: RelationalExecutionSelection::strict_native(),
         ..NativeTpchBenchmarkConfig::default()
     };
     let row = NativeTpchBenchmarkRow {

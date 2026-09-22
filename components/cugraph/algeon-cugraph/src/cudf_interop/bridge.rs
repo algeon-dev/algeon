@@ -10,7 +10,7 @@ use super::{
     types::{cudf_type_to_cugraph, cugraph_type_to_cudf},
 };
 use crate::{
-    array::RawDeviceArrayView,
+    array::{DeviceArrayView, RawDeviceArrayView},
     error::{Error, ErrorKind, Result},
     types::CugraphElement,
 };
@@ -66,7 +66,7 @@ fn validate_runtime_result_device(
 /// ```
 pub fn device_array_view_from_slice<'a, T: CugraphElement>(
     slice: &'a DeviceSlice<'a>,
-) -> Result<crate::array::DeviceArrayView<'a, T>> {
+) -> Result<DeviceArrayView<'a, T>> {
     let cudf_tid = slice.type_id();
     let cugraph_dtype = cudf_type_to_cugraph(cudf_tid).ok_or_else(|| {
         Error::new(ErrorKind::UnsupportedType, "device_array_view_from_slice")

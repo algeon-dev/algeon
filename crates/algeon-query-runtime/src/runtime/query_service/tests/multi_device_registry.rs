@@ -3,10 +3,12 @@ use std::{
     time::Duration,
 };
 
+use query_planning::error::QueryErrorCode;
+
 use crate::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
     GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-    QueryExecutionConfig, QueryService, QueueBounds,
+    QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -229,7 +231,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     // domain ceiling and the root member's hard limit; the 4 MiB allocation
     // must fail locally rather than becoming a device-health failure.
     let handle = service
-        .try_admit_query_with_request(crate::runtime::QueryAdmissionRequest::new().with_query_cap_bytes(GRANT_BYTES))
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(GRANT_BYTES))
         .unwrap()
         .expect("query should admit");
     assert_eq!(handle.device_budget_bytes(), GRANT_BYTES, "the ledger publishes the forced immutable grant");
@@ -530,6 +532,6 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
         .deadline = expired;
     let error = waiter.try_admit().unwrap_err();
 
-    assert_eq!(error.code(), query_planning::error::QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
 }

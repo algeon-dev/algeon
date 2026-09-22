@@ -16,8 +16,11 @@ use query_engine::{
     exec::output::{QueryExecutionOutcome, QueryOutput},
     graph_observation::{GraphClaimExecutionState, GraphMeasuredPeakRow},
     metrics::{JoinOperatorMetrics, QueryMetrics},
-    observability::{AttemptId, QueryAttemptReport},
-    runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
+    observability::{AttemptId, QueryAttemptReport, RuntimeObservationConfig},
+    runtime::{
+        BuildMaterializationBoundary, ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot, ProbeExecutionBoundary,
+        ResultMaterializationBoundary, SourceReadBoundary,
+    },
 };
 
 use super::{
@@ -342,7 +345,7 @@ struct MetricRowCaptureBudget {
 impl MetricRowCaptureBudget {
     fn new(capture: Option<&NativeExecutionMetricsCapture>) -> Self {
         let limits = capture.map_or_else(
-            || query_engine::observability::RuntimeObservationConfig::native_execution().limits(),
+            || RuntimeObservationConfig::native_execution().limits(),
             NativeExecutionMetricsCapture::metric_capture_limits,
         );
         Self {
@@ -1291,20 +1294,16 @@ impl AlgeonNativeMetrics {
     fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
         // These counters record which boundary policy was selected for this native query execution,
         // not rows or bytes crossing that boundary.
-        if matches!(policy.source_read(), query_engine::runtime::SourceReadBoundary::DirectDeviceLocalParquet) {
+        if matches!(policy.source_read(), SourceReadBoundary::DirectDeviceLocalParquet) {
             self.source_read_boundary_direct_device.add(1);
         }
-        if matches!(
-            policy.build_materialization(),
-            query_engine::runtime::BuildMaterializationBoundary::QueryScopedGpuHashJoin
-        ) {
+        if matches!(policy.build_materialization(), BuildMaterializationBoundary::QueryScopedGpuHashJoin) {
             self.build_materialization_boundary_query_scoped.add(1);
         }
-        if matches!(policy.probe_execution(), query_engine::runtime::ProbeExecutionBoundary::ReusableGpuHashJoin) {
+        if matches!(policy.probe_execution(), ProbeExecutionBoundary::ReusableGpuHashJoin) {
             self.probe_execution_boundary_reusable.add(1);
         }
-        if matches!(policy.result_materialization(), query_engine::runtime::ResultMaterializationBoundary::ExplicitSink)
-        {
+        if matches!(policy.result_materialization(), ResultMaterializationBoundary::ExplicitSink) {
             self.result_materialization_boundary_explicit.add(1);
         }
     }
@@ -1403,7 +1402,7 @@ mod tests {
         observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
             AttemptId, AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
-            SealedAttemptProjection,
+            SealedAttemptLabels, SealedAttemptProjection,
         },
         plan::GraphAlgorithm,
     };
@@ -1507,7 +1506,7 @@ mod tests {
 
         assert_eq!(
             projection.labels(),
-            query_engine::observability::SealedAttemptLabels {
+            SealedAttemptLabels {
                 disposition: "native",
                 outcome: "panicked",
                 cleanup_disposition: "completed_with_failures",

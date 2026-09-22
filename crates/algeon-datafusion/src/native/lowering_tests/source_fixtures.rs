@@ -1,12 +1,19 @@
+use datafusion::{
+    common::{DataFusionError, Result as DataFusionResult},
+    datasource::{listing::PartitionedFile, physical_plan::ParquetFileReaderFactory},
+    parquet::arrow::async_reader::AsyncFileReader,
+    physical_plan::metrics::ExecutionPlanMetricsSet,
+};
+use futures::executor::block_on;
+
 use super::*;
 
 pub(super) fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
         SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(1),
     );
-    let df =
-        futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
-    futures::executor::block_on(df.create_physical_plan()).unwrap()
+    let df = block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    block_on(df.create_physical_plan()).unwrap()
 }
 
 pub(super) fn parquet_scan_with_projection_indices(
@@ -250,17 +257,15 @@ pub(super) fn parquet_source_exec_without_predicate(source: &DataSourceExec) -> 
 #[derive(Debug)]
 struct RejectingParquetFileReaderFactory;
 
-impl datafusion::datasource::physical_plan::ParquetFileReaderFactory for RejectingParquetFileReaderFactory {
+impl ParquetFileReaderFactory for RejectingParquetFileReaderFactory {
     fn create_reader(
         &self,
         _partition_index: usize,
-        _partitioned_file: datafusion::datasource::listing::PartitionedFile,
+        _partitioned_file: PartitionedFile,
         _metadata_size_hint: Option<usize>,
-        _metrics: &datafusion::physical_plan::metrics::ExecutionPlanMetricsSet,
-    ) -> datafusion::common::Result<Box<dyn datafusion::parquet::arrow::async_reader::AsyncFileReader + Send>> {
-        Err(datafusion::common::DataFusionError::Execution(
-            "test reader factory should not be invoked during native lowering".to_string(),
-        ))
+        _metrics: &ExecutionPlanMetricsSet,
+    ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
+        Err(DataFusionError::Execution("test reader factory should not be invoked during native lowering".to_string()))
     }
 }
 

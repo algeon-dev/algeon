@@ -1,4 +1,14 @@
+use algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot;
+use query_engine::{
+    observability::{AttemptFailureSummary, CleanupFailureSummary},
+    runtime::GpuBackendCloseSnapshot,
+};
+
 use super::*;
+use crate::single_node_multi_gpu_validate::{
+    COMPOSED_SCHEDULE_SCHEMA, COMPOSED_SCHEDULE_VERSION,
+    aggregate::{AdmissionWaitEvidence, QueryDomainPoolUsageObservation, SUCCEEDED_OUTCOME},
+};
 
 pub(super) fn run_deadline_evidence(
     measurement_window_ns: u64,
@@ -43,7 +53,7 @@ pub(super) fn observe(
             operation: format!("{:?}", failure.operation()),
         }),
         terminal_evidence: terminal_evidence(report),
-        succeeded: report.outcome.stable_label() == super::super::aggregate::SUCCEEDED_OUTCOME,
+        succeeded: report.outcome.stable_label() == SUCCEEDED_OUTCOME,
         reached_gpu: matches!(report.disposition, AttemptDisposition::Native | AttemptDisposition::PartialNative),
         graph_claim_calibration: capture.graph_claim_calibration,
         composed_schedule: report
@@ -57,7 +67,7 @@ pub(super) fn observe(
         admission_wait_ns: report.admission.as_ref().map(|admission| admission.admission_wait_ns),
         admission_requested_ns: report.timestamps.admission_requested_ns,
         admitted_ns: report.timestamps.admitted_ns,
-        admission_wait: report.admission_wait.map(|fact| super::super::aggregate::AdmissionWaitEvidence {
+        admission_wait: report.admission_wait.map(|fact| AdmissionWaitEvidence {
             submission_sequence: fact.submission_sequence,
             // Preserve the historical artifact shape as explicit FIFO zero
             // facts; overtake policy is no longer configurable.
@@ -71,7 +81,7 @@ pub(super) fn observe(
         domain_pool_usage: resource_evidence
             .and_then(|evidence| evidence.outcome_terminal_usage.value)
             .and_then(|sample| sample.pool_usage)
-            .map(|usage| super::super::aggregate::QueryDomainPoolUsageObservation {
+            .map(|usage| QueryDomainPoolUsageObservation {
                 reserved_high_bytes: usage.reserved_high_bytes,
                 used_high_bytes: usage.used_high_bytes,
             }),
@@ -93,8 +103,8 @@ pub(super) fn project_composed_schedule_projection(
     projection: &AttemptComposedScheduleProjection,
 ) -> ComposedScheduleArtifact {
     ComposedScheduleArtifact {
-        schema: super::super::COMPOSED_SCHEDULE_SCHEMA,
-        version: super::super::COMPOSED_SCHEDULE_VERSION,
+        schema: COMPOSED_SCHEDULE_SCHEMA,
+        version: COMPOSED_SCHEDULE_VERSION,
         attempt_id: projection.attempt_id.to_string(),
         selected_ordinal: projection.device_ordinal,
         grant_id: projection.grant_id,
@@ -126,7 +136,7 @@ pub(super) fn project_composed_schedule_projection(
 /// stress artifact. This intentionally reads engine fields directly rather
 /// than reconstructing graph rows from DataFusion metric labels or error text.
 pub(super) fn project_graph_claim_calibration_snapshot(
-    snapshot: algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot,
+    snapshot: SealedAttemptGraphClaimCalibrationSnapshot,
 ) -> GraphClaimCalibrationSnapshot {
     GraphClaimCalibrationSnapshot {
         truncated: snapshot.truncated(),
@@ -163,7 +173,7 @@ pub(super) fn terminal_evidence(report: &QueryAttemptReport) -> AttemptTerminalE
     }
 }
 
-pub(super) fn redacted_failure_summary(summary: &query_engine::observability::AttemptFailureSummary) -> Value {
+pub(super) fn redacted_failure_summary(summary: &AttemptFailureSummary) -> Value {
     let mut value = json_value(summary);
     if let Value::Object(fields) = &mut value {
         fields.remove("text");
@@ -171,7 +181,7 @@ pub(super) fn redacted_failure_summary(summary: &query_engine::observability::At
     value
 }
 
-pub(super) fn redacted_cleanup_failure_summary(summary: &query_engine::observability::CleanupFailureSummary) -> Value {
+pub(super) fn redacted_cleanup_failure_summary(summary: &CleanupFailureSummary) -> Value {
     let mut value = json_value(summary);
     if let Value::Object(fields) = &mut value
         && let Some(Value::Object(failure)) = fields.get_mut("failure")
@@ -209,9 +219,7 @@ pub(super) fn close_backend(backend: &AlgeonGpuBackend) -> BackendCloseEvidence 
     BackendCloseEvidence { before, outcome, after }
 }
 
-pub(super) fn project_close_snapshot(
-    snapshot: query_engine::runtime::GpuBackendCloseSnapshot,
-) -> BackendCloseSnapshotEvidence {
+pub(super) fn project_close_snapshot(snapshot: GpuBackendCloseSnapshot) -> BackendCloseSnapshotEvidence {
     BackendCloseSnapshotEvidence {
         closing: snapshot.closing,
         gpu_resource_quiescent: snapshot.gpu_resource_quiescent,

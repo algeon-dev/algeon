@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::*;
+use crate::loaded_libraries::write_loaded_libraries;
 
 pub(super) async fn run_native_tpch_benchmark(
     config: &NativeTpchBenchmarkConfig,
@@ -29,7 +30,7 @@ pub(super) async fn run_native_tpch_benchmark(
     }
 
     if let Some(dir) = artifact_dir.as_deref() {
-        crate::loaded_libraries::write_loaded_libraries(dir)?;
+        write_loaded_libraries(dir)?;
     }
 
     runtime_resources.shutdown()?;

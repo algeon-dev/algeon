@@ -9,6 +9,7 @@ use cugraph::{
     array::DeviceArray,
     centrality::PageRankParams,
     cudf_interop::{TableGraphOptions, graph_from_prepared_table_export},
+    error::{Error, ErrorKind, Result as CugraphResult},
     graph::{Forward, Graph, GraphBuilder, Transposed},
     handle::{EnteredContext, ResourceHandle},
     types::GraphProperties,
@@ -51,9 +52,9 @@ pub fn assert_named_edge_columns(df: &cudf::DataFrame) {
 pub fn build_directed_named_dataframe_graph(
     handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
-) -> cugraph::error::Result<Graph<Forward>> {
+) -> CugraphResult<Graph<Forward>> {
     let export = df.try_prepare_device_table_export().map_err(|error| {
-        cugraph::Error::new(cugraph::ErrorKind::InvalidState, "build_directed_named_dataframe_graph")
+        Error::new(ErrorKind::InvalidState, "build_directed_named_dataframe_graph")
             .with_message("failed to prepare cudf edge table")
             .set_source(error)
     })?;
@@ -64,9 +65,9 @@ pub fn build_directed_named_dataframe_graph(
 pub fn build_undirected_named_dataframe_graph(
     handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
-) -> cugraph::error::Result<Graph<Transposed>> {
+) -> CugraphResult<Graph<Transposed>> {
     let export = df.try_prepare_device_table_export().map_err(|error| {
-        cugraph::Error::new(cugraph::ErrorKind::InvalidState, "build_undirected_named_dataframe_graph")
+        Error::new(ErrorKind::InvalidState, "build_undirected_named_dataframe_graph")
             .with_message("failed to prepare cudf edge table")
             .set_source(error)
     })?;
@@ -77,7 +78,7 @@ pub fn build_undirected_named_dataframe_graph(
 pub fn build_undirected_prepared_graph(
     handle: &EnteredContext<'_>,
     export: &PreparedTableExport<'_>,
-) -> cugraph::error::Result<Graph<Transposed>> {
+) -> CugraphResult<Graph<Transposed>> {
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
     graph_from_prepared_table_export::<Transposed>(handle, export, &opts)
 }

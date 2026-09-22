@@ -1,6 +1,8 @@
 //! Lakehouse cache-fill and object-store accessors for execution contexts.
 
 use std::{
+    future::Future,
+    sync,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -8,7 +10,12 @@ use std::{
 use ::object_store::ObjectStoreExt;
 #[cfg(any(test, feature = "test-hooks"))]
 use bytes::Bytes;
-use query_planning::error::{QueryError, QueryErrorCode, Result};
+use object_store::{aws::AwsCredential, path::Path as ObjectStorePath};
+use query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    source::redacted_object_store_path_diagnostic,
+};
+use tokio::{runtime::Runtime as TokioRuntime, task::JoinHandle};
 
 use super::{
     super::{
@@ -107,13 +114,13 @@ impl ExecutionContext {
         &self,
         key: S3ObjectStoreKey,
         operation: &'static str,
-    ) -> Result<Arc<::object_store::aws::AwsCredential>> {
+    ) -> Result<Arc<AwsCredential>> {
         if let Some(credential) = self.source_object_stores.recently_resolved_s3_credential(&key) {
             return Ok(credential);
         }
         let storage_profile_id = key.storage_profile_id.clone();
         let provider = self.source_object_stores.s3_credential_provider(key.clone())?;
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = sync::mpsc::channel();
         self.object_store_control_runtime.spawn(async move {
             let credential = provider.get_credential().await;
             let _ = sender.send(credential);
@@ -153,7 +160,7 @@ impl ExecutionContext {
     pub fn spawn_cache_maintenance_fetch(
         &self,
         store: Arc<dyn ::object_store::ObjectStore>,
-        location: ::object_store::path::Path,
+        location: ObjectStorePath,
         on_result: impl FnOnce(ObjectStoreFetchResult) + Send + 'static,
     ) {
         Self::spawn_cache_maintenance_fetch_on_runtime(
@@ -174,10 +181,10 @@ impl ExecutionContext {
         &self,
         future_factory: F,
         on_result: impl FnOnce(ObjectStoreCustomFetchResult<T>) + Send + 'static,
-    ) -> tokio::task::JoinHandle<()>
+    ) -> JoinHandle<()>
     where
         F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
         self.object_store_control_runtime.spawn(async move {
@@ -193,10 +200,10 @@ impl ExecutionContext {
         &self,
         future_factory: F,
         on_result: impl FnOnce(ObjectStoreCustomFetchResult<T>) + Send + 'static,
-    ) -> tokio::task::JoinHandle<()>
+    ) -> JoinHandle<()>
     where
         F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
         self.object_store_control_runtime.spawn(async move {
@@ -214,11 +221,11 @@ impl ExecutionContext {
     #[cfg(any(test, feature = "test-hooks"))]
     #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate runtime source tests"))]
     pub(in crate::runtime) fn fetch_object_store_bytes_on_runtime(
-        object_store_control_runtime: &tokio::runtime::Runtime,
+        object_store_control_runtime: &TokioRuntime,
         store: Arc<dyn ::object_store::ObjectStore>,
-        location: ::object_store::path::Path,
+        location: ObjectStorePath,
     ) -> Result<Bytes> {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = sync::mpsc::channel();
         Self::spawn_cache_maintenance_fetch_on_runtime(object_store_control_runtime, store, location, move |result| {
             let _ = sender.send(result.bytes);
         });
@@ -233,13 +240,13 @@ impl ExecutionContext {
     }
 
     fn spawn_cache_maintenance_fetch_on_runtime(
-        object_store_control_runtime: &tokio::runtime::Runtime,
+        object_store_control_runtime: &TokioRuntime,
         store: Arc<dyn ::object_store::ObjectStore>,
-        location: ::object_store::path::Path,
+        location: ObjectStorePath,
         on_result: impl FnOnce(ObjectStoreFetchResult) + Send + 'static,
     ) {
         object_store_control_runtime.spawn(async move {
-            let path_fact = query_planning::source::redacted_object_store_path_diagnostic(location.as_ref());
+            let path_fact = redacted_object_store_path_diagnostic(location.as_ref());
             let bytes = async move {
                 let result = store.get(&location).await?;
                 result.bytes().await

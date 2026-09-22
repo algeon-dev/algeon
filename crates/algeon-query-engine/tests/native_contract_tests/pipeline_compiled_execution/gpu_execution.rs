@@ -1,3 +1,14 @@
+use query_engine::{
+    admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
+    dimension_pruning::local_dimension_pruning_resolver,
+    error::QueryErrorCode,
+    exec::{ExecutionMetrics, QueryExecutionRequest, execute_query_plan as engine_execute_query_plan},
+    observability::{RuntimeObservationPayload, RuntimeTopologyRecord},
+    pipeline::SortStrategy,
+    rapids_backend::rapids_analysis_context,
+    runtime::resident::GpuResidentInputMap,
+};
+
 use super::*;
 
 // `cudf::Runtime` explicitly implements Send and Sync: it re-enters its
@@ -17,7 +28,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
 
     let compiled_plan = root_join_data_plan(&left_path, &right_path);
     let legacy_plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = compiled_plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = compiled_plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&compiled_plan, &analysis).expect("root join should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -25,9 +36,9 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(shared_runtime(runtime), &compiled_plan);
-    let compiled_metrics_recorder = query_engine::exec::ExecutionMetrics::detached("compiled_metrics");
+    let compiled_metrics_recorder = ExecutionMetrics::detached("compiled_metrics");
     let compiled_metrics_context = compiled_metrics_recorder.scope_context(&context).unwrap();
-    let gpu_inputs = query_engine::runtime::resident::GpuResidentInputMap::new();
+    let gpu_inputs = GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor = CompiledGpuTaskExecutor::new(
@@ -75,7 +86,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     write_self_join_parquet(&path);
 
     let plan = shared_source_self_join_data_plan(&path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source self join should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::SourceRead, 1);
     let shared_resource = pipeline
@@ -91,9 +102,9 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(shared_runtime(runtime), &plan);
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let metrics_context = metrics_recorder.scope_context(&context).unwrap();
-    let gpu_inputs = query_engine::runtime::resident::GpuResidentInputMap::new();
+    let gpu_inputs = GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor =
@@ -137,13 +148,13 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
     let plan = optimize_query_plan(
         aggregate_join_build_input_data_plan(&left_path, &right_path),
         &optimizer_options,
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     )
     .plan;
     assert_eq!(plan.dynamic_filter_routes().len(), 1);
     assert!(matches!(plan.dynamic_filter_routes()[0].producer, DynamicFilterProducer::AggregateGroupKeys { .. }));
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -151,12 +162,9 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("a grouped aggregate join-build input is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -187,7 +195,7 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_sort_limit_filter_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("join sort limit filter plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -195,12 +203,9 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit filter is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -221,7 +226,7 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
 
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
     let (state, batch) = {
@@ -265,12 +270,9 @@ fn execute_query_plan_runs_independent_union_branches_through_unified_admission(
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("independent union branches use the same compiled admission");
     assert!(
         admission.pipeline().tasks().iter().any(|task| task.kind() == PipelineTaskKind::Union),
@@ -300,7 +302,7 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_sort_limit_offset_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("join sort limit offset plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -311,17 +313,14 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     let sort_task =
         pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::FinalSort).expect("one sort task");
     assert!(
-        matches!(sort_task.sort_strategy(), Some(query_engine::pipeline::SortStrategy::FusedTopK { .. })),
+        matches!(sort_task.sort_strategy(), Some(SortStrategy::FusedTopK { .. })),
         "sort feeding a skip+fetch limit fuses into top-k, got {:?}",
         sort_task.sort_strategy()
     );
 
-    let decision = bounded_pipeline_decision(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .expect("bounded admission should not error");
+    let decision =
+        bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit offset is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -331,7 +330,7 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
 
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
     let (state, batch) = {
@@ -363,11 +362,11 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     let plan = optimize_query_plan(
         aggregate_join_build_input_data_plan(&left_path, &right_path),
         &optimizer_options,
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     )
     .plan;
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -376,7 +375,7 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
 
@@ -438,11 +437,11 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
     let plan = optimize_query_plan(
         shared_source_join_build_and_aggregate_data_plan(&fact_path, &dim_path),
         &optimizer_options,
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     )
     .plan;
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source aggregate plan should compile");
     assert!(
         pipeline.debug_render().contains("kind=shared_resident_producer"),
@@ -455,7 +454,7 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
 
@@ -500,7 +499,7 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
         ),
         ("resident grouped-aggregate subquery filter", resident_grouped_aggregate_subquery_filter_plan(true)),
     ] {
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
         let pipeline =
             compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
         assert_eq!(
@@ -538,7 +537,7 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(shared_runtime(runtime), &plan);
 
@@ -562,13 +561,11 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
-    let pipeline =
-        compile_pipeline(&plan, &plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()))
-            .expect("observed root join compiles");
+    let pipeline = compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context()))
+        .expect("observed root join compiles");
     let (context, observation) = bounded_observed_context(shared_runtime(runtime), &plan);
 
-    let outcome =
-        query_engine::exec::execute_query_plan(&context, query_engine::exec::QueryExecutionRequest::new(&plan));
+    let outcome = engine_execute_query_plan(&context, QueryExecutionRequest::new(&plan));
     let (result, metrics, plan_observation) = outcome.into_parts();
     assert!(matches!(result, Ok(QueryOutput::HostArrow(_))));
     assert!(plan_observation.is_none(), "one plan must not seal its query observation");
@@ -582,24 +579,13 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
         assert!(std::time::Instant::now() < deadline, "query observation seals after cleanup");
         std::thread::yield_now();
     };
-    assert!(
-        snapshot.events().iter().all(|event| !matches!(
-            event.payload,
-            query_engine::observability::RuntimeObservationPayload::Reservation(_)
-        ))
-    );
+    assert!(snapshot.events().iter().all(|event| !matches!(event.payload, RuntimeObservationPayload::Reservation(_))));
     assert!(metrics.task_runtime_metrics.values().all(|task| task.operator_kind != "unknown"));
-    assert!(
-        snapshot
-            .topology()
-            .any(|record| { matches!(record, query_engine::observability::RuntimeTopologyRecord::TaskDefinition(_)) })
-    );
+    assert!(snapshot.topology().any(|record| { matches!(record, RuntimeTopologyRecord::TaskDefinition(_)) }));
     let tasks = snapshot
         .topology()
         .filter_map(|record| match record {
-            query_engine::observability::RuntimeTopologyRecord::TaskDefinition(row) => {
-                Some((row.plan_execution_id.clone(), row.task_id.clone()))
-            },
+            RuntimeTopologyRecord::TaskDefinition(row) => Some((row.plan_execution_id.clone(), row.task_id.clone())),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -609,7 +595,7 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
     let barriers = snapshot
         .topology()
         .filter_map(|record| match record {
-            query_engine::observability::RuntimeTopologyRecord::BarrierDefinition(row) => {
+            RuntimeTopologyRecord::BarrierDefinition(row) => {
                 Some((row.plan_execution_id.clone(), row.barrier_id.to_string()))
             },
             _ => None,
@@ -618,7 +604,7 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
     let sinks = snapshot
         .topology()
         .filter_map(|record| match record {
-            query_engine::observability::RuntimeTopologyRecord::SinkDefinition(row) => {
+            RuntimeTopologyRecord::SinkDefinition(row) => {
                 Some((row.plan_execution_id.clone(), row.sink_id.to_string()))
             },
             _ => None,
@@ -636,7 +622,7 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = keyless_root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     assert!(analysis.admits_root_join());
     let pipeline = compile_pipeline(&plan, &analysis).expect("keyless root join should compile");
     assert_eq!(
@@ -673,7 +659,7 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_with_unary_inputs_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join with unary inputs should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -723,7 +709,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     assert!(analysis.admits_root_join());
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
@@ -739,19 +725,11 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        query_engine::admission::bounded_join_modeled_facts(
-            &plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_some(),
+        bounded_join_modeled_facts(&plan, rapids_analysis_context()).is_some(),
         "GPU sink plans admitted by compiled execution must emit modeled bounded-join facts"
     );
     assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none(),
+        bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none(),
         "GPU sink plans admitted by compiled execution must not emit unsupported bounded-join facts"
     );
     let mut passthrough_builder = QueryPlanBuilder::new();
@@ -802,18 +780,16 @@ fn bounded_artifact_binding_rejects_plan_pipeline_sink_mismatch() {
         Path::new("/tmp/compiled-sink-mismatch-right.parquet"),
     );
     let gpu_plan = plan.clone_with_gpu_resident_sink();
-    let host_admission =
-        bounded_pipeline_decision(&plan, mode, query_engine::rapids_backend::rapids_analysis_context())
-            .expect("host-sink decision should not fail")
-            .admission()
-            .cloned()
-            .expect("host-sink root join should be admitted");
-    let gpu_admission =
-        bounded_pipeline_decision(&gpu_plan, mode, query_engine::rapids_backend::rapids_analysis_context())
-            .expect("GPU-sink decision should not fail")
-            .admission()
-            .cloned()
-            .expect("GPU-sink root join should be admitted");
+    let host_admission = bounded_pipeline_decision(&plan, mode, rapids_analysis_context())
+        .expect("host-sink decision should not fail")
+        .admission()
+        .cloned()
+        .expect("host-sink root join should be admitted");
+    let gpu_admission = bounded_pipeline_decision(&gpu_plan, mode, rapids_analysis_context())
+        .expect("GPU-sink decision should not fail")
+        .admission()
+        .cloned()
+        .expect("GPU-sink root join should be admitted");
 
     assert!(host_admission.matches(&plan, mode));
     assert!(gpu_admission.matches(&gpu_plan, mode));
@@ -831,9 +807,9 @@ fn bounded_artifact_binding_rejects_plan_pipeline_sink_mismatch() {
     // binding error carrying the rejection reason as a fact.
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let context = bounded_context(shared_runtime(runtime), &gpu_plan);
-    let outcome = query_engine::exec::execute_query_plan(
+    let outcome = engine_execute_query_plan(
         &context,
-        query_engine::exec::QueryExecutionRequest::new(&gpu_plan).with_bounded_admission(&host_admission),
+        QueryExecutionRequest::new(&gpu_plan).with_bounded_admission(&host_admission),
     );
     let (result, _, _) = outcome.into_parts();
     let error = match result {
@@ -852,7 +828,7 @@ fn pipeline_validation_rejects_host_sink_output_lifetime() {
 
     let error = pipeline.validate().expect_err("host sinks cannot retain sink-output resources");
 
-    assert_eq!(error.code(), query_engine::error::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("resident_resource_id"), Some("r0"));
     assert_eq!(error.fact_value("sink_boundary_kind"), Some("host_arrow_materialization"));
     assert_eq!(error.fact_value("sink_output_resource_count"), Some("1"));
@@ -867,7 +843,7 @@ fn pipeline_validation_rejects_gpu_sink_output_from_wrong_producer() {
 
     let error = pipeline.validate().expect_err("GPU sink output must be produced by the sink boundary input task");
 
-    assert_eq!(error.code(), query_engine::error::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("resident_resource_id"), Some("r0"));
     assert_eq!(error.fact_value("producer_task"), Some("t1"));
     assert_eq!(error.fact_value("sink_boundary_task_id"), Some("t0"));
@@ -885,7 +861,7 @@ fn pipeline_validation_rejects_multiple_gpu_sink_outputs() {
 
     let error = pipeline.validate().expect_err("GPU sinks must expose exactly one sink-output resource");
 
-    assert_eq!(error.code(), query_engine::error::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("sink_boundary_task_id"), Some("t0"));
     assert_eq!(error.fact_value("sink_boundary_kind"), Some("gpu_resident_output"));
     assert_eq!(error.fact_value("sink_output_resource_count"), Some("2"));
@@ -934,7 +910,7 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
     let orders_path = dir.join("orders.parquet");
     write_single_join_post_root_parquets(&customers_path, &orders_path);
     let plan = single_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join aggregate plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
     assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 0);
@@ -966,7 +942,7 @@ fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_r
     let orders_path = dir.join("orders.parquet");
     write_string_group_join_post_root_parquets(&customers_path, &orders_path);
     let plan = string_group_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("string grouped aggregate plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
     assert_eq!(
@@ -1019,7 +995,7 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_sort_limit_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join final-sort/limit plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 0);
     assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
@@ -1051,7 +1027,7 @@ fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeli
     let orders_path = dir.join("orders.parquet");
     write_single_join_post_root_parquets(&customers_path, &orders_path);
     let plan = single_join_post_root_aggregate_sort_limit_data_plan(&customers_path, &orders_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join post-root plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1082,7 +1058,7 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
     let c_path = dir.join("c.parquet");
     write_multi_join_parquets(&a_path, &b_path, &c_path);
     let plan = simple_multi_join_plan(&a_path, &b_path, &c_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("simple multi-join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1114,7 +1090,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
     let c_path = dir.join("c.parquet");
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_frame_stream_multi_join_plan(&a_path, &b_path, &c_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("residual stream multi-join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1173,7 +1149,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
     let c_path = dir.join("c.parquet");
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_leaf_stream_join_plan(&a_path, &c_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("residual leaf-stream join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1248,7 +1224,7 @@ fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
     let c_path = dir.join("c.parquet");
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_leaf_stream_left_build_join_plan(&a_path, &c_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline =
         compile_pipeline(&plan, &analysis).expect("left-build residual leaf-stream join plan should compile");
     assert_eq!(
@@ -1320,11 +1296,11 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(shared_runtime(runtime), &plan);
-    let gpu_inputs = query_engine::runtime::resident::GpuResidentInputMap::new();
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let gpu_inputs = GpuResidentInputMap::new();
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let mut executor =
         CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
@@ -1332,7 +1308,7 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let error = executor.take_host_output().expect_err("empty host sink should be a structured invariant error");
     let rendered = error.to_string();
 
-    assert_eq!(error.code(), query_engine::error::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t5"));
     assert_eq!(error.facts().get("sink_boundary_kind"), Some("host_arrow_materialization"));
     assert!(!rendered.contains("BoundedJoinExecutionFamily"));

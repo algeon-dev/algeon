@@ -18,7 +18,7 @@ use datafusion::{
 };
 use query_engine::{
     admission::AttemptCapabilityEvidence,
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput, preflight_bounded_query_plan},
     plan::QueryPlan,
 };
 
@@ -33,7 +33,7 @@ use super::{
         AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
     },
 };
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 /// Leaf DataFusion execution plan for a host-materializing native cuDF query.
 ///
@@ -62,10 +62,7 @@ impl AlgeonNativeExec {
     /// GPU-resident sinks are rejected here because regular `ExecutionPlan::execute` must stream
     /// host Arrow `RecordBatch` output to DataFusion.
     #[cfg(test)]
-    pub(crate) fn try_new(
-        plan: QueryPlan,
-        execution_config: AlgeonNativeExecutionConfig,
-    ) -> crate::error::Result<Self> {
+    pub(crate) fn try_new(plan: QueryPlan, execution_config: AlgeonNativeExecutionConfig) -> Result<Self> {
         Self::try_new_with_cache(plan, execution_config, None)
     }
 
@@ -73,7 +70,7 @@ impl AlgeonNativeExec {
         plan: QueryPlan,
         execution_config: AlgeonNativeExecutionConfig,
         eq_properties: EquivalenceProperties,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         Self::try_new_with_cache(plan, execution_config, Some(eq_properties))
     }
 
@@ -81,7 +78,7 @@ impl AlgeonNativeExec {
         plan: QueryPlan,
         execution_config: AlgeonNativeExecutionConfig,
         eq_properties: Option<EquivalenceProperties>,
-    ) -> crate::error::Result<Self> {
+    ) -> Result<Self> {
         if !plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -250,17 +247,14 @@ impl ExecutionPlan for AlgeonNativeExec {
                 // artifact to execution instead of deciding again there.
                 let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
                 let bounded_admission = if execution_config.memory_control_policy().is_bounded() {
-                    query_engine::exec::preflight_bounded_query_plan(
-                        &gpu_plan,
-                        execution_config.statistical_aggregate_execution_mode(),
-                    )
-                    .map_err(|error| {
-                        DataFusionError::from(Error::from_native(
-                            "algeon_datafusion.native_exec.bounded_preflight",
-                            "failed to preflight the resolved bounded native executable plan before admission",
-                            error,
-                        ))
-                    })?
+                    preflight_bounded_query_plan(&gpu_plan, execution_config.statistical_aggregate_execution_mode())
+                        .map_err(|error| {
+                            DataFusionError::from(Error::from_native(
+                                "algeon_datafusion.native_exec.bounded_preflight",
+                                "failed to preflight the resolved bounded native executable plan before admission",
+                                error,
+                            ))
+                        })?
                 } else {
                     None
                 };

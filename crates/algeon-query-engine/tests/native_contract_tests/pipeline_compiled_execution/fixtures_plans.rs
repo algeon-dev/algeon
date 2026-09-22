@@ -1,3 +1,8 @@
+use query_engine::{
+    capability::{CapabilityEnvelope, CapabilityRejectionOwner},
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 use crate::projection_outputs;
 

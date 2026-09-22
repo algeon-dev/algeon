@@ -1,16 +1,22 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    thread,
+    time::Duration,
+};
 
-static SERIAL: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-fn semaphore() -> Arc<tokio::sync::Semaphore> {
-    Arc::clone(SERIAL.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))))
+static SERIAL: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn semaphore() -> Arc<Semaphore> {
+    Arc::clone(SERIAL.get_or_init(|| Arc::new(Semaphore::new(1))))
 }
 
-pub(crate) fn lock() -> tokio::sync::OwnedSemaphorePermit {
+pub(crate) fn lock() -> OwnedSemaphorePermit {
     loop {
         match semaphore().try_acquire_owned() {
             Ok(permit) => return permit,
-            Err(_) => std::thread::sleep(Duration::from_millis(1)),
+            Err(_) => thread::sleep(Duration::from_millis(1)),
         }
     }
 }

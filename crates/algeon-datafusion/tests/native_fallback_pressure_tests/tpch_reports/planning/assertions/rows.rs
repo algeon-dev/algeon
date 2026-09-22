@@ -1,3 +1,5 @@
+use algeon_datafusion::native_report::NativeDataFusionPlanningRow;
+
 use super::*;
 
 pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
@@ -99,9 +101,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
     }
 }
 
-fn assert_row_rejection_diagnostics_are_family_free(
-    row: &algeon_datafusion::native_report::NativeDataFusionPlanningRow,
-) {
+fn assert_row_rejection_diagnostics_are_family_free(row: &NativeDataFusionPlanningRow) {
     for gate in &row.capability_decision_rows {
         assert_no_legacy_rejection_terms(row.query_id.as_str(), &gate.to_stable_kv_row());
     }

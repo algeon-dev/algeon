@@ -12,8 +12,8 @@ use cudf::{
     core::{Column, Table},
     interop::{
         PartitionedLocalTableResults,
-        arrow_device::DeviceArrowColumnExport,
-        arrow_host, cuda_explicit_completion_required_lease_backend,
+        arrow_device::{DeviceArrowColumnExport, DeviceArrowTableExport},
+        arrow_host, cuda_event_handle, cuda_explicit_completion_required_lease_backend, cuda_stream_handle,
         frame::PartitionedDataFrameExport,
         runtime_release::{OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser},
     },
@@ -25,6 +25,8 @@ use rapids_interop::{
     LeaseExportContext, LeaseReadiness, OwnedColumnTransfer, OwnedTableTransfer, PreparedColumnExport,
     PreparedTableExport, ReadStartAuthority, ReadStartBinding, ReleaseSynchronization,
 };
+
+use crate::common::run_named_cases;
 
 struct TestActivation;
 
@@ -90,10 +92,8 @@ fn interop_shared_authority_surface_smoke() {
     let stream = CudaStream::new().unwrap();
     let event = CudaEvent::new().unwrap();
 
-    let _read_start =
-        ReadStartAuthority::ConsumerStream { stream: cudf::interop::cuda_stream_handle(&stream).unwrap() };
-    let _completion =
-        CompletionAuthority::CrossDeviceEvent { event: cudf::interop::cuda_event_handle(&event).unwrap() };
+    let _read_start = ReadStartAuthority::ConsumerStream { stream: cuda_stream_handle(&stream).unwrap() };
+    let _completion = CompletionAuthority::CrossDeviceEvent { event: cuda_event_handle(&event).unwrap() };
     let _result = LeaseCompletionResult::FallbackSynchronized;
 
     assert_eq!(
@@ -192,10 +192,7 @@ fn interop_low_level_adapter_surface_smoke() {
     ) {
     }
     fn assert_table_device_arrow_export_with_deep_copy(
-        _f: for<'a> fn(
-            &'a Table,
-        )
-            -> std::result::Result<cudf::interop::arrow_device::DeviceArrowTableExport, cudf::Error>,
+        _f: for<'a> fn(&'a Table) -> std::result::Result<DeviceArrowTableExport, cudf::Error>,
     ) {
     }
 
@@ -212,7 +209,7 @@ fn interop_low_level_adapter_surface_smoke() {
 
 #[test]
 fn surface_smoke_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("interop_lease_backend_surface_smoke", interop_lease_backend_surface_smoke),
         ("interop_shared_authority_surface_smoke", interop_shared_authority_surface_smoke),
         ("interop_high_level_adapter_surface_smoke", interop_high_level_adapter_surface_smoke),

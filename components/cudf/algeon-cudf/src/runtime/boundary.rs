@@ -213,10 +213,11 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::runtime::DeviceId;
 
     fn placement(workflow_id: u64) -> ExecutionPlacement {
         ExecutionPlacement {
-            device: super::super::DeviceId::DEFAULT,
+            device: DeviceId::DEFAULT,
             workflow_id,
             bundle_id: workflow_id + 100,
             stream_debug: workflow_id as usize + 200,

@@ -1,5 +1,7 @@
 use std::{fmt, sync::Arc};
 
+use query_engine::{datatypes::is_supported_arrow_type, source::ParquetReadStrategy};
+
 use super::{
     CapabilityReason, LakehouseCacheStatus, ResolvedParquetSource, Schema, SchemaRef, TableFormat,
     TableFormatColumnMapping, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
@@ -291,7 +293,7 @@ impl TableFormatScanPlan {
         self.projected_columns
             .iter()
             .chain(self.pure_filter_columns.iter())
-            .find(|column| !query_engine::datatypes::is_supported_arrow_type(&column.data_type))
+            .find(|column| !is_supported_arrow_type(&column.data_type))
             .map(|column| TableFormatUnsupportedColumn {
                 logical_name: column.logical_name.as_str(),
                 data_type: &column.data_type,
@@ -388,11 +390,7 @@ fn summarize_resolved_source_value<'a>(values: impl IntoIterator<Item = &'a str>
 
 pub(super) fn table_format_source_read_contract(source: &ResolvedParquetSource) -> &'static str {
     match source.read_strategy() {
-        query_engine::source::ParquetReadStrategy::LocalCacheKvikio
-            if source.cache_status == LakehouseCacheStatus::Hit =>
-        {
-            "local_cache_hit"
-        },
+        ParquetReadStrategy::LocalCacheKvikio if source.cache_status == LakehouseCacheStatus::Hit => "local_cache_hit",
         _ => source.read_strategy().as_str(),
     }
 }

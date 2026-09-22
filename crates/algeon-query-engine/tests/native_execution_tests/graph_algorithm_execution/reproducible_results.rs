@@ -1,3 +1,5 @@
+use arrow::datatypes::{Int32Type, Int64Type};
+
 /// Run one vertex-keyed graph algorithm over `edge_batch` and return its host
 /// output rows as `(vertex, bits)` sorted by vertex.
 ///
@@ -44,10 +46,10 @@ fn run_vertex_keyed_algorithm(
     let mut rows = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
         let bits = match values.data_type() {
-            DataType::Int32 => u64::from(values.as_primitive::<arrow::datatypes::Int32Type>().value(row) as u32),
-            DataType::Int64 => values.as_primitive::<arrow::datatypes::Int64Type>().value(row) as u64,
-            DataType::Float32 => u64::from(values.as_primitive::<arrow::datatypes::Float32Type>().value(row).to_bits()),
-            DataType::Float64 => values.as_primitive::<arrow::datatypes::Float64Type>().value(row).to_bits(),
+            DataType::Int32 => u64::from(values.as_primitive::<Int32Type>().value(row) as u32),
+            DataType::Int64 => values.as_primitive::<Int64Type>().value(row) as u64,
+            DataType::Float32 => u64::from(values.as_primitive::<Float32Type>().value(row).to_bits()),
+            DataType::Float64 => values.as_primitive::<Float64Type>().value(row).to_bits(),
             data_type => panic!("expected integer label or float score column, got {data_type}"),
         };
         rows.push((vertices.value(row), bits));

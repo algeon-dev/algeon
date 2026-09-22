@@ -33,8 +33,8 @@ fn native_query_executes_cross_join_with_explicit_output_projection() {
         left,
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
         ]),
         Arc::clone(&output_schema),
     );
@@ -114,8 +114,8 @@ fn native_query_preserves_cross_join_right_then_left_projection_order() {
         left,
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
         ]),
         Arc::clone(&output_schema),
     );
@@ -198,16 +198,10 @@ fn native_query_preserves_cross_join_interleaved_projection_order() {
         left,
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
-                "right_order_id",
-            ),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
-                "left_order_id",
-            ),
+            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
         ]),
         Arc::clone(&output_schema),
     );

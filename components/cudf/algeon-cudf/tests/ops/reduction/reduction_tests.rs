@@ -6,7 +6,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, error_context_value};
+use crate::common::{column_from_slice, error_context_value, run_named_cases, series};
 
 fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, expected_ddof: u32) {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -110,7 +110,7 @@ fn test_minmax() {
 
 fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
-    let series = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap().astype(dt).unwrap();
+    let series = series::<i32>("x", &[100, 200, 300]).unwrap().astype(dt).unwrap();
     let view = series.testing_view().unwrap();
 
     let result = reduction::reduce(&view, &ReduceAgg::Min, &dt).unwrap();
@@ -120,7 +120,7 @@ fn test_reduce_decimal_scalar_dtype_preserves_scale() {
 
 #[test]
 fn reduction_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_reduce_sum", test_reduce_sum),
         ("test_reduce_min", test_reduce_min),
         ("test_reduce_max", test_reduce_max),

@@ -1,11 +1,12 @@
 use super::{ExecutionMetrics, QueryError, RetryFacts};
+use crate::exec::retry::{is_retryable_resource_error, record_retryable_resource_error};
 
 pub(super) fn is_retryable_final_sort_error(error: &QueryError) -> bool {
-    crate::exec::retry::is_retryable_resource_error(error)
+    is_retryable_resource_error(error)
 }
 
 pub(super) fn record_final_sort_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
-    crate::exec::retry::record_retryable_resource_error(error, metrics);
+    record_retryable_resource_error(error, metrics);
 }
 
 pub(super) fn final_sort_retry_facts(retry_action: &'static str, metrics: &ExecutionMetrics) -> RetryFacts {

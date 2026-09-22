@@ -1,16 +1,28 @@
+use cudf::{TypeId, core::DeviceSlice};
+use cugraph::{
+    cudf_interop::device_array_view_from_slice,
+    layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions, LayoutResult},
+    random::RngState,
+    types::{CugraphElement, DataType},
+};
+
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
     QueryError, QueryErrorCode, Result, cudf_query_error, force_atlas2_params, map_cugraph_error,
     normalize_graph_result_schema, project_edge_list, run_with_cugraph_graph, table_graph_options,
 };
+use crate::plan::{
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphForceAtlas2InitialPositionsInput,
+    GraphForceAtlas2VertexAttributesInput,
+};
 
 pub(super) fn execute_force_atlas2(
     context: &ExecutionContext,
-    spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
     let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs } = inputs;
-    let crate::plan::GraphAlgorithmParams::ForceAtlas2(params) = &spec.params else {
+    let GraphAlgorithmParams::ForceAtlas2(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.graph_algorithm.force_atlas2",
@@ -41,12 +53,12 @@ pub(super) fn execute_force_atlas2(
         options,
         "algeon_datafusion_cugraph_force_atlas2",
         |runtime, entered, graph| {
-            let mut rng_state = cugraph::random::RngState::new(entered, seed).map_err(map_cugraph_error(
+            let mut rng_state = RngState::new(entered, seed).map_err(map_cugraph_error(
                 "query_engine.graph_algorithm.force_atlas2_rng",
                 "failed to create cuGraph RNG state for ForceAtlas2",
             ))?;
             let result = match graph.vertex_dtype() {
-                cugraph::types::DataType::Int32 => force_atlas2_with_side_inputs::<i32>(
+                DataType::Int32 => force_atlas2_with_side_inputs::<i32>(
                     entered,
                     graph,
                     &mut rng_state,
@@ -54,7 +66,7 @@ pub(super) fn execute_force_atlas2(
                     vertex_attributes.as_ref(),
                     initial_positions.as_ref(),
                 )?,
-                cugraph::types::DataType::Int64 => force_atlas2_with_side_inputs::<i64>(
+                DataType::Int64 => force_atlas2_with_side_inputs::<i64>(
                     entered,
                     graph,
                     &mut rng_state,
@@ -99,7 +111,7 @@ struct ForceAtlas2InitialPositionSeries {
 }
 
 fn force_atlas2_vertex_attribute_series(
-    binding: &crate::plan::GraphForceAtlas2VertexAttributesInput,
+    binding: &GraphForceAtlas2VertexAttributesInput,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<ForceAtlas2VertexAttributeSeries> {
     let frame = force_atlas2_side_input_frame(side_inputs, binding.input, "vertex_attributes")?;
@@ -109,35 +121,35 @@ fn force_atlas2_vertex_attribute_series(
             .radius
             .as_deref()
             .map(|column| {
-                force_atlas2_side_input_column(frame, column, "vertex_attributes.radius", Some(cudf::TypeId::Float32))
+                force_atlas2_side_input_column(frame, column, "vertex_attributes.radius", Some(TypeId::Float32))
             })
             .transpose()?,
         mobility: binding
             .mobility
             .as_deref()
             .map(|column| {
-                force_atlas2_side_input_column(frame, column, "vertex_attributes.mobility", Some(cudf::TypeId::Float32))
+                force_atlas2_side_input_column(frame, column, "vertex_attributes.mobility", Some(TypeId::Float32))
             })
             .transpose()?,
         mass: binding
             .mass
             .as_deref()
             .map(|column| {
-                force_atlas2_side_input_column(frame, column, "vertex_attributes.mass", Some(cudf::TypeId::Float32))
+                force_atlas2_side_input_column(frame, column, "vertex_attributes.mass", Some(TypeId::Float32))
             })
             .transpose()?,
     })
 }
 
 fn force_atlas2_initial_position_series(
-    binding: &crate::plan::GraphForceAtlas2InitialPositionsInput,
+    binding: &GraphForceAtlas2InitialPositionsInput,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<ForceAtlas2InitialPositionSeries> {
     let frame = force_atlas2_side_input_frame(side_inputs, binding.input, "initial_positions")?;
     Ok(ForceAtlas2InitialPositionSeries {
         vertex: force_atlas2_side_input_column(frame, &binding.vertex, "initial_positions.vertex", None)?,
-        x: force_atlas2_side_input_column(frame, &binding.x, "initial_positions.x", Some(cudf::TypeId::Float32))?,
-        y: force_atlas2_side_input_column(frame, &binding.y, "initial_positions.y", Some(cudf::TypeId::Float32))?,
+        x: force_atlas2_side_input_column(frame, &binding.x, "initial_positions.x", Some(TypeId::Float32))?,
+        y: force_atlas2_side_input_column(frame, &binding.y, "initial_positions.y", Some(TypeId::Float32))?,
     })
 }
 
@@ -198,13 +210,13 @@ fn force_atlas2_side_input_column(
 fn force_atlas2_with_side_inputs<V>(
     entered: &cugraph::EnteredContext<'_>,
     graph: &mut cugraph::Graph<cugraph::Forward>,
-    rng_state: &mut cugraph::random::RngState,
-    params: &cugraph::layout::ForceAtlas2Params,
+    rng_state: &mut RngState,
+    params: &ForceAtlas2Params,
     attributes: Option<&ForceAtlas2VertexAttributeSeries>,
     positions: Option<&ForceAtlas2InitialPositionSeries>,
-) -> Result<cugraph::layout::LayoutResult>
+) -> Result<LayoutResult>
 where
-    V: cugraph::types::CugraphElement + cudf::CudfType,
+    V: CugraphElement + cudf::CudfType,
 {
     if let Some(attributes) = attributes {
         validate_force_atlas2_vertex_series::<V>(&attributes.vertex, "vertex_attributes.vertex")?;
@@ -244,7 +256,7 @@ where
         .as_ref()
         .map(|slice| force_atlas2_device_view::<f32>(slice, "vertex_attributes.mass"))
         .transpose()?;
-    let native_attributes = attributes.map(|_| cugraph::layout::ForceAtlas2VertexAttrs {
+    let native_attributes = attributes.map(|_| ForceAtlas2VertexAttrs {
         radius: radius_view
             .as_ref()
             .map(|values| (attribute_vertex_view.as_ref().expect("attributes carry a vertex view"), values)),
@@ -270,7 +282,7 @@ where
         positions.map(|input| force_atlas2_device_slice::<f32>(&input.y, "initial_positions.y")).transpose()?;
     let y_view =
         y_slice.as_ref().map(|slice| force_atlas2_device_view::<f32>(slice, "initial_positions.y")).transpose()?;
-    let native_positions = positions.map(|_| cugraph::layout::InitialPositions {
+    let native_positions = positions.map(|_| InitialPositions {
         vertices: position_vertex_view.as_ref().expect("positions carry a vertex view"),
         x: x_view.as_ref().expect("positions carry an x view"),
         y: y_view.as_ref().expect("positions carry a y view"),
@@ -313,7 +325,7 @@ fn validate_force_atlas2_vertex_series<V: cudf::CudfType>(series: &cudf::Series,
 fn force_atlas2_device_slice<'a, T: cudf::CudfType>(
     series: &'a cudf::Series,
     role: &'static str,
-) -> Result<cudf::core::DeviceSlice<'a>> {
+) -> Result<DeviceSlice<'a>> {
     series.as_column().device_slice::<T>().map_err(|error| {
         cudf_query_error(
             "query_engine.graph_algorithm.force_atlas2_side_input",
@@ -324,11 +336,11 @@ fn force_atlas2_device_slice<'a, T: cudf::CudfType>(
     })
 }
 
-fn force_atlas2_device_view<'a, T: cugraph::types::CugraphElement>(
-    slice: &'a cudf::core::DeviceSlice<'a>,
+fn force_atlas2_device_view<'a, T: CugraphElement>(
+    slice: &'a DeviceSlice<'a>,
     role: &'static str,
 ) -> Result<cugraph::DeviceArrayView<'a, T>> {
-    cugraph::cudf_interop::device_array_view_from_slice::<T>(slice).map_err(map_cugraph_error(
+    device_array_view_from_slice::<T>(slice).map_err(map_cugraph_error(
         "query_engine.graph_algorithm.force_atlas2_side_input",
         match role {
             "vertex_attributes.vertex" => "failed to wrap ForceAtlas2 attribute vertices",

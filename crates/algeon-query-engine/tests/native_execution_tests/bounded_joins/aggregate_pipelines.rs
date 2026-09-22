@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use query_engine::mode::StatisticalAggregateExecutionMode;
+use query_engine::{expr::ColumnRef, mode::StatisticalAggregateExecutionMode, rapids_backend::rapids_analysis_context};
 
 use super::*;
 
@@ -34,8 +34,8 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         join_schema,
@@ -106,8 +106,8 @@ fn bounded_native_query_fuses_compiled_sort_limit_with_topk() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         join_schema,
@@ -193,13 +193,13 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         JoinSpec::new(
             JoinType::Left,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
-                query_engine::expr::ColumnRef::input(1, "o_custkey", "o_custkey"),
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -235,7 +235,7 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         final_schema,
     );
     let plan = builder.finish_with_host_sink(sort);
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -323,19 +323,13 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
         dim,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "id", "id"),
-                query_engine::expr::ColumnRef::input(1, "id", "id"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "category", "category"), "category"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "class", "class"), "class"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "brand", "brand"), "brand"),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "detail_sales", "detail_sales"),
-                "detail_sales",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "class", "class"), "class"),
+            JoinOutputColumn::left(ColumnRef::input(0, "brand", "brand"), "brand"),
+            JoinOutputColumn::left(ColumnRef::input(0, "detail_sales", "detail_sales"), "detail_sales"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -383,7 +377,7 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     );
     let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
     let plan = builder.finish_with_host_sink(limit);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     assert!(
         analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
         "rollup/rank/top-k optimized shape should select the bounded capability envelope; first_rejection={:?}",
@@ -511,8 +505,8 @@ fn bounded_stddev_join_aggregate_plan(runtime: &Arc<cudf::Runtime>, dir: &Path) 
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         join_schema,

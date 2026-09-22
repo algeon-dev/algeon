@@ -1,6 +1,7 @@
 //! Revocable service and query resource epochs.
 
 use std::{
+    fmt, sync,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -9,6 +10,8 @@ use std::{
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+
+use crate::runtime::deadline::{DeadlineMutexLockError, deadline_expired, deadline_remaining, mutex_lock_until};
 
 #[cfg(test)]
 #[path = "query_service_epoch_tests.rs"]
@@ -36,8 +39,8 @@ struct QueryServiceEpochIdleState {
     complete: bool,
 }
 
-impl std::fmt::Debug for QueryServiceEpoch {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for QueryServiceEpoch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("QueryServiceEpoch")
             .field("open", &self.inner.open.load(Ordering::Acquire))
@@ -100,7 +103,7 @@ impl QueryServiceEpoch {
         if self.inner.open.load(Ordering::Acquire) || self.inner.active_users.load(Ordering::Acquire) != 0 {
             return;
         }
-        let mut state = self.inner.idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.inner.idle_state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         self.complete_idle_locked(&mut state);
     }
 
@@ -121,16 +124,16 @@ impl QueryServiceEpoch {
 
     #[doc(hidden)]
     pub fn wait_for_idle_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
-        let mut state = match crate::runtime::deadline::mutex_lock_until(&self.inner.idle_state, deadline) {
+        let mut state = match mutex_lock_until(&self.inner.idle_state, deadline) {
             Ok(state) => state,
-            Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => {
+            Err(DeadlineMutexLockError::Poisoned) => {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
                     "query service resource epoch idle mutex was poisoned during shutdown",
                 ));
             },
-            Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
+            Err(DeadlineMutexLockError::TimedOut) => {
                 return Err(query_service_epoch_idle_timeout(
                     operation,
                     self.inner.active_users.load(Ordering::Acquire),
@@ -148,7 +151,7 @@ impl QueryServiceEpoch {
                 completed_here = true;
             }
             if state.complete {
-                if (waited_for_idle || completed_here) && crate::runtime::deadline::deadline_expired(deadline) {
+                if (waited_for_idle || completed_here) && deadline_expired(deadline) {
                     return Err(query_service_epoch_idle_timeout(
                         operation,
                         self.inner.active_users.load(Ordering::Acquire),
@@ -156,13 +159,13 @@ impl QueryServiceEpoch {
                 }
                 return Ok(());
             }
-            if crate::runtime::deadline::deadline_expired(deadline) {
+            if deadline_expired(deadline) {
                 return Err(query_service_epoch_idle_timeout(
                     operation,
                     self.inner.active_users.load(Ordering::Acquire),
                 ));
             }
-            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+            let Some(remaining) = deadline_remaining(deadline) else {
                 return Err(query_service_epoch_idle_timeout(
                     operation,
                     self.inner.active_users.load(Ordering::Acquire),
@@ -220,8 +223,8 @@ struct QueryResourceEpochInner {
     on_idle: Mutex<Option<QueryResourceEpochIdleCallback>>,
 }
 
-impl std::fmt::Debug for QueryResourceEpoch {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for QueryResourceEpoch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("QueryResourceEpoch")
             .field("open", &self.inner.open.load(Ordering::Acquire))
@@ -312,8 +315,8 @@ impl QueryResourceAnchor {
     }
 }
 
-impl std::fmt::Debug for QueryResourceAnchor {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for QueryResourceAnchor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("QueryResourceAnchor").field("epoch", &self.epoch).finish_non_exhaustive()
     }
 }

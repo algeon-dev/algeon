@@ -12,7 +12,9 @@ use super::{
     projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
     record_chunk_retry_error,
 };
-use crate::observability::SourceReadFact;
+use crate::{
+    exec::retry::backoff_before_retry, observability::SourceReadFact, rapids_backend::rapids_analysis_context,
+};
 
 pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
     context: &ExecutionContext,
@@ -23,9 +25,11 @@ pub(in crate::exec::bounded) fn bounded_source_adjacent_chunk_batching_enabled(
         && bounded.source.partition_columns.is_empty()
         && !bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && bounded.source.scan_limit.is_none()
-        && bounded.source.reader_predicate.as_ref().is_none_or(|predicate| {
-            bounded.source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
-        })
+        && bounded
+            .source
+            .reader_predicate
+            .as_ref()
+            .is_none_or(|predicate| bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
         && bounded_source_adjacent_chunk_batches(context, bounded, chunks).iter().any(|batch| batch.chunk_count() > 1)
 }
 
@@ -192,7 +196,7 @@ fn execute_source_adjacent_batch_retry(
                 return Err(error);
             };
             execution.record_source_read(SourceReadFact::ChunkRetried);
-            crate::exec::retry::backoff_before_retry(
+            backoff_before_retry(
                 execution.context(),
                 "query_engine.exec.bounded.source_adjacent_chunk_batch_split_retry",
             )?;
@@ -551,6 +555,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        plan::NodeId,
         runtime::SourceChunkPlanningMode,
         source::{CredentialMode, LocalParquetFile, ParquetSourceLocation, ResolvedParquetSource},
     };
@@ -579,7 +584,7 @@ mod tests {
     fn remote_direct_chunk(chunk_index: usize, estimated_source_read_bytes: u64) -> SourceChunk {
         let resolved_source = remote_direct_resolved_source();
         SourceChunk {
-            source_node_id: crate::plan::NodeId::from_index_for_internal_use(0),
+            source_node_id: NodeId::from_index_for_internal_use(0),
             chunk_index,
             file_index: 0,
             location: ParquetSourceLocation::object_store_uri("s3://bucket/table.parquet").unwrap(),

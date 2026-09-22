@@ -4,9 +4,10 @@ use algeon_datafusion::{
     backend::AlgeonGpuBackend,
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
-use query_engine::runtime::GpuDeviceMemoryLimit;
+use query_engine::runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode, SourceSchedulerPolicy};
 
 use super::*;
+use crate::{gpu_backend::build_installed_gpu_backend, report_workload::RelationalExecutionSelection};
 
 pub(super) const ALGEON_TPCH_BENCH_NATIVE_PROFILE_ENV: &str = "ALGEON_TPCH_BENCH_NATIVE_PROFILE";
 pub(super) const ALGEON_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str =
@@ -44,7 +45,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) iterations: usize,
     pub(super) dataset_mode: NativeTpchDatasetMode,
     pub(super) parquet_pushdown_filters: Option<bool>,
-    pub(super) native_execution: crate::report_workload::RelationalExecutionSelection,
+    pub(super) native_execution: RelationalExecutionSelection,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
     pub(super) max_source_reads_in_flight: usize,
 }
@@ -111,7 +112,7 @@ impl NativeTpchBenchmarkConfig {
             iterations: env_usize("ALGEON_TPCH_BENCH_ITERATIONS", 1)?,
             dataset_mode: NativeTpchDatasetMode::from_env("ALGEON_TPCH_BENCH_DATASET_MODE")?,
             parquet_pushdown_filters: optional_env_bool("ALGEON_TPCH_BENCH_PARQUET_PUSHDOWN_FILTERS")?,
-            native_execution: crate::report_workload::RelationalExecutionSelection::strict_native(),
+            native_execution: RelationalExecutionSelection::strict_native(),
             native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(
                 native_tpch_profile_settings_from_env()?,
             ),
@@ -155,16 +156,14 @@ impl NativeTpchBenchmarkConfig {
             policy.max_retry_attempts,
             policy.min_retry_chunk_row_groups,
         )
-        .with_source_scheduler_policy(query_engine::runtime::SourceSchedulerPolicy::new(
-            self.max_source_reads_in_flight,
-        ))
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(self.max_source_reads_in_flight))
         .with_source_chunk_planning_mode(policy.source_chunk_planning_mode)
     }
 
     pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
         let execution_config = self.native_execution_config_with_resources(&NativeTpchRuntimeResources::unavailable());
         let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(execution_config);
-        let backend = crate::gpu_backend::build_installed_gpu_backend(
+        let backend = build_installed_gpu_backend(
             optimizer_config,
             self.native_memory_policy.device_budget.memory_limit(),
             self.max_source_reads_in_flight,
@@ -184,7 +183,7 @@ impl Default for NativeTpchBenchmarkConfig {
             iterations: 1,
             dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
             parquet_pushdown_filters: None,
-            native_execution: crate::report_workload::RelationalExecutionSelection::strict_native(),
+            native_execution: RelationalExecutionSelection::strict_native(),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
         }
@@ -312,7 +311,7 @@ pub(super) struct NativeTpchMemoryPolicy {
     pub(super) max_row_groups_per_chunk: usize,
     pub(super) max_retry_attempts: usize,
     pub(super) min_retry_chunk_row_groups: usize,
-    pub(super) source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 impl NativeTpchMemoryPolicy {
@@ -323,7 +322,7 @@ impl NativeTpchMemoryPolicy {
         max_row_groups_per_chunk: usize,
         max_retry_attempts: usize,
         min_retry_chunk_row_groups: usize,
-        source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+        source_chunk_planning_mode: SourceChunkPlanningMode,
     ) -> Self {
         Self {
             profile_name: TPCH_NATIVE_PROFILE_CUSTOM,
@@ -374,7 +373,7 @@ impl Default for NativeTpchMemoryPolicy {
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         }
     }
 }
@@ -388,7 +387,7 @@ pub(super) struct NativeTpchProfileSettings {
     pub(super) max_row_groups_per_chunk: usize,
     pub(super) max_retry_attempts: usize,
     pub(super) min_retry_chunk_row_groups: usize,
-    pub(super) source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 impl NativeTpchProfileSettings {
@@ -415,7 +414,7 @@ struct NativeTpchProfileBase {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
-    source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
 }
 
 fn native_tpch_profile_settings_from_env() -> DataFusionResult<NativeTpchProfileSettings> {
@@ -517,7 +516,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         }),
         TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => Ok(NativeTpchProfileBase {
             name: TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
@@ -527,7 +526,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
             max_row_groups_per_chunk: TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
         }),
         other => Err(plan_error(format!(
             "invalid {ALGEON_TPCH_BENCH_NATIVE_PROFILE_ENV}: {other}; expected {TPCH_NATIVE_PROFILE_CONSERVATIVE} or {TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -614,14 +613,10 @@ fn parse_env_u64_value(name: &'static str, value: String) -> DataFusionResult<u6
     value.parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
 }
 
-fn parse_env_source_chunk_planning_mode(
-    value: String,
-) -> DataFusionResult<query_engine::runtime::SourceChunkPlanningMode> {
+fn parse_env_source_chunk_planning_mode(value: String) -> DataFusionResult<SourceChunkPlanningMode> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "conservative" => Ok(query_engine::runtime::SourceChunkPlanningMode::Conservative),
-        "local_parquet_throughput" | "local_throughput" => {
-            Ok(query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput)
-        },
+        "conservative" => Ok(SourceChunkPlanningMode::Conservative),
+        "local_parquet_throughput" | "local_throughput" => Ok(SourceChunkPlanningMode::LocalParquetThroughput),
         other => Err(plan_error(format!(
             "invalid {ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or local_parquet_throughput"
         ))),

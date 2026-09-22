@@ -397,8 +397,9 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
 
     let mut builder = QueryPlanBuilder::new();
     let driver = match variant {
-        ProjectionScalarSetopPlanVariant::OneRowDriver => builder
-            .add_source(SourceNode::LiteralBatch(query_engine::source::LiteralBatchSource::placeholder_row())),
+        ProjectionScalarSetopPlanVariant::OneRowDriver => {
+            builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::placeholder_row()))
+        },
         ProjectionScalarSetopPlanVariant::ScanLimitDriver => {
             let driver = builder.add_source(SourceNode::LocalParquet(
                 LocalParquetSource::new(
@@ -763,7 +764,7 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
             JoinType::LeftAnti,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
-        .with_null_equality(query_engine::plan::JoinNullEquality::NullsMatch)
+        .with_null_equality(JoinNullEquality::NullsMatch)
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&key_schema),
@@ -775,7 +776,7 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
             JoinType::LeftAnti,
             vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
         )
-        .with_null_equality(query_engine::plan::JoinNullEquality::NullsMatch)
+        .with_null_equality(JoinNullEquality::NullsMatch)
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&key_schema),
@@ -809,7 +810,7 @@ fn composed_pipeline_keeps_scalar_fanout_cardinality_as_node_facts() {
         ("max-rows-driver", projection_root_scalar_fanout_max_rows_driver_plan()),
         ("limit-driver", projection_root_scalar_fanout_limit_driver_plan()),
     ] {
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
         assert!(
             analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)),
             "{label} should keep a one-row node fact"
@@ -827,13 +828,12 @@ fn composed_pipeline_rejects_scalar_fanout_anti_join_at_node() {
     // variant; now the join node capability owns the rejection while the
     // scalar aggregates keep their one-row facts.
     let plan = projection_root_scalar_fanout_unsupported_join_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     assert!(analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)));
-    let projection = bounded_pipeline_rejection_projection(&plan)
-        .unwrap()
-        .expect("anti-join fan-out should project a rejection");
+    let projection =
+        bounded_pipeline_rejection_projection(&plan).unwrap().expect("anti-join fan-out should project a rejection");
     assert!(
-        matches!(projection.owner, query_engine::capability::CapabilityRejectionOwner::Node(_)),
+        matches!(projection.owner, CapabilityRejectionOwner::Node(_)),
         "anti-join fan-out should reject on the node, got {:?}",
         projection.owner
     );
@@ -850,7 +850,7 @@ fn composed_pipeline_rejects_non_dedup_left_anti_build_input() {
         .unwrap()
         .expect("distinct-aggregate anti build should project a rejection");
     assert!(
-        matches!(projection.owner, query_engine::capability::CapabilityRejectionOwner::Edge { .. }),
+        matches!(projection.owner, CapabilityRejectionOwner::Edge { .. }),
         "distinct-aggregate build should reject on the edge, got {:?}",
         projection.owner
     );
@@ -868,7 +868,7 @@ fn composed_pipeline_admits_chained_except_distinct_dedup_scalar() {
     let admission = bounded_pipeline_admission(&plan)
         .unwrap()
         .expect("chained EXCEPT DISTINCT dedup-scalar pipeline should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::ComposedPipeline);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ComposedPipeline);
 }
 
 #[test]
@@ -882,10 +882,7 @@ fn composed_pipeline_rejects_non_dedup_left_anti_probe_input() {
         .unwrap()
         .expect("non-dedup left-anti probe input should project a rejection");
     assert!(
-        matches!(
-            projection.owner,
-            query_engine::capability::CapabilityRejectionOwner::Edge { .. }
-        ),
+        matches!(projection.owner, CapabilityRejectionOwner::Edge { .. }),
         "non-dedup probe input should reject on the edge, got {:?}",
         projection.owner
     );

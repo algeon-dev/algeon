@@ -11,6 +11,8 @@ use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt, ptr::NonNull};
 
 use rapids_interop::{InteropError, InteropErrorKind};
 
+use crate::runtime;
+
 mod ffi;
 
 pub mod classification;
@@ -782,13 +784,13 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
     // another shim call on this thread and replace the TLS payload.
     let (message, ffi_detail) = read_ffi_error(status);
     if status == cudf_sys::CUDF_ERROR_FATAL_CUDA
-        && let Some(device) = crate::runtime::device_guard::current_entered_device()
+        && let Some(device) = runtime::device_guard::current_entered_device()
     {
-        crate::runtime::report_device_fault(
+        runtime::report_device_fault(
             device,
-            crate::runtime::DeviceFaultKind::FatalDeviceOperation,
+            runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(crate::runtime::DeviceFaultNativeStatus::Cudf(status)),
+            Some(runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
     Err(error_for_ffi_status_with_detail(status, operation, message, ffi_detail))

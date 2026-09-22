@@ -1,5 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
+use algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics;
+use query_engine::runtime::SourceChunkPlanningMode;
 use workloads::tpch::TpchTableMetadata;
 
 use super::*;
@@ -97,7 +99,7 @@ fn benchmark_query_progress_line_identifies_query_and_profile() {
             1024,
             DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
+            SourceChunkPlanningMode::LocalParquetThroughput,
         ),
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
         ..NativeTpchBenchmarkConfig::default()
@@ -501,8 +503,8 @@ fn not_supported_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
     }
 }
 
-fn accepted_capability_compiled_graphs() -> Vec<algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics> {
-    vec![algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics {
+fn accepted_capability_compiled_graphs() -> Vec<NativeCapabilityCompiledGraphDiagnostics> {
+    vec![NativeCapabilityCompiledGraphDiagnostics {
         task_count: 3,
         edge_count: 2,
         barrier_count: 0,

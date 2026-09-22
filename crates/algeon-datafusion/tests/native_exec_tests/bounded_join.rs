@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::{Int32Array, Int64Array};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use futures::executor::block_on;
 use query_engine::{
     optimizer::{
         JoinBuildSideSelectionBasis, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionOptions,
@@ -11,6 +12,7 @@ use query_engine::{
 };
 
 use super::*;
+use crate::tpch_session::tpch_report_session_config;
 
 #[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
@@ -31,7 +33,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 2);
 
-    let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    let batches = block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 3);
     assert_eq!(batches[0].num_columns(), 3);
@@ -69,7 +71,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 2);
 
-    let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    let batches = block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 0);
     assert_eq!(batches[0].num_columns(), 3);
@@ -101,12 +103,10 @@ fn assert_null_aware_anti_join_native_matches_datafusion(
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.selected_count(), 1, "report={report:?}; diagnostics={:?}", rule.last_planning_diagnostics());
 
-    let native_rows = null_aware_anti_join_rows(
-        &futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap(),
-    );
-    let datafusion_rows = null_aware_anti_join_rows(
-        &futures::executor::block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap(),
-    );
+    let native_rows =
+        null_aware_anti_join_rows(&block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap());
+    let datafusion_rows =
+        null_aware_anti_join_rows(&block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap());
     assert_eq!(native_rows, expected_rows);
     assert_eq!(datafusion_rows, expected_rows);
 }
@@ -208,7 +208,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
     assert_eq!(report.not_selected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
-    let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    let batches = block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 3);
     assert_eq!(batches[0].num_columns(), 3);
@@ -352,20 +352,18 @@ fn write_advisory_build_side_fixture(dir: &std::path::Path, skewed_dim_keys: boo
 type AdvisoryBuildSideRun = (JoinBuildSideSelectionCandidateDiagnostics, Vec<(i32, i64)>, Vec<(i32, i64)>);
 
 fn run_advisory_build_side_query(dir: &std::path::Path, collect_statistics: bool) -> AdvisoryBuildSideRun {
-    let mut config = crate::tpch_session::tpch_report_session_config();
+    let mut config = tpch_report_session_config();
     config.options_mut().execution.collect_statistics = collect_statistics;
     let ctx = SessionContext::new_with_config(config);
     for table in ["dim", "mid", "fact"] {
         let path = dir.join(format!("{table}.parquet"));
-        futures::executor::block_on(ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()))
-            .unwrap();
+        block_on(ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     }
     let plan = |sql: &str| {
-        let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
-        futures::executor::block_on(df.create_physical_plan()).unwrap()
+        let df = block_on(ctx.sql(sql)).unwrap();
+        block_on(df.create_physical_plan()).unwrap()
     };
-    let cpu =
-        futures::executor::block_on(collect(plan(ADVISORY_BUILD_SIDE_SQL), Arc::new(TaskContext::default()))).unwrap();
+    let cpu = block_on(collect(plan(ADVISORY_BUILD_SIDE_SQL), Arc::new(TaskContext::default()))).unwrap();
 
     // The fixture is tiny, so lower the small-build thresholds below the
     // leaf's footer estimate; otherwise the pass stops at "current side is
@@ -392,7 +390,7 @@ fn run_advisory_build_side_query(dir: &std::path::Path, collect_statistics: bool
         .find(|candidate| candidate.left_estimated_rows.is_none() && candidate.right_estimated_rows.is_some())
         .cloned()
         .expect("the join-fed outer join should be a build-side candidate");
-    let native = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    let native = block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
 
     (candidate, grouped_total_rows(&native), grouped_total_rows(&cpu))
 }

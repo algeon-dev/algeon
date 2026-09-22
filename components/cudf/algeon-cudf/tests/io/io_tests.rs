@@ -14,6 +14,7 @@ use cudf::{
     io::parquet,
     testing::prelude::*,
 };
+use cudf_sys::test_support;
 use tempfile::TempDir;
 
 use crate::common::{
@@ -584,7 +585,7 @@ fn test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation() {
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ENTRY);
+    arm_next_io_metadata_fault(test_support::CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ENTRY);
     let err = match parquet::read_parquet_table(
         &parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
     ) {
@@ -613,7 +614,7 @@ fn test_parquet_read_metadata_null_name_array_uses_canonical_fault_context() {
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ARRAY);
+    arm_next_io_metadata_fault(test_support::CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ARRAY);
     let err = match parquet::read_parquet_table(
         &parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
     ) {
@@ -645,7 +646,7 @@ fn test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context() {
     let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     parquet::write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
+    arm_next_io_metadata_fault(test_support::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
     let err = match parquet::read_parquet_table(
         &parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
     ) {

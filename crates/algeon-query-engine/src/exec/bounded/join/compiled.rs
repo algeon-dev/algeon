@@ -14,8 +14,9 @@ use super::{
 use crate::{
     admission::CompiledJoinExecutionStrategy,
     capability::{KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind, keyed_filtered_semi_anti_join_capable},
-    exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+    exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource, lanes::AggregateLaneDispatch},
     expr::{ColumnQualifier, ColumnRef},
+    metrics::{JoinOperatorMetrics, OperatorMetrics},
 };
 
 mod cross;
@@ -703,7 +704,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     node: &JoinNode,
     build: BoundedCompiledJoinBuildState,
     mut inputs: ResidentFrameStreamPayload,
-    outer: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
+    outer: Option<&AggregateLaneDispatch>,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
         BoundedCompiledJoinBuildState::Prepared(build) if mixed_left_match_probe_supported(node, build.strategy) => {
@@ -829,7 +830,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
     node_id: NodeId,
     node: &JoinNode,
     probe: BoundedCompiledJoinProbeState,
-    outer: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
+    outer: Option<&AggregateLaneDispatch>,
 ) -> Result<ResidentGpuFrame> {
     match probe {
         BoundedCompiledJoinProbeState::Hash(probe) => {
@@ -1585,9 +1586,9 @@ fn materialize_compiled_indices_output(
     }
     debug_assert_eq!(observed_gather_map_bytes, gather_map_bytes);
     let (left, right) = txn.sides();
-    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(OperatorMetrics::join(
         node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: execution_strategy.to_string(),

@@ -8,6 +8,7 @@ use std::{
 };
 
 use algeon_datafusion::{
+    cugraph_sql::CugraphAlgoExec,
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION, CuvsAlgoExec,
         CuvsLogicalNode, CuvsOperation, CuvsRelationArgumentSyntax, CuvsRelationRole, cuvs_options_json_schema,
@@ -17,16 +18,24 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     session::AlgeonSessionStateBuilderExt,
 };
-use arrow::array::Array;
+use arrow::{
+    array::{Array, BooleanArray, StringArray},
+    datatypes::DataType,
+};
 use datafusion::{
-    common::{DFSchema, config::Dialect, tree_node::TreeNodeRecursion},
-    execution::{SessionStateBuilder, context::TaskContext},
+    catalog::Session,
+    common::{DFSchema, DataFusionError, Result as DataFusionResult, config::Dialect, tree_node::TreeNodeRecursion},
+    execution::{
+        SessionStateBuilder,
+        context::{QueryPlanner, TaskContext},
+    },
     logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
     physical_expr::PhysicalExpr,
     physical_plan::{
         ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
         SendableRecordBatchStream,
     },
+    physical_planner::DefaultPhysicalPlanner,
     prelude::SessionContext,
     sql::{
         parser::Statement as DataFusionStatement,
@@ -36,7 +45,7 @@ use datafusion::{
     },
 };
 use query_engine::plan::{
-    CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, canonicalize_cuvs_options,
+    CUVS_ID_TYPES, CuvsIdType, CuvsOperation as NativeCuvsOperation, canonicalize_cuvs_options,
     vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
 };
 
@@ -68,13 +77,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     );
     assert_eq!(
         CUVS_ID_TYPES,
-        &[
-            query_engine::plan::CuvsIdType::Int32,
-            query_engine::plan::CuvsIdType::Int64,
-            query_engine::plan::CuvsIdType::Utf8,
-            query_engine::plan::CuvsIdType::LargeUtf8,
-            query_engine::plan::CuvsIdType::Utf8View,
-        ]
+        &[CuvsIdType::Int32, CuvsIdType::Int64, CuvsIdType::Utf8, CuvsIdType::LargeUtf8, CuvsIdType::Utf8View,]
     );
 
     let pca = cuvs_options_json_schema(CuvsOperation::Pca);
@@ -226,8 +229,7 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
     )
     .await;
     let knn = find_cuvs_node(&knn).unwrap();
-    let expected_knn =
-        vector_brute_force_knn_output_schema(arrow::datatypes::DataType::Utf8, arrow::datatypes::DataType::Int64);
+    let expected_knn = vector_brute_force_knn_output_schema(DataType::Utf8, DataType::Int64);
     let expected_knn = DFSchema::try_from(expected_knn.as_ref().clone()).unwrap();
     assert_eq!(knn.schema().as_ref(), &expected_knn);
 
@@ -240,7 +242,7 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
     )
     .await;
     let kmeans = find_cuvs_node(&kmeans).unwrap();
-    let expected_kmeans = vector_kmeans_output_schema(arrow::datatypes::DataType::Int64);
+    let expected_kmeans = vector_kmeans_output_schema(DataType::Int64);
     let expected_kmeans = DFSchema::try_from(expected_kmeans.as_ref().clone()).unwrap();
     assert_eq!(kmeans.schema().as_ref(), &expected_kmeans);
 
@@ -250,7 +252,7 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
     )
     .await;
     let pca = find_cuvs_node(&pca).unwrap();
-    let expected_pca = vector_pca_output_schema(arrow::datatypes::DataType::Int64, 2);
+    let expected_pca = vector_pca_output_schema(DataType::Int64, 2);
     let expected_pca = DFSchema::try_from(expected_pca.as_ref().clone()).unwrap();
     assert_eq!(pca.schema().as_ref(), &expected_pca);
 }
@@ -266,17 +268,15 @@ fn identical_cuvs_installation_is_idempotent_over_its_existing_query_planner() {
 struct SentinelQueryPlanner;
 
 #[async_trait::async_trait]
-impl datafusion::execution::context::QueryPlanner for SentinelQueryPlanner {
+impl QueryPlanner for SentinelQueryPlanner {
     async fn create_physical_plan(
         &self,
-        logical_plan: &datafusion::logical_expr::LogicalPlan,
-        session: &dyn datafusion::catalog::Session,
-    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        logical_plan: &LogicalPlan,
+        session: &dyn Session,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         use datafusion::physical_planner::PhysicalPlanner;
 
-        datafusion::physical_planner::DefaultPhysicalPlanner::default()
-            .create_physical_plan(logical_plan, session)
-            .await
+        DefaultPhysicalPlanner::default().create_physical_plan(logical_plan, session).await
     }
 }
 
@@ -358,14 +358,8 @@ async fn catalog_relations_become_two_real_children_and_alias_resolves() {
     assert!(!queries.contains("EmptyRelation"), "{queries}");
     assert!(plan.display_indent().to_string().contains("SubqueryAlias: knn"));
     assert_schema(node.schema(), &["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"]);
-    assert_eq!(
-        node.schema().field_with_unqualified_name("query_id").unwrap().data_type(),
-        &arrow::datatypes::DataType::Utf8
-    );
-    assert_eq!(
-        node.schema().field_with_unqualified_name("neighbor_id").unwrap().data_type(),
-        &arrow::datatypes::DataType::Int64
-    );
+    assert_eq!(node.schema().field_with_unqualified_name("query_id").unwrap().data_type(), &DataType::Utf8);
+    assert_eq!(node.schema().field_with_unqualified_name("neighbor_id").unwrap().data_type(), &DataType::Int64);
 }
 
 #[tokio::test]
@@ -512,10 +506,9 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
         .unwrap();
     assert_eq!(described.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
     let described_batch = &described[0];
-    let validation_schema: serde_json::Value = serde_json::from_str(
-        described_batch.column(10).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0),
-    )
-    .unwrap();
+    let validation_schema: serde_json::Value =
+        serde_json::from_str(described_batch.column(10).as_any().downcast_ref::<StringArray>().unwrap().value(0))
+            .unwrap();
     assert_eq!(
         validation_schema["properties"]["options"]["description"],
         "cuVS operation options and relation-column bindings. See options_schema_json."
@@ -538,10 +531,10 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
         .collect()
         .await
         .unwrap();
-    let valid_column = valid[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    let error_code = valid[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-    let resolved_column = valid[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    let would_execute = valid[0].column(5).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let valid_column = valid[0].column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
+    let error_code = valid[0].column(1).as_any().downcast_ref::<StringArray>().unwrap();
+    let resolved_column = valid[0].column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
+    let would_execute = valid[0].column(5).as_any().downcast_ref::<BooleanArray>().unwrap();
     #[cfg(feature = "cuvs")]
     {
         assert!(valid_column.value(0));
@@ -571,8 +564,8 @@ async fn unified_gpu_metadata_reports_cuvs_as_available() {
         .collect()
         .await
         .unwrap();
-    let available = listed[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    let reason = listed[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+    let available = listed[0].column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
+    let reason = listed[0].column(1).as_any().downcast_ref::<StringArray>().unwrap();
     assert!(available.value(0));
     assert!(reason.is_null(0));
 
@@ -591,9 +584,9 @@ async fn unified_gpu_metadata_reports_cuvs_as_available() {
         .collect()
         .await
         .unwrap();
-    let valid = validated[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    let code = validated[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-    let would_execute = validated[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let valid = validated[0].column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
+    let code = validated[0].column(1).as_any().downcast_ref::<StringArray>().unwrap();
+    let would_execute = validated[0].column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
     assert!(valid.value(0));
     assert!(code.is_null(0));
     assert!(would_execute.value(0));
@@ -617,9 +610,9 @@ async fn unified_gpu_metadata_reports_cuvs_unavailability_before_relation_valida
         .collect()
         .await
         .unwrap();
-    let missing_valid = missing[0].column(0).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
-    let missing_code = missing[0].column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-    let missing_resolved = missing[0].column(2).as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+    let missing_valid = missing[0].column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
+    let missing_code = missing[0].column(1).as_any().downcast_ref::<StringArray>().unwrap();
+    let missing_resolved = missing[0].column(2).as_any().downcast_ref::<BooleanArray>().unwrap();
     #[cfg(feature = "cuvs")]
     {
         assert!(!missing_valid.value(0));
@@ -749,8 +742,8 @@ impl ExecutionPlan for ExecuteCountingExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
-    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
         Ok(TreeNodeRecursion::Continue)
     }
 
@@ -761,20 +754,14 @@ impl ExecutionPlan for ExecuteCountingExec {
     fn with_new_children(
         self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if children.len() != 1 {
-            return Err(datafusion::common::DataFusionError::Execution(
-                "ExecuteCountingExec expects one child".to_string(),
-            ));
+            return Err(DataFusionError::Execution("ExecuteCountingExec expects one child".to_string()));
         }
         Ok(Arc::new(Self { input: children.remove(0), execute_count: Arc::clone(&self.execute_count) }))
     }
 
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         self.execute_count.fetch_add(1, Ordering::SeqCst);
         self.input.execute(partition, context)
     }
@@ -874,7 +861,7 @@ async fn cugraph_reaches_cuvs_as_a_direct_gpu_resident_producer() {
     let dataset = cuvs.children()[0];
     assert_eq!(dataset.name(), "CugraphAlgoExec", "cuGraph must be the direct cuVS child with no host wrapper");
     assert!(
-        dataset.downcast_ref::<algeon_datafusion::cugraph_sql::CugraphAlgoExec>().is_some(),
+        dataset.downcast_ref::<CugraphAlgoExec>().is_some(),
         "direct child must retain the typed GPU-resident producer"
     );
 }
@@ -945,7 +932,7 @@ fn assert_schema(schema: &DFSchema, names: &[&str]) {
 }
 
 #[cfg(not(feature = "cuvs"))]
-fn assert_feature_disabled(error: datafusion::common::DataFusionError) {
+fn assert_feature_disabled(error: DataFusionError) {
     let typed = error.find_algeon_error().expect("structured cuVS feature-disabled error");
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));

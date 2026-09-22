@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::common::run_named_cases;
+
 const CONCATENATE_RS: &str = include_str!("../../src/ops/concatenate.rs");
 const RESHAPE_RS: &str = include_str!("../../src/ops/reshape.rs");
 const BINARY_RS: &str = include_str!("../../src/ops/binary.rs");
@@ -1214,7 +1216,7 @@ fn cudf_sys_call_names(line: &str) -> Vec<String> {
 
 #[test]
 fn source_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "concatenate_helpers_require_explicit_execution_options",
             concatenate_helpers_require_explicit_execution_options,

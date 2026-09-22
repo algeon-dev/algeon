@@ -1,10 +1,8 @@
-use super::{
-    super::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledTaskOutput,
-};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledTaskOutput};
 use crate::{
     error::Result,
     exec::bounded::{
+        compiled::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
         execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
         execute_bounded_generic_local_parquet_source, execute_bounded_join_leaf_source,
         materialize_bounded_join_leaf_local_parquet_source_stream,

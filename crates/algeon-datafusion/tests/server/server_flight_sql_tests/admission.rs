@@ -5,6 +5,13 @@
 // rather than a timer, so queue depth is a coordinated state rather than a
 // race against real device work.
 
+use algeon_datafusion::{
+    attempt::{AlgeonAttempt, AttemptStream},
+    server::Result as ServerResult,
+};
+use tempfile::Builder as AdmissionTempfileBuilder;
+use tokio::{task::JoinHandle, time::timeout as admission_timeout};
+
 /// Occupies the backend's one active slot until the returned holder is
 /// dropped.
 ///
@@ -14,7 +21,7 @@ async fn hold_the_only_gpu_slot(
     backend: &AlgeonGpuBackend,
     ctx: &Arc<SessionContext>,
     sql: &str,
-) -> (algeon_datafusion::attempt::AlgeonAttempt, algeon_datafusion::attempt::AttemptStream) {
+) -> (AlgeonAttempt, AttemptStream) {
     let attempt = backend.begin_attempt(AttemptOptions::default()).expect("holder attempt should begin");
     let mut stream = attempt.sql(ctx, sql).await.expect("holder should plan");
     stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
@@ -28,9 +35,9 @@ async fn admission_test_server(
 ) -> (
     AlgeonGpuBackend,
     Arc<SessionContext>,
-    FlightSqlServiceClient<tonic::transport::Channel>,
+    FlightSqlServiceClient<Channel>,
     CancellationToken,
-    tokio::task::JoinHandle<algeon_datafusion::server::Result<()>>,
+    JoinHandle<ServerResult<()>>,
     tempfile::TempDir,
 ) {
     let (listener, addr) = free_local_addr();
@@ -45,7 +52,7 @@ async fn admission_test_server(
         .with_max_queue_wait(max_queue_wait);
     let backend = build_injected_test_backend(&mut config);
 
-    let dir = tempfile::Builder::new().prefix("algeon-datafusion-admission-").tempdir().unwrap();
+    let dir = AdmissionTempfileBuilder::new().prefix("algeon-datafusion-admission-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
     write_update_edges_parquet(&parquet_path);
 
@@ -71,10 +78,10 @@ const ADMISSION_SQL: &str = "select src from admission_edges order by src limit 
 
 async fn shutdown_admission_test_server(
     shutdown: CancellationToken,
-    server: tokio::task::JoinHandle<algeon_datafusion::server::Result<()>>,
+    server: JoinHandle<ServerResult<()>>,
 ) {
     shutdown.cancel();
-    tokio::time::timeout(Duration::from_secs(10), server)
+    admission_timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic")
@@ -83,8 +90,8 @@ async fn shutdown_admission_test_server(
 
 /// Starts a `DoGet` whose admission will queue, and returns its ticket task.
 async fn start_queued_do_get(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-) -> (FlightInfo, tokio::task::JoinHandle<std::result::Result<Vec<RecordBatch>, FlightError>>) {
+    client: &mut FlightSqlServiceClient<Channel>,
+) -> (FlightInfo, JoinHandle<std::result::Result<Vec<RecordBatch>, FlightError>>) {
     let flight_info = client.execute(ADMISSION_SQL.to_string(), None).await.unwrap();
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let mut do_get_client = client.clone();
@@ -108,7 +115,7 @@ async fn flight_do_get_rejects_a_full_admission_queue_as_resource_exhausted() {
     assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
 
     drop(holder);
-    let batches = tokio::time::timeout(Duration::from_secs(60), first)
+    let batches = admission_timeout(Duration::from_secs(60), first)
         .await
         .expect("the queued DoGet should finish once the holder releases")
         .expect("queued DoGet task should not panic")
@@ -148,7 +155,7 @@ async fn queued_flight_query_holds_no_gpu_grant_and_cancels_without_admission() 
             break;
         }
         assert!(Instant::now() < deadline, "cancelled waiter was not removed: {snapshot:?}");
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(backend.device_ledger_reports().unwrap()[0].grants.len(), 1);
 
@@ -176,11 +183,11 @@ async fn disconnecting_a_queued_flight_client_releases_the_waiter_for_the_next_q
             break;
         }
         assert!(Instant::now() < deadline, "disconnected waiter was not removed: {snapshot:?}");
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        sleep(Duration::from_millis(25)).await;
     }
 
     drop(holder);
-    let batches = tokio::time::timeout(Duration::from_secs(60), execute_batches(&mut client, ADMISSION_SQL))
+    let batches = admission_timeout(Duration::from_secs(60), execute_batches(&mut client, ADMISSION_SQL))
         .await
         .expect("the freed slot should admit the next query");
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
@@ -199,7 +206,7 @@ async fn a_queued_flight_query_times_out_against_the_configured_queue_wait() {
 
     let (_flight_info, queued) = start_queued_do_get(&mut client).await;
     let status = unwrap_flight_status(
-        tokio::time::timeout(Duration::from_secs(30), queued)
+        admission_timeout(Duration::from_secs(30), queued)
             .await
             .expect("the queued DoGet should expire against the queue wait bound")
             .expect("queued DoGet task should not panic")

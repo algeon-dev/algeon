@@ -88,11 +88,11 @@ fn query_service_stream_runtimes_are_distinct_while_both_contexts_are_held() {
 #[test]
 fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotations() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let lifecycle = crate::runtime::BackendLifecycle::new();
-    let attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest::default(),
+    let lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest::default(),
         lifecycle.try_begin_observation().expect("attempt observation permit"),
-        std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
+        Arc::new(AttemptBackendCounters::default()),
         None,
     );
     let attempt_id = attempt.owner.attempt_id();
@@ -101,7 +101,7 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
-    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
@@ -109,7 +109,7 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     let grant_identity = handle.grant_identity().expect("admitted handle owns its grant identity");
     assert_eq!(grant_identity.attempt_id, attempt_id);
     attempt_handle
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(AttemptAdmissionFact {
             admission_sequence: handle.admission_sequence(),
             admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: handle.device_ordinal(),
@@ -198,7 +198,7 @@ fn admitted_context_gate_rejects_missing_identity_and_scope_evidence() {
     let admitted_fixture = |max_active_attempts_per_device| {
         let service = runtime_test_service(max_active_attempts_per_device, 8);
         let plan = explicit_sink_plan("input");
-        let evidence = query_planning::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+        let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
         let handle = service
             .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
             .expect("evidence-backed admission");
@@ -281,7 +281,7 @@ async fn release_racing_root_context_binding_returns_a_structured_error_without_
     let deadline = Instant::now() + Duration::from_secs(10);
     while !gate.entered() {
         assert!(Instant::now() < deadline, "root context setup consumes its binding");
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
     handle.finish();
     gate.open();
@@ -303,9 +303,9 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
     let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 1);
 
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
-    let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+    let (blocker_started_tx, blocker_started_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = blocker_started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
@@ -318,14 +318,14 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
     let deadline = Instant::now() + Duration::from_secs(10);
     while pool.snapshot().queued_jobs == 0 {
         assert!(Instant::now() < deadline, "root context setup must queue behind the worker blocker");
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
 
     acquisition.abort();
     assert!(acquisition.await.expect_err("aborted root setup task must not complete").is_cancelled());
 
     release.add_permits(1);
-    let admitted_context = tokio::time::timeout(Duration::from_secs(10), handle.acquire_context_async())
+    let admitted_context = timeout(Duration::from_secs(10), handle.acquire_context_async())
         .await
         .expect("a subsequent acquisition must not wait on an abandoned root claim")
         .expect("a subsequent acquisition establishes the root context");
@@ -374,9 +374,9 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 1);
 
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
-    let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+    let (blocker_started_tx, blocker_started_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = blocker_started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
@@ -392,12 +392,12 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     let queue_observation_deadline = Instant::now() + Duration::from_secs(10);
     while pool.snapshot().queued_jobs == 0 {
         assert!(Instant::now() < queue_observation_deadline, "context setup must reach the GPU worker queue");
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
 
-    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    sleep_until(TokioInstant::from_std(deadline)).await;
     release.add_permits(1);
-    let error = tokio::time::timeout(Duration::from_secs(10), acquisition)
+    let error = timeout(Duration::from_secs(10), acquisition)
         .await
         .expect("queued context setup returns after the worker is released")
         .expect("queued context setup task does not panic")
@@ -405,7 +405,7 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
 
-    let recovery_context = tokio::time::timeout(Duration::from_secs(10), handle.acquire_context_async())
+    let recovery_context = timeout(Duration::from_secs(10), handle.acquire_context_async())
         .await
         .expect("a fresh context setup does not inherit the expired worker claim")
         .expect("a fresh context setup consumes the original root binding");
@@ -761,10 +761,10 @@ async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     let admitted_context = handle.acquire_context().unwrap();
     let pool = admitted_context.context().gpu_execution_pool().expect("counted GPU execution pool");
     let retained_pool = pool.clone();
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let job_release = Arc::clone(&release);
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
+    let (finished_tx, finished_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = started_tx.send(());
         let _permit = job_release.acquire_owned().await.expect("job release semaphore remains open");
@@ -803,9 +803,9 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     let admitted_context = handle.acquire_context().unwrap();
     let pool = admitted_context.context().gpu_execution_pool().expect("counted GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 1);
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
-    let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+    let (blocker_started_tx, blocker_started_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = blocker_started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("blocker release remains open");
@@ -813,7 +813,7 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     .unwrap();
     blocker_started_rx.await.expect("blocking GPU job starts");
 
-    let (queued_finished_tx, queued_finished_rx) = tokio::sync::oneshot::channel();
+    let (queued_finished_tx, queued_finished_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
         let _ = queued_finished_tx.send(());
     })
@@ -875,10 +875,10 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
         .expect("service owns the device GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 1);
 
-    let release_blocker = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_blocker = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release_blocker);
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
+    let (finished_tx, finished_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::Cleanup, async move {
         let _ = started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("cleanup blocker remains open");
@@ -893,7 +893,7 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     let deadline = Instant::now() + Duration::from_secs(1);
     while service.admission_snapshot().unwrap().queued_queries != 1 {
         assert!(Instant::now() < deadline, "second admission must queue behind the direct handle");
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
 
     direct.finish();
@@ -903,13 +903,13 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     // admission yet.
     let mut queued = queued;
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), &mut queued).await.is_err(),
+        timeout(Duration::from_millis(200), &mut queued).await.is_err(),
         "envelope-owning release must wait for the busy GPU worker"
     );
 
     release_blocker.add_permits(1);
     finished_rx.await.expect("cleanup blocker finishes after release");
-    let admitted = tokio::time::timeout(Duration::from_secs(10), queued)
+    let admitted = timeout(Duration::from_secs(10), queued)
         .await
         .expect("queued admission completes once the device executor runs the release")
         .expect("queued admission task must not panic")
@@ -932,9 +932,9 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
         .gpu_execution_pool_for_device(0)
         .expect("service owns the device GPU execution pool");
     assert_eq!(pool.snapshot().worker_count, 1);
-    let release_blocker = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_blocker = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release_blocker);
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
     pool.spawn(GpuExecutionJobKind::Cleanup, async move {
         let _ = started_tx.send(());
         let _permit = blocker_release.acquire_owned().await.expect("cleanup blocker remains open");
@@ -947,18 +947,18 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
     let deadline = Instant::now() + Duration::from_secs(1);
     while service.admission_snapshot().unwrap().queued_queries != 1 {
         assert!(Instant::now() < deadline, "second admission must queue behind the context-backed handle");
-        tokio::task::yield_now().await;
+        yield_now().await;
     }
 
     handle.finish();
     drop(handle);
     assert!(
-        tokio::time::timeout(Duration::from_millis(250), &mut queued).await.is_err(),
+        timeout(Duration::from_millis(250), &mut queued).await.is_err(),
         "root-context cleanup must wait for the busy GPU worker"
     );
 
     release_blocker.add_permits(1);
-    let admitted = tokio::time::timeout(Duration::from_secs(1), queued)
+    let admitted = timeout(Duration::from_secs(1), queued)
         .await
         .expect("GPU cleanup releases the queued admission")
         .expect("queued admission task must not panic")
@@ -973,9 +973,9 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     let retained_pool = handle.gpu_execution_pool().expect("counted query-handle GPU execution pool");
     assert_eq!(retained_pool.snapshot().worker_count, 2);
     let job_pool = retained_pool.clone();
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let job_release = Arc::clone(&release);
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
     let job = tokio::spawn(async move {
         job_pool
             .run(GpuExecutionJobKind::AttemptWork, async move {
@@ -999,15 +999,15 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
 #[tokio::test(flavor = "current_thread")]
 async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quiescence() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
-    let backend_lifecycle = crate::runtime::BackendLifecycle::new();
-    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
-    let attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
             observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+            ..BeginAttemptRequest::default()
         },
         backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-        std::sync::Arc::clone(&counters),
+        Arc::clone(&counters),
         None,
     );
     let attempt_owner = attempt.owner;
@@ -1015,14 +1015,14 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
-    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
 
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("attempt-bound admission");
     attempt_handle
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(AttemptAdmissionFact {
             admission_sequence: handle.admission_sequence(),
             admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: handle.device_ordinal(),
@@ -1035,9 +1035,9 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
 
     let pool = handle.gpu_execution_pool().expect("counted query GPU execution pool");
     let job_pool = pool.clone();
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
     let job_release = Arc::clone(&release);
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
     let execution = tokio::spawn(async move {
         job_pool
             .run(GpuExecutionJobKind::AttemptWork, async move {
@@ -1077,7 +1077,7 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
     assert!(report.timestamps.physical_execution_started_ns.is_some());
     assert!(report.timestamps.cleanup_complete_ns.is_some());
     assert!(report.timestamps.report_ready_ns.is_some());
-    assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::Released);
+    assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
     assert_eq!(counters.snapshot().reports_ready, 1, "admitted close publishes exactly one terminal report");
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("late execution cleanup lets close recover");
 }
@@ -1096,7 +1096,7 @@ fn active_query_owner_prevents_service_drain_until_cleanup_finishes() {
 #[test]
 fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction() {
     struct CleanupBlockerGate {
-        semaphore: Arc<tokio::sync::Semaphore>,
+        semaphore: Arc<Semaphore>,
     }
 
     impl Drop for CleanupBlockerGate {
@@ -1109,7 +1109,7 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
     let handle = service.admit_query().unwrap();
     let pool = handle.gpu_execution_pool().unwrap();
     let worker_count = pool.snapshot().worker_count;
-    let release = CleanupBlockerGate { semaphore: Arc::new(tokio::sync::Semaphore::new(0)) };
+    let release = CleanupBlockerGate { semaphore: Arc::new(Semaphore::new(0)) };
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (finished_tx, finished_rx) = std::sync::mpsc::channel();
 

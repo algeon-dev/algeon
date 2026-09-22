@@ -12,7 +12,10 @@ use query_engine::plan::{PlanNode, VectorAlgorithmParams, VectorRowIdBinding};
 use super::CuvsAlgoExec;
 #[cfg(not(feature = "cuvs"))]
 use crate::error::{DataFusionErrorExt, ErrorCode};
-use crate::{cuvs_sql::CUVS_BRUTE_FORCE_KNN_FUNCTION, session::AlgeonSessionStateBuilderExt};
+use crate::{
+    cuvs_sql::{CUVS_BRUTE_FORCE_KNN_FUNCTION, CuvsOperation},
+    session::AlgeonSessionStateBuilderExt,
+};
 
 const KNN_OPTIONS: &str = r#"{
   "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -64,7 +67,7 @@ async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
     let logical = ctx.state().create_logical_plan(&sql).await.expect("cuVS logical planning");
     let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
     let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
-    assert_eq!(exec.operation(), crate::cuvs_sql::CuvsOperation::BruteForceKnn);
+    assert_eq!(exec.operation(), CuvsOperation::BruteForceKnn);
     assert_eq!(exec.children().len(), 2);
     assert_eq!(exec.schema().as_ref(), logical.schema().as_arrow());
     let native = exec.native_plan().expect("typed native vector plan");
@@ -89,7 +92,7 @@ async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
         "ordinal outputs supplement the caller's row IDs instead of replacing them"
     );
 
-    let cloned = datafusion::execution::SessionStateBuilder::new_from_existing(ctx.state()).build();
+    let cloned = SessionStateBuilder::new_from_existing(ctx.state()).build();
     let cloned_physical = cloned.create_physical_plan(&logical).await.expect("cloned planner retained");
     assert!(find_cuvs_exec(cloned_physical.as_ref()).is_some());
 

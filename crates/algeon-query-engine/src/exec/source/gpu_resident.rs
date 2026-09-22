@@ -1,6 +1,7 @@
 use super::{
     ExecutionContext, ExecutionMetrics, GpuDataFrame, GpuResidentInputMap, QueryError, QueryErrorCode, Result,
 };
+use crate::source::GpuResidentSource;
 
 /// Read a caller-supplied GPU-resident source by plan-local input name.
 ///
@@ -10,7 +11,7 @@ use super::{
 /// the consumer neither copies nor charges those bytes to its own cap.
 pub(in crate::exec) fn read_gpu_resident_source(
     context: &ExecutionContext,
-    source: &crate::source::GpuResidentSource,
+    source: &GpuResidentSource,
     inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {

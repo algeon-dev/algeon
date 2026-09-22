@@ -4,14 +4,19 @@
 use std::sync::{Barrier, mpsc};
 use std::{
     collections::HashMap,
+    fmt, mem,
     sync::{
-        Arc, Condvar, Mutex, OnceLock, Weak,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
 
+use cudf::{
+    DeviceId, Runtime,
+    runtime::{DeviceHealthSnapshot, DeviceHealthStatus, device_health_snapshot},
+};
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 #[cfg(test)]
@@ -38,9 +43,9 @@ use super::{
 use crate::{
     native_error::cudf_query_error,
     observability::{
-        RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeResourceDomain,
-        RuntimeResourceId, RuntimeResourceRow, RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope,
-        RuntimeTopologyRecord, StreamLeaseAcquisition, StreamLeaseLifecycleState,
+        RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeObservationRecordClass,
+        RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeStreamLeaseObservation,
+        RuntimeStreamLeaseScope, RuntimeTopologyRecord, StreamLeaseAcquisition, StreamLeaseLifecycleState,
     },
 };
 
@@ -61,7 +66,7 @@ static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
 /// multiprocessor count cannot be detected, this returns
 /// [`DEFAULT_SERVICE_STREAM_POOL_SIZE`]. The detected value is cached per
 /// device ordinal for the process lifetime.
-pub fn default_service_stream_pool_size_for_device(device: cudf::DeviceId) -> usize {
+pub fn default_service_stream_pool_size_for_device(device: DeviceId) -> usize {
     static DEFAULT_SIZES: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
     let sizes = DEFAULT_SIZES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut sizes = match sizes.lock() {
@@ -88,7 +93,7 @@ pub(super) fn default_service_stream_pool_size_from_device_facts(facts: &DeviceF
     default_service_stream_pool_size_from_sm_count(facts.sm_count.and_then(nonzero_sm_count))
 }
 
-fn detect_device_multiprocessor_count(device: cudf::DeviceId) -> Option<usize> {
+fn detect_device_multiprocessor_count(device: DeviceId) -> Option<usize> {
     device.multiprocessor_count().ok().and_then(nonzero_sm_count)
 }
 
@@ -99,7 +104,7 @@ pub(super) fn nonzero_sm_count(count: u32) -> Option<usize> {
 #[derive(Debug)]
 pub(super) struct ServiceStreamPoolInner {
     pub(super) id: u64,
-    pub(super) device: cudf::DeviceId,
+    pub(super) device: DeviceId,
     pub(super) pool_size: usize,
     pub(super) root_capacity: usize,
     pub(super) aux_capacity: usize,
@@ -142,7 +147,7 @@ impl StreamPermitClass {
 
 #[derive(Debug, Default)]
 pub(super) struct ServiceStreamPoolState {
-    pub(super) idle: Vec<Arc<cudf::Runtime>>,
+    pub(super) idle: Vec<Arc<Runtime>>,
     pub(super) created: usize,
     pub(super) root_outstanding: usize,
     pub(super) aux_outstanding: usize,
@@ -172,7 +177,7 @@ impl ServiceStreamPool {
     /// `pool_size` is the maximum number of simultaneously leased streams.
     /// Runtime/stream creation is lazy: construction records the limit but does
     /// not allocate CUDA streams immediately.
-    pub fn new(device: cudf::DeviceId, pool_size: usize) -> Result<Self> {
+    pub fn new(device: DeviceId, pool_size: usize) -> Result<Self> {
         // Direct constructors keep pre-partition semantics: one root slot for
         // lifecycle work and an auxiliary class bounded only by the physical
         // pool size. Backend-owned pools pass explicit `A_d`/`A_d * S_d`
@@ -183,7 +188,7 @@ impl ServiceStreamPool {
 
     /// Creates a pool with explicit root/auxiliary stream-slot capacities.
     pub fn new_with_classes(
-        device: cudf::DeviceId,
+        device: DeviceId,
         pool_size: usize,
         root_capacity: usize,
         aux_capacity: usize,
@@ -233,7 +238,7 @@ impl ServiceStreamPool {
     /// injected its own pool yet. Pools are keyed by `(device ordinal,
     /// pool_size)` so differently sized service tests do not silently share a
     /// capacity contract.
-    pub fn for_device(device: cudf::DeviceId, pool_size: usize) -> Result<Self> {
+    pub fn for_device(device: DeviceId, pool_size: usize) -> Result<Self> {
         validate_service_stream_pool_size(pool_size)?;
         static POOLS: OnceLock<Mutex<ServiceStreamPoolRegistry>> = OnceLock::new();
         let pools = POOLS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -254,7 +259,7 @@ impl ServiceStreamPool {
     }
 
     /// CUDA device served by this pool.
-    pub fn device(&self) -> cudf::DeviceId {
+    pub fn device(&self) -> DeviceId {
         self.inner.device
     }
 
@@ -290,13 +295,13 @@ impl ServiceStreamPool {
         self.inner.available.notify_all();
         let idle = match self.inner.state.try_lock() {
             Ok(mut state) => {
-                let idle = std::mem::take(&mut state.idle);
+                let idle = mem::take(&mut state.idle);
                 state.created = state.created.saturating_sub(idle.len());
                 self.inner.state_changed.notify_all();
                 idle
             },
-            Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
-            Err(std::sync::TryLockError::Poisoned(_)) => {
+            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::Poisoned(_)) => {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
                     operation,
@@ -316,7 +321,7 @@ impl ServiceStreamPool {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_all();
         let mut state = self.lock_state_until(deadline, operation)?;
-        let idle = std::mem::take(&mut state.idle);
+        let idle = mem::take(&mut state.idle);
         state.created = state.created.saturating_sub(idle.len());
         drop(state);
         drop(idle);
@@ -382,8 +387,8 @@ impl ServiceStreamPool {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.available.notify_all();
         let idle = {
-            let mut state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let idle = std::mem::take(&mut state.idle);
+            let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let idle = mem::take(&mut state.idle);
             state.created = state.created.saturating_sub(idle.len());
             self.inner.state_changed.notify_all();
             idle
@@ -603,7 +608,7 @@ impl ServiceStreamPool {
         permit_class: StreamPermitClass,
     ) -> Result<StreamLease> {
         enum AcquireAction {
-            Reuse(Arc<cudf::Runtime>),
+            Reuse(Arc<Runtime>),
             Create,
         }
 
@@ -637,8 +642,8 @@ impl ServiceStreamPool {
                 lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
                 return Err(error);
             }
-            let health = cudf::runtime::device_health_snapshot(self.device());
-            if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
+            let health = device_health_snapshot(self.device());
+            if health.status() == DeviceHealthStatus::Unhealthy {
                 let error = unhealthy_stream_device_error(operation, self.device(), health);
                 lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
                 return Err(error);
@@ -730,8 +735,8 @@ impl ServiceStreamPool {
         })
     }
 
-    fn build_runtime(&self) -> Result<cudf::Runtime> {
-        cudf::Runtime::builder().with_device(self.device()).with_device_memory_manager().build().map_err(|error| {
+    fn build_runtime(&self) -> Result<Runtime> {
+        Runtime::builder().with_device(self.device()).with_device_memory_manager().build().map_err(|error| {
             cudf_query_error(
                 "query_engine.service_stream_pool.runtime",
                 "failed to initialize service stream pool runtime",
@@ -740,7 +745,7 @@ impl ServiceStreamPool {
         })
     }
 
-    fn lock_state(&self, operation: &'static str) -> Result<std::sync::MutexGuard<'_, ServiceStreamPoolState>> {
+    fn lock_state(&self, operation: &'static str) -> Result<MutexGuard<'_, ServiceStreamPoolState>> {
         self.inner.state.lock().map_err(|_error| {
             QueryError::new(QueryErrorCode::Internal, operation, "service stream pool mutex was poisoned")
         })
@@ -750,12 +755,12 @@ impl ServiceStreamPool {
         &self,
         deadline: Instant,
         operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, ServiceStreamPoolState>> {
+    ) -> Result<MutexGuard<'_, ServiceStreamPoolState>> {
         loop {
             match self.inner.state.try_lock() {
                 Ok(state) => return Ok(state),
-                Err(std::sync::TryLockError::Poisoned(_)) => return self.lock_state(operation),
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                Err(TryLockError::Poisoned(_)) => return self.lock_state(operation),
+                Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
                     return Err(QueryError::new(
                         QueryErrorCode::ServiceOverloaded,
                         operation,
@@ -764,7 +769,7 @@ impl ServiceStreamPool {
                     .with_fact("reason", "stream_pool_idle_timeout")
                     .with_fact("device_ordinal", self.device().ordinal()));
                 },
-                Err(std::sync::TryLockError::WouldBlock) => thread::yield_now(),
+                Err(TryLockError::WouldBlock) => thread::yield_now(),
             }
         }
     }
@@ -795,7 +800,7 @@ fn stream_acquire_wait_interval(deadline: Option<Instant>) -> Duration {
     deadline.saturating_duration_since(Instant::now()).min(cancellation_poll)
 }
 
-fn stream_acquire_timeout_error(operation: &'static str, device: cudf::DeviceId, pool_size: usize) -> QueryError {
+fn stream_acquire_timeout_error(operation: &'static str, device: DeviceId, pool_size: usize) -> QueryError {
     QueryError::new(QueryErrorCode::ServiceOverloaded, operation, "service stream pool acquire timed out")
         .with_fact("reason", "stream_pool_wait_timeout")
         .with_fact("device_ordinal", device.ordinal())
@@ -804,8 +809,8 @@ fn stream_acquire_timeout_error(operation: &'static str, device: cudf::DeviceId,
 
 fn unhealthy_stream_device_error(
     operation: &'static str,
-    device: cudf::DeviceId,
-    health: cudf::runtime::DeviceHealthSnapshot,
+    device: DeviceId,
+    health: DeviceHealthSnapshot,
 ) -> QueryError {
     let mut error = QueryError::new(
         QueryErrorCode::CudfPersistentFailure,
@@ -869,7 +874,7 @@ struct StreamLeaseObservation {
     lease_id: RuntimeResourceId,
     device_ordinal: u32,
     scope: RuntimeStreamLeaseScope,
-    terminal_recorded: std::sync::atomic::AtomicBool,
+    terminal_recorded: AtomicBool,
 }
 
 impl StreamLeaseObservation {
@@ -880,7 +885,7 @@ impl StreamLeaseObservation {
             lease_id: RuntimeResourceId::new(format!("stream-pool-{}-lease-{sequence}", pool.inner.id)),
             device_ordinal: u32::try_from(pool.device().ordinal()).unwrap_or(u32::MAX),
             scope,
-            terminal_recorded: std::sync::atomic::AtomicBool::new(false),
+            terminal_recorded: AtomicBool::new(false),
         }
     }
 
@@ -901,7 +906,7 @@ impl StreamLeaseObservation {
     }
 
     fn define_resource(&self) {
-        self.observation.record_topology(crate::observability::RuntimeObservationRecordClass::Resource, || {
+        self.observation.record_topology(RuntimeObservationRecordClass::Resource, || {
             RuntimeTopologyRecord::Resource(RuntimeResourceRow {
                 plan_execution_id: self.scope.plan_execution_id.clone(),
                 resource_id: self.lease_id.clone(),
@@ -931,15 +936,15 @@ impl StreamLeaseObservation {
 /// dropping thread.
 pub struct StreamLease {
     pool: ServiceStreamPool,
-    runtime: Option<Arc<cudf::Runtime>>,
+    runtime: Option<Arc<Runtime>>,
     observation: Option<Arc<StreamLeaseObservation>>,
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
     cleanup_completion: Mutex<Option<StreamCleanupCompletion>>,
     permit_class: StreamPermitClass,
 }
 
-impl std::fmt::Debug for StreamLease {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for StreamLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StreamLease")
             .field("device_ordinal", &self.pool.device().ordinal())
             .field("has_runtime", &self.runtime.is_some())
@@ -987,12 +992,12 @@ impl StreamLease {
     }
 
     #[doc(hidden)]
-    pub fn device(&self) -> cudf::DeviceId {
+    pub fn device(&self) -> DeviceId {
         self.runtime.as_ref().expect("stream lease runtime is present").device()
     }
 
     /// Clone a counted cuDF runtime derived from this lease.
-    pub fn runtime(&self) -> Result<cudf::Runtime> {
+    pub fn runtime(&self) -> Result<Runtime> {
         let runtime = self.runtime.as_ref().expect("stream lease runtime is present").as_ref().clone();
         let Some(resource_epoch) = &self.resource_epoch else {
             return Ok(runtime);
@@ -1009,7 +1014,7 @@ impl StreamLease {
     }
 
     /// Clone the shared runtime handle for a short-lived execution context.
-    pub fn shared_runtime(&self) -> Result<Arc<cudf::Runtime>> {
+    pub fn shared_runtime(&self) -> Result<Arc<Runtime>> {
         self.runtime().map(Arc::new)
     }
 }
@@ -1075,7 +1080,17 @@ pub(super) fn validate_service_stream_pool_size(pool_size: usize) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
+    use cudf::{
+        runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
+        testing::device_safety::DeviceSafetyTestScope,
+    };
+    use query_planning::error::QueryErrorStatus;
+
     use super::*;
+    use crate::observability::{
+        PlanExecutionId, RuntimeJobId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTaskId,
+        RuntimeWorkerId, assert_live_topology_references_resolve,
+    };
 
     #[test]
     fn zero_capacity_rejects_before_runtime_initialization() {
@@ -1086,7 +1101,7 @@ mod tests {
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
-    fn observed_stream_states(owner: &crate::observability::RuntimeObservationOwner) -> Vec<StreamLeaseLifecycleState> {
+    fn observed_stream_states(owner: &RuntimeObservationOwner) -> Vec<StreamLeaseLifecycleState> {
         owner
             .live_snapshot()
             .expect("observation remains live")
@@ -1157,7 +1172,7 @@ mod tests {
         let error = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap_err();
 
         assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.status(), QueryErrorStatus::Permanent);
         assert_eq!(error.operation(), STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION);
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_spawn_failed"));
         assert_eq!(error.fact_value("device_ordinal"), Some("0"));
@@ -1234,7 +1249,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.status(), QueryErrorStatus::Permanent);
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_unexpected_exit"));
         assert_eq!(
             pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
@@ -1529,7 +1544,7 @@ mod tests {
         let error =
             pool.close_and_wait_until(deadline, "query_engine.service_stream_pool.test_join_panic").unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.status(), QueryErrorStatus::Permanent);
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
         assert_eq!(error.fact_value("supervisor_stage"), Some("thread_join"));
 
@@ -1628,12 +1643,12 @@ mod tests {
         let lease = pool.acquire().unwrap();
         drop(lease);
         let _ = stream_cleanup_thread_id_for_test(&pool);
-        let _scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
-        cudf::runtime::report_device_fault(
+        let _scope = DeviceSafetyTestScope::install([]);
+        report_device_fault(
             cudf::DeviceId::DEFAULT,
-            cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+            DeviceFaultKind::FatalDeviceOperation,
             "injected_stream_reuse_fault",
-            Some(cudf::runtime::DeviceFaultNativeStatus::CUDF_FATAL_CUDA),
+            Some(DeviceFaultNativeStatus::CUDF_FATAL_CUDA),
         );
 
         let error = pool.acquire().expect_err("unhealthy device must reject idle runtime reuse");
@@ -1644,11 +1659,8 @@ mod tests {
     #[test]
     fn observed_stream_acquire_distinguishes_create_reuse_and_release() {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
-        let owner = crate::observability::RuntimeObservationOwner::new(
-            "stream-lifecycle",
-            None,
-            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-        );
+        let owner =
+            RuntimeObservationOwner::new("stream-lifecycle", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
         let cancellation = ExecutionCancellation::new();
 
         let created = pool
@@ -1673,7 +1685,7 @@ mod tests {
         let _ = stream_cleanup_thread_id_for_test(&pool);
 
         let states = observed_stream_states(&owner);
-        crate::observability::assert_live_topology_references_resolve(&owner.live_snapshot().unwrap());
+        assert_live_topology_references_resolve(&owner.live_snapshot().unwrap());
         assert_eq!(states.len(), 6);
         assert!(matches!(states[0], StreamLeaseLifecycleState::Enqueued));
         assert!(matches!(
@@ -1694,11 +1706,8 @@ mod tests {
         let pool = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap();
         let held = pool.acquire().unwrap();
         let cancellation = ExecutionCancellation::new();
-        let owner = crate::observability::RuntimeObservationOwner::new(
-            "stream-cancel",
-            None,
-            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-        );
+        let owner =
+            RuntimeObservationOwner::new("stream-cancel", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
         let waiter_pool = pool.clone();
         let waiter_cancellation = cancellation.clone();
         let observation = owner.handle();
@@ -1710,15 +1719,9 @@ mod tests {
                 Instant::now() + Duration::from_secs(1),
                 "query_engine.service_stream_pool.test_observed_cancel",
                 observation,
-                RuntimeStreamLeaseScope::for_plan(crate::observability::PlanExecutionId::new("stream-plan"))
-                    .with_source_worker(
-                        crate::observability::RuntimeTaskId::new("source-task"),
-                        crate::observability::RuntimeWorkerId::new("source-worker"),
-                    )
-                    .with_gpu_worker(
-                        crate::observability::RuntimeJobId::new("gpu-job"),
-                        crate::observability::RuntimeWorkerId::new("gpu-worker"),
-                    ),
+                RuntimeStreamLeaseScope::for_plan(PlanExecutionId::new("stream-plan"))
+                    .with_source_worker(RuntimeTaskId::new("source-task"), RuntimeWorkerId::new("source-worker"))
+                    .with_gpu_worker(RuntimeJobId::new("gpu-job"), RuntimeWorkerId::new("gpu-worker")),
             )
         });
         started_receiver.recv().unwrap();

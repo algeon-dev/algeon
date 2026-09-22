@@ -1,7 +1,9 @@
 use cudf::{Series, TypeId};
 
-use super::super::*;
-use crate::plan::{VectorBruteForceKnnParams, VectorRelationBinding, VectorRowIdBinding};
+use crate::{
+    exec::*,
+    plan::{VectorBruteForceKnnParams, VectorDistanceMetric, VectorRelationBinding, VectorRowIdBinding},
+};
 
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";
 
@@ -74,7 +76,7 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
         .map_err(|error| {
             cudf_query_error(ASSEMBLY_OPERATION, "failed to assemble kNN relational output on device", error)
         })?;
-    let descending_distance = matches!(params.metric, crate::plan::VectorDistanceMetric::InnerProduct);
+    let descending_distance = matches!(params.metric, VectorDistanceMetric::InnerProduct);
     let sorted = unsorted
         .with_execution(&execution)
         .sort_values(

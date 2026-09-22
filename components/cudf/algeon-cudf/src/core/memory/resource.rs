@@ -16,6 +16,7 @@ use super::{
 use crate::{
     DeviceId,
     core::error::{self, Result},
+    runtime,
     runtime::{device_guard::DeviceGuard, stream::CudaStream},
 };
 
@@ -524,12 +525,12 @@ impl Drop for DeviceMemoryResourceHandle {
             if !self._failure_callbacks.is_empty() {
                 std::mem::forget(std::mem::take(&mut self._failure_callbacks));
             }
-            crate::runtime::quarantine_device_resource(self.device, "DeviceMemoryResourceHandle::drop", &error);
+            runtime::quarantine_device_resource(self.device, "DeviceMemoryResourceHandle::drop", &error);
             return;
         }
         let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
         let mut status = None;
-        crate::runtime::drop_device_resource(&mut raw, self.device, "DeviceMemoryResourceHandle::drop", |owned| {
+        runtime::drop_device_resource(&mut raw, self.device, "DeviceMemoryResourceHandle::drop", |owned| {
             status = Some(unsafe { cudf_sys::cudf_memory_resource_destroy(owned, self.device.ordinal_raw()) });
         });
         if status != Some(cudf_sys::CUDF_SUCCESS) {
@@ -577,14 +578,14 @@ pub(super) fn record_native_teardown_failure(
     status: cudf_sys::cudf_status_t,
 ) {
     if status == cudf_sys::CUDF_ERROR_FATAL_CUDA {
-        crate::runtime::report_device_fault(
+        runtime::report_device_fault(
             device,
-            crate::runtime::DeviceFaultKind::FatalDeviceOperation,
+            runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(crate::runtime::DeviceFaultNativeStatus::Cudf(status)),
+            Some(runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
-    crate::runtime::device_health::record_teardown_failure(
+    runtime::device_health::record_teardown_failure(
         device,
         operation,
         &format_args!("native teardown failed with status {status}"),

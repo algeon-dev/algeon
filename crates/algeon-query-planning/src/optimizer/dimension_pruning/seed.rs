@@ -1,6 +1,7 @@
 use super::{
-    AnalysisContext, BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource, NodeId, PlanNode,
-    QueryNode, QueryPlan, SourceColumnRef, SourceNode, mutable_local_parquet_source, predicate_columns, rewrite,
+    AggregateNode, AnalysisContext, BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource,
+    NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, SourceColumnRef, SourceNode, mutable_local_parquet_source,
+    predicate_columns, rewrite,
 };
 
 pub(super) fn seed_reader_predicates_from_group_key_filters(
@@ -190,14 +191,14 @@ fn predicate_is_reader_visible(source: &LocalParquetSource, predicate: &Expr) ->
         && columns.iter().all(|column| matches!(source.source_column_ref(column), Some(SourceColumnRef::File(_))))
 }
 
-fn remap_projection_predicate(predicate: &Expr, projection: &crate::plan::ProjectionNode) -> Option<Expr> {
+fn remap_projection_predicate(predicate: &Expr, projection: &ProjectionNode) -> Option<Expr> {
     remap_unqualified_columns(predicate, &mut |column| {
         let output = projection.outputs.iter().find(|output| output.field.name() == column.name())?;
         simple_projection_expr(&output.expr)
     })
 }
 
-fn remap_aggregate_group_predicate(predicate: &Expr, aggregate: &crate::plan::AggregateNode) -> Option<Expr> {
+fn remap_aggregate_group_predicate(predicate: &Expr, aggregate: &AggregateNode) -> Option<Expr> {
     if aggregate.spec.grouping_sets.is_some() {
         return None;
     }

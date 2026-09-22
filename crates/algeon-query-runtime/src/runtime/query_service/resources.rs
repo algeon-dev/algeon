@@ -3,10 +3,18 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::runtime::Runtime as TokioRuntime;
 
+#[cfg(feature = "cugraph")]
+use crate::runtime::cache::resident_graph::GpuResidentGraphCache;
 use crate::runtime::{
     CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, GpuExecutionQueryTracker,
-    cache_fill::CacheFillConcurrencyGate, object_store::SourceObjectStoreRegistry,
+    cache::{
+        CacheSourceEventSnapshot, DeviceCacheAllocationFactory, DeviceCacheReport,
+        local_parquet::GpuLocalParquetSourceCache,
+    },
+    cache_fill::CacheFillConcurrencyGate,
+    object_store::SourceObjectStoreRegistry,
 };
 
 /// Cache resources owned by one installed backend resource generation.
@@ -22,23 +30,21 @@ pub(super) struct DeviceResidentCaches {
 
 #[derive(Debug, Clone)]
 struct DeviceResidentCache {
-    source: crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache,
+    source: GpuLocalParquetSourceCache,
     #[cfg(feature = "cugraph")]
-    graph: crate::runtime::cache::resident_graph::GpuResidentGraphCache,
+    graph: GpuResidentGraphCache,
     // Declare this last: every cache lease and cached allocation must be
     // destroyed before the domain owner becomes droppable. Keep-alive only:
     // the factory owns the one physical cuDF allocation domain for the
     // ordinal, so it is retained but never read directly.
-    allocation_factory: crate::runtime::cache::DeviceCacheAllocationFactory,
+    allocation_factory: DeviceCacheAllocationFactory,
 }
 
 impl DeviceResidentCaches {
     pub(super) fn install(devices: &super::DeviceRegistry) -> Result<Self> {
         let mut installed = HashMap::new();
         for context in devices.contexts() {
-            let Some(allocation_factory) =
-                crate::runtime::cache::DeviceCacheAllocationFactory::new(context.ledger().as_ref().clone())?
-            else {
+            let Some(allocation_factory) = DeviceCacheAllocationFactory::new(context.ledger().as_ref().clone())? else {
                 continue;
             };
             let source = allocation_factory.source_cache()?;
@@ -58,18 +64,12 @@ impl DeviceResidentCaches {
         Ok(Self { devices: installed })
     }
 
-    pub(super) fn source_for_device(
-        &self,
-        device_ordinal: usize,
-    ) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
+    pub(super) fn source_for_device(&self, device_ordinal: usize) -> Option<GpuLocalParquetSourceCache> {
         self.devices.get(&device_ordinal).map(|cache| cache.source.clone())
     }
 
     #[cfg(feature = "cugraph")]
-    pub(super) fn graph_for_device(
-        &self,
-        device_ordinal: usize,
-    ) -> Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache> {
+    pub(super) fn graph_for_device(&self, device_ordinal: usize) -> Option<GpuResidentGraphCache> {
         self.devices.get(&device_ordinal).map(|cache| cache.graph.clone())
     }
 
@@ -77,7 +77,7 @@ impl DeviceResidentCaches {
     /// activity observed from its two subdomains.  Logical resident bytes stay
     /// in `DeviceLedgerReport`; this is the independent physical comparison
     /// surface used by service operators and cache qualification tools.
-    pub(super) fn reports(&self) -> Result<Vec<crate::runtime::cache::DeviceCacheReport>> {
+    pub(super) fn reports(&self) -> Result<Vec<DeviceCacheReport>> {
         self.devices
             .values()
             .map(|cache| {
@@ -95,7 +95,7 @@ impl DeviceResidentCaches {
     /// Returns the bounded source-cache events emitted by the ordinal-local
     /// cache owners.  These are diagnostic observations only; the paired
     /// ledger and allocation-domain reports remain byte-residency authority.
-    pub(super) fn source_event_snapshots(&self) -> Result<Vec<crate::runtime::cache::CacheSourceEventSnapshot>> {
+    pub(super) fn source_event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
         let mut events = self
             .devices
             .values()
@@ -135,7 +135,7 @@ pub(super) struct QueryServiceResources {
     pub(super) gpu_execution_query_tracker: GpuExecutionQueryTracker,
     pub(super) lakehouse_cache_fill_budget: CacheFillByteBudget,
     pub(super) lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate,
-    pub(super) object_store_control_runtime: Arc<tokio::runtime::Runtime>,
+    pub(super) object_store_control_runtime: Arc<TokioRuntime>,
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
     pub(super) deployment_io_capability: DeploymentIoCapability,
 }

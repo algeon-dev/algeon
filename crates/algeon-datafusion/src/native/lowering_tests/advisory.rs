@@ -1,8 +1,11 @@
 use query_engine::{
     admission::bounded_pipeline_decision,
+    dimension_pruning::local_dimension_pruning_resolver,
     mode::StatisticalAggregateExecutionMode,
+    optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::ShadowBytes,
     plan::{AdvisoryStatistic, AdvisoryStatisticsScope},
+    rapids_backend::rapids_analysis_context,
     shadow::estimate_compiled_pipeline,
 };
 
@@ -62,23 +65,20 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
 
     // The estimate is composed over the schedule that actually executes, so the
     // advisory volumes must survive the optimizer rewrites that produce it.
-    let native = &query_engine::optimizer::optimize_query_plan(
+    let native = &optimize_query_plan(
         lowered.plans[0].clone(),
-        &query_engine::optimizer::NativeOptimizerOptions::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     )
     .plan;
     assert!(!native.advisory_outputs().is_empty(), "optimizer rewrites carry frontend statistics forward");
-    let admission = bounded_pipeline_decision(
-        native,
-        StatisticalAggregateExecutionMode::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .unwrap()
-    .into_execution_admission()
-    .unwrap()
-    .expect("the lowered q03 join plan compiles to a bounded pipeline");
+    let admission =
+        bounded_pipeline_decision(native, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .unwrap()
+            .into_execution_admission()
+            .unwrap()
+            .expect("the lowered q03 join plan compiles to a bounded pipeline");
     let pipeline = admission.pipeline();
 
     let estimate = estimate_compiled_pipeline(native, pipeline).unwrap();

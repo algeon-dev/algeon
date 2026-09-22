@@ -166,7 +166,7 @@ pub fn reader_predicate_expr_references_decimal_column(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::BinaryOp;
+    use crate::expr::{BinaryOp, CaseWhen};
 
     #[test]
     fn decimal_integer_scaling_reports_exact_failure_kind() {
@@ -200,7 +200,7 @@ mod tests {
             Expr::lower(Expr::column("name")),
             BinaryOp::Eq,
             Expr::case(
-                vec![crate::expr::CaseWhen {
+                vec![CaseWhen {
                     when: Expr::is_not_null(Expr::column("amount")),
                     then: Expr::literal(LiteralValue::Utf8("x".to_string())),
                 }],

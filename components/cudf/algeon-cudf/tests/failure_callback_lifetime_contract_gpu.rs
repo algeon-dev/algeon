@@ -5,21 +5,22 @@ use std::{
 };
 
 use cudf::{DeviceId, DeviceMemoryResource};
+use cudf_sys::test_support;
 
 fn current_device_resource_raw() -> *mut c_void {
     let mut out = ptr::null_mut();
-    let status = unsafe { cudf_sys::test_support::cudf_test_current_device_resource_raw(&mut out) };
+    let status = unsafe { test_support::cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     out
 }
 
 fn set_current_device_resource(mr: &cudf_sys::BorrowedMemoryResource<'_>) -> Result<(), cudf_sys::cudf_status_t> {
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current(mr.as_raw()) };
+    let status = unsafe { test_support::cudf_test_memory_resource_set_current(mr.as_raw()) };
     if status == cudf_sys::CUDF_SUCCESS { Ok(()) } else { Err(status) }
 }
 
 unsafe fn set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_sys::cudf_status_t> {
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current_raw(raw_mr) };
+    let status = unsafe { test_support::cudf_test_memory_resource_set_current_raw(raw_mr) };
     if status == cudf_sys::CUDF_SUCCESS { Ok(()) } else { Err(status) }
 }
 

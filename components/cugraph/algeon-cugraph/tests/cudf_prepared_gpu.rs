@@ -19,9 +19,10 @@ use common::{
     },
 };
 use cudf::{
+    core::Table,
     interop::contract::{
         ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
-        LeaseBackend, LeaseCompletionResult, LeaseExportContext, ReadStartBinding,
+        LeaseBackend, LeaseCompletionResult, LeaseExportContext, ReadStartBinding, Result as InteropResult,
     },
     testing::prelude::*,
 };
@@ -34,7 +35,7 @@ use cugraph::{
         vertex_pairs_from_prepared_table_export,
     },
     error::ErrorKind,
-    graph::{Forward, Graph, GraphBuilder},
+    graph::{Forward, Graph, GraphBuilder, Transposed},
     handle::ResourceHandle,
     traversal::{BfsParams, BfsPredicateParams},
     types::GraphProperties,
@@ -88,16 +89,12 @@ impl ActiveLeaseBackend for CountingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
+    ) -> InteropResult<LeaseCompletionResult> {
         self.complete_calls.fetch_add(1, Ordering::SeqCst);
         Ok(LeaseCompletionResult::FallbackSynchronized)
     }
 
-    fn drop_incomplete(
-        &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<()> {
+    fn drop_incomplete(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> InteropResult<()> {
         self.drop_incomplete_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -112,7 +109,7 @@ impl ActiveLeaseBackend for FailingActivationBackend {
         _export: &LeaseExportContext,
         _read_start: ReadStartBinding,
         _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseActivation> {
+    ) -> InteropResult<LeaseActivation> {
         Err(InteropError::new(InteropErrorKind::InvalidView, "test backend forced activation failure"))
     }
 
@@ -124,15 +121,11 @@ impl ActiveLeaseBackend for FailingActivationBackend {
         &self,
         _export: &LeaseExportContext,
         _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
+    ) -> InteropResult<LeaseCompletionResult> {
         Ok(LeaseCompletionResult::FallbackSynchronized)
     }
 
-    fn drop_incomplete(
-        &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<()> {
+    fn drop_incomplete(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> InteropResult<()> {
         Ok(())
     }
 }
@@ -187,7 +180,7 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
         _export: &LeaseExportContext,
         read_start: ReadStartBinding,
         completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseActivation> {
+    ) -> InteropResult<LeaseActivation> {
         self.recorded.lock().expect("recorded").push(RecordedLeaseBindings {
             activate_read_start: read_start.into(),
             activate_completion: completion.into(),
@@ -204,18 +197,14 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
         &self,
         _export: &LeaseExportContext,
         completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<LeaseCompletionResult> {
+    ) -> InteropResult<LeaseCompletionResult> {
         let mut recorded = self.recorded.lock().expect("recorded");
         let last = recorded.last_mut().expect("activate should run before complete");
         last.complete_completion = completion.into();
         Ok(LeaseCompletionResult::FallbackSynchronized)
     }
 
-    fn drop_incomplete(
-        &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
-    ) -> cudf::interop::contract::Result<()> {
+    fn drop_incomplete(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> InteropResult<()> {
         Ok(())
     }
 }
@@ -783,7 +772,7 @@ fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_comp
         .expect("entered");
     let src = runtime.column_from_slice(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.column_from_slice(TRIANGLE_TAIL_DST_I32).expect("dst");
-    let table = cudf::core::Table::from_columns(vec![src, dst]).expect("table");
+    let table = Table::from_columns(vec![src, dst]).expect("table");
 
     let export = table.try_into_prepared_device_table_export().expect("table export");
     assert!(export.clone_retained_owner().is_some(), "owned table prepared export should retain its producer owner");
@@ -822,15 +811,10 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
     let wgt_export = wgt.try_prepare_device_column_export().expect("weight export");
 
-    let opts = PreparedGraphOptions::default().properties(cugraph::types::GraphProperties::undirected()).renumber();
-    let mut graph = graph_from_prepared_columns::<cugraph::graph::Transposed>(
-        &handle,
-        &src_export,
-        &dst_export,
-        Some(&wgt_export),
-        &opts,
-    )
-    .expect("graph_from_prepared_columns");
+    let opts = PreparedGraphOptions::default().properties(GraphProperties::undirected()).renumber();
+    let mut graph =
+        graph_from_prepared_columns::<Transposed>(&handle, &src_export, &dst_export, Some(&wgt_export), &opts)
+            .expect("graph_from_prepared_columns");
 
     let actual = pagerank_score_map(&handle, &mut graph);
     let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
@@ -847,7 +831,7 @@ fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph
     let runtime = explicit_runtime();
     let df = python_undirected_multigraph_dataframe(&runtime);
     let export = df.try_prepare_device_table_export().expect("table export");
-    let props = cugraph::types::GraphProperties { is_symmetric: true, is_multigraph: true };
+    let props = GraphProperties { is_symmetric: true, is_multigraph: true };
 
     let opts = TableGraphOptions::new(0, 1).properties(props).renumber();
     let mut graph =

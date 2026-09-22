@@ -1,5 +1,7 @@
 use std::ptr;
 
+use cudf_sys::test_support;
+
 use crate::{
     helpers::*,
     support::{last_error_message, lock_shim_state},
@@ -216,7 +218,7 @@ fn test_table_release_columns_allocation_failure_does_not_consume_table() {
 
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = -1;
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
+    unsafe { test_support::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
     let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
@@ -260,9 +262,9 @@ fn test_table_release_columns_publish_failure_does_not_consume_table() {
 
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = -1;
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(1) };
     let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { test_support::cudf_test_fail_column_handle_release_after(-1) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out_columns.is_null());

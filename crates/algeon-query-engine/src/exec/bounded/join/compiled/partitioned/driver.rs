@@ -7,6 +7,10 @@ use super::{
     release_bounded_join_side_frame, release_partitioned_join_side, release_streamed_join_outputs_reverse, side_metric,
     slice_partition_join_side_range,
 };
+use crate::{
+    exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
+    metrics::{JoinOperatorMetrics, OperatorMetrics},
+};
 
 // Retry subdivision constants are deliberately fixed because they describe the
 // deterministic shape of already-admitted partitioned-join work, not a new
@@ -118,13 +122,13 @@ impl PartitionedJoinProbeChunk {
             execution.context().check_cancellation("query_engine.exec.bounded.partitioned_join_probe_retry")?;
             match self.partition_range(execution, plan, keys, range) {
                 Ok(output) => return Ok(Some(output)),
-                Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
+                Err(error) if is_retryable_resource_error(&error) => {
                     record_partitioned_join_retry_error(&error, execution.metrics());
                     let action = if attempt >= policy.max_attempts {
                         "retry_attempts_exhausted"
                     } else if let Some((first, second)) = split_partitioned_join_row_range(range, policy.min_probe_rows)
                     {
-                        crate::exec::retry::backoff_before_retry(
+                        backoff_before_retry(
                             execution.context(),
                             "query_engine.exec.bounded.partitioned_join_probe_partition_retry",
                         )?;
@@ -330,19 +334,17 @@ where
         materialize_partition,
     ) {
         Ok(output) => Ok(vec![output]),
-        Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
-            retry_partitioned_join_work_after_error(
-                execution,
-                plan,
-                left_partitioned,
-                right_partitioned,
-                work,
-                policy,
-                attempt,
-                error,
-                materialize_partition,
-            )
-        },
+        Err(error) if is_retryable_resource_error(&error) => retry_partitioned_join_work_after_error(
+            execution,
+            plan,
+            left_partitioned,
+            right_partitioned,
+            work,
+            policy,
+            attempt,
+            error,
+            materialize_partition,
+        ),
         Err(error) => Err(error),
     }
 }
@@ -387,10 +389,7 @@ where
         && partitioned_join_probe_split_supported(plan.node)
         && let Some((left_work, right_work)) = split_partitioned_join_probe_work(plan.node, work, policy.min_probe_rows)
     {
-        crate::exec::retry::backoff_before_retry(
-            execution.context(),
-            "query_engine.exec.bounded.partitioned_join_probe_split_retry",
-        )?;
+        backoff_before_retry(execution.context(), "query_engine.exec.bounded.partitioned_join_probe_split_retry")?;
         return materialize_partitioned_join_retry_children(
             execution,
             plan,
@@ -404,10 +403,7 @@ where
     }
 
     if can_repartition_partitioned_join_work(work) {
-        crate::exec::retry::backoff_before_retry(
-            execution.context(),
-            "query_engine.exec.bounded.partitioned_join_repartition_retry",
-        )?;
+        backoff_before_retry(execution.context(), "query_engine.exec.bounded.partitioned_join_repartition_retry")?;
         return materialize_repartitioned_join_work_with_retry(
             execution,
             plan,
@@ -419,7 +415,7 @@ where
             materialize_partition,
         )
         .map_err(|retry_error| {
-            if crate::exec::retry::is_retryable_resource_error(&retry_error) {
+            if is_retryable_resource_error(&retry_error) {
                 attach_partitioned_join_retry_error(
                     retry_error,
                     plan,
@@ -443,7 +439,7 @@ where
 }
 
 fn record_partitioned_join_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
-    crate::exec::retry::record_retryable_resource_error(error, metrics);
+    record_retryable_resource_error(error, metrics);
 }
 
 #[expect(
@@ -906,9 +902,9 @@ pub(super) fn record_partitioned_join_operator_metrics(
     summary: &PartitionedJoinOutputSummary,
     metrics: &ExecutionMetrics,
 ) {
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    metrics.record_operator_metrics(OperatorMetrics::join(
         plan.node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: plan.node.spec.join_type.to_string(),
             execution_strategy: plan.strategy.execution_strategy.to_string(),
@@ -1060,7 +1056,7 @@ mod tests {
     #[test]
     fn retry_error_evidence_records_resource_exhaustion() {
         let error = retryable_error_with_fact("memory_boundary", "join_partition_right_side");
-        let metrics = crate::exec::ExecutionMetrics::detached("partitioned-join-retry");
+        let metrics = ExecutionMetrics::detached("partitioned-join-retry");
 
         record_partitioned_join_retry_error(&error, &metrics);
         assert_eq!(metrics.snapshot().retry_resource_exhausted_count, 1);

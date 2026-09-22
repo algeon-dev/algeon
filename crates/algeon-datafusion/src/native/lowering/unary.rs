@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     physical_expr::PhysicalExpr,
-    physical_plan::{ExecutionPlan, projection::ProjectionExec},
+    physical_plan::{ExecutionPlan, filter::FilterExec, projection::ProjectionExec},
 };
 use query_engine::{expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder};
 
@@ -91,7 +91,7 @@ impl FilterOutputSelection {
 }
 
 fn required_filter_output_selection(
-    filter: &datafusion::physical_plan::filter::FilterExec,
+    filter: &FilterExec,
     required_output_fields: &RequiredFields,
 ) -> Result<FilterOutputSelection, CapabilityReason> {
     let input_schema = filter.input().schema();

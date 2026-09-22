@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
+
 use super::{
-    AggregateGroupKeyLineage, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan,
-    aggregate_group_key_output_name, direct_projection_column_name, subtree_contains_node, unique_lineage,
+    AggregateGroupKeyLineage, AggregateNode, JoinNode, JoinNullEquality, JoinSide, JoinType, NodeId, PlanNode,
+    QueryPlan, aggregate_group_key_output_name, direct_projection_column_name, subtree_contains_node, unique_lineage,
 };
 
 pub(super) fn shared_source_filter_is_keyset_constrained(
@@ -12,7 +14,7 @@ pub(super) fn shared_source_filter_is_keyset_constrained(
     producer_source_node_id: NodeId,
     producer_source_column: &str,
 ) -> bool {
-    let mut visited = std::collections::BTreeSet::new();
+    let mut visited = BTreeSet::new();
     column_consumers_are_keyset_constrained(
         plan,
         parent_counts,
@@ -210,9 +212,7 @@ fn join_directly_constrains_column(
     producer_source_node_id: NodeId,
     producer_source_column: &str,
 ) -> bool {
-    if join.spec.join_type != JoinType::Inner
-        || join.spec.null_equality != crate::plan::JoinNullEquality::NullsDoNotMatch
-    {
+    if join.spec.join_type != JoinType::Inner || join.spec.null_equality != JoinNullEquality::NullsDoNotMatch {
         return false;
     }
     join.spec.keys.iter().any(|key| {
@@ -239,10 +239,7 @@ fn join_input_side(join: &JoinNode, input: NodeId) -> Option<JoinSide> {
     }
 }
 
-fn aggregate_group_key_output_for_column<'a>(
-    aggregate: &'a crate::plan::AggregateNode,
-    column: &str,
-) -> Option<&'a str> {
+fn aggregate_group_key_output_for_column<'a>(aggregate: &'a AggregateNode, column: &str) -> Option<&'a str> {
     if aggregate.spec.grouping_sets.is_some() {
         return None;
     }

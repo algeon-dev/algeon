@@ -1,12 +1,18 @@
 //! Bounded admission, placement, and query-service orchestration.
 
-use std::sync::{
-    Arc, Condvar, Mutex,
-    atomic::{AtomicBool, AtomicU64},
+use std::{
+    sync,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64},
+    },
 };
 #[cfg(test)]
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{Receiver, SyncSender},
+    },
     time::Duration,
 };
 
@@ -19,6 +25,8 @@ use super::{
     config::{QueryExecutionConfig, QueueBounds},
     resources::QueryServiceResources,
 };
+#[cfg(feature = "qualification")]
+use crate::runtime::gpu::DeviceAdmissionHealth;
 use crate::runtime::{DeviceLedger, allocator_correlation::AllocatorEventCorrelationIndex, context::QueryServiceEpoch};
 
 mod api;
@@ -139,7 +147,7 @@ impl QueryServiceInner {
         // not close device ledgers one at a time without it: an admission
         // could otherwise race between the first and final closure and start
         // work on a fleet whose fault isolation is unknown.
-        let _fleet_admission = self.fleet_admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _fleet_admission = self.fleet_admission.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let reason = format!("unknown-isolation backend failure: {}", detail.as_ref());
         let mut closed_a_ledger = false;
         if let Some(resources) = &self.resources {
@@ -207,8 +215,8 @@ impl PendingPreflightPause {
 #[cfg(test)]
 pub(in crate::runtime::query_service) struct TestPauseHandle {
     name: &'static str,
-    entered: Mutex<std::sync::mpsc::Receiver<()>>,
-    release: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    entered: Mutex<Receiver<()>>,
+    release: Mutex<Option<SyncSender<()>>>,
     drop_cleanup: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -223,8 +231,8 @@ impl std::fmt::Debug for TestPauseHandle {
 impl TestPauseHandle {
     pub(in crate::runtime::query_service) fn new(
         name: &'static str,
-        entered: std::sync::mpsc::Receiver<()>,
-        release: std::sync::mpsc::SyncSender<()>,
+        entered: Receiver<()>,
+        release: SyncSender<()>,
     ) -> Self {
         Self { name, entered: Mutex::new(entered), release: Mutex::new(Some(release)), drop_cleanup: Mutex::new(None) }
     }
@@ -392,7 +400,7 @@ impl QueryService {
             })?;
             let ledger = resources.devices.context_by_ordinal(device_ordinal)?.ledger();
             let newly_quarantined = ledger.close_admission_if_open(REASON)?;
-            let crate::runtime::gpu::DeviceAdmissionHealth::Closed { generation, .. } = ledger.health()? else {
+            let DeviceAdmissionHealth::Closed { generation, .. } = ledger.health()? else {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
                     "query_engine.query_service.fault_injection",

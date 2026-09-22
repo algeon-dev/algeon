@@ -7,7 +7,11 @@
 use std::fmt;
 
 use super::{HashJoinBuildArtifactId, JoinOutputColumn, PlanNode, QueryNode, QueryPlan, ResultSink, SortExpr};
-use crate::{dynamic_filter::DynamicFilterRoute, expr::Expr, source::SourceNode};
+use crate::{
+    dynamic_filter::DynamicFilterRoute,
+    expr::{AggregateExpr, Expr, GroupingSetsSpec},
+    source::SourceNode,
+};
 
 impl fmt::Display for QueryPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -339,7 +343,7 @@ fn format_exprs(expressions: &[Expr]) -> String {
     }
 }
 
-fn format_aggregate_exprs(expressions: &[crate::expr::AggregateExpr]) -> String {
+fn format_aggregate_exprs(expressions: &[AggregateExpr]) -> String {
     if expressions.is_empty() {
         "none".to_string()
     } else {
@@ -355,7 +359,7 @@ fn format_aggregate_exprs(expressions: &[crate::expr::AggregateExpr]) -> String 
     }
 }
 
-fn format_grouping_sets(grouping_sets: Option<&crate::expr::GroupingSetsSpec>) -> String {
+fn format_grouping_sets(grouping_sets: Option<&GroupingSetsSpec>) -> String {
     let Some(grouping_sets) = grouping_sets else {
         return "none".to_string();
     };

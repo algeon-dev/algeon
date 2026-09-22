@@ -28,7 +28,8 @@ use crate::common::{
     dependency_wait_call_count_for_stream, explicit_i32_column, explicit_i32_series,
     last_destroyed_memory_resource_value, last_exec_mr_value, last_exec_stream_value,
     last_memory_resource_destroy_sequence, last_sync_sequence, last_sync_stream_value, lock_event_observation,
-    reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_runtime, scalar,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
+    scalar, series,
 };
 
 fn explicit_nullable_i32_series(_name: &str, data: &[i32], validity: &[bool], identity: u64) -> Series {
@@ -64,7 +65,7 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(table.testing_execution_domain_kind(), "explicit");
     assert_eq!(table.testing_execution_domain_id(), expected_id);
 
-    let series = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
+    let series = series::<i32>("id", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", series)]).unwrap();
     assert_eq!(df.testing_execution_domain_kind(), "explicit");
     assert_eq!(df.testing_execution_domain_id(), expected_id);
@@ -525,7 +526,7 @@ fn replace_family_uses_input_domain_and_orders_replacement_domain() {
 
 #[test]
 fn execution_domain_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("helper_constructors_seed_explicit_runtime_domain", helper_constructors_seed_explicit_runtime_domain),
         (
             "private_pool_teardown_fences_its_registered_stream_before_resource_release",

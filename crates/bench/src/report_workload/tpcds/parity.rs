@@ -21,12 +21,14 @@ use algeon_datafusion::{
     session::AlgeonSessionStateBuilderExt,
 };
 use datafusion::{
+    error::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
 use futures::FutureExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use query_engine::runtime::GpuDeviceMemoryLimit;
 use workloads::tpcds::TpcdsQuery;
 
 use super::{
@@ -90,7 +92,7 @@ pub async fn tpcds_parity_workload_items(
         session_config.clone(),
         session_config,
         optimizer_config,
-        query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        GpuDeviceMemoryLimit::default(),
         query_filter,
         None,
     )
@@ -113,7 +115,7 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
         cpu_session_config,
         native_session_config,
         optimizer_config,
-        query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        GpuDeviceMemoryLimit::default(),
         query_filter,
         None,
     )
@@ -138,7 +140,7 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
         session_config.clone(),
         session_config,
         optimizer_config,
-        query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        GpuDeviceMemoryLimit::default(),
         query_filter,
         external_oracles,
     )
@@ -163,7 +165,7 @@ pub async fn tpcds_parity_report_rows_with_external_oracles(
         root,
         session_config,
         optimizer_config,
-        query_engine::runtime::GpuDeviceMemoryLimit::default(),
+        GpuDeviceMemoryLimit::default(),
         query_filter,
         external_oracles,
         float_tolerance,
@@ -177,7 +179,7 @@ pub async fn tpcds_parity_report_rows_with_external_oracles_and_device_memory_li
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: query_engine::runtime::GpuDeviceMemoryLimit,
+    device_memory_limit: GpuDeviceMemoryLimit,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
@@ -202,7 +204,7 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: query_engine::runtime::GpuDeviceMemoryLimit,
+    device_memory_limit: GpuDeviceMemoryLimit,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
@@ -227,7 +229,7 @@ async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
     optimizer_config: AlgeonNativeOptimizerConfig,
-    device_memory_limit: query_engine::runtime::GpuDeviceMemoryLimit,
+    device_memory_limit: GpuDeviceMemoryLimit,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
@@ -270,7 +272,7 @@ impl TpcdsParityRunner {
         cpu_session_config: SessionConfig,
         native_session_config: SessionConfig,
         optimizer_config: AlgeonNativeOptimizerConfig,
-        device_memory_limit: query_engine::runtime::GpuDeviceMemoryLimit,
+        device_memory_limit: GpuDeviceMemoryLimit,
     ) -> WorkloadResult<Self> {
         let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
             let mut fallback_config = cpu_session_config.clone();
@@ -290,9 +292,7 @@ impl TpcdsParityRunner {
             let native_rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
             let builder = SessionStateBuilder::new_with_default_features()
                 .with_config(native_tpcds_session_config(native_session_config));
-            let builder = backend
-                .install_on(builder)
-                .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)))?;
+            let builder = backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error)))?;
             let native_state = builder.with_algeon_native_rule(Arc::clone(&native_rule)).build();
             let native_ctx = SessionContext::new_with_state(native_state);
             register_tpcds_tables_with_native_metadata(&native_ctx, root).await?;

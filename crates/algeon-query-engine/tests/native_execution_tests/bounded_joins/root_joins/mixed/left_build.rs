@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::expr::ColumnRef;
+
 use super::*;
 
 fn left_match_schema() -> Arc<Schema> {
@@ -15,7 +17,7 @@ fn left_match_plan(
     right_path: &Path,
     join_type: JoinType,
     null_equality: JoinNullEquality,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let schema = left_match_schema();
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(join_left_source(
@@ -44,10 +46,7 @@ fn left_match_plan(
             .with_residual_predicate(predicate)
             .with_null_equality(null_equality)
             .with_build_side(JoinSide::Left)
-            .with_output_projection(vec![JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "qty", "qty"),
-                "qty",
-            )]),
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")]),
         Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, true)])),
     );
     builder.finish_with_host_sink(join)

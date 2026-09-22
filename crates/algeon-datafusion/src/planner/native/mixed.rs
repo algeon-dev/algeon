@@ -9,8 +9,9 @@
 
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::{
+    common::ScalarValue,
     datasource::{
         physical_plan::{FileScanConfigBuilder, FileSource, ParquetSource},
         source::DataSourceExec,
@@ -31,7 +32,10 @@ use query_engine::{
     source::SourceNode,
 };
 
-use crate::native_exec::AlgeonNativeExec;
+use crate::{
+    native::{native_parquet_file_reader_factory_is_supported, scan_predicate_exactly_matches_filter},
+    native_exec::AlgeonNativeExec,
+};
 
 /// A root-only CPU filter whose direct input was certified for replacement by
 /// one native host-output leaf.
@@ -164,7 +168,7 @@ fn root_filter_is_eligible(filter: &FilterExec, source: &dyn ExecutionPlan) -> b
         && file_scan.output_ordering.is_empty()
         && file_scan.table_partition_cols().is_empty()
         && file_scan.expr_adapter_factory.is_none()
-        && crate::native::native_parquet_file_reader_factory_is_supported(parquet_source)
+        && native_parquet_file_reader_factory_is_supported(parquet_source)
         // DataFusion retains a source-level copy of filters it can use for
         // Parquet pruning. This boundary may clear that hint only when it exactly
         // matches the retained CPU ILIKE filter, which remains the sole
@@ -178,8 +182,7 @@ fn root_filter_is_eligible(filter: &FilterExec, source: &dyn ExecutionPlan) -> b
 }
 
 fn source_predicate_is_absent_or_matches_filter(parquet_source: &ParquetSource, filter: &FilterExec) -> bool {
-    parquet_source.filter().is_none()
-        || crate::native::scan_predicate_exactly_matches_filter(parquet_source, Some(filter))
+    parquet_source.filter().is_none() || scan_predicate_exactly_matches_filter(parquet_source, Some(filter))
 }
 
 /// Rebuild a mixed source without a source-level copy of the CPU predicate.
@@ -194,7 +197,7 @@ fn native_lowering_source(filter: &FilterExec, source: &dyn ExecutionPlan) -> Op
     if parquet_source.filter().is_none() {
         return Some(Arc::clone(filter.input()));
     }
-    if !crate::native::scan_predicate_exactly_matches_filter(parquet_source, Some(filter)) {
+    if !scan_predicate_exactly_matches_filter(parquet_source, Some(filter)) {
         return None;
     }
 
@@ -223,9 +226,7 @@ fn root_filter_has_deterministic_ilike(filter: &FilterExec) -> bool {
         && like.case_insensitive()
         && matches!(
             pattern.value(),
-            datafusion::common::ScalarValue::Utf8(Some(_))
-                | datafusion::common::ScalarValue::LargeUtf8(Some(_))
-                | datafusion::common::ScalarValue::Utf8View(Some(_))
+            ScalarValue::Utf8(Some(_)) | ScalarValue::LargeUtf8(Some(_)) | ScalarValue::Utf8View(Some(_))
         )
         && filter
             .input()
@@ -245,7 +246,7 @@ fn source_properties_are_certified(source: &dyn ExecutionPlan) -> bool {
         && canonical_empty_equivalence_properties(source.schema(), source.properties().equivalence_properties())
 }
 
-fn native_leaf_is_certified(native_child: &dyn ExecutionPlan, schema: &arrow::datatypes::Schema) -> bool {
+fn native_leaf_is_certified(native_child: &dyn ExecutionPlan, schema: &Schema) -> bool {
     native_child.schema().as_ref() == schema
         && single_unknown_partition(native_child)
         && native_child.properties().output_ordering().is_none()
@@ -283,7 +284,7 @@ fn canonical_empty_equivalence_properties(schema: SchemaRef, properties: &Equiva
         && properties.constraints().is_empty()
 }
 
-fn simple_boundary_schema(schema: &arrow::datatypes::Schema) -> bool {
+fn simple_boundary_schema(schema: &Schema) -> bool {
     schema.fields().iter().all(|field| {
         matches!(
             field.data_type(),

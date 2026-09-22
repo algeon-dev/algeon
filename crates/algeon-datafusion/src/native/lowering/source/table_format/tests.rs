@@ -8,7 +8,8 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, Int64Array},
+    array::{Array, Int64Array, ListArray},
+    datatypes::TimeUnit,
     record_batch::RecordBatch,
 };
 use datafusion::{
@@ -21,13 +22,14 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::PlanNode,
+    rapids_backend::rapids_analysis_context,
     runtime::ExecutionContext,
-    source::{self, CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
+    source::{self, CredentialMode, PartitionColumn, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
 };
 
 use super::*;
 use crate::table_format::{
-    AlgeonIcebergNativeScanOutcome, AlgeonIcebergScanExec, TableFormat, TableFormatDeleteFile,
+    AlgeonIcebergNativeScanOutcome, AlgeonIcebergScanExec, TableFormat, TableFormatColumnRole, TableFormatDeleteFile,
     TableFormatDeleteFileContent, TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatReadCapability,
     TableFormatScalarValue,
 };
@@ -163,8 +165,7 @@ fn table_format_local_footer_missing_field_id_uses_name_mapping_alias() {
     assert_eq!(native_source.read_columns, vec!["old_status"]);
     assert_eq!(native_source.projected_output_columns, vec!["status"]);
     assert_eq!(native_source.files[0].field_id_read_bindings[0].physical_name, "old_status");
-    source::validate_local_parquet_source(&native_source, query_engine::rapids_backend::rapids_analysis_context())
-        .unwrap();
+    source::validate_local_parquet_source(&native_source, rapids_analysis_context()).unwrap();
     fs::remove_dir_all(dir).ok();
 }
 
@@ -197,7 +198,7 @@ fn table_format_footer_missing_field_id_rejects_ambiguous_name_mapping_aliases()
                 DataType::Int64,
                 false,
                 TableFormatColumnSource::DirectTopLevelFileColumn,
-                crate::table_format::TableFormatColumnRole::Projected,
+                TableFormatColumnRole::Projected,
             )
             .with_field_id_source_names(["status", "old_status"]),
         );
@@ -240,7 +241,7 @@ fn table_format_footer_missing_field_id_rejects_ambiguous_aliases_before_type_fi
                 DataType::Int64,
                 false,
                 TableFormatColumnSource::DirectTopLevelFileColumn,
-                crate::table_format::TableFormatColumnRole::Projected,
+                TableFormatColumnRole::Projected,
             )
             .with_field_id_source_names(["status", "old_status"]),
         );
@@ -282,7 +283,7 @@ fn table_format_footer_alias_with_conflicting_field_id_rejects_name_mapping_fall
                 DataType::Int64,
                 false,
                 TableFormatColumnSource::DirectTopLevelFileColumn,
-                crate::table_format::TableFormatColumnRole::Projected,
+                TableFormatColumnRole::Projected,
             )
             .with_field_id_source_names(["old_status"]),
         );
@@ -323,7 +324,7 @@ fn table_format_footer_malformed_field_id_metadata_rejects_same_name_fallback() 
             DataType::Int64,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -337,7 +338,7 @@ fn table_format_footer_malformed_field_id_metadata_rejects_same_name_fallback() 
 
 #[test]
 fn table_format_direct_timestamp_timezone_uses_timezone_free_source_contract() {
-    let timestamp_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into()));
+    let timestamp_type = DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()));
     let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", timestamp_type.clone(), true)]));
     let data_file = TableFormatDataFile::new(
         "file-0",
@@ -360,7 +361,7 @@ fn table_format_direct_timestamp_timezone_uses_timezone_free_source_contract() {
             timestamp_type.clone(),
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -372,14 +373,14 @@ fn table_format_direct_timestamp_timezone_uses_timezone_free_source_contract() {
     assert_eq!(groups.len(), 1);
     assert_eq!(
         groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(),
-        &DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None)
+        &DataType::Timestamp(TimeUnit::Microsecond, None)
     );
     assert_eq!(groups[0].output_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
 }
 
 #[test]
 fn table_format_timestamp_partition_source_contract_keeps_logical_timezone() {
-    let timestamp_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into()));
+    let timestamp_type = DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()));
     let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", timestamp_type.clone(), false)]));
     let data_file = TableFormatDataFile::new(
         "file-0",
@@ -410,7 +411,7 @@ fn table_format_timestamp_partition_source_contract_keeps_logical_timezone() {
             timestamp_type.clone(),
             false,
             TableFormatColumnSource::IdentityPartitionValue,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements = table_format_column_requirements(
@@ -429,13 +430,12 @@ fn table_format_timestamp_partition_source_contract_keeps_logical_timezone() {
             .unwrap();
 
     assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
-    source::validate_local_parquet_source(&native_source, query_engine::rapids_backend::rapids_analysis_context())
-        .unwrap();
+    source::validate_local_parquet_source(&native_source, rapids_analysis_context()).unwrap();
 }
 
 #[test]
 fn table_format_timestamp_missing_source_contract_keeps_logical_timezone() {
-    let timestamp_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into()));
+    let timestamp_type = DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()));
     let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", timestamp_type.clone(), true)]));
     let data_file = TableFormatDataFile::new(
         "file-0",
@@ -459,7 +459,7 @@ fn table_format_timestamp_missing_source_contract_keeps_logical_timezone() {
             timestamp_type.clone(),
             true,
             TableFormatColumnSource::MissingNullableColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements = table_format_column_requirements(
@@ -478,8 +478,7 @@ fn table_format_timestamp_missing_source_contract_keeps_logical_timezone() {
             .unwrap();
 
     assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
-    source::validate_local_parquet_source(&native_source, query_engine::rapids_backend::rapids_analysis_context())
-        .unwrap();
+    source::validate_local_parquet_source(&native_source, rapids_analysis_context()).unwrap();
 }
 
 #[test]
@@ -534,7 +533,7 @@ fn table_format_attached_remote_footer_schema_admits_field_id_mapping() {
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -575,7 +574,7 @@ fn table_format_attached_remote_footer_same_name_signed_integer_widening_admits(
             DataType::Int32,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements = table_format_column_requirements(
@@ -608,8 +607,7 @@ fn table_format_attached_remote_footer_same_name_signed_integer_widening_admits(
     assert_eq!(groups[0].field_id_bindings[0][0].data_type, DataType::Int16);
     assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
     assert!(groups[0].has_read_coercions());
-    source::validate_local_parquet_source(&native_source, query_engine::rapids_backend::rapids_analysis_context())
-        .unwrap();
+    source::validate_local_parquet_source(&native_source, rapids_analysis_context()).unwrap();
 }
 
 #[test]
@@ -637,7 +635,7 @@ fn table_format_attached_remote_footer_same_name_unsafe_type_mismatch_rejects_in
             DataType::Int32,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -677,7 +675,7 @@ fn table_format_attached_remote_footer_absent_nullable_field_id_materializes_mis
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -718,7 +716,7 @@ fn table_format_filter_only_same_name_signed_integer_widening_admits() {
             DataType::Int32,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::PureFilter,
+            TableFormatColumnRole::PureFilter,
         ));
     let scan_exec: Arc<dyn ExecutionPlan> = Arc::new(test_scan_exec(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_schema = scan_exec.schema();
@@ -758,8 +756,7 @@ fn table_format_filter_only_same_name_signed_integer_widening_admits() {
     assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
     assert!(groups[0].has_read_coercions());
     assert!(native_source.reader_predicate.is_none());
-    source::validate_local_parquet_source(&native_source, query_engine::rapids_backend::rapids_analysis_context())
-        .unwrap();
+    source::validate_local_parquet_source(&native_source, rapids_analysis_context()).unwrap();
 }
 
 #[test]
@@ -793,7 +790,7 @@ fn table_format_bare_boolean_filter_stays_post_decode() {
             DataType::Int32,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ))
         .with_pure_filter_column(TableFormatColumnMapping::new(
             Some(2),
@@ -802,7 +799,7 @@ fn table_format_bare_boolean_filter_stays_post_decode() {
             DataType::Boolean,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::PureFilter,
+            TableFormatColumnRole::PureFilter,
         ));
     let scan_exec = Arc::new(test_scan_exec(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_plan_exec: Arc<dyn ExecutionPlan> = Arc::clone(&scan_exec) as _;
@@ -881,7 +878,7 @@ fn table_format_filter_only_same_name_unsafe_type_mismatch_rejects_instead_of_mi
             DataType::Int32,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::PureFilter,
+            TableFormatColumnRole::PureFilter,
         ));
     let scan_exec: Arc<dyn ExecutionPlan> = Arc::new(test_scan_exec(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_schema = scan_exec.schema();
@@ -936,7 +933,7 @@ fn table_format_filter_only_absent_nullable_field_id_rejects_instead_of_missing_
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::PureFilter,
+            TableFormatColumnRole::PureFilter,
         ));
     let scan_exec: Arc<dyn ExecutionPlan> = Arc::new(test_scan_exec(scan_plan.clone(), Arc::clone(&output_schema)));
     let scan_schema = scan_exec.schema();
@@ -990,7 +987,7 @@ fn table_format_parent_predicate_absent_nullable_field_id_rejects_instead_of_mis
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let required = RequiredFields::only_with_predicates(BTreeSet::from([0]), BTreeSet::from([0]));
@@ -1038,7 +1035,7 @@ fn table_format_field_id_mapping_allows_list_child_field_name_drift() {
             logical_list_type,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1088,7 +1085,7 @@ fn table_format_field_id_mapping_allows_fixed_size_list_child_field_name_drift()
             logical_list_type,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1136,7 +1133,7 @@ fn table_format_field_id_mapping_rejects_non_parquet_list_child_metadata_drift()
             logical_list_type,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1175,7 +1172,7 @@ fn table_format_field_id_mapping_allows_required_footer_for_nullable_logical_fie
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1217,7 +1214,7 @@ fn table_format_field_id_mapping_rejects_nullable_footer_for_required_logical_fi
             DataType::Int64,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1231,14 +1228,10 @@ fn table_format_field_id_mapping_rejects_nullable_footer_for_required_logical_fi
 
 #[test]
 fn table_format_field_id_mapping_allows_timestamp_timezone_footer_normalization() {
-    let footer_field = Field::new(
-        "event_ts",
-        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("+00:00".into())),
-        false,
-    )
-    .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "8".to_string())]));
+    let footer_field = Field::new("event_ts", DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())), false)
+        .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "8".to_string())]));
     let footer_schema = Arc::new(Schema::new(vec![footer_field]));
-    let logical_type = DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+    let logical_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
     let scan_schema = Arc::new(Schema::new(vec![Field::new("event_ts", logical_type.clone(), true)]));
     let data_file = TableFormatDataFile::new(
         "file-0",
@@ -1261,7 +1254,7 @@ fn table_format_field_id_mapping_allows_timestamp_timezone_footer_normalization(
             logical_type,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1302,7 +1295,7 @@ fn table_format_missing_nullable_list_column_retains_its_declared_type() {
             list_type.clone(),
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let file_schema = table_format_file_schema(&scan_plan);
     let requirements =
@@ -1346,7 +1339,7 @@ fn table_format_field_id_missing_nullable_list_executes_as_declared_typed_nulls(
             list_type,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let scan_exec = test_scan_exec(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
@@ -1361,7 +1354,7 @@ fn table_format_field_id_missing_nullable_list_executes_as_declared_typed_nulls(
     };
     assert_eq!(batch.schema(), scan_schema);
     assert_eq!(batch.num_rows(), 2);
-    let flags = batch.column(0).as_any().downcast_ref::<arrow::array::ListArray>().unwrap();
+    let flags = batch.column(0).as_any().downcast_ref::<ListArray>().unwrap();
     assert_eq!(flags.null_count(), 2);
     assert_eq!(flags.values().len(), 0);
     assert_eq!(flags.value_type(), DataType::Boolean);
@@ -1461,7 +1454,7 @@ fn table_format_equality_delete_hidden_key_rejects_without_delete_footer_field_i
             DataType::Int64,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ))
         .with_pure_filter_column(TableFormatColumnMapping::new(
             Some(1),
@@ -1470,7 +1463,7 @@ fn table_format_equality_delete_hidden_key_rejects_without_delete_footer_field_i
             DataType::Int64,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::PureFilter,
+            TableFormatColumnRole::PureFilter,
         ));
     let scan_exec = test_scan_exec(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
@@ -1576,7 +1569,7 @@ fn table_format_local_footer_renamed_physical_columns_lower_as_union_groups() {
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let scan_exec = test_scan_exec(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
@@ -1641,7 +1634,7 @@ fn table_format_multi_group_scan_limit_is_pushed_into_each_source() {
             DataType::Int64,
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ));
     let scan_exec = test_scan_exec(scan_plan, Arc::clone(&scan_schema));
     let mut builder = NativeQueryPlanBuilder::new();
@@ -1870,8 +1863,7 @@ fn table_format_empty_required_fields_uses_field_id_carrier_without_projecting_i
     assert_eq!(native_source.read_columns, vec!["old_status"]);
     assert!(native_source.projected_output_columns.is_empty());
     assert_eq!(native_source.pure_filter_columns, vec!["status"]);
-    source::validate_local_parquet_source(&native_source, query_engine::rapids_backend::rapids_analysis_context())
-        .unwrap();
+    source::validate_local_parquet_source(&native_source, rapids_analysis_context()).unwrap();
     fs::remove_dir_all(dir).ok();
 }
 
@@ -1952,7 +1944,7 @@ fn single_projected_file_scan_plan_with_nullability(
             DataType::Int64,
             nullable,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::Projected,
+            TableFormatColumnRole::Projected,
         ))
 }
 
@@ -1982,7 +1974,7 @@ fn single_projected_file_scan_plan_with_default(
                 DataType::Int64,
                 false,
                 TableFormatColumnSource::DirectTopLevelFileColumn,
-                crate::table_format::TableFormatColumnRole::Projected,
+                TableFormatColumnRole::Projected,
             )
             .with_missing_default_value(default_value),
         )
@@ -2023,7 +2015,7 @@ fn single_pure_filter_file_scan_plan(path: &Path, schema: SchemaRef, field_id: i
             DataType::Int64,
             false,
             TableFormatColumnSource::DirectTopLevelFileColumn,
-            crate::table_format::TableFormatColumnRole::PureFilter,
+            TableFormatColumnRole::PureFilter,
         ))
 }
 
@@ -2178,7 +2170,7 @@ fn table_format_partition_only_file_row_count_creates_synthetic_row_group_metada
     requirements.read_column_file_indices.clear();
     requirements.projected_output_columns = vec!["part".to_string()];
     requirements.projected_output_column_source_refs = vec![NativeSourceColumnRef::Partition(0)];
-    requirements.partition_columns = vec![query_engine::source::PartitionColumn::new("part", DataType::Int32, false)];
+    requirements.partition_columns = vec![PartitionColumn::new("part", DataType::Int32, false)];
     requirements.partition_column_indices = vec![0];
     requirements.scan_output_columns = vec!["part".to_string()];
 

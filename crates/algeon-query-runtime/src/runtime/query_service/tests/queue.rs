@@ -1,3 +1,5 @@
+use query_planning::error::{QueryErrorKind, QueryErrorStatus};
+
 #[test]
 fn query_service_reports_overload_when_queue_is_full() {
     let service = test_service(1, 1);
@@ -16,8 +18,8 @@ fn query_service_reports_overload_when_queue_is_full() {
 
     let error = service.admit_query().unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.kind(), query_planning::error::QueryErrorKind::ResourceExhausted);
-    assert_eq!(error.status(), query_planning::error::QueryErrorStatus::Temporary);
+    assert_eq!(error.kind(), QueryErrorKind::ResourceExhausted);
+    assert_eq!(error.status(), QueryErrorStatus::Temporary);
     assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
     assert_eq!(
         QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
@@ -546,12 +548,12 @@ fn query_service_close_wakes_waiting_admission() {
 fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
     let service = test_service(1, 8);
     let active = service.admit_query().expect("first admission occupies the only slot");
-    let lifecycle = crate::runtime::BackendLifecycle::new();
-    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
-    let attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
+    let lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
             observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+            ..BeginAttemptRequest::default()
         },
         lifecycle.try_begin_observation().expect("attempt observation permit"),
         std::sync::Arc::clone(&counters),

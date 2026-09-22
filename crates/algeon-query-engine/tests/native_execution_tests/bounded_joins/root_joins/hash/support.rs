@@ -25,15 +25,9 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
-                    "category",
-                ),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -94,15 +88,9 @@ fn bounded_native_query_uses_single_pass_reusable_probe_for_unique_inner_build()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
-                    "category",
-                ),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right)
             .with_build_artifact_id("orders_by_order_id"),

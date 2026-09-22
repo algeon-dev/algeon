@@ -1,9 +1,16 @@
 //! Resident graph identity, fingerprinting, and planning analysis.
 use std::fmt;
 
+use arrow::datatypes::DataType as ArrowDataType;
+
 use super::{
     EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, Expr, Field, GraphAlgorithmSpec, NodeId, PlanNode,
     ProjectionNode, QueryPlan,
+};
+use crate::{
+    error::{QueryError, QueryErrorCode, Result},
+    source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
+    util::{StableFnv1a64, escape_kv_delimited},
 };
 
 /// Concrete graph orientation used for resident graph cache keys.
@@ -45,15 +52,15 @@ pub struct GraphSourceFingerprint {
     diagnostic_fingerprint: String,
 }
 
-impl std::fmt::Debug for GraphSourceFingerprint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for GraphSourceFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphSourceFingerprint").field("fingerprint", &self.diagnostic_fingerprint).finish()
     }
 }
 
 impl GraphSourceFingerprint {
     fn new(fingerprint: String) -> Self {
-        let mut hasher = crate::util::StableFnv1a64::new();
+        let mut hasher = StableFnv1a64::new();
         hasher.update_field(&fingerprint);
         let diagnostic_fingerprint = format!("graph-source-v1-fnv64-{:016x}", hasher.finish());
         Self { fingerprint, diagnostic_fingerprint }
@@ -150,12 +157,12 @@ pub struct GraphResidencyDescriptor {
     /// frame is live, so bounded graph admission must retain this fact.
     graph_raw_edge_row_count: Option<u64>,
     /// Arrow dtype of the graph vertex columns.
-    pub vertex_data_type: arrow::datatypes::DataType,
+    pub vertex_data_type: ArrowDataType,
     /// Arrow dtype of the semantic weight column when the algorithm consumes
     /// weights.
-    pub weight_data_type: Option<arrow::datatypes::DataType>,
+    pub weight_data_type: Option<ArrowDataType>,
     /// Arrow dtype of the edge-id column when present.
-    pub edge_id_data_type: Option<arrow::datatypes::DataType>,
+    pub edge_id_data_type: Option<ArrowDataType>,
 }
 
 impl GraphResidencyDescriptor {
@@ -185,14 +192,14 @@ impl GraphResidencyDescriptor {
     /// key; diagnostics expose its redacted fingerprint.
     pub fn for_content_identity(
         content_identity: impl AsRef<str>,
-        vertex_data_type: arrow::datatypes::DataType,
-        weight_data_type: Option<arrow::datatypes::DataType>,
-        edge_id_data_type: Option<arrow::datatypes::DataType>,
-    ) -> crate::error::Result<Self> {
+        vertex_data_type: ArrowDataType,
+        weight_data_type: Option<ArrowDataType>,
+        edge_id_data_type: Option<ArrowDataType>,
+    ) -> Result<Self> {
         let content_identity = content_identity.as_ref().trim();
         if content_identity.is_empty() {
-            return Err(crate::error::QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
                 "query_engine.plan.graph_residency_content_identity",
                 "graph residency requires a non-empty immutable content identity",
             )
@@ -251,11 +258,11 @@ pub struct ResidentGraphKey {
     /// Concrete cuGraph graph orientation.
     pub orientation: GraphResidencyOrientation,
     /// Arrow dtype of the graph vertex columns.
-    pub vertex_data_type: arrow::datatypes::DataType,
+    pub vertex_data_type: ArrowDataType,
     /// Arrow dtype of the semantic weight column when consumed.
-    pub weight_data_type: Option<arrow::datatypes::DataType>,
+    pub weight_data_type: Option<ArrowDataType>,
     /// Arrow dtype of the edge-id column when present.
-    pub edge_id_data_type: Option<arrow::datatypes::DataType>,
+    pub edge_id_data_type: Option<ArrowDataType>,
 }
 
 /// Edge preparation contract folded into resident graph keys.
@@ -390,10 +397,10 @@ fn edge_node_has_simple_directed_edge_topology(
     };
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => {
+            SourceNode::LocalParquet(source) => {
                 source.has_simple_directed_edge_topology(source_column, destination_column)
             },
-            crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => false,
+            SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => false,
         },
         PlanNode::Projection(projection) => {
             let (Some(source_column), Some(destination_column)) = (
@@ -425,7 +432,7 @@ fn edge_node_has_simple_directed_edge_topology(
 /// the descriptor construction here ensures direct scans and native plans use
 /// the same stable key contract.
 pub fn graph_residency_descriptor_for_local_parquet_source(
-    source: &crate::source::LocalParquetSource,
+    source: &LocalParquetSource,
     spec: &GraphAlgorithmSpec,
 ) -> GraphResidencyPlanAnalysis {
     let bindings = EffectiveGraphEdgeBindings::for_spec(spec);
@@ -443,10 +450,10 @@ fn graph_residency_descriptor_for_edge_node(
     let node = plan.node(node_id).ok_or(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput)?;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => {
+            SourceNode::LocalParquet(source) => {
                 graph_residency_descriptor_for_local_parquet_source_with_bindings(source, bindings)
             },
-            crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => {
+            SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => {
                 Err(GraphSourceFingerprintBypassReason::NonLocalParquetSource)
             },
         },
@@ -482,7 +489,7 @@ fn projection_source_column(projection: &ProjectionNode, output_column: &str) ->
 }
 
 fn graph_residency_descriptor_for_local_parquet_source_with_bindings(
-    source: &crate::source::LocalParquetSource,
+    source: &LocalParquetSource,
     bindings: &EffectiveGraphEdgeBindings,
 ) -> std::result::Result<GraphResidencyDescriptor, GraphSourceFingerprintBypassReason> {
     if source.scan_limit.is_some() {
@@ -554,24 +561,24 @@ fn graph_residency_descriptor_for_local_parquet_source_with_bindings(
 }
 
 fn graph_source_field<'a>(
-    source: &'a crate::source::LocalParquetSource,
+    source: &'a LocalParquetSource,
     column: &str,
 ) -> std::result::Result<&'a Field, GraphSourceFingerprintBypassReason> {
     source.output_schema().field_with_name(column).map_err(|_| GraphSourceFingerprintBypassReason::MissingEdgeColumn)
 }
 
-fn local_parquet_file_identity_is_graph_stable(file: &crate::source::LocalParquetFile) -> bool {
+fn local_parquet_file_identity_is_graph_stable(file: &LocalParquetFile) -> bool {
     let table_format_identity = file.stable_id.starts_with("table-format:");
     let strong_content_identity =
         file.resolved_source.content_identity.as_deref().is_some_and(graph_content_identity_is_strong);
     match &file.location {
-        crate::source::ParquetSourceLocation::LocalPath(_) => {
+        ParquetSourceLocation::LocalPath(_) => {
             (file.file_size_bytes.is_some()
                 && file.stable_id.starts_with("local:")
                 && file.stable_id.contains(":mtime="))
                 || (table_format_identity && strong_content_identity)
         },
-        crate::source::ParquetSourceLocation::ObjectStoreUri { .. } => strong_content_identity,
+        ParquetSourceLocation::ObjectStoreUri { .. } => strong_content_identity,
     }
 }
 
@@ -585,7 +592,7 @@ fn graph_content_identity_is_strong(identity: &str) -> bool {
 fn push_graph_source_column(
     output: &mut String,
     role: &str,
-    source: &crate::source::LocalParquetSource,
+    source: &LocalParquetSource,
     column: &str,
 ) -> std::result::Result<(), GraphSourceFingerprintBypassReason> {
     let field = graph_source_field(source, column)?;
@@ -597,11 +604,11 @@ fn push_graph_source_column(
     Ok(())
 }
 
-fn graph_source_ref_label(source_ref: crate::source::SourceColumnRef) -> String {
+fn graph_source_ref_label(source_ref: SourceColumnRef) -> String {
     match source_ref {
-        crate::source::SourceColumnRef::File(index) => format!("file:{index}"),
-        crate::source::SourceColumnRef::Partition(index) => format!("partition:{index}"),
-        crate::source::SourceColumnRef::MissingNull(index) => format!("missing_null:{index}"),
+        SourceColumnRef::File(index) => format!("file:{index}"),
+        SourceColumnRef::Partition(index) => format!("partition:{index}"),
+        SourceColumnRef::MissingNull(index) => format!("missing_null:{index}"),
     }
 }
 
@@ -625,8 +632,8 @@ fn push_graph_string_vec(output: &mut String, key: impl AsRef<str>, values: &[St
 }
 
 fn push_graph_fingerprint_token(output: &mut String, key: impl AsRef<str>, value: impl ToString) {
-    output.push_str(&crate::util::escape_kv_delimited(key.as_ref()));
+    output.push_str(&escape_kv_delimited(key.as_ref()));
     output.push('=');
-    output.push_str(&crate::util::escape_kv_delimited(value.to_string().as_str()));
+    output.push_str(&escape_kv_delimited(value.to_string().as_str()));
     output.push(';');
 }

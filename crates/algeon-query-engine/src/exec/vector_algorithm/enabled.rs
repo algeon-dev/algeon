@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
+use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{Series, frame::dataframe::GpuRecordBatch};
 use cuvs::{
     BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, KMeansInit, KMeansMetric, KMeansModel, KMeansParams,
@@ -7,11 +8,9 @@ use cuvs::{
     fit_transform_owned,
 };
 
-use super::{
-    super::{GpuDataFrame, *},
-    assembly::{assemble_brute_force_knn_output, assemble_kmeans_output, assemble_pca_output},
-};
+use super::assembly::{assemble_brute_force_knn_output, assemble_kmeans_output, assemble_pca_output};
 use crate::{
+    exec::{GpuDataFrame, *},
     observability::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
@@ -587,7 +586,7 @@ fn with_relation_tensor<T>(
         CuvsDenseVectorBinding::VectorColumn(column)
             if matches!(
                 input_schema.field_with_name(column).map(|field| field.data_type()),
-                Ok(arrow::datatypes::DataType::List(_) | arrow::datatypes::DataType::LargeList(_))
+                Ok(DataType::List(_) | DataType::LargeList(_))
             )
     ) {
         return with_uniform_list_relation_tensor(
@@ -776,7 +775,7 @@ fn with_owned_relation_matrix<T>(
         CuvsDenseVectorBinding::VectorColumn(column)
             if matches!(
                 input_schema.field_with_name(column).map(|field| field.data_type()),
-                Ok(arrow::datatypes::DataType::List(_) | arrow::datatypes::DataType::LargeList(_))
+                Ok(DataType::List(_) | DataType::LargeList(_))
             )
     ) {
         return with_owned_uniform_list_relation_matrix(
@@ -931,7 +930,7 @@ fn with_uniform_list_relation_tensor<T>(
     role: &'static str,
     binding: &VectorRelationBinding,
     input: &GpuDataFrame,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &SchemaRef,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
     body: impl FnOnce(&ValidatedDeviceTensor<'_>) -> Result<T>,
@@ -1011,7 +1010,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
     role: &'static str,
     binding: &VectorRelationBinding,
     input: &GpuDataFrame,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &SchemaRef,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
     layout: MatrixLayout,
@@ -1093,7 +1092,7 @@ fn uniform_list_vector_column<'a>(
 }
 
 fn uniform_list_field_index(
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &SchemaRef,
     column: &str,
     node_id: NodeId,
     role: &'static str,
@@ -1316,7 +1315,7 @@ fn relation_input<'a>(
 
 fn relation_dimension(
     binding: &VectorRelationBinding,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &SchemaRef,
     node_id: NodeId,
     role: &'static str,
 ) -> Result<usize> {
@@ -1337,8 +1336,8 @@ fn relation_dimension(
             })?
             .data_type()
         {
-            arrow::datatypes::DataType::FixedSizeList(_, dimension) if *dimension > 0 => Ok(*dimension as usize),
-            arrow::datatypes::DataType::List(_) | arrow::datatypes::DataType::LargeList(_) => Err(QueryError::new(
+            DataType::FixedSizeList(_, dimension) if *dimension > 0 => Ok(*dimension as usize),
+            DataType::List(_) | DataType::LargeList(_) => Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 PACK_OPERATION,
                 "variable List<Float32> vector columns require a uniform-dimension device witness",

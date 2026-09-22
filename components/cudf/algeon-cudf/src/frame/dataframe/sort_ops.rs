@@ -5,11 +5,15 @@ use smallvec::SmallVec;
 use super::{fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_group_keys, owned::DataFrame};
 use crate::{
     core::{
-        column::Column,
+        column::{Column, position_sequence_in_domain},
         error::{self, Result},
     },
     frame::series::Series,
-    internal::{hash::FastIndexMap, resolve::resolve_column_names, temp_table::TempTableView},
+    internal::{
+        hash::FastIndexMap,
+        resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
+        temp_table::TempTableView,
+    },
     ops::{
         groupby::{GroupByScanRequest, NullPolicy, groupby_scan_sorted},
         join::MergeOptions,
@@ -371,7 +375,7 @@ impl DataFrame {
             if let Some(null_orders) = null_orders.as_mut() {
                 null_orders.push(sorting::NullOrder::After);
             }
-            Some(crate::core::column::position_sequence_in_domain(self.row_count, &output_domain, operation)?)
+            Some(position_sequence_in_domain(self.row_count, &output_domain, operation)?)
         } else {
             None
         };
@@ -445,7 +449,7 @@ impl DataFrame {
         }
 
         if views.is_empty() {
-            crate::internal::resolve::build_borrowed_table_view_from_columns(columns, &[])
+            build_borrowed_table_view_from_columns(columns, &[])
         } else {
             TempTableView::from_column_views(views)
         }
@@ -461,11 +465,7 @@ impl DataFrame {
 
     /// Return zero-based `Int32` row positions aligned to the current frame order.
     pub fn row_positions(&self) -> Result<Series> {
-        Series::from_column(crate::core::column::position_sequence_in_domain(
-            self.row_count,
-            &self.domain,
-            "dataframe::row_positions",
-        )?)
+        Series::from_column(position_sequence_in_domain(self.row_count, &self.domain, "dataframe::row_positions")?)
     }
 
     /// Return a zero-based per-group row number for already-sorted rows.
@@ -484,11 +484,7 @@ impl DataFrame {
 
         let row_idx_name = unique_temp_column_name(self, "__cudf_group_cumcount_row_idx__");
         let group_start_name = unique_temp_column_name(self, "__cudf_group_cumcount_group_start__");
-        let row_idx = Series::from_column(crate::core::column::position_sequence_in_domain(
-            self.row_count,
-            &self.domain,
-            operation,
-        )?)?;
+        let row_idx = Series::from_column(position_sequence_in_domain(self.row_count, &self.domain, operation)?)?;
         let with_row_idx = self.with_column(&row_idx_name, row_idx)?;
 
         let first_rows = with_row_idx.drop_duplicates(
@@ -529,7 +525,7 @@ impl DataFrame {
         let value_indices = resolve_column_names(&self.columns, &[value], operation)?;
         let value_column = self.columns.get_index(value_indices[0]).expect("resolved scan value index remains valid");
 
-        let keys_table = crate::internal::resolve::build_borrowed_table_view_from_columns(&self.columns, &key_indices)?;
+        let keys_table = build_borrowed_table_view_from_columns(&self.columns, &key_indices)?;
         let value_view = value_column.1.view()?;
         let aggregations = [agg];
         let requests = [GroupByScanRequest { values: &value_view, aggregations: &aggregations }];

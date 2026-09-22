@@ -1,3 +1,5 @@
+use query_planning::error::{CugraphAllocationSource, QueryError, QueryErrorCode};
+
 use super::*;
 
 fn failure(code: AttemptFailureCode, facts: Vec<AttemptFailureFact>) -> AttemptFailureSummary {
@@ -17,13 +19,13 @@ fn reason(value: AttemptFailureFactValue) -> AttemptFailureFact {
 
 #[test]
 fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_order() {
-    let error = query_planning::error::QueryError::new(
-        query_planning::error::QueryErrorCode::CudfResourceExhausted,
+    let error = QueryError::new(
+        QueryErrorCode::CudfResourceExhausted,
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
     .with_fact("reason", "backend_closing")
-    .with_cugraph_allocation_source(query_planning::error::CugraphAllocationSource::RmmBadAlloc);
+    .with_cugraph_allocation_source(CugraphAllocationSource::RmmBadAlloc);
 
     let summary = AttemptFailureSummary::from_native_error(&error);
     assert_eq!(
@@ -38,14 +40,11 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     );
 
     for (source, expected) in [
-        (
-            query_planning::error::CugraphAllocationSource::RmmOutOfMemory,
-            AttemptFailureFactValue::CugraphRmmOutOfMemory,
-        ),
-        (query_planning::error::CugraphAllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
+        (CugraphAllocationSource::RmmOutOfMemory, AttemptFailureFactValue::CugraphRmmOutOfMemory),
+        (CugraphAllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
     ] {
-        let error = query_planning::error::QueryError::new(
-            query_planning::error::QueryErrorCode::CudfResourceExhausted,
+        let error = QueryError::new(
+            QueryErrorCode::CudfResourceExhausted,
             "query_engine.test.allocation_source",
             "cuGraph allocation failed",
         )
@@ -56,16 +55,16 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         );
     }
 
-    let unknown = query_planning::error::QueryError::new(
-        query_planning::error::QueryErrorCode::CudfResourceExhausted,
+    let unknown = QueryError::new(
+        QueryErrorCode::CudfResourceExhausted,
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
-    .with_cugraph_allocation_source(query_planning::error::CugraphAllocationSource::Unknown);
+    .with_cugraph_allocation_source(CugraphAllocationSource::Unknown);
     assert!(AttemptFailureSummary::from_native_error(&unknown).facts().is_empty());
 
-    let untyped_fact = query_planning::error::QueryError::new(
-        query_planning::error::QueryErrorCode::CudfResourceExhausted,
+    let untyped_fact = QueryError::new(
+        QueryErrorCode::CudfResourceExhausted,
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )

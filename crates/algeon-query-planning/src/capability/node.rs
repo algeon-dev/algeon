@@ -4,6 +4,8 @@
 //! executable decision, and produced properties such as ordering and residency.
 use std::collections::BTreeMap;
 
+use arrow::datatypes::{DataType as ArrowDataType, Schema as ArrowSchema};
+
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinExecutionCapability, JoinNode,
     JoinSide, KeyedHashJoinStrategyDecision, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan, SourceNode,
@@ -21,7 +23,16 @@ use super::{
     },
     one_shot_equi_join_supported, validate_local_parquet_source,
 };
-use crate::{backend::AnalysisContext, plan::UnionNode};
+use crate::{
+    backend::AnalysisContext,
+    plan::{
+        AggregateNode, DataPlacement, EdgeNormalizeNode, EdgeWeightCombiner, GraphAlgorithmNode, GraphAlgorithmParams,
+        GraphVertexPairInput, SortNode, UnionNode, VectorAlgorithmNode, WindowFrame, WindowFunction, WindowNode,
+        graph_result_schema_for_vertex_type,
+    },
+    source::validate_literal_batch_source,
+    vector_validation::validate_vector_algorithm_node_contract,
+};
 
 pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisContext<'_>) -> NodeCapability {
     let node_id = node.id;
@@ -165,9 +176,9 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCon
 fn vector_algorithm_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,
-    vector: &crate::plan::VectorAlgorithmNode,
+    vector: &VectorAlgorithmNode,
 ) -> CapabilityDecision {
-    match crate::vector_validation::validate_vector_algorithm_node_contract(vector, plan, node_id) {
+    match validate_vector_algorithm_node_contract(vector, plan, node_id) {
         Ok(()) => CapabilityDecision::Satisfied,
         Err(error) => {
             let mut facts =
@@ -194,7 +205,7 @@ pub(super) fn source_node_executable_decision(source: &SourceNode, ctx: Analysis
         ),
         SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
         SourceNode::LiteralBatch(source) => validation_result_decision(
-            crate::source::validate_literal_batch_source(source, ctx),
+            validate_literal_batch_source(source, ctx),
             "unsupported_literal_batch_source_capability",
             [("source_format", "literal_batch".to_string())],
         ),
@@ -217,7 +228,7 @@ fn expression_node_decision<'a>(
 fn aggregate_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,
-    aggregate: &crate::plan::AggregateNode,
+    aggregate: &AggregateNode,
 ) -> CapabilityDecision {
     if let Some(grouping_sets) = &aggregate.spec.grouping_sets
         && let Err(reason) = validate_grouping_sets_capability(&aggregate.spec, grouping_sets)
@@ -302,39 +313,32 @@ fn aggregate_node_executable_decision(
     CapabilityDecision::Satisfied
 }
 
-fn aggregate_expr_input_data_type<'a>(
-    expr: &'a crate::expr::Expr,
-    input_schema: &'a arrow::datatypes::Schema,
-) -> Option<&'a arrow::datatypes::DataType> {
+fn aggregate_expr_input_data_type<'a>(expr: &'a Expr, input_schema: &'a ArrowSchema) -> Option<&'a ArrowDataType> {
     match expr {
-        crate::expr::Expr::Column(column) => {
-            input_schema.field_with_name(column.name()).ok().map(|field| field.data_type())
-        },
-        crate::expr::Expr::Cast { target_type, .. } | crate::expr::Expr::TryCast { target_type, .. } => {
-            Some(target_type)
-        },
-        crate::expr::Expr::Alias { expr, .. } => aggregate_expr_input_data_type(expr, input_schema),
+        Expr::Column(column) => input_schema.field_with_name(column.name()).ok().map(|field| field.data_type()),
+        Expr::Cast { target_type, .. } | Expr::TryCast { target_type, .. } => Some(target_type),
+        Expr::Alias { expr, .. } => aggregate_expr_input_data_type(expr, input_schema),
         _ => None,
     }
 }
 
-fn is_cudf_median_input_type(data_type: &arrow::datatypes::DataType) -> bool {
+fn is_cudf_median_input_type(data_type: &ArrowDataType) -> bool {
     matches!(
         data_type,
-        arrow::datatypes::DataType::Int8
-            | arrow::datatypes::DataType::Int16
-            | arrow::datatypes::DataType::Int32
-            | arrow::datatypes::DataType::Int64
-            | arrow::datatypes::DataType::UInt8
-            | arrow::datatypes::DataType::UInt16
-            | arrow::datatypes::DataType::UInt32
-            | arrow::datatypes::DataType::UInt64
-            | arrow::datatypes::DataType::Float32
-            | arrow::datatypes::DataType::Float64
+        ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+            | ArrowDataType::Float32
+            | ArrowDataType::Float64
     )
 }
 
-fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::WindowNode) -> CapabilityDecision {
+fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> CapabilityDecision {
     if window.spec.functions.is_empty() {
         return CapabilityDecision::rejected(
             "unsupported_window_node_capability",
@@ -363,9 +367,9 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
     }
     for function in &window.spec.functions {
         match function {
-            crate::plan::WindowFunction::Aggregate { function, expr, frame, .. } => {
+            WindowFunction::Aggregate { function, expr, frame, .. } => {
                 match frame {
-                    crate::plan::WindowFrame::WholePartition => {
+                    WindowFrame::WholePartition => {
                         if window.spec.partition_by.is_empty() {
                             return CapabilityDecision::rejected(
                                 "unsupported_window_node_capability",
@@ -385,7 +389,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
                             );
                         }
                     },
-                    crate::plan::WindowFrame::RowsUnboundedPrecedingToCurrent => {
+                    WindowFrame::RowsUnboundedPrecedingToCurrent => {
                         if window.spec.order_by.is_empty() {
                             return CapabilityDecision::rejected(
                                 "unsupported_window_node_capability",
@@ -395,12 +399,8 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
                                 ],
                             );
                         }
-                        if !matches!(
-                            function,
-                            crate::expr::AggregateFunction::Sum
-                                | crate::expr::AggregateFunction::Min
-                                | crate::expr::AggregateFunction::Max
-                        ) {
+                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+                        {
                             return CapabilityDecision::rejected(
                                 "unsupported_window_node_capability",
                                 [
@@ -422,15 +422,15 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
                     );
                 }
             },
-            crate::plan::WindowFunction::Rank { .. } if window.spec.order_by.is_empty() => {
+            WindowFunction::Rank { .. } if window.spec.order_by.is_empty() => {
                 return CapabilityDecision::rejected(
                     "unsupported_window_node_capability",
                     [("node_id", node_id.to_string()), ("reason", "rank_requires_order_by".to_string())],
                 );
             },
-            crate::plan::WindowFunction::Rank { .. } => {},
-            crate::plan::WindowFunction::RowNumber { .. } => {},
-            crate::plan::WindowFunction::LagLead { expr, .. } if window.spec.order_by.is_empty() => {
+            WindowFunction::Rank { .. } => {},
+            WindowFunction::RowNumber { .. } => {},
+            WindowFunction::LagLead { expr, .. } if window.spec.order_by.is_empty() => {
                 return CapabilityDecision::rejected(
                     "unsupported_window_node_capability",
                     [
@@ -440,7 +440,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
                     ],
                 );
             },
-            crate::plan::WindowFunction::LagLead { expr, .. } => {
+            WindowFunction::LagLead { expr, .. } => {
                 if let Err(rejection) = validate_column_expr_capability(expr) {
                     return expression_rejection_decision(
                         node_id,
@@ -480,7 +480,7 @@ fn validate_grouping_sets_capability(
     Ok(())
 }
 
-fn sort_node_executable_decision(node_id: NodeId, sort: &crate::plan::SortNode) -> CapabilityDecision {
+fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> CapabilityDecision {
     if sort.spec.expressions.is_empty() {
         return CapabilityDecision::rejected(
             "unsupported_sort_node_capability",
@@ -638,7 +638,7 @@ fn union_node_executable_decision(plan: &QueryPlan, node_id: NodeId, union: &Uni
 fn graph_algorithm_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,
-    graph: &crate::plan::GraphAlgorithmNode,
+    graph: &GraphAlgorithmNode,
 ) -> CapabilityDecision {
     if let Some(required) = graph.spec.algorithm.definition().required_graph_directedness()
         && graph.spec.graph_options.directed != required
@@ -675,7 +675,7 @@ fn graph_algorithm_node_executable_decision(
                 ],
             );
         };
-        if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
             return CapabilityDecision::rejected(
                 "unsupported_graph_algorithm_node_capability",
                 [
@@ -717,7 +717,7 @@ fn graph_algorithm_node_executable_decision(
                 ],
             );
         };
-        if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+        if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
             return CapabilityDecision::rejected(
                 "unsupported_graph_algorithm_node_capability",
                 [
@@ -763,7 +763,7 @@ fn graph_algorithm_node_executable_decision(
         }
     }
 
-    if let crate::plan::GraphAlgorithmParams::Bfs(params) = &graph.spec.params
+    if let GraphAlgorithmParams::Bfs(params) = &graph.spec.params
         && params.predicates.include_edge_ids.is_some()
         && graph.spec.edge_columns.edge_id.is_none()
     {
@@ -778,7 +778,7 @@ fn graph_algorithm_node_executable_decision(
         );
     }
 
-    if let crate::plan::GraphAlgorithmParams::Similarity(params) = &graph.spec.params {
+    if let GraphAlgorithmParams::Similarity(params) = &graph.spec.params {
         let vertex_type = input
             .output_schema()
             .field_with_name(&graph.spec.edge_columns.source)
@@ -797,8 +797,7 @@ fn graph_algorithm_node_executable_decision(
         .expect("source column was validated above")
         .data_type();
     if graph.output_schema().as_ref()
-        != crate::plan::graph_result_schema_for_vertex_type(graph.spec.algorithm, &graph.spec.params, vertex_type)
-            .as_ref()
+        != graph_result_schema_for_vertex_type(graph.spec.algorithm, &graph.spec.params, vertex_type).as_ref()
     {
         return CapabilityDecision::rejected(
             "unsupported_graph_algorithm_node_capability",
@@ -818,8 +817,8 @@ fn graph_algorithm_node_executable_decision(
 fn graph_similarity_pair_input_decision(
     plan: &QueryPlan,
     node_id: NodeId,
-    pair_input: &crate::plan::GraphVertexPairInput,
-    vertex_type: &arrow::datatypes::DataType,
+    pair_input: &GraphVertexPairInput,
+    vertex_type: &ArrowDataType,
 ) -> CapabilityDecision {
     let Some(input) = plan.node(pair_input.input) else {
         return CapabilityDecision::rejected(
@@ -866,7 +865,7 @@ fn graph_similarity_pair_input_decision(
             ],
         );
     }
-    if !matches!(first.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+    if !matches!(first.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
         return CapabilityDecision::rejected(
             "unsupported_graph_algorithm_node_capability",
             [
@@ -896,7 +895,7 @@ fn graph_similarity_pair_input_decision(
 fn edge_normalize_node_executable_decision(
     plan: &QueryPlan,
     node_id: NodeId,
-    edge_normalize: &crate::plan::EdgeNormalizeNode,
+    edge_normalize: &EdgeNormalizeNode,
 ) -> CapabilityDecision {
     let Some(input) = plan.node(edge_normalize.input) else {
         return CapabilityDecision::rejected(
@@ -919,7 +918,7 @@ fn edge_normalize_node_executable_decision(
                 ],
             );
         };
-        if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
             return CapabilityDecision::rejected(
                 "unsupported_edge_normalize_node_capability",
                 [
@@ -935,7 +934,7 @@ fn edge_normalize_node_executable_decision(
 
     if matches!(
         edge_normalize.spec.weight_combiner,
-        crate::plan::EdgeWeightCombiner::MinWeight | crate::plan::EdgeWeightCombiner::KeepLastInputOrder
+        EdgeWeightCombiner::MinWeight | EdgeWeightCombiner::KeepLastInputOrder
     ) && edge_normalize.spec.edge_columns.weight.is_none()
     {
         return CapabilityDecision::rejected(
@@ -956,7 +955,7 @@ fn edge_normalize_node_executable_decision(
                 ],
             );
         };
-        if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+        if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
             return CapabilityDecision::rejected(
                 "unsupported_edge_normalize_node_capability",
                 [
@@ -982,7 +981,7 @@ fn edge_normalize_node_executable_decision(
                 ],
             );
         };
-        if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
             return CapabilityDecision::rejected(
                 "unsupported_edge_normalize_node_capability",
                 [
@@ -1001,7 +1000,7 @@ fn edge_normalize_node_executable_decision(
 
 pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
     let mut properties = Vec::new();
-    if node.facts.placement == crate::plan::DataPlacement::Device {
+    if node.facts.placement == DataPlacement::Device {
         properties.push(ProducedProperty::ResidentFrame);
     }
     match &node.kind {

@@ -17,6 +17,7 @@ use crate::{
             self, DeviceIdFact, Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, FACT_LEFT_DEVICE,
             FACT_LEFT_TYPE_ID, FACT_RIGHT_DEVICE, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result,
         },
+        native_teardown::drop_device_owned_handle,
         scalar::Scalar,
         types::{
             CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_bitmask,
@@ -1500,11 +1501,8 @@ impl Column {
 
 impl Drop for Column {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
-            self.handle.as_ptr(),
-            self.domain.device_id(),
-            "Column::drop",
-            |owned| unsafe { cudf_sys::cudf_column_destroy(owned) },
-        );
+        drop_device_owned_handle(self.handle.as_ptr(), self.domain.device_id(), "Column::drop", |owned| unsafe {
+            cudf_sys::cudf_column_destroy(owned)
+        });
     }
 }

@@ -5,6 +5,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 #[cfg(feature = "iceberg")]
 use algeon_datafusion::table_format::{self, TableFormatLakehouseCachePolicy};
 use algeon_datafusion::{
+    backend::GpuDeviceMemoryLimit,
+    cugraph_sql::CugraphGraphOptions,
+    error::ErrorCode,
+    native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonGpuExecutionMode, DataFusionCpuExecutionPolicy},
     server::{
         ALGEON_ICEBERG_NAMESPACE_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,

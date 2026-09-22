@@ -1,11 +1,11 @@
-use crate::core::error::Result;
+use crate::{core::error::Result, runtime::DeviceId};
 
 pub(crate) fn trigger_match_dictionaries_result_count_mismatch_for_test() -> Result<()> {
     super::result_shape::validate_match_dictionaries_result_shape(
         std::ptr::null_mut(),
         1,
         2,
-        crate::runtime::DeviceId::DEFAULT,
+        DeviceId::DEFAULT,
         "dictionary::match_dictionaries",
     )
 }
@@ -15,7 +15,7 @@ pub(crate) fn trigger_match_dictionaries_null_result_array_for_test() -> Result<
         std::ptr::null_mut(),
         1,
         1,
-        crate::runtime::DeviceId::DEFAULT,
+        DeviceId::DEFAULT,
         "dictionary::match_dictionaries",
     )
 }

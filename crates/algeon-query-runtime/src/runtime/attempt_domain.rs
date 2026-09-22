@@ -5,6 +5,10 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use cudf::{
+    AttemptStreamProviderRegistration,
+    runtime::{CudaStream, DeviceEntryGuard},
+};
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{MemoryGrant, gpu::GrantIdentity, memory_domain::create_grant_memory_domain};
@@ -28,7 +32,7 @@ pub struct AttemptAllocationDomain {
 pub struct AttemptStreamProviderRoute {
     registration: cudf::AttemptStreamProviderRegistration,
     _member_leases: Vec<cudf::StreamReservationLease>,
-    _fork_streams: Vec<cudf::runtime::CudaStream>,
+    _fork_streams: Vec<CudaStream>,
 }
 
 impl AttemptStreamProviderRoute {
@@ -69,7 +73,7 @@ impl AttemptStreamProviderRoute {
     /// claim lives with the alias, so it is released when the alias detaches.
     /// It fails typed when every auxiliary fork is claimed, which a caller
     /// holding a fresh auxiliary permit never sees.
-    pub(super) fn attach(&self, stream: &cudf::runtime::CudaStream) -> Result<cudf::AttemptStreamProviderAlias> {
+    pub(super) fn attach(&self, stream: &CudaStream) -> Result<cudf::AttemptStreamProviderAlias> {
         self.registration.attach(stream).map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_stream_provider.attach",
@@ -146,7 +150,7 @@ impl AttemptAllocationDomain {
     /// stream for the attempt and the shared lease is cloned into per-stage
     /// budget tokens, which never attach a second member to the stream. The
     /// member detaches only when every clone drops.
-    pub fn create_member(&self, stream: &cudf::runtime::CudaStream) -> Result<cudf::StreamReservationLease> {
+    pub fn create_member(&self, stream: &CudaStream) -> Result<cudf::StreamReservationLease> {
         if stream.device().ordinal() != self.device_ordinal() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -187,7 +191,7 @@ impl AttemptAllocationDomain {
     /// worker, or an auxiliary fragment context.
     pub(super) fn create_stream_provider_route(
         &self,
-        parent: &cudf::runtime::CudaStream,
+        parent: &CudaStream,
         auxiliary_capacity: usize,
     ) -> Result<AttemptStreamProviderRoute> {
         let operation = "query_engine.runtime.attempt_stream_provider.create";
@@ -203,13 +207,13 @@ impl AttemptAllocationDomain {
         // Auxiliary forks plus the parent's reserved fork, which the native
         // route takes as the last registered entry.
         let capacity = auxiliary_capacity.max(1) + 1;
-        let _entry = cudf::runtime::DeviceEntryGuard::enter(parent.device(), operation).map_err(|error| {
+        let _entry = DeviceEntryGuard::enter(parent.device(), operation).map_err(|error| {
             cudf_query_error(operation, "failed to enter the attempt stream-provider device", error)
         })?;
         let mut fork_streams = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             fork_streams.push(
-                cudf::runtime::CudaStream::new().map_err(|error| {
+                CudaStream::new().map_err(|error| {
                     cudf_query_error(operation, "failed to create an attempt auxiliary stream", error)
                 })?,
             );
@@ -218,7 +222,7 @@ impl AttemptAllocationDomain {
         for stream in &fork_streams {
             member_leases.push(self.create_member(stream)?);
         }
-        let registration = cudf::AttemptStreamProviderRegistration::register(parent, &fork_streams)
+        let registration = AttemptStreamProviderRegistration::register(parent, &fork_streams)
             .map_err(|error| cudf_query_error(operation, "failed to register attempt fork streams", error))?;
         Ok(AttemptStreamProviderRoute { registration, _member_leases: member_leases, _fork_streams: fork_streams })
     }

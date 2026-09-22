@@ -1,6 +1,24 @@
 use arrow::datatypes::SchemaRef;
+#[cfg(feature = "cugraph")]
+use cugraph::AllocationFailureSource;
+#[cfg(feature = "cugraph")]
+use cugraph::AllocationSource;
+#[cfg(feature = "cugraph")]
+use cugraph::ErrorKind;
+#[cfg(feature = "cugraph")]
+use cugraph::ErrorStatus;
 
 use super::{DataFrame, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type, cudf_query_error};
+#[cfg(feature = "cugraph")]
+use crate::error::CugraphAllocationSource;
+#[cfg(feature = "cugraph")]
+use crate::metrics::BoundaryMetrics;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphAlgorithmParams;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphBetweennessSeeds;
+#[cfg(feature = "cugraph")]
+use crate::plan::GraphSsspSource;
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_algorithm_metadata_with_null_drops(metadata: String, null_edge_rows_dropped: u64) -> String {
@@ -9,12 +27,12 @@ pub(super) fn graph_algorithm_metadata_with_null_drops(metadata: String, null_ed
 }
 
 #[cfg(feature = "cugraph")]
-pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> String {
+pub(super) fn graph_algorithm_parameters(params: &GraphAlgorithmParams) -> String {
     match params {
-        crate::plan::GraphAlgorithmParams::PageRank(params) => {
+        GraphAlgorithmParams::PageRank(params) => {
             format!("alpha={},epsilon={},max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
         },
-        crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) => format!(
+        GraphAlgorithmParams::PersonalizedPageRank(params) => format!(
             "alpha={},epsilon={},max_iterations={},personalization_node={},personalization_vertex_col={},personalization_value_col={}",
             params.pagerank.alpha,
             params.pagerank.epsilon,
@@ -23,26 +41,26 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
             params.personalization.vertex,
             params.personalization.value,
         ),
-        crate::plan::GraphAlgorithmParams::Bfs(params) => format!(
+        GraphAlgorithmParams::Bfs(params) => format!(
             "source_vertex={},depth_limit={}",
             params.source_vertex,
             params.depth_limit.map_or_else(|| "none".to_string(), |value| value.to_string())
         ),
-        crate::plan::GraphAlgorithmParams::Louvain(params) => {
+        GraphAlgorithmParams::Louvain(params) => {
             format!("max_level={},threshold={},resolution={}", params.max_level, params.threshold, params.resolution)
         },
-        crate::plan::GraphAlgorithmParams::EigenvectorCentrality(params) => {
+        GraphAlgorithmParams::EigenvectorCentrality(params) => {
             format!("epsilon={},max_iterations={}", params.epsilon, params.max_iterations)
         },
-        crate::plan::GraphAlgorithmParams::KatzCentrality(params) => format!(
+        GraphAlgorithmParams::KatzCentrality(params) => format!(
             "alpha={},beta={},epsilon={},max_iterations={}",
             params.alpha, params.beta, params.epsilon, params.max_iterations,
         ),
-        crate::plan::GraphAlgorithmParams::Hits(params) => format!(
+        GraphAlgorithmParams::Hits(params) => format!(
             "epsilon={},max_iterations={},normalize={}",
             params.epsilon, params.max_iterations, params.normalize,
         ),
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => format!(
+        GraphAlgorithmParams::BetweennessCentrality(params) => format!(
             "seeds={},k={},normalized={},include_endpoints={},exact_vertex_threshold={}",
             graph_betweenness_seeds_label(params.seeds.as_ref()),
             params.k.map_or_else(|| "none".to_string(), |k| k.to_string()),
@@ -50,40 +68,40 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
             params.include_endpoints,
             params.exact_vertex_threshold,
         ),
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => format!(
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => format!(
             "seeds={},k={},normalized={},exact_vertex_threshold={}",
             graph_betweenness_seeds_label(params.seeds.as_ref()),
             params.k.map_or_else(|| "none".to_string(), |k| k.to_string()),
             params.normalized,
             params.exact_vertex_threshold,
         ),
-        crate::plan::GraphAlgorithmParams::Sssp(params) => format!(
+        GraphAlgorithmParams::Sssp(params) => format!(
             "source_vertex={},cutoff={}",
             graph_sssp_source_label(&params.source_vertex),
             params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
         ),
-        crate::plan::GraphAlgorithmParams::DegreesAll(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::InDegreesAll(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::OutDegreesAll(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::WeaklyConnectedComponents(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::StronglyConnectedComponents(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::TriangleCountAll(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::CoreNumber(params) => {
+        GraphAlgorithmParams::DegreesAll(_) => String::new(),
+        GraphAlgorithmParams::InDegreesAll(_) => String::new(),
+        GraphAlgorithmParams::OutDegreesAll(_) => String::new(),
+        GraphAlgorithmParams::WeaklyConnectedComponents(_) => String::new(),
+        GraphAlgorithmParams::StronglyConnectedComponents(_) => String::new(),
+        GraphAlgorithmParams::TriangleCountAll(_) => String::new(),
+        GraphAlgorithmParams::CoreNumber(params) => {
             format!("degree_type={}", params.degree_type.as_str())
         },
-        crate::plan::GraphAlgorithmParams::KCore(params) => {
+        GraphAlgorithmParams::KCore(params) => {
             format!("k={},degree_type={}", params.k, params.degree_type.as_str())
         },
-        crate::plan::GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::Leiden(params) => format!(
+        GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
+        GraphAlgorithmParams::Leiden(params) => format!(
             "max_level={},resolution={},theta={},seed={}",
             params.max_level, params.resolution, params.theta, params.seed,
         ),
-        crate::plan::GraphAlgorithmParams::Ecg(params) => format!(
+        GraphAlgorithmParams::Ecg(params) => format!(
             "min_weight={},ensemble_size={},max_level={},threshold={},resolution={},seed={}",
             params.min_weight, params.ensemble_size, params.max_level, params.threshold, params.resolution, params.seed,
         ),
-        crate::plan::GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
+        GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
             "n_clusters={},n_eigenvectors={},evs_tolerance={},evs_max_iterations={},\
              k_means_tolerance={},k_means_max_iterations={},seed={}",
             params.n_clusters,
@@ -94,7 +112,7 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
             params.k_means_max_iterations,
             params.seed,
         ),
-        crate::plan::GraphAlgorithmParams::ForceAtlas2(params) => format!(
+        GraphAlgorithmParams::ForceAtlas2(params) => format!(
             "max_iter={},outbound_attraction_distribution={},lin_log_mode={},prevent_overlapping={},\
              overlap_scaling_ratio={},edge_weight_influence={},jitter_tolerance={},barnes_hut_optimize={},\
              barnes_hut_theta={},scaling_ratio={},strong_gravity_mode={},gravity={},verbose={},seed={}",
@@ -113,7 +131,7 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
             params.verbose,
             params.seed,
         ),
-        crate::plan::GraphAlgorithmParams::Similarity(params) => format!(
+        GraphAlgorithmParams::Similarity(params) => format!(
             "vertex_pairs_node={},first_column={},second_column={}",
             params.vertex_pairs.input, params.vertex_pairs.first_column, params.vertex_pairs.second_column,
         ),
@@ -121,12 +139,12 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_betweenness_seeds_label(seeds: Option<&crate::plan::GraphBetweennessSeeds>) -> String {
+fn graph_betweenness_seeds_label(seeds: Option<&GraphBetweennessSeeds>) -> String {
     seeds.map_or_else(
         || "all".to_string(),
         |seeds| match seeds {
-            crate::plan::GraphBetweennessSeeds::I64(values) => values.len().to_string(),
-            crate::plan::GraphBetweennessSeeds::Input { input, row_count_upper_bound } => {
+            GraphBetweennessSeeds::I64(values) => values.len().to_string(),
+            GraphBetweennessSeeds::Input { input, row_count_upper_bound } => {
                 format!("input:{}:{}:rows<={row_count_upper_bound}", input.input, input.column)
             },
         },
@@ -134,19 +152,16 @@ fn graph_betweenness_seeds_label(seeds: Option<&crate::plan::GraphBetweennessSee
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_sssp_source_label(source: &crate::plan::GraphSsspSource) -> String {
+fn graph_sssp_source_label(source: &GraphSsspSource) -> String {
     match source {
-        crate::plan::GraphSsspSource::I64(value) => value.to_string(),
-        crate::plan::GraphSsspSource::Input(input) => format!("input:{}:{}", input.input, input.column),
+        GraphSsspSource::I64(value) => value.to_string(),
+        GraphSsspSource::Input(input) => format!("input:{}:{}", input.input, input.column),
     }
 }
 
 #[cfg(feature = "cugraph")]
-pub(super) fn boundary_delta(
-    before: &crate::metrics::BoundaryMetrics,
-    after: &crate::metrics::BoundaryMetrics,
-) -> crate::metrics::BoundaryMetrics {
-    crate::metrics::BoundaryMetrics {
+pub(super) fn boundary_delta(before: &BoundaryMetrics, after: &BoundaryMetrics) -> BoundaryMetrics {
+    BoundaryMetrics {
         gpu_resident_input_handoffs: after
             .gpu_resident_input_handoffs
             .saturating_sub(before.gpu_resident_input_handoffs),
@@ -234,12 +249,12 @@ pub(super) fn map_cugraph_error(
                 None => query_error,
             },
         );
-        let query_error = if error.kind() == cugraph::ErrorKind::OutOfMemory {
+        let query_error = if error.kind() == ErrorKind::OutOfMemory {
             let source = match error.allocation_source() {
-                cugraph::AllocationSource::Unknown => crate::error::CugraphAllocationSource::Unknown,
-                cugraph::AllocationSource::RmmOutOfMemory => crate::error::CugraphAllocationSource::RmmOutOfMemory,
-                cugraph::AllocationSource::RmmBadAlloc => crate::error::CugraphAllocationSource::RmmBadAlloc,
-                cugraph::AllocationSource::StdBadAlloc => crate::error::CugraphAllocationSource::StdBadAlloc,
+                AllocationSource::Unknown => CugraphAllocationSource::Unknown,
+                AllocationSource::RmmOutOfMemory => CugraphAllocationSource::RmmOutOfMemory,
+                AllocationSource::RmmBadAlloc => CugraphAllocationSource::RmmBadAlloc,
+                AllocationSource::StdBadAlloc => CugraphAllocationSource::StdBadAlloc,
             };
             query_error
                 .with_cugraph_allocation_source(source)
@@ -260,19 +275,19 @@ pub(super) fn map_cugraph_error(
 #[cfg(feature = "cugraph")]
 fn code_for_cugraph_error(error: &cugraph::Error) -> QueryErrorCode {
     match error.kind() {
-        cugraph::ErrorKind::OutOfMemory => match error.allocation_failure_source() {
-            cugraph::AllocationFailureSource::ReservationLimit => QueryErrorCode::QueryMemoryLimitExceeded,
-            cugraph::AllocationFailureSource::Physical => QueryErrorCode::DeviceOutOfMemory,
-            cugraph::AllocationFailureSource::Unknown => QueryErrorCode::DeviceAllocationFailed,
+        ErrorKind::OutOfMemory => match error.allocation_failure_source() {
+            AllocationFailureSource::ReservationLimit => QueryErrorCode::QueryMemoryLimitExceeded,
+            AllocationFailureSource::Physical => QueryErrorCode::DeviceOutOfMemory,
+            AllocationFailureSource::Unknown => QueryErrorCode::DeviceAllocationFailed,
         },
-        cugraph::ErrorKind::InvalidInput | cugraph::ErrorKind::InvalidHandle => QueryErrorCode::CudfInvalidInput,
-        cugraph::ErrorKind::UnsupportedType | cugraph::ErrorKind::NotImplemented => QueryErrorCode::CudfUnsupported,
-        cugraph::ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
-        cugraph::ErrorKind::NonConvergence => QueryErrorCode::AlgorithmDidNotConverge,
-        cugraph::ErrorKind::IoError | cugraph::ErrorKind::Unexpected => match error.status() {
-            cugraph::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
-            cugraph::ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
-            cugraph::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
+        ErrorKind::InvalidInput | ErrorKind::InvalidHandle => QueryErrorCode::CudfInvalidInput,
+        ErrorKind::UnsupportedType | ErrorKind::NotImplemented => QueryErrorCode::CudfUnsupported,
+        ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
+        ErrorKind::NonConvergence => QueryErrorCode::AlgorithmDidNotConverge,
+        ErrorKind::IoError | ErrorKind::Unexpected => match error.status() {
+            ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
+            ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
+            ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
         },
         _ => QueryErrorCode::CudfDependencyFailure,
     }
@@ -293,7 +308,7 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed);
         assert_eq!(error.fact_value("cugraph_allocation_failure_source"), Some("unknown"));
         assert_eq!(error.fact_value("cugraph_allocation_source"), Some("unknown"));
-        assert_eq!(error.cugraph_allocation_source(), Some(crate::error::CugraphAllocationSource::Unknown));
+        assert_eq!(error.cugraph_allocation_source(), Some(CugraphAllocationSource::Unknown));
 
         let dependency_error = map_cugraph_error("query_engine.graph_algorithm.test", "cuGraph dependency failure")(
             cugraph::Error::new(cugraph::ErrorKind::InvalidInput, "cugraph.test.invalid_input"),

@@ -151,10 +151,7 @@ fn native_group_only_distinct_preserves_schema_over_empty_join_output() {
     ]));
     let left_batch = RecordBatch::try_new(
         Arc::clone(&left_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec!["depends", "owns", "calls"])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(StringArray::from(vec!["depends", "owns", "calls"]))],
     )
     .unwrap();
     let right_batch = RecordBatch::try_new(
@@ -190,21 +187,12 @@ fn native_group_only_distinct_preserves_schema_over_empty_join_output() {
         right,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "key", "key"),
-                query_engine::expr::ColumnRef::input(1, "key", "key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "semantic", "semantic"),
-                "semantic",
-            ),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "vertexId", "vertexId"), "vertexId"),
-            JoinOutputColumn::right(
-                query_engine::expr::ColumnRef::input(1, "vertexPriority", "vertexPriority"),
-                "vertexPriority",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "semantic", "semantic"), "semantic"),
+            JoinOutputColumn::right(ColumnRef::input(1, "vertexId", "vertexId"), "vertexId"),
+            JoinOutputColumn::right(ColumnRef::input(1, "vertexPriority", "vertexPriority"), "vertexPriority"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -237,10 +225,7 @@ fn native_group_only_distinct_preserves_schema_over_empty_join_output() {
     )
     .unwrap();
     fs::remove_file(&right_path).unwrap();
-    DataFrame::from_record_batch(&runtime, &matching_right_batch)
-        .unwrap()
-        .write_parquet(&right_path)
-        .unwrap();
+    DataFrame::from_record_batch(&runtime, &matching_right_batch).unwrap().write_parquet(&right_path).unwrap();
     let nonempty = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(nonempty_batch) = nonempty.output() else {
         panic!("host sink should materialize one RecordBatch");

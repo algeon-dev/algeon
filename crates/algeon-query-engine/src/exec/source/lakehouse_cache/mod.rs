@@ -1,4 +1,6 @@
 use super::{DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk, cudf_query_error};
+#[cfg(test)]
+use crate::parquet_metadata::parquet_footer_sidecar_path;
 
 mod cache;
 mod maintenance;
@@ -512,7 +514,7 @@ mod tests {
         let old_a = write_cache_entry(&root, "v1/s3/bucket/content/a.parquet__h1", 4);
         let old_b = write_cache_entry(&root, "v1/s3/bucket/content/b.parquet__h2", 4);
         let protected = write_cache_entry(&root, "v1/s3/bucket/content/c.parquet__h3", 4);
-        let old_a_sidecar = crate::parquet_metadata::parquet_footer_sidecar_path(&old_a);
+        let old_a_sidecar = parquet_footer_sidecar_path(&old_a);
         fs::write(&old_a_sidecar, b"sidecar").unwrap();
         let lock_path = lakehouse_cache_lock_path(&old_b);
         fs::write(&lock_path, b"locked").unwrap();

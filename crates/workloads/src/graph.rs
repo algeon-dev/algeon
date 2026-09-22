@@ -13,7 +13,10 @@ use std::{
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use parquet::{
     arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    file::reader::{FileReader, SerializedFileReader},
+    file::{
+        metadata::KeyValue,
+        reader::{FileReader, SerializedFileReader},
+    },
 };
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -405,10 +408,7 @@ fn validate_canonical_edge_vertex_footer_bounds(layout: &DblpFixtureLayout, mani
     Ok(())
 }
 
-fn parse_graph_vertex_upper_bound_footer(
-    metadata: Option<&Vec<parquet::file::metadata::KeyValue>>,
-    table: &str,
-) -> WorkloadResult<u64> {
+fn parse_graph_vertex_upper_bound_footer(metadata: Option<&Vec<KeyValue>>, table: &str) -> WorkloadResult<u64> {
     let mut entries =
         metadata.into_iter().flatten().filter(|entry| entry.key == DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY);
     let Some(entry) = entries.next() else {
@@ -448,7 +448,7 @@ fn validate_simple_directed_edge_topology_footer(layout: &DblpFixtureLayout) -> 
 }
 
 fn parse_simple_directed_edge_topology_footer(
-    metadata: Option<&Vec<parquet::file::metadata::KeyValue>>,
+    metadata: Option<&Vec<KeyValue>>,
     table: &str,
 ) -> WorkloadResult<(u64, u64)> {
     let mut entries =

@@ -17,7 +17,8 @@ use super::{
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorKind, Result, invariant_violation},
+        native_teardown::drop_device_owned_handle,
         scalar::Scalar,
     },
     frame::dataframe::{DataFrame, InfoDetail, group_keys::require_non_empty_group_keys},
@@ -364,7 +365,7 @@ impl PreparedDataFrameGroupBy {
 
 impl Drop for PreparedDataFrameGroupBy {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
+        drop_device_owned_handle(
             self.handle.as_ptr(),
             self.keys_domain.device_id(),
             "PreparedDataFrameGroupBy::drop",
@@ -556,7 +557,7 @@ impl<'a> GroupBy<'a> {
         let prepared_facts = match prepared_groupby_facts_raw(handle.as_ptr(), &keys_domain, operation) {
             Ok(facts) => facts,
             Err(error) => {
-                crate::core::native_teardown::drop_device_owned_handle(
+                drop_device_owned_handle(
                     handle.as_ptr(),
                     keys_domain.device_id(),
                     "groupby::PreparedDataFrameGroupBy::new::cleanup",
@@ -922,16 +923,13 @@ fn annotate_groupby_budget_execution_error(
 fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
     let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor_if_needed(operation))?;
     let Some(memory) = info.memory_accounting else {
-        return Err(crate::core::error::invariant_violation(
+        return Err(invariant_violation(
             operation,
             "InfoDetail::DEVICE_ALLOCATED must populate dataframe memory accounting",
         ));
     };
     memory.device_allocated_bytes.ok_or_else(|| {
-        crate::core::error::invariant_violation(
-            operation,
-            "InfoDetail::DEVICE_ALLOCATED must populate dataframe device-allocated bytes",
-        )
+        invariant_violation(operation, "InfoDetail::DEVICE_ALLOCATED must populate dataframe device-allocated bytes")
     })
 }
 

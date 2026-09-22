@@ -30,7 +30,7 @@ use crate::{
     backend::InstalledTestGpuBackend,
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{
-        AlgeonNativeGpuProducerExec,
+        AlgeonNativeGpuProducerExec, QueryAdmissionSource,
         admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
         graph::{GraphExecutionPlan, register_graph_execution_plan_discovery},
     },
@@ -210,7 +210,7 @@ fn fake_host_owned_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn
     plan.downcast_ref::<FakeHostOwnedGraphExec>().map(|graph| graph as &dyn GraphExecutionPlan)
 }
 
-fn admission_source(backend: &InstalledTestGpuBackend) -> crate::native_exec::QueryAdmissionSource {
+fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
     backend
         .optimizer_config()
         .native_execution_config()

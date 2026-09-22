@@ -1,4 +1,7 @@
+use query_engine::{rapids_backend::rapids_analysis_context, source::validate_local_parquet_source};
+
 use super::*;
+use crate::report::GpuCandidate;
 
 #[tokio::test]
 async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() {
@@ -252,11 +255,7 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     assert_eq!(source.diagnostics.projected_output_column_count, 0);
     assert_eq!(source.diagnostics.pure_filter_column_count, 1);
     assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "not_required");
-    query_engine::source::validate_local_parquet_source(
-        source,
-        query_engine::rapids_backend::rapids_analysis_context(),
-    )
-    .unwrap();
+    validate_local_parquet_source(source, rapids_analysis_context()).unwrap();
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Count);
@@ -283,11 +282,7 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
     assert_eq!(
         result.report.outcomes()[0],
         CandidateOutcome::Selected {
-            candidate: algeon_datafusion::report::GpuCandidate::with_operator_count(
-                "ProjectionExec(AggregateExec(LocalParquetScan))",
-                1,
-                3,
-            ),
+            candidate: GpuCandidate::with_operator_count("ProjectionExec(AggregateExec(LocalParquetScan))", 1, 3,),
         }
     );
     assert_eq!(result.source_diagnostics.len(), 1);

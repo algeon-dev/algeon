@@ -104,7 +104,7 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
             if matches!(
                 expr.as_ref(),
                 Expr::Binary {
-                    op: query_engine::expr::BinaryOp::Divide,
+                    op: BinaryOp::Divide,
                     output_type: Some(DataType::Decimal128(_, _)),
                     ..
                 }
@@ -294,7 +294,7 @@ fn string_predicates_lower_to_native_string_predicate_expressions() {
     write_parquet_file_with_tpch_like_columns(&path);
     let scan = parquet_scan(&path);
     let scan_schema = scan.schema();
-    let string_predicate = |name: &str, fun: Arc<datafusion::logical_expr::ScalarUDF>, literal: &str| {
+    let string_predicate = |name: &str, fun: Arc<ScalarUDF>, literal: &str| {
         Arc::new(ScalarFunctionExpr::new(
             name,
             fun,

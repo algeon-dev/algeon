@@ -3,7 +3,14 @@
 //! These types are readiness/reporting contracts. They do not select an
 //! execution path by themselves.
 
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync,
+    sync::OnceLock,
+};
+
+use cudf::io::{KvikioCompatMode, gds_driver_available, set_kvikio_compat_mode};
 
 /// Default Linux procfs path created by the `nvidia-fs` kernel module.
 pub const NVIDIA_FS_PROC_PATH: &str = "/proc/driver/nvidia-fs";
@@ -36,7 +43,7 @@ impl DeploymentIoCapability {
     pub fn probe_current_host() -> Self {
         let nvidia_fs_status = probe_nvidia_fs_status();
         let kvikio_compat_mode =
-            KvikioCompatModeStatus::from_env_value(std::env::var(KVIKIO_COMPAT_MODE_ENV).ok().as_deref());
+            KvikioCompatModeStatus::from_env_value(env::var(KVIKIO_COMPAT_MODE_ENV).ok().as_deref());
         configure_kvikio_compatibility(&nvidia_fs_status, &kvikio_compat_mode);
         let gds_driver_probe_status =
             probe_cudf_gds_driver_if_eligible(&nvidia_fs_status, &kvikio_compat_mode, probe_cudf_gds_driver);
@@ -48,7 +55,7 @@ impl DeploymentIoCapability {
     /// Treats deployment IO state as process-static and avoids repeating the
     /// expensive cuFile driver probe on each execution-context build.
     pub fn cached_current_host() -> Self {
-        static CACHED: std::sync::OnceLock<DeploymentIoCapability> = std::sync::OnceLock::new();
+        static CACHED: OnceLock<DeploymentIoCapability> = sync::OnceLock::new();
         CACHED.get_or_init(Self::probe_current_host).clone()
     }
 
@@ -265,7 +272,7 @@ fn probe_nvidia_fs_status_from_paths<'a>(paths: impl IntoIterator<Item = &'a Pat
 }
 
 fn probe_cudf_gds_driver() -> GdsDriverProbeStatus {
-    match cudf::io::gds_driver_available() {
+    match gds_driver_available() {
         Ok(()) => GdsDriverProbeStatus::Available,
         Err(error) => GdsDriverProbeStatus::Unavailable {
             code: error.code().to_string(),
@@ -293,7 +300,7 @@ fn configure_kvikio_compatibility(nvidia_fs_status: &NvidiaFsProbeStatus, kvikio
     if !matches!(nvidia_fs_status, NvidiaFsProbeStatus::DriverMissing) && !kvikio_compat_mode.is_forced_on() {
         return;
     }
-    if let Err(error) = cudf::io::set_kvikio_compat_mode(cudf::io::KvikioCompatMode::On) {
+    if let Err(error) = set_kvikio_compat_mode(KvikioCompatMode::On) {
         eprintln!("[query-engine] warning: failed to configure KvikIO compatibility mode: {error}");
     }
 }

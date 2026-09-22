@@ -1,3 +1,7 @@
+use algeon_datafusion::error::ErrorCode;
+use tempfile::Builder as FlightSqlTempfileBuilder;
+use tokio::{task::{spawn_blocking, yield_now}, time::timeout as flight_sql_timeout};
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_client_can_run_select_one() {
     let (listener, addr) = free_local_addr();
@@ -7,7 +11,7 @@ async fn flight_sql_client_can_run_select_one() {
     let backend = build_injected_test_backend(&mut config);
     let replacement_config = config.clone();
     let cleanup_backend = backend.clone();
-    let dir = tempfile::Builder::new().prefix("algeon-datafusion-flight-sql-abort-holder-").tempdir().unwrap();
+    let dir = FlightSqlTempfileBuilder::new().prefix("algeon-datafusion-flight-sql-abort-holder-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
     write_update_edges_parquet(&parquet_path);
 
@@ -40,18 +44,18 @@ async fn flight_sql_client_can_run_select_one() {
     server.abort();
     let error = server.await.expect_err("aborted server task must report cancellation");
     assert!(error.is_cancelled());
-    let error = algeon_datafusion::server::backend_from_server_config(&replacement_config)
+    let error = backend_from_server_config(&replacement_config)
         .expect_err("hard abort does not synchronously complete active GPU query cleanup");
     let diagnostic = format!("{error:?}");
     assert!(diagnostic.contains("code: ServiceOverloaded"), "{diagnostic}");
     assert!(diagnostic.contains("operation: \"algeon_datafusion.backend.gpu_core\""), "{diagnostic}");
     assert!(diagnostic.contains("native_operation\", \"query_engine.gpu.owner.claim"), "{diagnostic}");
     drop(delayed_cleanup);
-    tokio::task::spawn_blocking(move || cleanup_backend.close_and_wait(Duration::from_secs(10)))
+    spawn_blocking(move || cleanup_backend.close_and_wait(Duration::from_secs(10)))
         .await
         .expect("aborted server cleanup waiter must not panic")
         .expect("aborted server must reach query-service quiescence");
-    let replacement = algeon_datafusion::server::backend_from_server_config(&replacement_config)
+    let replacement = backend_from_server_config(&replacement_config)
         .expect("quiescent aborted server must release its closed QueryService governor claim");
     drop(replacement);
 
@@ -69,10 +73,10 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
     config.bind_addr = addr;
     let replacement_config = config.clone();
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
-    tokio::task::yield_now().await;
+    yield_now().await;
 
     server.abort();
-    let error = tokio::time::timeout(Duration::from_secs(1), server)
+    let error = flight_sql_timeout(Duration::from_secs(1), server)
         .await
         .expect("server task Drop must not block the current-thread runtime")
         .expect_err("aborted server task must report cancellation");
@@ -84,7 +88,7 @@ async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
     // the ownership claim is environment-dependent.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let replacement = loop {
-        match algeon_datafusion::server::backend_from_server_config(&replacement_config) {
+        match backend_from_server_config(&replacement_config) {
             Ok(backend) => break backend,
             Err(error)
                 if error.fact_value("native_operation") == Some("query_engine.gpu.owner.claim")
@@ -124,7 +128,7 @@ async fn flight_sql_builder_can_run_select_one_and_shutdown_by_token() {
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     drop(client);
     shutdown.cancel();
-    let server_result = tokio::time::timeout(Duration::from_secs(10), server)
+    let server_result = flight_sql_timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic");
@@ -140,7 +144,7 @@ async fn removed_unbounded_server_setting_is_rejected_during_config_load() {
         (name == "ALGEON_SERVER_NATIVE_MEMORY_POLICY").then(|| "unbounded".to_string())
     })
     .unwrap_err();
-    assert_eq!(error.code(), algeon_datafusion::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.operation(), "algeon_datafusion.server.config");
     assert_eq!(error.fact_value("config_field"), Some("ALGEON_SERVER_NATIVE_MEMORY_POLICY"));
 }
@@ -190,7 +194,7 @@ async fn flight_sql_datafusion_baseline_statement_never_enters_gpu_ledger() {
 
     drop(client);
     shutdown.cancel();
-    let server_result = tokio::time::timeout(Duration::from_secs(10), server)
+    let server_result = flight_sql_timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic");
@@ -211,7 +215,7 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(1);
     config.queue_policy = config.queue_policy.clone().with_max_queue_wait(Duration::from_secs(60));
     let backend = build_injected_test_backend(&mut config);
-    let dir = tempfile::Builder::new().prefix("algeon-datafusion-flight-sql-shared-backend-").tempdir().unwrap();
+    let dir = FlightSqlTempfileBuilder::new().prefix("algeon-datafusion-flight-sql-shared-backend-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
     write_update_edges_parquet(&parquet_path);
 
@@ -267,14 +271,14 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
     // the assertion does not impose an ordering, and allow the configured
     // 60-second admission window when the shared-GPU lane is fully occupied.
     let (flight_batches, session_batches) =
-        tokio::time::timeout(Duration::from_secs(60), async { tokio::join!(flight_query, session_query) })
+        flight_sql_timeout(Duration::from_secs(60), async { tokio::join!(flight_query, session_query) })
             .await
             .expect("Flight and session queries should finish after direct backend admission releases");
     let flight_batches = flight_batches.expect("Flight query task should not panic");
     let session_batches = session_batches.expect("session query task should not panic").unwrap();
 
     shutdown.cancel();
-    let server_result = tokio::time::timeout(Duration::from_secs(10), server)
+    let server_result = flight_sql_timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic");
@@ -298,16 +302,16 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         .clone()
         .with_max_queued_attempts(2)
         .with_max_queue_wait(Duration::from_secs(60));
-    let backend = algeon_datafusion::server::backend_from_server_config(&config).unwrap();
+    let backend = backend_from_server_config(&config).unwrap();
     let first_backend = backend.clone();
     let second_backend = backend.clone();
     let first_session = Arc::new(
-        algeon_datafusion::server::build_session_context_with_backend(&config, &first_backend)
+        build_session_context_with_backend(&config, &first_backend)
             .await
             .expect("first cloned backend must install a session"),
     );
     let second_session = Arc::new(
-        algeon_datafusion::server::build_session_context_with_backend(&config, &second_backend)
+        build_session_context_with_backend(&config, &second_backend)
             .await
             .expect("second cloned backend must install a session"),
     );
@@ -366,7 +370,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
     assert_eq!(first_worker_pools[0].device_ordinal, backend.devices()[0].device_ordinal());
     assert_eq!(first_worker_pools[0].worker_count, 1);
 
-    let dir = tempfile::Builder::new().prefix("algeon-datafusion-cloned-session-backend-").tempdir().unwrap();
+    let dir = FlightSqlTempfileBuilder::new().prefix("algeon-datafusion-cloned-session-backend-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
     write_update_edges_parquet(&parquet_path);
     first_session
@@ -408,7 +412,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
 
     drop(holder);
     let (first_batches, second_batches) =
-        tokio::time::timeout(Duration::from_secs(60), async { tokio::join!(first_query, second_query) })
+        flight_sql_timeout(Duration::from_secs(60), async { tokio::join!(first_query, second_query) })
             .await
             .expect("both cloned-session queries should run after the shared slot is released");
     let first_batches = first_batches.expect("first cloned-session task must not panic");

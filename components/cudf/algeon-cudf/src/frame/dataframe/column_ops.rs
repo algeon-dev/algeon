@@ -12,7 +12,7 @@ use crate::{
         hash::{FastIndexMap, fast_index_map_with_capacity},
         resolve::missing_column_error,
     },
-    ops::{self, unary},
+    ops::{self, replace::replace_nulls_with_exec_options, unary},
     runtime::{
         BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, execution_domain::ExecutionDomain,
         execution_resolver::ResolvedExecution,
@@ -527,13 +527,8 @@ impl DataFrame {
             ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
         let cv = col.view()?;
         let exec_options = col.execution_domain().enter_execution()?;
-        let new_col = crate::ops::replace::replace_nulls_with_exec_options(
-            &cv,
-            value,
-            col.execution_domain(),
-            exec_options.options(),
-            operation,
-        )?;
+        let new_col =
+            replace_nulls_with_exec_options(&cv, value, col.execution_domain(), exec_options.options(), operation)?;
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));

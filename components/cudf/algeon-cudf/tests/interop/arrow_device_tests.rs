@@ -15,9 +15,26 @@ use cudf::{
     },
     interop::arrow_device::{
         DeviceArrowDeviceType, DeviceArrowExportMaterialization, DeviceArrowImportMaterialization,
+        ForeignDeviceArrowColumn, ForeignDeviceArrowTable,
     },
     ops::dictionary,
-    testing::prelude::*,
+    testing::{
+        arrow::{
+            arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+            reset_arrow_host_interop_observation_for_test,
+        },
+        device_safety::DeviceSafetyTestScope,
+        interop::{
+            arrow_device_cpu_type_for_test, arrow_device_cuda_host_type_for_test,
+            arrow_device_cuda_managed_type_for_test, quarantine_owner_unknown_device_array_for_test,
+        },
+        prelude::*,
+    },
+};
+use cudf_sys::test_support::{
+    cudf_test_arrow_device_array_set_device_type, cudf_test_event_raw_record_call_count_for_stream_raw,
+    cudf_test_event_reset_observation, cudf_test_event_stream_wait_call_count_for_stream_raw,
+    cudf_test_event_synchronize_call_count_for_event_handle_raw,
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, PreparedColumnExport, SchemaNullability,
@@ -27,6 +44,7 @@ use tempfile::TempDir;
 
 use crate::common::{
     last_exec_device, last_exec_mr_value, last_exec_stream_value, lock_event_observation, reset_exec_observation,
+    run_named_cases,
 };
 
 fn should_run_multi_gpu_test() -> bool {
@@ -49,30 +67,26 @@ fn assert_exec_observation_matches_runtime(runtime: &Runtime) {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
+    unsafe { cudf_test_event_reset_observation() };
 }
 
 fn observed_event_synchronize_call_count_for_event_handle_raw(event_handle_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe {
-        cudf_sys::test_support::cudf_test_event_synchronize_call_count_for_event_handle_raw(event_handle_raw, &mut out)
-    };
+    let status = unsafe { cudf_test_event_synchronize_call_count_for_event_handle_raw(event_handle_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count for event handle");
     out
 }
 
 fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read stream-wait observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read raw event-record observation count");
     out
 }
@@ -716,10 +730,8 @@ fn numeric_series_device_arrow_owned_abi_handoff_survives_export_drop() {
         assert_eq!(abi.fixed_width_values_ptr().unwrap(), producer_ptr);
 
         let (schema, array, materialization) = abi.into_raw_abi();
-        let foreign = unsafe {
-            cudf::interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts(schema, array, materialization)
-        }
-        .expect("owned ABI raw parts should re-wrap as a foreign device-arrow column");
+        let foreign = unsafe { ForeignDeviceArrowColumn::from_raw_abi_parts(schema, array, materialization) }
+            .expect("owned ABI raw parts should re-wrap as a foreign device-arrow column");
 
         (foreign, producer_ptr)
     };
@@ -738,10 +750,8 @@ fn series_device_arrow_import_retains_owned_abi_release_until_imported_column_dr
     let abi = series.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
     let (schema, array, materialization) = abi.into_raw_abi();
     let (schema_releases, array_releases) = unsafe { install_release_observers(schema, array) };
-    let foreign = unsafe {
-        cudf::interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts(schema, array, materialization)
-    }
-    .expect("owned ABI raw parts should re-wrap as a foreign device-arrow column");
+    let foreign = unsafe { ForeignDeviceArrowColumn::from_raw_abi_parts(schema, array, materialization) }
+        .expect("owned ABI raw parts should re-wrap as a foreign device-arrow column");
 
     let imported = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
 
@@ -789,7 +799,7 @@ fn owned_abi_release_callbacks_support_spec_compliant_struct_moves() {
 
 fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array() {
     let err = match unsafe {
-        cudf::interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts(
+        ForeignDeviceArrowColumn::from_raw_abi_parts(
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             DeviceArrowImportMaterialization::ForeignRetainedView,
@@ -864,7 +874,7 @@ fn series_device_arrow_import_round_trip_returns_unnamed_series() {
 
 fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime.series(&[10i32, 20, 30]).unwrap();
@@ -874,8 +884,8 @@ fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let imported = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
 
     assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn bool_device_arrow_import_reports_bridge_owned_device_copy() {
@@ -934,7 +944,7 @@ fn decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preser
 
 fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let series = decimal64_series(&runtime, "amount", &[12345i64, -67890, 5], -2);
@@ -945,8 +955,8 @@ fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
 
     assert_eq!(imported.as_column().data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(imported.eq(&series).unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn string_series_device_arrow_export_reports_producer_retained_view() {
@@ -986,7 +996,7 @@ fn string_series_device_arrow_import_reports_foreign_retained_view_and_preserves
 
 fn list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let frame = read_json_dataframe(
         "arrow_device_list.jsonl",
@@ -1006,13 +1016,13 @@ fn list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::List);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn struct_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let frame = read_json_dataframe(
         "arrow_device_struct.jsonl",
@@ -1032,13 +1042,13 @@ fn struct_series_device_arrow_round_trip_preserves_recursive_children_and_report
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::Struct);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let plain = runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
@@ -1056,13 +1066,13 @@ fn dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::Dictionary32);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let frame = read_json_dataframe(
         "arrow_device_list_bool.jsonl",
@@ -1082,8 +1092,8 @@ fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy(
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::List);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_is_foreign_retained() {
@@ -1504,10 +1514,8 @@ fn dataframe_device_arrow_owned_abi_handoff_survives_export_drop() {
         assert_eq!(abi.column_names().unwrap(), vec!["id".to_string(), "flag".to_string()]);
 
         let (schema, array, materialization) = abi.into_raw_abi();
-        unsafe {
-            cudf::interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts(schema, array, materialization)
-        }
-        .expect("owned ABI raw parts should re-wrap as a foreign device-arrow table")
+        unsafe { ForeignDeviceArrowTable::from_raw_abi_parts(schema, array, materialization) }
+            .expect("owned ABI raw parts should re-wrap as a foreign device-arrow table")
     };
 
     let imported = DataFrame::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime).unwrap();
@@ -1527,10 +1535,8 @@ fn dataframe_device_arrow_import_retains_owned_abi_release_until_imported_datafr
     let abi = df.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
     let (schema, array, materialization) = abi.into_raw_abi();
     let (schema_releases, array_releases) = unsafe { install_release_observers(schema, array) };
-    let foreign = unsafe {
-        cudf::interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts(schema, array, materialization)
-    }
-    .expect("owned ABI raw parts should re-wrap as a foreign device-arrow table");
+    let foreign = unsafe { ForeignDeviceArrowTable::from_raw_abi_parts(schema, array, materialization) }
+        .expect("owned ABI raw parts should re-wrap as a foreign device-arrow table");
 
     let imported = DataFrame::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime).unwrap();
 
@@ -1545,7 +1551,7 @@ fn dataframe_device_arrow_import_retains_owned_abi_release_until_imported_datafr
 
 fn foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array() {
     let err = match unsafe {
-        cudf::interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts(
+        ForeignDeviceArrowTable::from_raw_abi_parts(
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             DeviceArrowImportMaterialization::ForeignRetainedView,
@@ -1636,7 +1642,7 @@ fn bool_table_device_arrow_import_reports_bridge_owned_device_copy() {
 
 fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
@@ -1660,8 +1666,8 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
         imported.series("amount").unwrap().eq(&amounts).unwrap().to_vec_strict::<bool>().unwrap(),
         vec![true, true, true]
     );
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
@@ -1689,7 +1695,7 @@ fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
 
 fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
@@ -1705,13 +1711,13 @@ fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
         imported.series("word").unwrap().to_optional_strings().unwrap(),
         vec![Some("alpha".to_string()), Some(String::new()), None, Some("omega".to_string()),]
     );
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let source = nested_dictionary_dataframe(
@@ -1733,8 +1739,8 @@ fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_
     assert_eq!(source_names, imported_names);
     assert_eq!(imported_names, vec!["name", "lists", "point", "category"]);
     assert_host_table_exports_equivalent(&source_table, &imported_table);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_values() {
@@ -1795,7 +1801,7 @@ fn dataframe_device_arrow_export_uses_producer_execution_domain() {
 
 fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
@@ -1809,8 +1815,8 @@ fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     assert_eq!(imported.column_names(), &["id", "flag"]);
     assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 1, 4]);
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without_host_fencing() {
@@ -1922,12 +1928,12 @@ fn device_arrow_import_rejects_different_runtime_device() {
 
 #[test]
 fn owner_unknown_device_array_drop_quarantines_without_destructor_ffi() {
-    let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+    let scope = DeviceSafetyTestScope::install([]);
 
     // The hook uses a non-null dangling pointer. Reaching the native
     // destructor would be invalid; successful return proves the None-owner
     // branch consumed it into quarantine without FFI.
-    cudf::testing::interop::quarantine_owner_unknown_device_array_for_test();
+    quarantine_owner_unknown_device_array_for_test();
 
     assert_eq!(scope.unknown_device_quarantined_count(), 1);
     assert_eq!(scope.remaining_call_count(), 0);
@@ -1940,21 +1946,18 @@ fn device_arrow_import_rejects_non_cuda_device_type() {
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+        cudf_test_arrow_device_array_set_device_type(
             raw_parts.device_array_ptr().cast(),
-            cudf::testing::interop::arrow_device_cpu_type_for_test(),
+            arrow_device_cpu_type_for_test(),
         );
     }
 
-    assert_eq!(
-        raw_parts.device_type(),
-        DeviceArrowDeviceType::Other(cudf::testing::interop::arrow_device_cpu_type_for_test())
-    );
+    assert_eq!(raw_parts.device_type(), DeviceArrowDeviceType::Other(arrow_device_cpu_type_for_test()));
 
     let foreign = raw_parts.into_foreign();
     let err = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime)
         .expect_err("non-CUDA Arrow device roots should be rejected at the safe Rust import boundary");
-    let raw_device_type = cudf::testing::interop::arrow_device_cpu_type_for_test().to_string();
+    let raw_device_type = arrow_device_cpu_type_for_test().to_string();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
@@ -1988,7 +1991,7 @@ fn device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_c
 
 fn device_arrow_import_accepts_cuda_host_device_type() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime.series(&[11i32, 22, 33]).unwrap();
@@ -1996,9 +1999,9 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+        cudf_test_arrow_device_array_set_device_type(
             raw_parts.device_array_ptr().cast(),
-            cudf::testing::interop::arrow_device_cuda_host_type_for_test(),
+            arrow_device_cuda_host_type_for_test(),
         );
     }
 
@@ -2011,13 +2014,13 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     assert_eq!(foreign.device_type(), DeviceArrowDeviceType::CudaHost);
     assert_eq!(imported.device_data_ptr().unwrap(), producer_ptr);
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 fn table_device_arrow_import_accepts_cuda_managed_device_type() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.column_from_slice(&[5i32, 6, 7]).unwrap();
@@ -2028,9 +2031,9 @@ fn table_device_arrow_import_accepts_cuda_managed_device_type() {
     let raw_parts = table.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+        cudf_test_arrow_device_array_set_device_type(
             raw_parts.device_array_ptr().cast(),
-            cudf::testing::interop::arrow_device_cuda_managed_type_for_test(),
+            arrow_device_cuda_managed_type_for_test(),
         );
     }
 
@@ -2053,8 +2056,8 @@ fn table_device_arrow_import_accepts_cuda_managed_device_type() {
         Series::from_column(imported_columns[1].deep_copy().unwrap()).unwrap().to_vec_strict::<f64>().unwrap(),
         vec![1.5, 2.5, 3.5]
     );
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -2092,21 +2095,18 @@ fn table_device_arrow_import_rejects_non_cuda_device_type() {
     let raw_parts = table.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+        cudf_test_arrow_device_array_set_device_type(
             raw_parts.device_array_ptr().cast(),
-            cudf::testing::interop::arrow_device_cpu_type_for_test(),
+            arrow_device_cpu_type_for_test(),
         );
     }
 
-    assert_eq!(
-        raw_parts.device_type(),
-        DeviceArrowDeviceType::Other(cudf::testing::interop::arrow_device_cpu_type_for_test())
-    );
+    assert_eq!(raw_parts.device_type(), DeviceArrowDeviceType::Other(arrow_device_cpu_type_for_test()));
 
     let foreign = raw_parts.into_foreign();
     let err = Table::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime)
         .expect_err("non-CUDA Arrow device table roots should be rejected at the safe Rust import boundary");
-    let raw_device_type = cudf::testing::interop::arrow_device_cpu_type_for_test().to_string();
+    let raw_device_type = arrow_device_cpu_type_for_test().to_string();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
@@ -2118,7 +2118,7 @@ fn table_device_arrow_import_rejects_non_cuda_device_type() {
 
 #[test]
 fn arrow_device_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "numeric_column_device_arrow_export_reports_producer_retained_view",
             numeric_column_device_arrow_export_reports_producer_retained_view,

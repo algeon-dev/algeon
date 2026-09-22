@@ -1,11 +1,12 @@
 use super::{BoundedExecutionAttempt, ExecutionMetrics, QueryError, RetryFacts, SourceChunk};
+use crate::exec::retry::{is_retryable_resource_error, record_retryable_resource_error};
 
 pub(in crate::exec::bounded) fn is_retryable_chunk_error(error: &QueryError) -> bool {
-    crate::exec::retry::is_retryable_resource_error(error)
+    is_retryable_resource_error(error)
 }
 
 pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
-    crate::exec::retry::record_retryable_resource_error(error, metrics);
+    record_retryable_resource_error(error, metrics);
 }
 
 pub(in crate::exec::bounded) fn split_retryable_chunk(

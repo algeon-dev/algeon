@@ -1,6 +1,8 @@
 use cudf::TypeId;
 use cudf_sys::*;
 
+use crate::common::run_named_cases;
+
 fn public_type_id_discriminants_match_ffi_contract() {
     let pairs = [
         (TypeId::Empty as i32, CUDF_TYPE_EMPTY as i32),
@@ -45,7 +47,7 @@ fn public_type_id_layout_matches_ffi_layout() {
 
 #[test]
 fn type_id_contract_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("public_type_id_discriminants_match_ffi_contract", public_type_id_discriminants_match_ffi_contract),
         ("public_type_id_layout_matches_ffi_layout", public_type_id_layout_matches_ffi_layout),
     ]);

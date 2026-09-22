@@ -14,8 +14,8 @@ use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
     native_report::candidate_shape_family,
-    planner::FinalPlanCoverage,
-    report::{CandidateOutcome, PlanningReport},
+    planner::{FinalPlanCoverage, NativePlanningDiagnostics},
+    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE, PlanningReport},
 };
 
 pub(super) fn cugraph_calls(plan: &dyn ExecutionPlan) -> Vec<QueryGpuCugraphCall> {
@@ -62,7 +62,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
             CandidateOutcome::Deferred { candidate, .. } => QueryGpuCandidateOutcome {
                 selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
-                reason_code: Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
+                reason_code: Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
                 reason_kind: Some(QueryGpuCandidateReasonKind::PlanShape),
                 detail: candidate.shape.clone(),
                 category: Some("producer_binding".to_string()),
@@ -176,7 +176,7 @@ pub(super) fn runtime_caveats(
     caveats
 }
 
-pub(super) fn planning_diagnostics_did_io(diagnostics: &crate::planner::NativePlanningDiagnostics) -> bool {
+pub(super) fn planning_diagnostics_did_io(diagnostics: &NativePlanningDiagnostics) -> bool {
     diagnostics.input_plan_root.contains("AlgeonIcebergScanExec")
         || diagnostics.input_plan_shape.contains("AlgeonIcebergScanExec")
         || diagnostics.report.outcomes().iter().any(|outcome| match outcome {

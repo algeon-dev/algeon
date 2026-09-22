@@ -26,11 +26,13 @@ use arrow::{
 use cudf::DataFrame;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
+    admission::AttemptCapabilityEvidence,
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
-    error::QueryErrorCode,
+    error::{QueryErrorCode, Result as QueryEngineResult},
     exec::{
         QueryExecutionRequest, execute_query_plan as execute_query_plan_direct, materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
+        preflight_bounded_query_plan, preflight_query_plan,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
@@ -290,36 +292,30 @@ impl BackendQueryContext {
         self
     }
 
-    fn runtime(&self) -> query_engine::error::Result<cudf::Runtime> {
+    fn runtime(&self) -> QueryEngineResult<cudf::Runtime> {
         Ok(backend_runtime_with_policy(self.policy).as_ref().clone())
     }
 
-    fn admit_plan(&self, plan: &QueryPlan) -> query_engine::error::Result<AdmittedPlanContext> {
-        query_engine::exec::preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
+    fn admit_plan(&self, plan: &QueryPlan) -> QueryEngineResult<AdmittedPlanContext> {
+        preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         self.admit_evidence(evidence)
     }
 
-    fn admit_plan_for_compiled_executor_test(
-        &self,
-        plan: &QueryPlan,
-    ) -> query_engine::error::Result<AdmittedPlanContext> {
+    fn admit_plan_for_compiled_executor_test(&self, plan: &QueryPlan) -> QueryEngineResult<AdmittedPlanContext> {
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         self.admit_evidence(evidence)
     }
 
-    fn admit_evidence(
-        &self,
-        evidence: query_engine::admission::AttemptCapabilityEvidence,
-    ) -> query_engine::error::Result<AdmittedPlanContext> {
+    fn admit_evidence(&self, evidence: AttemptCapabilityEvidence) -> QueryEngineResult<AdmittedPlanContext> {
         self.admit_evidence_with_observation(evidence, None)
     }
 
     fn admit_evidence_with_observation(
         &self,
-        evidence: query_engine::admission::AttemptCapabilityEvidence,
+        evidence: AttemptCapabilityEvidence,
         observation: Option<RuntimeObservationOwner>,
-    ) -> query_engine::error::Result<AdmittedPlanContext> {
+    ) -> QueryEngineResult<AdmittedPlanContext> {
         let mut request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence);
         if let Some(bytes) = self.requested_bytes {
             request = request.with_query_cap_bytes(bytes);
@@ -336,8 +332,8 @@ impl BackendQueryContext {
         &self,
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
-    ) -> query_engine::error::Result<QueryExecutionResult> {
-        query_engine::exec::preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
+    ) -> QueryEngineResult<QueryExecutionResult> {
+        preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         let admitted = self.admit_evidence_with_observation(evidence, Some(RuntimeObservationOwner::disabled()))?;
         let outcome = execute_query_plan_direct(
@@ -355,11 +351,9 @@ impl BackendQueryContext {
     }
 }
 
-fn capability_evidence_for_fixture_plan(
-    plan: &QueryPlan,
-) -> query_engine::error::Result<query_engine::admission::AttemptCapabilityEvidence> {
-    query_engine::exec::preflight_query_plan(plan)?;
-    let mut evidence = query_engine::admission::AttemptCapabilityEvidence::for_query_plan(plan);
+fn capability_evidence_for_fixture_plan(plan: &QueryPlan) -> QueryEngineResult<AttemptCapabilityEvidence> {
+    preflight_query_plan(plan)?;
+    let mut evidence = AttemptCapabilityEvidence::for_query_plan(plan);
     #[cfg(feature = "cugraph")]
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))) {
         evidence.attest_cugraph_graph_execution_scope(plan);
@@ -372,7 +366,7 @@ trait TestExecutionContext {
         &self,
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
-    ) -> query_engine::error::Result<QueryExecutionResult>;
+    ) -> QueryEngineResult<QueryExecutionResult>;
 }
 
 impl TestExecutionContext for AdmittedPlanContext {
@@ -380,7 +374,7 @@ impl TestExecutionContext for AdmittedPlanContext {
         &self,
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
-    ) -> query_engine::error::Result<QueryExecutionResult> {
+    ) -> QueryEngineResult<QueryExecutionResult> {
         let outcome = execute_query_plan_direct(
             self.context.context(),
             QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
@@ -395,7 +389,7 @@ impl TestExecutionContext for BackendQueryContext {
         &self,
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
-    ) -> query_engine::error::Result<QueryExecutionResult> {
+    ) -> QueryEngineResult<QueryExecutionResult> {
         self.execute_admitted(plan, gpu_inputs)
     }
 }
@@ -403,7 +397,7 @@ impl TestExecutionContext for BackendQueryContext {
 fn execute_query_plan<C: TestExecutionContext + ?Sized>(
     context: &C,
     plan: &QueryPlan,
-) -> query_engine::error::Result<QueryExecutionResult> {
+) -> QueryEngineResult<QueryExecutionResult> {
     context.execute_plan(plan, &GpuResidentInputMap::new())
 }
 
@@ -411,7 +405,7 @@ fn execute_query_plan_with_gpu_inputs<C: TestExecutionContext + ?Sized>(
     context: &C,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
-) -> query_engine::error::Result<QueryExecutionResult> {
+) -> QueryEngineResult<QueryExecutionResult> {
     context.execute_plan(plan, gpu_inputs)
 }
 

@@ -2,6 +2,11 @@
 use std::{fmt, path::PathBuf, time::Duration};
 
 use super::{env::EnvValues, *};
+#[cfg(not(feature = "iceberg"))]
+use crate::table_format::{
+    ALGEON_LAKEHOUSE_CACHE_MAX_BYTES_ENV, ALGEON_LAKEHOUSE_CACHE_POLICY_ENV, ALGEON_LAKEHOUSE_CACHE_READ_ENV,
+    ALGEON_LAKEHOUSE_CACHE_ROOT_ENV,
+};
 
 /// DataFusion catalog name exposed to SQL for Iceberg tables.
 pub const ALGEON_ICEBERG_CATALOG_NAME_ENV: &str = "ALGEON_ICEBERG_CATALOG_NAME";
@@ -570,10 +575,10 @@ pub(super) fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> 
         ALGEON_ICEBERG_S3_REGION_ENV,
         ALGEON_ICEBERG_S3_PATH_STYLE_ENV,
         ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
-        crate::server::table_format::ALGEON_LAKEHOUSE_CACHE_ROOT_ENV,
-        crate::server::table_format::ALGEON_LAKEHOUSE_CACHE_READ_ENV,
-        crate::server::table_format::ALGEON_LAKEHOUSE_CACHE_POLICY_ENV,
-        crate::server::table_format::ALGEON_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
+        ALGEON_LAKEHOUSE_CACHE_ROOT_ENV,
+        ALGEON_LAKEHOUSE_CACHE_READ_ENV,
+        ALGEON_LAKEHOUSE_CACHE_POLICY_ENV,
+        ALGEON_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
         ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
     ]) {
         return Err(ServerError::invalid_config(

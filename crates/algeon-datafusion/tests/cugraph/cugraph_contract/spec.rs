@@ -21,9 +21,10 @@ use query_engine::{
         GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
         GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
         GraphPersonalizedPageRankParams, GraphSccParams, GraphSimilarityParams, GraphSpectralClusteringParams,
-        GraphSsspParams, GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams,
-        PlanNode, QueryPlan, QueryPlanBuilder, graph_result_schema_for_vertex_type,
+        GraphSsspParams, GraphSsspSource, GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphVertexPairInput,
+        GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, graph_result_schema_for_vertex_type,
     },
+    rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
 };
 
@@ -47,10 +48,9 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
         GraphAlgorithm::EdgeBetweennessCentrality => {
             GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams::default())
         },
-        GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams {
-            source_vertex: query_engine::plan::GraphSsspSource::I64(0),
-            cutoff: None,
-        }),
+        GraphAlgorithm::Sssp => {
+            GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: GraphSsspSource::I64(0), cutoff: None })
+        },
         GraphAlgorithm::DegreesAll => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
         GraphAlgorithm::InDegreesAll => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
         GraphAlgorithm::OutDegreesAll => GraphAlgorithmParams::OutDegreesAll(GraphOutDegreesAllParams),
@@ -164,7 +164,7 @@ fn registry_native_and_sql_inventories_have_matching_lengths() {
 fn registry_algorithms_admit_under_execution_capability_without_a_memory_veto() {
     for entry in GRAPH_OPERATION_REGISTRY {
         let plan = graph_plan(entry.algorithm);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
         let node = analysis
             .nodes
             .iter()

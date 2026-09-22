@@ -24,7 +24,7 @@ use datafusion::{
     functions::{datetime, string, unicode},
     functions_aggregate::{count::count_udaf, first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
     functions_window::row_number::row_number_udwf,
-    logical_expr::{Operator, WindowFrame},
+    logical_expr::{AggregateUDF, Operator, ScalarUDF, WindowFrame},
     parquet::{
         arrow::arrow_reader::{RowSelection, RowSelector},
         file::reader::{FileReader, SerializedFileReader},
@@ -33,15 +33,15 @@ use datafusion::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
         expressions::{
-            CaseExpr, CastExpr, DynamicFilterPhysicalExpr, IsNullExpr, LikeExpr, NotExpr, TryCastExpr, binary, col,
-            in_list, is_null, lit,
+            CaseExpr, CastExpr, Column, DynamicFilterPhysicalExpr, IsNullExpr, LikeExpr, NotExpr, TryCastExpr, binary,
+            col, in_list, is_null, lit,
         },
         window::{StandardWindowExpr, WindowExpr},
     },
     physical_plan::{
         ChildrenPropertiesMode, ExecutionPlan, InputOrderMode, ReplaceChildrenOptions,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
-        filter::FilterExec,
+        filter::{FilterExec, FilterExecBuilder},
         joins::{
             HashJoinExec, NestedLoopJoinExec, PartitionMode,
             utils::{ColumnIndex, JoinFilter},
@@ -56,12 +56,13 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use query_engine::{
-    expr::{AggregateFunction, Expr, LiteralValue},
+    expr::{AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue},
     plan::{
-        JoinNullEquality as NativeJoinNullEquality, JoinOutputColumn as NativeJoinOutputColumn,
-        JoinSide as NativeJoinSide, JoinType as NativeJoinType, NodeId, PlanNode, QueryPlan, ResultSink,
+        AggregateNode, JoinNode, JoinNullEquality as NativeJoinNullEquality,
+        JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide, JoinType as NativeJoinType, NodeId,
+        PlanNode, QueryPlan, ResultSink,
     },
-    source::{SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
+    source::{LiteralBatchSource, LocalParquetSource, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
 use workloads::tpch::write_tiny_tpch_parquet_dataset;
 
@@ -130,7 +131,7 @@ use sql::*;
 
 fn aggregate_expr_like(
     existing: &AggregateFunctionExpr,
-    udaf: Arc<datafusion::logical_expr::AggregateUDF>,
+    udaf: Arc<AggregateUDF>,
     schema: Arc<Schema>,
     distinct: bool,
     order_by: Vec<PhysicalSortExpr>,
@@ -148,7 +149,7 @@ fn aggregate_expr_like(
 
 fn aggregate_expr_on_column_like(
     existing: &AggregateFunctionExpr,
-    udaf: Arc<datafusion::logical_expr::AggregateUDF>,
+    udaf: Arc<AggregateUDF>,
     schema: Arc<Schema>,
     column_index: usize,
     distinct: bool,
@@ -167,7 +168,7 @@ fn aggregate_expr_on_column_like(
 }
 
 fn aggregate_expr_on_column_with_alias(
-    udaf: Arc<datafusion::logical_expr::AggregateUDF>,
+    udaf: Arc<AggregateUDF>,
     schema: Arc<Schema>,
     column_index: usize,
     alias: &str,
@@ -219,13 +220,11 @@ fn count_only_sql_session_config() -> SessionConfig {
     config
 }
 
-fn native_local_parquet_source(plan: &query_engine::plan::QueryPlan) -> &query_engine::source::LocalParquetSource {
+fn native_local_parquet_source(plan: &QueryPlan) -> &LocalParquetSource {
     native_local_parquet_sources(plan).into_iter().next().expect("native plan should contain a local parquet source")
 }
 
-fn native_local_parquet_sources(
-    plan: &query_engine::plan::QueryPlan,
-) -> Vec<&query_engine::source::LocalParquetSource> {
+fn native_local_parquet_sources(plan: &QueryPlan) -> Vec<&LocalParquetSource> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -239,9 +238,7 @@ fn native_local_parquet_sources(
         .collect()
 }
 
-fn native_literal_batch_sources(
-    plan: &query_engine::plan::QueryPlan,
-) -> Vec<&query_engine::source::LiteralBatchSource> {
+fn native_literal_batch_sources(plan: &QueryPlan) -> Vec<&LiteralBatchSource> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -254,15 +251,15 @@ fn native_literal_batch_sources(
         .collect()
 }
 
-fn local_parquet_source_table(source: &query_engine::source::LocalParquetSource) -> Option<&str> {
+fn local_parquet_source_table(source: &LocalParquetSource) -> Option<&str> {
     source.files.first()?.path.file_stem()?.to_str()
 }
 
-fn native_aggregate_functions(plan: &query_engine::plan::QueryPlan) -> Vec<AggregateFunction> {
+fn native_aggregate_functions(plan: &QueryPlan) -> Vec<AggregateFunction> {
     native_aggregate_exprs(plan).iter().map(|expr| expr.function).collect()
 }
 
-fn native_aggregate_exprs(plan: &query_engine::plan::QueryPlan) -> &[query_engine::expr::AggregateExpr] {
+fn native_aggregate_exprs(plan: &QueryPlan) -> &[AggregateExpr] {
     native_aggregate_nodes(plan)
         .into_iter()
         .next()
@@ -270,7 +267,7 @@ fn native_aggregate_exprs(plan: &query_engine::plan::QueryPlan) -> &[query_engin
         .expect("native plan should contain an aggregate node")
 }
 
-fn native_aggregate_nodes(plan: &query_engine::plan::QueryPlan) -> Vec<&query_engine::plan::AggregateNode> {
+fn native_aggregate_nodes(plan: &QueryPlan) -> Vec<&AggregateNode> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -280,7 +277,7 @@ fn native_aggregate_nodes(plan: &query_engine::plan::QueryPlan) -> Vec<&query_en
         .collect()
 }
 
-fn native_aggregate_group_exprs(plan: &query_engine::plan::QueryPlan) -> &[Expr] {
+fn native_aggregate_group_exprs(plan: &QueryPlan) -> &[Expr] {
     plan.nodes()
         .iter()
         .find_map(|node| match &node.kind {
@@ -290,7 +287,7 @@ fn native_aggregate_group_exprs(plan: &query_engine::plan::QueryPlan) -> &[Expr]
         .expect("native plan should contain an aggregate node")
 }
 
-fn native_projection_exprs(plan: &query_engine::plan::QueryPlan) -> Vec<&Expr> {
+fn native_projection_exprs(plan: &QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
         .flat_map(|node| match &node.kind {
@@ -300,11 +297,11 @@ fn native_projection_exprs(plan: &query_engine::plan::QueryPlan) -> Vec<&Expr> {
         .collect()
 }
 
-fn native_filter_expr(plan: &query_engine::plan::QueryPlan) -> &Expr {
+fn native_filter_expr(plan: &QueryPlan) -> &Expr {
     native_filter_exprs(plan).into_iter().next().expect("native plan should contain a filter node")
 }
 
-fn native_filter_exprs(plan: &query_engine::plan::QueryPlan) -> Vec<&Expr> {
+fn native_filter_exprs(plan: &QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -314,7 +311,7 @@ fn native_filter_exprs(plan: &query_engine::plan::QueryPlan) -> Vec<&Expr> {
         .collect()
 }
 
-fn native_joins(plan: &query_engine::plan::QueryPlan) -> Vec<&query_engine::plan::JoinNode> {
+fn native_joins(plan: &QueryPlan) -> Vec<&JoinNode> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -324,7 +321,7 @@ fn native_joins(plan: &query_engine::plan::QueryPlan) -> Vec<&query_engine::plan
         .collect()
 }
 
-fn rewritten_native_join(result: &NativeLoweringResult) -> &query_engine::plan::JoinNode {
+fn rewritten_native_join(result: &NativeLoweringResult) -> &JoinNode {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -339,7 +336,7 @@ fn rewritten_native_join(result: &NativeLoweringResult) -> &query_engine::plan::
 }
 
 fn assert_right_hash_join_contract(
-    join: &query_engine::plan::JoinNode,
+    join: &JoinNode,
     expected_join_type: NativeJoinType,
     expected_build_side: NativeJoinSide,
     expected_projection: &[(NativeJoinSide, &str, &str)],
@@ -376,12 +373,7 @@ fn projection_source_for_alias<'a>(expressions: &'a [String], alias: &str) -> &'
         .unwrap_or_else(|| panic!("projection should contain alias {alias}: {expressions:?}"))
 }
 
-fn assert_join_input_materializes_decimal_cast(
-    plan: &query_engine::plan::QueryPlan,
-    input: query_engine::plan::NodeId,
-    alias: &str,
-    source_column: &str,
-) {
+fn assert_join_input_materializes_decimal_cast(plan: &QueryPlan, input: NodeId, alias: &str, source_column: &str) {
     let input_node = plan.node(input).expect("join input should exist");
     let PlanNode::Projection(projection) = &input_node.kind else {
         panic!("join input should be a residual materialization projection");
@@ -409,12 +401,7 @@ fn assert_join_input_materializes_decimal_cast(
     );
 }
 
-fn assert_join_input_materializes_substring(
-    plan: &query_engine::plan::QueryPlan,
-    input: query_engine::plan::NodeId,
-    alias: &str,
-    source_column: &str,
-) {
+fn assert_join_input_materializes_substring(plan: &QueryPlan, input: NodeId, alias: &str, source_column: &str) {
     let input_node = plan.node(input).expect("join input should exist");
     let PlanNode::Projection(projection) = &input_node.kind else {
         panic!("join input should be a residual materialization projection");
@@ -439,8 +426,8 @@ fn assert_join_input_materializes_substring(
 }
 
 fn assert_join_input_materializes_case_decimal_divide(
-    plan: &query_engine::plan::QueryPlan,
-    input: query_engine::plan::NodeId,
+    plan: &QueryPlan,
+    input: NodeId,
     alias: &str,
     source_column: &str,
 ) {
@@ -462,7 +449,7 @@ fn assert_join_input_materializes_case_decimal_divide(
                                     && matches!(
                                         &branches[0].then,
                                         Expr::Binary {
-                                            op: query_engine::expr::BinaryOp::Divide,
+                                            op: BinaryOp::Divide,
                                             output_type: Some(DataType::Decimal128(_, _)),
                                             left,
                                             right,
@@ -478,8 +465,8 @@ fn assert_join_input_materializes_case_decimal_divide(
 }
 
 fn assert_join_input_materializes_upper_utf8view_cast(
-    plan: &query_engine::plan::QueryPlan,
-    input: query_engine::plan::NodeId,
+    plan: &QueryPlan,
+    input: NodeId,
     alias: &str,
     source_column: &str,
 ) {
@@ -522,22 +509,18 @@ fn duplicate_named_root_aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) 
             .unwrap(),
     );
 
-    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-        ArrowSortOptions::new(false, false),
-    )])
-    .unwrap();
+    let sort_exprs =
+        LexOrdering::new([PhysicalSortExpr::new(Arc::new(Column::new("dup", 0)), ArrowSortOptions::new(false, false))])
+            .unwrap();
     let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(3)));
     Arc::new(LocalLimitExec::new(sort, 3))
 }
 
 fn duplicate_group_alias_root_aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let aggregate = duplicate_group_alias_aggregate(scan);
-    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-        ArrowSortOptions::new(false, false),
-    )])
-    .unwrap();
+    let sort_exprs =
+        LexOrdering::new([PhysicalSortExpr::new(Arc::new(Column::new("dup", 0)), ArrowSortOptions::new(false, false))])
+            .unwrap();
     let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(3)));
     Arc::new(LocalLimitExec::new(sort, 3))
 }
@@ -545,10 +528,7 @@ fn duplicate_group_alias_root_aggregate_sort_limit_plan(scan: Arc<dyn ExecutionP
 fn aggregate_over_duplicate_group_alias_input_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let inner = duplicate_group_alias_aggregate(scan);
     let inner_schema = inner.schema();
-    let group_by = PhysicalGroupBy::new_single(vec![(
-        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
-        "outer_dup".to_string(),
-    )]);
+    let group_by = PhysicalGroupBy::new_single(vec![(Arc::new(Column::new("dup", 0)), "outer_dup".to_string())]);
     let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("sum_m00", &inner_schema).unwrap()])
         .schema(Arc::clone(&inner_schema))
         .alias("outer_sum")

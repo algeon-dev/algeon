@@ -8,18 +8,15 @@
 
 use cudf::{DataFrame, FrameMemoryEffect};
 
-use crate::common::{column_from_slice, dataframe_device_ptr as device_ptr};
+use crate::common::{column_from_slice, dataframe_device_ptr as device_ptr, dataframe_from_columns, run_named_cases};
 
 /// Helper: build a 3-row, 3-column DataFrame with distinct column types.
 fn sample_df() -> DataFrame {
     let ids = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scores = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let flags = column_from_slice(&[true, false, true]).unwrap();
-    crate::common::dataframe_from_columns(
-        vec!["id".to_string(), "score".to_string(), "flag".to_string()],
-        vec![ids, scores, flags],
-    )
-    .unwrap()
+    dataframe_from_columns(vec!["id".to_string(), "score".to_string(), "flag".to_string()], vec![ids, scores, flags])
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +324,7 @@ fn test_select_subset_then_with_column_shares_retained() {
 
 #[test]
 fn arc_sharing_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_clone_shares_all_columns", test_clone_shares_all_columns),
         ("test_clone_both_dfs_independently_readable", test_clone_both_dfs_independently_readable),
         ("test_clone_preserves_schema", test_clone_preserves_schema),

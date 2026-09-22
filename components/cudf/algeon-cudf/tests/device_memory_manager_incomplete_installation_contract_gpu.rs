@@ -5,6 +5,7 @@ use cudf::{
     DeviceMemoryManagerInstallationOutcomeKind, DeviceMemoryManagerInstallationRetry,
     DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
 };
+use cudf_sys::test_support;
 
 #[test]
 fn failed_current_resource_switch_is_retryable_but_never_reusable() {
@@ -12,7 +13,7 @@ fn failed_current_resource_switch_is_retryable_but_never_reusable() {
     let identity = DeviceMemoryManagerInstallationIdentity::new([0x41; 16], 1, [0x42; 16]);
     let options = DeviceMemoryManagerOptions::default();
 
-    unsafe { cudf_sys::test_support::cudf_test_memory_manager_fail_next_current_resource_install() };
+    unsafe { test_support::cudf_test_memory_manager_fail_next_current_resource_install() };
     let failure = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
         device,
         identity,

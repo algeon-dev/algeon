@@ -12,6 +12,10 @@ use super::{
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, unsupported_bounded_shape,
     validate_executable_join_subset,
 };
+use crate::{
+    exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe},
+    metrics::{JoinOperatorMetrics, OperatorMetrics},
+};
 
 pub(super) fn execute_compiled_filtered_join_build_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -448,9 +452,9 @@ fn record_filtered_join_output_metrics(
     output_rows: u64,
     output_bytes: u64,
 ) {
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    metrics.record_operator_metrics(OperatorMetrics::join(
         node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_reusable_filtered_join".to_string(),
@@ -513,7 +517,7 @@ struct SharedFilteredBuild {
     build_bytes: u64,
     filtered_join: GpuFilteredJoinBuildHandle,
     hash_table_bytes: u64,
-    null_aware_probe: crate::exec::join::NullAwareAntiProbe,
+    null_aware_probe: NullAwareAntiProbe,
 }
 
 impl SharedFilteredBuild {
@@ -561,7 +565,7 @@ pub(in crate::exec::bounded) fn parallel_filtered_probe_frames(
     node: &JoinNode,
     build: &BoundedCompiledFilteredJoinBuildState,
     frames: Vec<ResidentGpuFrame>,
-    outer: Option<&crate::exec::bounded::compiled::lanes::AggregateLaneDispatch>,
+    outer: Option<&AggregateLaneDispatch>,
 ) -> Result<Vec<ResidentGpuFrame>> {
     if frames.len() <= 1 {
         return serial_filtered_probe_frames(execution, node_id, node, build, frames.into());
@@ -570,8 +574,7 @@ pub(in crate::exec::bounded) fn parallel_filtered_probe_frames(
     let chunk_count = state.pending.len();
     let shared = std::sync::Arc::new(SharedFilteredBuild::from_build(build));
     let node_owned = node.clone();
-    let mut run_on = |dispatch: &crate::exec::bounded::compiled::lanes::AggregateLaneDispatch,
-                      execution: &mut BoundedExecutionAttempt<'_>| {
+    let mut run_on = |dispatch: &AggregateLaneDispatch, execution: &mut BoundedExecutionAttempt<'_>| {
         let width = dispatch.width();
         execution.metrics().record_join_strategy_decision(
             node_id,
@@ -607,10 +610,9 @@ pub(in crate::exec::bounded) fn parallel_filtered_probe_frames(
     };
     match outer {
         Some(dispatch) => run_on(dispatch, execution)?,
-        None => crate::exec::bounded::compiled::lanes::AggregateLaneDispatch::with_available_lanes(
-            execution,
-            |dispatch, execution| run_on(dispatch, execution),
-        )?,
+        None => {
+            AggregateLaneDispatch::with_available_lanes(execution, |dispatch, execution| run_on(dispatch, execution))?
+        },
     }
     Ok(state.outputs)
 }

@@ -10,6 +10,7 @@ use cugraph_sys::{
 use crate::{
     array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::vertex_pairs_to_dataframe,
     error::{Error, ErrorKind, Result, require_non_null},
     graph::DeferredInputCompletion,
     handle::ResourceHandleLease,
@@ -123,8 +124,7 @@ impl VertexPairs {
     /// Convert this pair collection to a cudf DataFrame with `"first"` and
     /// `"second"` columns.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::vertex_pairs_to_dataframe(self, runtime)
-            .map_err(|error| error.with_operation("VertexPairs::to_dataframe"))
+        vertex_pairs_to_dataframe(self, runtime).map_err(|error| error.with_operation("VertexPairs::to_dataframe"))
     }
 }
 

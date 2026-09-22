@@ -1,23 +1,40 @@
 use std::{collections::BTreeMap, sync::Arc};
 
+use arrow::datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema};
+use cudf::io::{
+    parquet::{
+        RemoteCredentialMode, RemoteParquetBackendBuildStatus, RemoteParquetCapability,
+        RemoteParquetCapabilityDisposition, RemoteParquetProfile, RemoteParquetSource, RemoteReadMode,
+        probe_remote_parquet_datasource, remote_parquet_capability,
+    },
+    source::{
+        LocalParquetFile as CudfLocalParquetFile, ParquetSourceLocation as CudfParquetSourceLocation,
+        ParquetVariableWidthEncodingProof as CudfParquetVariableWidthEncodingProof, SourceChunk as CudfSourceChunk,
+    },
+};
+use object_store::aws::AwsCredential;
+
 use super::{local::*, remote::*};
 use crate::{
+    chunk, error,
     exec::source::{
         ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, SourceChunk,
         cudf_query_error_without_source,
     },
+    expr,
     expr::{BinaryOp, Expr, LiteralValue},
+    parquet_stats, plan, rapids_backend, runtime, source,
 };
 
 fn remote_direct_test_source() -> LocalParquetSource {
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("payload", arrow::datatypes::DataType::Utf8, true),
-        arrow::datatypes::Field::new("filter_only", arrow::datatypes::DataType::Boolean, true),
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("id", ArrowDataType::Int32, false),
+        ArrowField::new("payload", ArrowDataType::Utf8, true),
+        ArrowField::new("filter_only", ArrowDataType::Boolean, true),
     ]));
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
+    let resolved = source::ResolvedParquetSource::remote_kvikio(
         "s3://bucket/part.parquet",
-        crate::source::CredentialMode::SharedProcessEnv,
+        source::CredentialMode::SharedProcessEnv,
     );
     let file = LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("valid remote direct source")
@@ -38,9 +55,9 @@ const UNREACHABLE_FOOTER_PROFILE_ID: &str = "unreachable-footer";
 
 fn context_with_unreachable_footer_store() -> ExecutionContext {
     ExecutionContext::builder()
-        .with_source_storage_profiles([crate::runtime::SourceStorageProfile::s3(
+        .with_source_storage_profiles([runtime::SourceStorageProfile::s3(
             UNREACHABLE_FOOTER_PROFILE_ID,
-            crate::runtime::S3SourceStorageProfile::default_chain()
+            runtime::S3SourceStorageProfile::default_chain()
                 .with_region("us-east-1")
                 .with_endpoint("http://127.0.0.1:9")
                 .with_path_style_access(true)
@@ -50,8 +67,8 @@ fn context_with_unreachable_footer_store() -> ExecutionContext {
         .expect("execution context builds")
 }
 
-fn remote_direct_with_unreachable_footer_store(uri: &str) -> crate::source::ResolvedParquetSource {
-    crate::source::ResolvedParquetSource::remote_kvikio(uri, crate::source::CredentialMode::SharedProcessEnv)
+fn remote_direct_with_unreachable_footer_store(uri: &str) -> source::ResolvedParquetSource {
+    source::ResolvedParquetSource::remote_kvikio(uri, source::CredentialMode::SharedProcessEnv)
         .with_storage_profile_id(UNREACHABLE_FOOTER_PROFILE_ID)
 }
 
@@ -66,12 +83,12 @@ fn assert_required_footer_fetch_temporary_failure(error: &QueryError) {
 fn local_and_local_cache_contracts_build_only_local_parquet_paths() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
     let cases = [
-        crate::source::ResolvedParquetSource::local_kvikio("/tmp/local.parquet"),
-        crate::source::ResolvedParquetSource::local_cache_kvikio(
+        source::ResolvedParquetSource::local_kvikio("/tmp/local.parquet"),
+        source::ResolvedParquetSource::local_cache_kvikio(
             "s3://bucket/part.parquet",
             "/tmp/algeon-cache/part.parquet",
-            crate::source::CredentialMode::ScopedResolved,
-            crate::source::LakehouseCacheStatus::Hit,
+            source::CredentialMode::ScopedResolved,
+            source::LakehouseCacheStatus::Hit,
         ),
     ];
 
@@ -83,20 +100,20 @@ fn local_and_local_cache_contracts_build_only_local_parquet_paths() {
 
         assert_eq!(cudf_file.reader_path(), expected_path);
         assert!(cudf_file.remote_source().is_none(), "local/cache contract must not become a remote URI");
-        assert!(matches!(cudf_file.location(), cudf::io::source::ParquetSourceLocation::LocalPath(_)));
+        assert!(matches!(cudf_file.location(), CudfParquetSourceLocation::LocalPath(_)));
     }
 }
 
 #[test]
 fn missing_remote_profile_is_structured_and_cannot_fallback() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
+    let resolved = source::ResolvedParquetSource::remote_kvikio(
         "s3://bucket/private/part.parquet?signature=secret",
-        crate::source::CredentialMode::ScopedResolved,
+        source::CredentialMode::ScopedResolved,
     )
     .with_storage_profile_id("missing-profile");
-    let cudf_file = cudf::io::source::LocalParquetFile::object_store_uri(resolved.reader_location(), "part", [])
-        .expect("valid object-store URI");
+    let cudf_file =
+        CudfLocalParquetFile::object_store_uri(resolved.reader_location(), "part", []).expect("valid object-store URI");
 
     let error =
         attach_cudf_remote_parquet_contract(&context, cudf_file, &resolved, "query_engine.test.remote_contract")
@@ -113,23 +130,23 @@ fn missing_remote_profile_is_structured_and_cannot_fallback() {
 
 #[test]
 fn unavailable_remote_backend_is_permanent_structured_and_cannot_fallback() {
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
+    let resolved = source::ResolvedParquetSource::remote_kvikio(
         "s3://bucket/private/part.parquet?signature=secret",
-        crate::source::CredentialMode::SharedProcessEnv,
+        source::CredentialMode::SharedProcessEnv,
     );
-    let capability = cudf::io::parquet::RemoteParquetCapability {
-        disposition: cudf::io::parquet::RemoteParquetCapabilityDisposition::BackendBuildDisabled,
+    let capability = RemoteParquetCapability {
+        disposition: RemoteParquetCapabilityDisposition::BackendBuildDisabled,
         uri_scheme: "s3".to_string(),
-        read_mode: cudf::io::parquet::RemoteReadMode::RequireKvikio,
-        credential_mode: cudf::io::parquet::RemoteCredentialMode::SharedProcessEnv,
-        backend_build_status: cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled,
+        read_mode: RemoteReadMode::RequireKvikio,
+        credential_mode: RemoteCredentialMode::SharedProcessEnv,
+        backend_build_status: RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled,
     };
 
     let error =
         validate_remote_kvikio_capability(&resolved, &capability, "query_engine.test.remote_contract").unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::CudfUnsupported);
-    assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), error::QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("remote_kvikio_backend_unavailable"));
     assert_eq!(error.fact_value("remote_capability_disposition"), Some("backend_build_disabled"));
     assert_eq!(error.fact_value("remote_backend_build_status"), Some("kvikio_remote_io_disabled"));
@@ -140,9 +157,9 @@ fn unavailable_remote_backend_is_permanent_structured_and_cannot_fallback() {
 
 #[test]
 fn remote_parquet_profile_carries_only_non_secret_storage_hints() {
-    let storage = crate::runtime::SourceStorageProfile::s3(
+    let storage = runtime::SourceStorageProfile::s3(
         "rest-s3",
-        crate::runtime::S3SourceStorageProfile::default_chain()
+        runtime::S3SourceStorageProfile::default_chain()
             .with_region("us-west-2")
             .with_endpoint("http://localhost:9000")
             .with_path_style_access(true)
@@ -155,16 +172,16 @@ fn remote_parquet_profile_carries_only_non_secret_storage_hints() {
     assert_eq!(profile.region(), Some("us-west-2"));
     assert_eq!(profile.endpoint(), Some("http://localhost:9000"));
     assert_eq!(profile.path_style_access(), Some(true));
-    assert_eq!(profile.credential_mode(), cudf::io::parquet::RemoteCredentialMode::ScopedProfile);
+    assert_eq!(profile.credential_mode(), RemoteCredentialMode::ScopedProfile);
 }
 
 #[test]
 fn remote_parquet_profile_passes_resolved_default_chain_credentials_as_scoped_static() {
-    let storage = crate::runtime::SourceStorageProfile::s3(
+    let storage = runtime::SourceStorageProfile::s3(
         "glue-default-chain",
-        crate::runtime::S3SourceStorageProfile::default_chain().with_region("us-east-1"),
+        runtime::S3SourceStorageProfile::default_chain().with_region("us-east-1"),
     );
-    let credential = ::object_store::aws::AwsCredential {
+    let credential = AwsCredential {
         key_id: "resolved-access-key".to_string(),
         secret_key: "resolved-secret-key".to_string(),
         token: Some("resolved-session-token".to_string()),
@@ -175,7 +192,7 @@ fn remote_parquet_profile_passes_resolved_default_chain_credentials_as_scoped_st
 
     assert_eq!(profile.profile_id(), Some("glue-default-chain"));
     assert_eq!(profile.region(), Some("us-east-1"));
-    assert_eq!(profile.credential_mode(), cudf::io::parquet::RemoteCredentialMode::ScopedProfile);
+    assert_eq!(profile.credential_mode(), RemoteCredentialMode::ScopedProfile);
     let rendered = format!("{profile:?}");
     assert!(rendered.contains("Static"), "resolved default-chain credential must become a scoped static credential");
     assert!(!rendered.contains("resolved-access-key"));
@@ -185,47 +202,44 @@ fn remote_parquet_profile_passes_resolved_default_chain_credentials_as_scoped_st
 
 #[test]
 fn remote_parquet_profile_treats_region_override_as_scoped_hint() {
-    let storage = crate::runtime::SourceStorageProfile::s3(
+    let storage = runtime::SourceStorageProfile::s3(
         "glue-region",
-        crate::runtime::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
+        runtime::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
     );
 
     let profile = cudf_remote_parquet_profile_from_storage(Some("glue-region"), Some(&storage), None);
 
     assert_eq!(profile.profile_id(), Some("glue-region"));
     assert_eq!(profile.region(), Some("us-west-2"));
-    assert_eq!(profile.credential_mode(), cudf::io::parquet::RemoteCredentialMode::ScopedProfile);
+    assert_eq!(profile.credential_mode(), RemoteCredentialMode::ScopedProfile);
 }
 
 #[test]
 fn typed_remote_parquet_contract_hardwires_fail_closed_kvikio_mode() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
-    let cudf_file = cudf::io::source::LocalParquetFile::object_store_uri("s3://bucket/part.parquet", "part", [])
+    let cudf_file = CudfLocalParquetFile::object_store_uri("s3://bucket/part.parquet", "part", [])
         .expect("valid object store file");
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
+    let resolved = source::ResolvedParquetSource::remote_kvikio(
         "s3://bucket/part.parquet",
-        crate::source::CredentialMode::SharedProcessEnv,
+        source::CredentialMode::SharedProcessEnv,
     );
     let file = attach_cudf_remote_parquet_contract(&context, cudf_file, &resolved, "query_engine.test")
         .expect("remote contract attaches");
     let remote_source = file.remote_source().expect("remote source is preserved");
-    let capability = cudf::io::parquet::remote_parquet_capability(remote_source);
+    let capability = remote_parquet_capability(remote_source);
 
     assert_eq!(remote_source.uri(), "s3://bucket/part.parquet");
-    assert_eq!(remote_source.read_mode(), cudf::io::parquet::RemoteReadMode::RequireKvikio);
-    assert_eq!(capability.disposition, cudf::io::parquet::RemoteParquetCapabilityDisposition::KvikioRemoteDatasource);
-    assert_eq!(resolved.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect);
+    assert_eq!(remote_source.read_mode(), RemoteReadMode::RequireKvikio);
+    assert_eq!(capability.disposition, RemoteParquetCapabilityDisposition::KvikioRemoteDatasource);
+    assert_eq!(resolved.read_strategy(), source::ParquetReadStrategy::RemoteDirect);
 }
 
 #[test]
 fn datasource_probe_cudf_failures_preserve_facts_without_source_text() {
-    let source = cudf::io::parquet::RemoteParquetSource::s3("s3://bucket/part.parquet")
-        .expect("valid remote source")
-        .with_profile(
-            cudf::io::parquet::RemoteParquetProfile::shared_process_env()
-                .with_credential_mode(cudf::io::parquet::RemoteCredentialMode::ScopedProfile),
-        );
-    let cudf_error = cudf::io::parquet::probe_remote_parquet_datasource(&source, Some(4096))
+    let source = RemoteParquetSource::s3("s3://bucket/part.parquet").expect("valid remote source").with_profile(
+        RemoteParquetProfile::shared_process_env().with_credential_mode(RemoteCredentialMode::ScopedProfile),
+    );
+    let cudf_error = probe_remote_parquet_datasource(&source, Some(4096))
         .expect_err("scoped profiles are rejected before datasource open");
 
     let error = cudf_query_error_without_source(
@@ -256,10 +270,7 @@ fn remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode()
     assert_eq!(cudf_source.required_columns().len(), 1);
     assert_eq!(cudf_source.files()[0].row_groups(), Some([1, 3].as_slice()));
     assert_eq!(cudf_source.files()[0].remote_source().unwrap().uri(), "s3://bucket/part.parquet");
-    assert_eq!(
-        cudf_source.files()[0].remote_source().unwrap().read_mode(),
-        cudf::io::parquet::RemoteReadMode::RequireKvikio
-    );
+    assert_eq!(cudf_source.files()[0].remote_source().unwrap().read_mode(), RemoteReadMode::RequireKvikio);
     assert_eq!(cudf_chunk.remote_source().unwrap().uri(), "s3://bucket/part.parquet");
     assert!(!cudf_chunk.reads_all_row_groups());
     assert_eq!(cudf_chunk.row_group_indexes(), [1, 3]);
@@ -275,11 +286,11 @@ fn local_parquet_descriptor_propagates_variable_width_payload_evidence() {
     let mut source = remote_direct_test_source();
     source.files[0] = source.files[0].clone().with_variable_width_payload_evidence(BTreeMap::from([(
         1,
-        crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+        parquet_stats::ParquetVariableWidthPayloadEvidence::new(
             1,
             vec![1, 3],
             2048,
-            crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+            parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
         ),
     )]));
 
@@ -293,17 +304,17 @@ fn local_parquet_descriptor_propagates_variable_width_payload_evidence() {
     assert_eq!(evidence.physical_column_index, 1);
     assert_eq!(evidence.selected_row_groups, [1, 3]);
     assert_eq!(evidence.payload_upper_bound_bytes, 2048);
-    assert_eq!(evidence.encoding_proof, cudf::io::source::ParquetVariableWidthEncodingProof::PlainAndDictionary);
+    assert_eq!(evidence.encoding_proof, CudfParquetVariableWidthEncodingProof::PlainAndDictionary);
 }
 
 #[test]
 fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
     let source = remote_direct_test_source();
-    let plan = crate::chunk::plan_local_parquet_source_chunks(
-        crate::plan::NodeId::from_index_for_internal_use(1),
+    let plan = chunk::plan_local_parquet_source_chunks(
+        plan::NodeId::from_index_for_internal_use(1),
         &source,
-        crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
+        chunk::SourceChunkPlanningPolicy::new(None, 1),
     )
     .expect("selected row groups split into a multi-chunk plan");
     assert_eq!(plan.chunks.len(), 2);
@@ -320,20 +331,20 @@ fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode(
     for file in cudf_source.files() {
         let remote = file.remote_source().expect("batch file retains its typed remote source");
         assert_eq!(remote.uri(), "s3://bucket/part.parquet");
-        assert_eq!(remote.read_mode(), cudf::io::parquet::RemoteReadMode::RequireKvikio);
+        assert_eq!(remote.read_mode(), RemoteReadMode::RequireKvikio);
     }
 }
 
 fn local_test_source(files: Vec<LocalParquetFile>) -> LocalParquetSource {
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("payload", arrow::datatypes::DataType::Utf8, true),
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("id", ArrowDataType::Int32, false),
+        ArrowField::new("payload", ArrowDataType::Utf8, true),
     ]));
     LocalParquetSource::from_files(files, schema, vec!["id".to_string(), "payload".to_string()])
 }
 
 fn local_test_file(path: &str, stable_id: &str, row_group_count: usize) -> LocalParquetFile {
-    LocalParquetFile::from_resolved_parquet_source(crate::source::ResolvedParquetSource::local_kvikio(path))
+    LocalParquetFile::from_resolved_parquet_source(source::ResolvedParquetSource::local_kvikio(path))
         .expect("valid local source")
         .with_stable_id(stable_id)
         .with_file_size_bytes(4096)
@@ -351,10 +362,10 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
         local_test_file("/tmp/lineitem-b.parquet", "b", 2),
         local_test_file("/tmp/lineitem-a.parquet", "a-again", 1),
     ]);
-    let plan = crate::chunk::plan_local_parquet_source_chunks(
-        crate::plan::NodeId::from_index_for_internal_use(1),
+    let plan = chunk::plan_local_parquet_source_chunks(
+        plan::NodeId::from_index_for_internal_use(1),
         &source,
-        crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
+        chunk::SourceChunkPlanningPolicy::new(None, 1),
     )
     .expect("one row group per chunk splits every file");
     assert_eq!(plan.chunks.iter().map(|chunk| chunk.file_index).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 2]);
@@ -363,23 +374,17 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
         .expect("same-file chunks lower through one cudf file entry");
 
     assert_eq!(
-        cudf_source.files().iter().map(cudf::io::source::LocalParquetFile::stable_id).collect::<Vec<_>>(),
+        cudf_source.files().iter().map(CudfLocalParquetFile::stable_id).collect::<Vec<_>>(),
         ["a", "b", "a-again"]
     );
-    assert_eq!(
-        cudf_chunks.iter().map(cudf::io::source::SourceChunk::file_index).collect::<Vec<_>>(),
-        [0, 0, 0, 1, 1, 2]
-    );
+    assert_eq!(cudf_chunks.iter().map(CudfSourceChunk::file_index).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 2]);
     assert_eq!(
         cudf_chunks.iter().map(|chunk| chunk.row_group_indexes().to_vec()).collect::<Vec<_>>(),
         [vec![0], vec![1], vec![2], vec![0], vec![1], vec![0]]
     );
+    assert_eq!(cudf_chunks.iter().map(CudfSourceChunk::chunk_index).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
     assert_eq!(
-        cudf_chunks.iter().map(cudf::io::source::SourceChunk::chunk_index).collect::<Vec<_>>(),
-        [0, 1, 2, 3, 4, 5]
-    );
-    assert_eq!(
-        cudf_chunks.iter().map(cudf::io::source::SourceChunk::stable_id).collect::<Vec<_>>(),
+        cudf_chunks.iter().map(CudfSourceChunk::stable_id).collect::<Vec<_>>(),
         ["a", "a", "a", "b", "b", "a-again"]
     );
 }
@@ -387,13 +392,13 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
 #[test]
 fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
-    let source = remote_direct_test_source().with_reader_predicate(crate::expr::Expr::binary(
-        crate::expr::Expr::column("filter_only"),
-        crate::expr::BinaryOp::Eq,
-        crate::expr::Expr::literal(crate::expr::LiteralValue::Boolean(true)),
+    let source = remote_direct_test_source().with_reader_predicate(expr::Expr::binary(
+        expr::Expr::column("filter_only"),
+        expr::BinaryOp::Eq,
+        expr::Expr::literal(expr::LiteralValue::Boolean(true)),
     ));
     let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
-    assert!(source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()));
+    assert!(source.reader_predicate_is_supported(predicate, rapids_backend::rapids_analysis_context()));
 
     let (cudf_source, _cudf_chunk) =
         cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
@@ -402,20 +407,13 @@ fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
     assert_eq!(cudf_source.read_columns(), ["payload", "filter_only"]);
     assert!(cudf_source.reader_predicate().is_some());
     assert_eq!(cudf_source.files()[0].remote_source().unwrap().uri(), "s3://bucket/part.parquet");
-    assert_eq!(
-        cudf_source.files()[0].remote_source().unwrap().read_mode(),
-        cudf::io::parquet::RemoteReadMode::RequireKvikio
-    );
+    assert_eq!(cudf_source.files()[0].remote_source().unwrap().read_mode(), RemoteReadMode::RequireKvikio);
 }
 
 #[test]
 fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unverified_decimal_type() {
     let context = context_with_unreachable_footer_store();
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "discount",
-        arrow::datatypes::DataType::Decimal128(15, 2),
-        true,
-    )]));
+    let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
     let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
     let file = LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("valid remote direct source")
@@ -424,9 +422,9 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
         .with_row_groups(vec![0])
         .with_row_group_bytes(vec![4096])
         .with_row_group_rows(vec![10])
-        .with_reader_decimal_types(vec![crate::source::ParquetReaderDecimalType::new(
+        .with_reader_decimal_types(vec![source::ParquetReaderDecimalType::new(
             "discount",
-            crate::source::ParquetReaderDecimalTypeId::Decimal64,
+            source::ParquetReaderDecimalTypeId::Decimal64,
             -2,
         )]);
     let predicate = Expr::binary(
@@ -438,11 +436,11 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
         .with_column_file_indices(vec![0], vec![0], vec![])
         .with_reader_predicate(predicate);
     let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
-    assert!(source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()));
+    assert!(source.reader_predicate_is_supported(predicate, rapids_backend::rapids_analysis_context()));
     assert!(source.reader_predicate_requires_source_contract(predicate));
     let file = &source.files[0];
     let chunk = SourceChunk {
-        source_node_id: crate::plan::NodeId::from_index_for_internal_use(1),
+        source_node_id: plan::NodeId::from_index_for_internal_use(1),
         chunk_index: 7,
         file_index: 0,
         location: file.location.clone(),
@@ -476,7 +474,7 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: Some("batched".to_string()),
-        source_chunk_planning_mode: crate::runtime::SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_mode: runtime::SourceChunkPlanningMode::Conservative,
         source_chunk_planning_reason: "test".to_string(),
     };
 
@@ -490,19 +488,12 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
 #[test]
 fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "discount",
-        arrow::datatypes::DataType::Decimal128(15, 2),
-        true,
-    )]));
-    let reader_decimal_types = vec![crate::source::ParquetReaderDecimalType::new(
-        "discount",
-        crate::source::ParquetReaderDecimalTypeId::Decimal64,
-        -2,
-    )];
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
+    let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
+    let reader_decimal_types =
+        vec![source::ParquetReaderDecimalType::new("discount", source::ParquetReaderDecimalTypeId::Decimal64, -2)];
+    let resolved = source::ResolvedParquetSource::remote_kvikio(
         "s3://bucket/lineitem.parquet",
-        crate::source::CredentialMode::SharedProcessEnv,
+        source::CredentialMode::SharedProcessEnv,
     );
     let file = LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("valid remote direct source")
@@ -522,7 +513,7 @@ fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
         .with_reader_predicate(predicate);
     let file = &source.files[0];
     let chunk = SourceChunk {
-        source_node_id: crate::plan::NodeId::from_index_for_internal_use(1),
+        source_node_id: plan::NodeId::from_index_for_internal_use(1),
         chunk_index: 7,
         file_index: 0,
         location: file.location.clone(),
@@ -556,7 +547,7 @@ fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: Some("batched".to_string()),
-        source_chunk_planning_mode: crate::runtime::SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_mode: runtime::SourceChunkPlanningMode::Conservative,
         source_chunk_planning_reason: "test".to_string(),
     };
 
@@ -573,7 +564,7 @@ fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
     let source = remote_direct_test_source();
     let file = &source.files[0];
     let mut chunk = SourceChunk {
-        source_node_id: crate::plan::NodeId::from_index_for_internal_use(1),
+        source_node_id: plan::NodeId::from_index_for_internal_use(1),
         chunk_index: 7,
         file_index: 0,
         location: file.location.clone(),
@@ -607,10 +598,10 @@ fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
         scan_limit_rows: None,
         size_estimate_based: false,
         source_batching_reason: Some("batched".to_string()),
-        source_chunk_planning_mode: crate::runtime::SourceChunkPlanningMode::Conservative,
+        source_chunk_planning_mode: runtime::SourceChunkPlanningMode::Conservative,
         source_chunk_planning_reason: "test".to_string(),
     };
-    chunk.location = crate::source::ParquetSourceLocation::object_store_uri("s3://bucket/other.parquet").unwrap();
+    chunk.location = source::ParquetSourceLocation::object_store_uri("s3://bucket/other.parquet").unwrap();
 
     let error = cudf_local_parquet_source_chunk_batch(&context, &source, &[chunk])
         .expect_err("chunk must not verify one file while decoding another object");
@@ -627,11 +618,7 @@ fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
 #[test]
 fn remote_direct_contract_propagates_required_footer_fetch_failure_without_footer_type_metadata() {
     let context = context_with_unreachable_footer_store();
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "discount",
-        arrow::datatypes::DataType::Decimal128(15, 2),
-        true,
-    )]));
+    let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
     let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
     let file = LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("valid remote direct source")
@@ -659,11 +646,7 @@ fn remote_direct_contract_propagates_required_footer_fetch_failure_without_foote
 #[test]
 fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverified_decimal_type() {
     let context = context_with_unreachable_footer_store();
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "discount",
-        arrow::datatypes::DataType::Decimal128(15, 2),
-        true,
-    )]));
+    let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("discount", ArrowDataType::Decimal128(15, 2), true)]));
     let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
     let file = LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("valid remote direct source")
@@ -672,9 +655,9 @@ fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverifie
         .with_row_groups(vec![0])
         .with_row_group_bytes(vec![4096])
         .with_row_group_rows(vec![10])
-        .with_reader_decimal_types(vec![crate::source::ParquetReaderDecimalType::new(
+        .with_reader_decimal_types(vec![source::ParquetReaderDecimalType::new(
             "discount",
-            crate::source::ParquetReaderDecimalTypeId::Decimal32,
+            source::ParquetReaderDecimalTypeId::Decimal32,
             -2,
         )]);
     let predicate = Expr::binary(
@@ -697,15 +680,9 @@ fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverifie
 fn remote_direct_cudf_contract_errors_redact_object_store_locations() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
     let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "payload",
-        arrow::datatypes::DataType::Utf8,
-        true,
-    )]));
-    let resolved = crate::source::ResolvedParquetSource::remote_kvikio(
-        sensitive_uri,
-        crate::source::CredentialMode::SharedProcessEnv,
-    );
+    let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new("payload", ArrowDataType::Utf8, true)]));
+    let resolved =
+        source::ResolvedParquetSource::remote_kvikio(sensitive_uri, source::CredentialMode::SharedProcessEnv);
     let file = LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("valid remote direct source")
         .with_stable_id("secret-bucket/private/key.parquet?X-Amz-Signature=abc")

@@ -6,7 +6,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable, scalar};
+use crate::common::{column_from_slice, column_from_slice_nullable, run_named_cases, scalar};
 
 fn test_replace_nulls_with_scalar_i32() {
     // Column with nulls at positions 1 and 3.
@@ -171,7 +171,7 @@ fn test_replace_nulls_policy_float64() {
 
 #[test]
 fn replace_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_replace_nulls_with_scalar_i32", test_replace_nulls_with_scalar_i32),
         ("test_replace_nulls_no_nulls", test_replace_nulls_no_nulls),
         ("test_replace_nulls_all_null", test_replace_nulls_all_null),

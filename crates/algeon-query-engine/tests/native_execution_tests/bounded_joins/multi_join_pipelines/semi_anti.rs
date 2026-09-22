@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use query_engine::{
+    admission::bounded_join_unsupported_shape_facts, expr::ColumnRef, rapids_backend::rapids_analysis_context,
+    runtime::ExecutionCancellation,
+};
+
 use super::*;
 
 #[test]
@@ -30,8 +35,8 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         JoinSpec::new(JoinType::LeftSemi, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&left_only_join_schema),
@@ -42,21 +47,15 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&left_only_join_schema),
     );
     let plan = builder.finish_with_host_sink(anti_join);
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
-    assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none()
-    );
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -248,15 +247,12 @@ fn shared_leaf_inner_probe_anti_build_plan(
         keys,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "supp_id", "supp_id"),
-                query_engine::expr::ColumnRef::input(1, "supp", "supp"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "supp_id", "supp_id"), ColumnRef::input(1, "supp", "supp"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "supp", "supp"), "supp"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "nation", "nation"), "nation"),
+            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "supp", "supp"), "supp"),
+            JoinOutputColumn::left(ColumnRef::input(0, "nation", "nation"), "nation"),
         ])
         .with_build_side(JoinSide::Left),
         inner_schema,
@@ -267,8 +263,8 @@ fn shared_leaf_inner_probe_anti_build_plan(
         JoinSpec::new(
             JoinType::LeftAnti,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                query_engine::expr::ColumnRef::input(1, "order_id", "order_id"),
+                ColumnRef::input(0, "order_id", "order_id"),
+                ColumnRef::input(1, "order_id", "order_id"),
             )],
         )
         .with_residual_predicate(Expr::binary(
@@ -276,10 +272,7 @@ fn shared_leaf_inner_probe_anti_build_plan(
             BinaryOp::NotEq,
             Expr::input_column(0, "supp", "supp"),
         ))
-        .with_output_projection(vec![JoinOutputColumn::left(
-            query_engine::expr::ColumnRef::input(0, "nation", "nation"),
-            "nation",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "nation", "nation"), "nation")])
         .with_build_side(JoinSide::Right),
         anti_schema,
     );
@@ -307,13 +300,7 @@ fn bounded_native_query_streams_a_shared_staged_leaf_into_each_join_consumer() {
     let detail_schema = write_shared_leaf_detail_parquet(&detail_path, SHARED_LEAF_ROWS);
     let supplier_schema = write_shared_leaf_supplier_parquet(&supplier_path);
     let plan = shared_leaf_inner_probe_anti_build_plan(&detail_path, &detail_schema, &supplier_path, &supplier_schema);
-    assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none()
-    );
+    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
 
     let context = backend_context_with_grant(SHARED_LEAF_GRANT_BYTES);
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
@@ -389,9 +376,8 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
     };
     assert_eq!(batch.num_rows(), SHARED_LEAF_NATIONS as usize);
 
-    let cancellation = query_engine::runtime::ExecutionCancellation::with_deadline(Some(
-        std::time::Instant::now() + std::time::Duration::from_millis(40),
-    ));
+    let cancellation =
+        ExecutionCancellation::with_deadline(Some(std::time::Instant::now() + std::time::Duration::from_millis(40)));
     let evidence = capability_evidence_for_fixture_plan(&plan).unwrap();
     let handle = suite_backend_with_policy(context.policy)
         .session_capability()

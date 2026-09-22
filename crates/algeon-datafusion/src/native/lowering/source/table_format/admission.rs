@@ -3,6 +3,8 @@ use std::{
     sync::Arc,
 };
 
+use datafusion::physical_plan::filter::FilterExec;
+
 use super::{
     AlgeonIcebergScanExec, CapabilityReason, ExecutionPlan, NativeLiteralValue, NativeMissingColumn,
     NativeParquetColumnRequirements, NativePartitionColumn, NativeSourceColumnRef, NormalizedNativeSource,
@@ -59,7 +61,7 @@ pub(super) fn table_format_column_requirements(
     scan_plan: &TableFormatScanPlan,
     file_schema: &SchemaRef,
     scan_schema: SchemaRef,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     required_output_fields: &RequiredFields,
 ) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let required_scan_output_indices =
@@ -249,7 +251,7 @@ fn table_format_equality_delete_required_columns(
 
 fn table_format_predicate_scan_output_indices(
     scan_schema: SchemaRef,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     required_output_fields: &RequiredFields,
 ) -> Result<Vec<usize>, CapabilityReason> {
     if let Some(filter) = filter

@@ -18,6 +18,10 @@ use parquet::{
     file::{metadata::KeyValue, properties::WriterProperties},
 };
 use serde_json::Value;
+use workloads::{
+    graph::{DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY, DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY, DBLP_TABLES},
+    tpch::write_tiny_tpch_parquet_dataset,
+};
 
 use super::{
     aggregate::{
@@ -449,7 +453,7 @@ fn fixture_preflight_artifact_records_typed_fnv_and_sha256_fingerprints_for_a_va
     let root = test_root("fixture-preflight");
     fs::create_dir(&root).unwrap();
     let tpch_root = root.join("tpch");
-    workloads::tpch::write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
+    write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
     let dblp_root = root.join("citation_network").join("v1");
     write_dblp_fixture(&dblp_root, None);
     let profile = fixture_preflight_profile(&tpch_root, &dblp_root.join("parquet"));
@@ -481,7 +485,7 @@ fn fixture_preflight_rejects_a_self_consistent_noncanonical_dblp_fixture_before_
     let root = test_root("noncanonical-dblp-fixture");
     fs::create_dir(&root).unwrap();
     let tpch_root = root.join("tpch");
-    workloads::tpch::write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
+    write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
     let dblp_root = root.join("citation_network").join("v1");
     // Give the otherwise self-consistent miniature fixture the complete-edge
     // footer shape. Canonical preflight must then reject its non-V12 counts,
@@ -626,7 +630,7 @@ fn write_dblp_fixture(root: &Path, graph_vertex_upper_bound: Option<&str>) {
             _ => unreachable!("fixed DBLP table contract"),
         }
     };
-    for &table in workloads::graph::DBLP_TABLES {
+    for &table in DBLP_TABLES {
         let footer = matches!(table, "edges_by_src" | "edges_by_dst").then_some(graph_vertex_upper_bound).flatten();
         let topology = matches!(table, "edges_by_src" | "edges_by_dst")
             .then_some(r#"{"source_column_index":1,"destination_column_index":2}"#);
@@ -708,16 +712,11 @@ fn write_tiny_graph_parquet(
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
     let mut footer_metadata = Vec::new();
     if let Some(value) = graph_vertex_upper_bound {
-        footer_metadata.push(KeyValue::new(
-            workloads::graph::DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY.to_string(),
-            value.to_string(),
-        ));
+        footer_metadata.push(KeyValue::new(DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY.to_string(), value.to_string()));
     }
     if let Some(value) = edge_topology {
-        footer_metadata.push(KeyValue::new(
-            workloads::graph::DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY.to_string(),
-            value.to_string(),
-        ));
+        footer_metadata
+            .push(KeyValue::new(DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY.to_string(), value.to_string()));
     }
     let properties = WriterProperties::builder()
         .set_key_value_metadata((!footer_metadata.is_empty()).then_some(footer_metadata))
@@ -2245,7 +2244,7 @@ fn a_measured_run_may_execute_one_fixture_kind_while_preflight_requires_both() {
     let root = test_root("measured-single-kind");
     fs::create_dir(&root).unwrap();
     let tpch_root = root.join("tpch");
-    workloads::tpch::write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
+    write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
 
     let mut profile = measured_run_profile();
     profile.workloads = vec![FixtureWorkloadProfile {

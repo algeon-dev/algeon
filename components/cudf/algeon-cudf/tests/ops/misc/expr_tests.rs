@@ -28,14 +28,16 @@ use cudf::{
 };
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
 
+use crate::common::{error_context_value, nullable_series, run_named_cases, series};
+
 // ===========================================================================
 // Helpers
 // ===========================================================================
 
 /// Build a simple 3-row DataFrame with columns "x" (i32) and "y" (i32).
 fn xy_df() -> DataFrame {
-    let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
+    let x = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = series::<i32>("y", &[1, 2, 3]).unwrap();
     DataFrame::from_series([("x", x), ("y", y)]).unwrap()
 }
 
@@ -44,19 +46,19 @@ fn df_with_series(name: &str, series: Series) -> DataFrame {
 }
 
 fn i32_df(name: &str, data: &[i32]) -> DataFrame {
-    df_with_series(name, crate::common::series::<i32>(name, data).unwrap())
+    df_with_series(name, series::<i32>(name, data).unwrap())
 }
 
 fn nullable_i32_df(name: &str, data: &[i32], validity: &[bool]) -> DataFrame {
-    df_with_series(name, crate::common::nullable_series::<i32>(name, data, validity).unwrap())
+    df_with_series(name, nullable_series::<i32>(name, data, validity).unwrap())
 }
 
 fn f64_df(name: &str, data: &[f64]) -> DataFrame {
-    df_with_series(name, crate::common::series::<f64>(name, data).unwrap())
+    df_with_series(name, series::<f64>(name, data).unwrap())
 }
 
 fn nullable_f64_df(name: &str, data: &[f64], validity: &[bool]) -> DataFrame {
-    df_with_series(name, crate::common::nullable_series::<f64>(name, data, validity).unwrap())
+    df_with_series(name, nullable_series::<f64>(name, data, validity).unwrap())
 }
 
 fn decimal128_df_from_arrow(name: &str, values: Vec<Option<i128>>, precision: u8, scale: i8) -> DataFrame {
@@ -87,11 +89,11 @@ fn decimal128_pair_df_from_arrow(
 }
 
 fn bool_df(name: &str, data: &[bool]) -> DataFrame {
-    df_with_series(name, crate::common::series::<bool>(name, data).unwrap())
+    df_with_series(name, series::<bool>(name, data).unwrap())
 }
 
 fn str_df(name: &str, data: &[&str]) -> DataFrame {
-    df_with_series(name, crate::common::series(name, data).unwrap())
+    df_with_series(name, series(name, data).unwrap())
 }
 
 fn eval(expr: Expr, df: &DataFrame) -> Series {
@@ -264,10 +266,8 @@ fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
 }
 
 fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
-    let discount = crate::common::series("discount", &[5i64, 25])
-        .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
-        .unwrap();
+    let discount =
+        series("discount", &[5i64, 25]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
     let df = df_with_series("discount", discount);
 
     let result = eval((lit_decimal128_raw(1, 0) - col("discount")).alias("net"), &df);
@@ -458,8 +458,8 @@ fn neg_expr() {
 }
 
 fn bitand_bool() {
-    let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
-    let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
+    let a = series::<bool>("a", &[true, true, false, false]).unwrap();
+    let b = series::<bool>("b", &[true, false, true, false]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
     let result = (col("a") & col("b")).alias("and").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -474,8 +474,8 @@ fn bitand_bool_scalar_lhs_without_lit() {
 }
 
 fn bitor_bool() {
-    let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
-    let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
+    let a = series::<bool>("a", &[true, true, false, false]).unwrap();
+    let b = series::<bool>("b", &[true, false, true, false]).unwrap();
     let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
     let result = (col("a") | col("b")).alias("or").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
@@ -547,8 +547,8 @@ fn gt_scalar_without_lit_produces_bool() {
 }
 
 fn eq_col_col() {
-    let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
+    let x = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let y = series::<i32>("b", &[1, 99, 3]).unwrap();
     let df = DataFrame::from_series([("a", x), ("b", y)]).unwrap();
     let result = col("a").eq(col("b")).alias("same").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
@@ -560,8 +560,8 @@ fn lt_lit_with_alias() {
 }
 
 fn ne_col_col() {
-    let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
+    let x = series::<i32>("a", &[1, 2, 3]).unwrap();
+    let y = series::<i32>("b", &[1, 99, 3]).unwrap();
     let df = DataFrame::from_series([("a", x), ("b", y)]).unwrap();
     let result = col("a").ne(col("b")).alias("diff").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
@@ -574,7 +574,7 @@ fn ge_and_le() {
 }
 
 fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
-    let shipdate = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
+    let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -590,7 +590,7 @@ fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
 }
 
 fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
-    let shipdate = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
+    let shipdate = series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -605,7 +605,7 @@ fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
 }
 
 fn timestamp_days_datetime_offset_adds_calendrical_months() {
-    let shipdate = crate::common::series("shipdate", &[18_262i32, 18_293, 18_322])
+    let shipdate = series("shipdate", &[18_262i32, 18_293, 18_322])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -620,7 +620,7 @@ fn timestamp_days_datetime_offset_adds_calendrical_months() {
 }
 
 fn timestamp_days_datetime_offset_rejects_non_exact_duration_resolution() {
-    let shipdate = crate::common::series("shipdate", &[18_262i32])
+    let shipdate = series("shipdate", &[18_262i32])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -649,7 +649,7 @@ fn datetime_offset_zero_interval_still_rejects_non_timestamp_input() {
 }
 
 fn timestamp_expr_datetime_namespace_extracts_components() {
-    let dates = crate::common::series("ts", &[0i32, 31, 365])
+    let dates = series("ts", &[0i32, 31, 365])
         .unwrap()
         .astype(TypeId::DurationDays)
         .unwrap()
@@ -804,10 +804,10 @@ fn with_columns_no_alias_errors() {
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
-    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some("output_name"));
-    assert_eq!(crate::common::error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("output_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
     assert_eq!(
-        crate::common::error_context_value(&err, "remedy").as_deref(),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use .alias(...) or provide an explicit (name, expr) pair"),
     );
 }
@@ -958,8 +958,8 @@ fn fillna_scalar_preserves_output_name() {
 }
 
 fn fillna_with_column_path() {
-    let v = crate::common::nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
-    let backup = crate::common::series::<i32>("backup", &[10, 20, 30]).unwrap();
+    let v = nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
+    let backup = series::<i32>("backup", &[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("v", v), ("backup", backup)]).unwrap();
     let result = col("v").fillna_with(col("backup")).alias("filled").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
@@ -1086,7 +1086,7 @@ fn agg_sum_string_reports_expr_reduce_operation_on_type_error() {
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "expr::reduce");
     assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(crate::common::error_context_value(&err, "input_type").as_deref(), None);
+    assert_eq!(error_context_value(&err, "input_type").as_deref(), None);
 }
 
 fn reduce_requires_explicit_output_name() {
@@ -1108,10 +1108,10 @@ fn with_columns_rejects_unaliased_reduce() {
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
-    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some("output_name"));
-    assert_eq!(crate::common::error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("output_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
     assert_eq!(
-        crate::common::error_context_value(&err, "remedy").as_deref(),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use .alias(...) or provide an explicit (name, expr) pair"),
     );
 }
@@ -1221,9 +1221,9 @@ fn when_then_otherwise_scalar_literals_without_lit() {
 }
 
 fn when_then_otherwise_column_branches() {
-    let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    let flag = crate::common::series::<bool>("f", &[true, false, true]).unwrap();
+    let x = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = series::<i32>("y", &[1, 2, 3]).unwrap();
+    let flag = series::<bool>("f", &[true, false, true]).unwrap();
     let df = DataFrame::from_series([("x", x), ("y", y), ("f", flag)]).unwrap();
     let result = when(col("f")).then(col("x")).otherwise(col("y")).alias("pick").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
@@ -1231,9 +1231,9 @@ fn when_then_otherwise_column_branches() {
 
 fn when_then_otherwise_with_nulls_in_condition() {
     // libcudf copy_if_else: null mask positions produce the false_val
-    let cond = crate::common::nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
-    let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
-    let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
+    let cond = nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
+    let x = series::<i32>("x", &[10, 20, 30]).unwrap();
+    let y = series::<i32>("y", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_series([("c", cond), ("x", x), ("y", y)]).unwrap();
     let result = when(col("c")).then(col("x")).otherwise(col("y")).alias("out").eval(&df).unwrap();
     // row 0: cond valid & true  → x[0]=10
@@ -1261,10 +1261,10 @@ fn if_else_requires_alias_in_with_columns() {
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
-    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some("output_name"));
-    assert_eq!(crate::common::error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("output_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
     assert_eq!(
-        crate::common::error_context_value(&err, "remedy").as_deref(),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use .alias(...) or provide an explicit (name, expr) pair"),
     );
 }
@@ -1288,7 +1288,7 @@ fn when_then_otherwise_composite() {
 
 #[test]
 fn expr_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("col_resolves_existing_column", col_resolves_existing_column),
         ("col_missing_column_errors", col_missing_column_errors),
         ("lit_i32_broadcasts", lit_i32_broadcasts),

@@ -1,3 +1,5 @@
+use crate::common::run_named_cases;
+
 const EXPR_RS: &str = include_str!("../../../src/ops/expr.rs");
 const EXPR_AGG_RS: &str = include_str!("../../../src/ops/expr/agg.rs");
 const EXPR_CORE_RS: &str = include_str!("../../../src/ops/expr/core.rs");
@@ -64,7 +66,7 @@ fn ops_module_docs_align_with_expression_dsl_surface() {
 
 #[test]
 fn expr_doc_surface_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("expr_module_docs_center_dsl_entry_points", expr_module_docs_center_dsl_entry_points),
         ("expr_method_family_docs_avoid_namespace_jargon", expr_method_family_docs_avoid_namespace_jargon),
         ("when_chain_docs_describe_staged_construction", when_chain_docs_describe_staged_construction),

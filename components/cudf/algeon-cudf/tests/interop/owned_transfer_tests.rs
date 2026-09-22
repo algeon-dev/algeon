@@ -18,6 +18,12 @@ use cudf::{
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
 };
+use cudf_sys::test_support::{
+    cudf_test_event_allow_synchronize, cudf_test_event_block_synchronize, cudf_test_event_fail_synchronize,
+    cudf_test_event_raw_record_call_count_for_stream_raw, cudf_test_event_reset_observation,
+    cudf_test_event_stream_wait_call_count_for_event_raw, cudf_test_event_synchronize_call_count,
+    cudf_test_event_unblock_synchronize,
+};
 use rapids_interop::{
     BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaEventHandle, CudaStreamHandle,
     DataType as InteropDataType, ExportDiagnostics, ExportProfile, InteropErrorKind, OwnedColumnTransfer,
@@ -27,7 +33,10 @@ use rapids_interop::{
 };
 use tempfile::TempDir;
 
-use crate::common::{column_from_slice, interop_error_context_value, lock_event_observation};
+use crate::common::{
+    column_from_slice, interop_error_context_value, lock_event_observation, run_named_cases, series as common_series,
+    with_test_runtime,
+};
 
 fn binding_ptr_eq(transfer: &OwnedColumnTransfer, expected_ptr: *const std::ffi::c_void) -> bool {
     transfer.bindings().iter().any(|binding| binding.bytes().base_ptr() == expected_ptr)
@@ -128,46 +137,44 @@ fn fixed_width_binding_len<T>(len: usize) -> usize {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
+    unsafe { cudf_test_event_reset_observation() };
 }
 
 fn observed_event_synchronize_call_count() -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_event_synchronize_call_count(&mut out) };
+    let status = unsafe { cudf_test_event_synchronize_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count");
     out
 }
 
 fn observed_stream_wait_call_count_for_event_raw(event_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_event_raw(event_raw, &mut out) };
+    let status = unsafe { cudf_test_event_stream_wait_call_count_for_event_raw(event_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-event wait observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
     out
 }
 
 fn block_event_synchronize() {
-    unsafe { cudf_sys::test_support::cudf_test_event_block_synchronize() };
+    unsafe { cudf_test_event_block_synchronize() };
 }
 
 fn unblock_event_synchronize() {
-    unsafe { cudf_sys::test_support::cudf_test_event_unblock_synchronize() };
+    unsafe { cudf_test_event_unblock_synchronize() };
 }
 
 fn fail_event_synchronize() {
-    unsafe { cudf_sys::test_support::cudf_test_event_fail_synchronize() };
+    unsafe { cudf_test_event_fail_synchronize() };
 }
 
 fn allow_event_synchronize() {
-    unsafe { cudf_sys::test_support::cudf_test_event_allow_synchronize() };
+    unsafe { cudf_test_event_allow_synchronize() };
 }
 
 struct EventSynchronizeBlockGuard;
@@ -1276,7 +1283,7 @@ fn owned_table_transfer_import_rejects_excessively_nested_wrappers() {
 }
 
 fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe() {
-    crate::common::with_test_runtime(|runtime| {
+    with_test_runtime(|runtime| {
         let expected_device = runtime.device().ordinal() as i32;
 
         let column = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -1292,7 +1299,7 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
             OwnedTransferMode::Plain,
         );
 
-        let series = crate::common::series("values", &[1i32, 2, 3]).unwrap();
+        let series = common_series("values", &[1i32, 2, 3]).unwrap();
         let series_ptr = series.testing_view().unwrap().device_data_ptr().unwrap();
         let series_stream = series.as_column().testing_execution_domain_stream_value();
         let series_transfer = series.try_into_owned_transfer().unwrap();
@@ -1311,8 +1318,8 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
         let table_transfer = table.try_into_owned_transfer().unwrap();
         assert_owned_table_transfer_contract(&table_transfer, 3, 2, None, expected_device, OwnedTransferMode::Plain);
 
-        let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
-        let values = crate::common::series("value", &[10i32, 20, 30]).unwrap();
+        let ids = common_series("id", &[1i32, 2, 3]).unwrap();
+        let values = common_series("value", &[10i32, 20, 30]).unwrap();
         let frame = DataFrame::from_series([("id", ids), ("value", values)]).unwrap();
         let frame_transfer = frame.try_into_owned_transfer().unwrap();
         let expected_names = vec!["id".to_string(), "value".to_string()];
@@ -1374,7 +1381,7 @@ fn runtime_release_owned_column_transfer_abandoned_releaser_only_preserves_impor
 
 #[test]
 fn owned_transfer_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes",
             column_owned_device_transfer_contracts_cover_direct_and_runtime_release_modes,

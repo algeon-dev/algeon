@@ -15,7 +15,10 @@ use std::{
 use super::{
     device::DeviceId, device_guard::DeviceEntryGuard, device_health::check_device_status_in, event::CudaEvent,
 };
-use crate::core::error::{self, Error, ErrorCode, Result};
+use crate::core::{
+    error::{self, Error, ErrorCode, Result},
+    native_teardown::drop_device_owned_handle,
+};
 
 /// Keeps one attempt's fork-stream route registered while its native work
 /// drains. The route owns clones of every stream handle so the native provider
@@ -365,12 +368,9 @@ impl CudaStream {
 impl Drop for CudaStreamHandle {
     fn drop(&mut self) {
         let raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        crate::core::native_teardown::drop_device_owned_handle(
-            raw,
-            self.device,
-            "CudaStreamHandle::drop",
-            |owned| unsafe { cudf_sys::cudf_stream_destroy(owned) },
-        );
+        drop_device_owned_handle(raw, self.device, "CudaStreamHandle::drop", |owned| unsafe {
+            cudf_sys::cudf_stream_destroy(owned)
+        });
     }
 }
 
@@ -392,7 +392,10 @@ impl std::fmt::Debug for CudaStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope};
+    use crate::{
+        runtime::DeviceHealthStatus,
+        testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope},
+    };
 
     #[test]
     fn drop_get_device_failure_quarantines_without_destroying_on_an_unproven_device() {
@@ -406,7 +409,7 @@ mod tests {
         drop(stream);
 
         let snapshot = scope.health_snapshot(device);
-        assert_eq!(snapshot.status(), crate::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
         assert_eq!(snapshot.quarantined_teardown_count(), 1);
         assert_eq!(scope.remaining_call_count(), 0);
     }
@@ -427,7 +430,7 @@ mod tests {
         drop(stream);
 
         let snapshot = scope.health_snapshot(device);
-        assert_eq!(snapshot.status(), crate::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.status(), DeviceHealthStatus::Unhealthy);
         assert_eq!(snapshot.quarantined_teardown_count(), 1);
         assert_eq!(scope.remaining_call_count(), 0);
     }

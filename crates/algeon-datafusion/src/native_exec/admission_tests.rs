@@ -19,23 +19,27 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
     },
 };
-use futures::StreamExt;
+use futures::{
+    StreamExt,
+    stream::{empty, once},
+};
 use query_engine::{
-    admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence},
+    admission::{AttemptCapabilityEvidence, AttemptExecutionManifest, AttemptExecutionOccurrence, ExecutionCapability},
     error::QueryErrorCode,
     observability::{
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
         RuntimeTerminalOutcome,
     },
-    plan::QueryPlanBuilder,
-    runtime::ExecutionCancellation,
+    plan::{QueryPlan, QueryPlanBuilder},
+    runtime::{DeviceCapabilities, ExecutionCancellation, GpuDeviceMemoryLimit},
     source::{GpuResidentSource, SourceNode},
 };
+use tokio::time::timeout;
 
 use super::*;
 use crate::{
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, InstalledTestGpuBackend},
-    error::DataFusionErrorExt,
+    error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::AlgeonNativeExecutionConfig,
 };
 
@@ -69,24 +73,20 @@ impl LifecycleExec {
 
     fn typed_error(behavior: LifecyclePlanBehavior) -> DataFusionError {
         let (code, operation, message) = match behavior {
-            LifecyclePlanBehavior::ExecuteError => (
-                crate::error::ErrorCode::Internal,
-                "algeon_datafusion.test.composed_producer",
-                "synthetic composed producer failed",
-            ),
-            LifecyclePlanBehavior::StreamError => (
-                crate::error::ErrorCode::Internal,
-                "algeon_datafusion.test.composed_consumer",
-                "synthetic composed consumer failed",
-            ),
+            LifecyclePlanBehavior::ExecuteError => {
+                (ErrorCode::Internal, "algeon_datafusion.test.composed_producer", "synthetic composed producer failed")
+            },
+            LifecyclePlanBehavior::StreamError => {
+                (ErrorCode::Internal, "algeon_datafusion.test.composed_consumer", "synthetic composed consumer failed")
+            },
             LifecyclePlanBehavior::CancelledStream => (
-                crate::error::ErrorCode::Cancelled,
+                ErrorCode::Cancelled,
                 "algeon_datafusion.test.composed_consumer_cancelled",
                 "synthetic composed consumer was cancelled",
             ),
             LifecyclePlanBehavior::Success => unreachable!("success does not produce a typed error"),
         };
-        DataFusionError::from(crate::error::Error::new(code, operation, message))
+        DataFusionError::from(Error::new(code, operation, message))
     }
 }
 
@@ -137,13 +137,13 @@ impl ExecutionPlan for LifecycleExec {
         }
         match self.behavior {
             LifecyclePlanBehavior::Success => {
-                let stream = futures::stream::empty::<DataFusionResult<RecordBatch>>();
+                let stream = empty::<DataFusionResult<RecordBatch>>();
                 Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
             },
             LifecyclePlanBehavior::ExecuteError => Err(Self::typed_error(self.behavior)),
             LifecyclePlanBehavior::StreamError | LifecyclePlanBehavior::CancelledStream => {
                 let error = Self::typed_error(self.behavior);
-                let stream = futures::stream::once(async move { Err::<RecordBatch, DataFusionError>(error) });
+                let stream = once(async move { Err::<RecordBatch, DataFusionError>(error) });
                 Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), stream)))
             },
         }
@@ -198,7 +198,7 @@ fn explicit_sink_capability_evidence() -> AttemptCapabilityEvidence {
     AttemptCapabilityEvidence::for_query_plan(&plan)
 }
 
-fn resident_host_plan(input_name: &str) -> query_engine::plan::QueryPlan {
+fn resident_host_plan(input_name: &str) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
@@ -295,7 +295,7 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
 
     drop(context);
-    let next_context = tokio::time::timeout(
+    let next_context = timeout(
         std::time::Duration::from_secs(5),
         ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
     )
@@ -346,7 +346,7 @@ async fn admission_failure_clears_round_state_and_allows_a_retry() {
         assert!(round.handle.is_none(), "a rejected admission cannot retain a query handle");
     }
 
-    let retry = tokio::time::timeout(
+    let retry = timeout(
         Duration::from_secs(5),
         ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
     )
@@ -366,7 +366,7 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_cont
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
         AlgeonGpuDeviceProfile::new(0)
-            .with_memory_limit(query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default(),
     );
@@ -394,7 +394,7 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_cont
     }
 
     drop(first_context);
-    let replacement = tokio::time::timeout(
+    let replacement = timeout(
         Duration::from_secs(5),
         ticket.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
     )
@@ -410,7 +410,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
         AlgeonGpuDeviceProfile::new(0)
-            .with_memory_limit(query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default().with_max_queue_wait(Duration::from_secs(1)),
     );
@@ -423,7 +423,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
 
     let waiter = QueryAdmissionTicket::new(admission_source(&backend), None);
     let deadline = Instant::now() + Duration::from_millis(100);
-    let error = tokio::time::timeout(
+    let error = timeout(
         Duration::from_secs(5),
         waiter.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::with_deadline(Some(deadline))),
     )
@@ -442,7 +442,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
     }
 
     drop(held_context);
-    let replacement = tokio::time::timeout(
+    let replacement = timeout(
         Duration::from_secs(5),
         waiter.acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new()),
     )
@@ -455,16 +455,16 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
 #[tokio::test(flavor = "current_thread")]
 async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_before_admission() {
     let mut unavailable = explicit_sink_capability_evidence();
-    unavailable.required_capabilities = vec![query_engine::admission::ExecutionCapability::new("unavailable")];
+    unavailable.required_capabilities = vec![ExecutionCapability::new("unavailable")];
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
         AlgeonGpuDeviceProfile::new(0)
-            .with_memory_limit(query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-            .with_device_capabilities(query_engine::runtime::DeviceCapabilities::only(Vec::new())),
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+            .with_device_capabilities(DeviceCapabilities::only(Vec::new())),
         AlgeonGpuQueuePolicy::default(),
     );
-    let config = crate::native_exec::AlgeonNativeExecutionConfig::bounded(256, 512, 1, 1, 1)
-        .with_query_admission_source(admission_source(&backend));
+    let config =
+        AlgeonNativeExecutionConfig::bounded(256, 512, 1, 1, 1).with_query_admission_source(admission_source(&backend));
     let ticket = config
         .new_plan_query_admission_ticket_with_fragment_requirements(vec![unavailable.clone()])
         .expect("fragment requirements aggregate into a ticket")
@@ -608,10 +608,7 @@ async fn composed_consumer_cancellation_is_terminalized_as_cancelled() {
 
     let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cancelled consumer stream starts");
     let error = stream.next().await.expect("consumer emits cancellation").expect_err("cancellation is an error item");
-    assert_eq!(
-        error.find_algeon_error().expect("cancelled error remains typed").code(),
-        crate::error::ErrorCode::Cancelled
-    );
+    assert_eq!(error.find_algeon_error().expect("cancelled error remains typed").code(), ErrorCode::Cancelled);
     drop(stream);
 
     assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));

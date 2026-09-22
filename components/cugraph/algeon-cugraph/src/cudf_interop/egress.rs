@@ -12,7 +12,7 @@ use crate::{
         EcgResult, ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, SpectralClusteringResult,
         TriangleCountResult,
     },
-    error::Result,
+    error::{Error, ErrorKind, Result},
     labeling::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult},
     layout::LayoutResult,
     similarity::{
@@ -435,9 +435,7 @@ fn canonicalize_component_labels(
                         .map_err(|_| format!("canonical component label {value:?} exceeds Int32 vertex range"))
                 })
                 .collect::<std::result::Result<Vec<Option<i32>>, String>>()
-                .map_err(|message| {
-                    crate::error::Error::new(crate::error::ErrorKind::InvalidState, operation).with_message(message)
-                })?;
+                .map_err(|message| Error::new(ErrorKind::InvalidState, operation).with_message(message))?;
             runtime.series_opt(&narrowed).map_err(|error| {
                 map_cudf_error_with(error, operation, "failed to build canonical label column", std::iter::empty())
             })?
@@ -446,7 +444,7 @@ fn canonicalize_component_labels(
             map_cudf_error_with(error, operation, "failed to build canonical label column", std::iter::empty())
         })?,
         other => {
-            return Err(crate::error::Error::new(crate::error::ErrorKind::UnsupportedType, operation)
+            return Err(Error::new(ErrorKind::UnsupportedType, operation)
                 .with_message(format!("unexpected component vertex dtype: {other:?}")));
         },
     };
@@ -467,7 +465,7 @@ fn int_series_to_i64(series: &cudf::Series, role: &'static str, operation: &'sta
         },
         cudf::TypeId::Int64 => series.to_optional_vec::<i64>(),
         other => {
-            return Err(crate::error::Error::new(crate::error::ErrorKind::UnsupportedType, operation)
+            return Err(Error::new(ErrorKind::UnsupportedType, operation)
                 .with_message(format!("unexpected component {role} dtype: {other:?}")));
         },
     };

@@ -53,7 +53,7 @@ pub struct Series {
 }
 
 impl TryFrom<Column> for Series {
-    type Error = crate::core::error::Error;
+    type Error = Error;
 
     fn try_from(col: Column) -> Result<Self> {
         Self::from_column(col)

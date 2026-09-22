@@ -7,6 +7,7 @@ use super::{
     observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
     unsupported_bounded_shape,
 };
+use crate::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
 pub(super) fn execute_compiled_projected_cross_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -70,9 +71,9 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
     let build_side = node.spec.build_side;
     let probe_side = probe_side(build_side);
-    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(OperatorMetrics::join(
         node_id,
-        crate::metrics::JoinOperatorMetrics {
+        JoinOperatorMetrics {
             query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: execution_strategy.to_string(),

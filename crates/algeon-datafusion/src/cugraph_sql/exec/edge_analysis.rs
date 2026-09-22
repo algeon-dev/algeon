@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
+use datafusion::physical_expr::PhysicalExpr;
+use query_engine::plan::edge_plan_has_simple_directed_edge_topology;
+
 use super::{
     AggregateExec, AggregateMode, Column, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy, DataSourceExec,
     ExecutionPlan, FileScanConfig, MemorySourceConfig, ProjectionExec, RepartitionExec, Schema, SortExec, UnionExec,
 };
+use crate::native::datafusion_local_parquet_scan_has_simple_directed_edge_topology;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct CugraphEdgeCanonicalFacts {
@@ -52,17 +56,13 @@ pub(super) fn cugraph_edge_canonical_facts(
     }
 
     if let Some(source) = plan.downcast_ref::<DataSourceExec>()
-        && crate::native::datafusion_local_parquet_scan_has_simple_directed_edge_topology(
-            source,
-            &spec.src_col,
-            &spec.dst_col,
-        )
+        && datafusion_local_parquet_scan_has_simple_directed_edge_topology(source, &spec.src_col, &spec.dst_col)
     {
         return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
     }
 
     if let Some(native_plan) = super::admission::lowered_native_edge_plan(plan)
-        && query_engine::plan::edge_plan_has_simple_directed_edge_topology(native_plan, &spec.src_col, &spec.dst_col)
+        && edge_plan_has_simple_directed_edge_topology(native_plan, &spec.src_col, &spec.dst_col)
     {
         return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
     }
@@ -323,7 +323,7 @@ pub(super) fn unique_schema_column_index(schema: &Schema, column_name: &str) -> 
 }
 
 pub(super) fn edge_column_role(
-    expr: &dyn datafusion::physical_expr::PhysicalExpr,
+    expr: &dyn PhysicalExpr,
     input_indices: EdgeSchemaColumnIndices,
     spec: &CugraphAlgorithmSpec,
 ) -> Option<EdgeColumnRole> {
@@ -341,7 +341,7 @@ pub(super) fn column_matches_edge_role(column: &Column, index: usize, name: &str
     column.index() == index && same_edge_column(column.name(), name)
 }
 
-pub(super) fn physical_column(expr: &dyn datafusion::physical_expr::PhysicalExpr) -> Option<&Column> {
+pub(super) fn physical_column(expr: &dyn PhysicalExpr) -> Option<&Column> {
     expr.downcast_ref::<Column>()
 }
 

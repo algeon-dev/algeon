@@ -19,7 +19,11 @@ use super::{
     schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
     validate_global_aggregate_capability, when,
 };
-use crate::expression_lowering_policy::ExpressionLoweringPolicy;
+use crate::{
+    expression_lowering_policy::ExpressionLoweringPolicy,
+    naming::unique_name_with_suffix_from,
+    plan::{ShiftDirection, WindowFunction},
+};
 
 mod aggregate;
 mod global_aggregate;
@@ -319,31 +323,31 @@ pub(super) fn execute_window(
     }
 
     let mut frame = input.frame().clone();
-    if node.spec.functions.iter().any(|function| {
-        matches!(function, crate::plan::WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. })
-    }) {
+    if node
+        .spec
+        .functions
+        .iter()
+        .any(|function| matches!(function, WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. }))
+    {
         frame = execute_partition_window_aggregate(context, node, input_schema, frame, output_schema, metrics)?;
     }
     if node.spec.functions.iter().any(|function| {
-        matches!(
-            function,
-            crate::plan::WindowFunction::Aggregate { frame: WindowFrame::RowsUnboundedPrecedingToCurrent, .. }
-        )
+        matches!(function, WindowFunction::Aggregate { frame: WindowFrame::RowsUnboundedPrecedingToCurrent, .. })
     }) {
         frame = execute_cumulative_window_aggregate(context, node, frame, metrics)?;
     }
     for function in &node.spec.functions {
-        if let crate::plan::WindowFunction::Rank { alias } = function {
+        if let WindowFunction::Rank { alias } = function {
             frame = execute_rank_window(context, node, frame, alias.as_str(), metrics)?;
         }
     }
     for function in &node.spec.functions {
-        if let crate::plan::WindowFunction::RowNumber { alias, output_type } = function {
+        if let WindowFunction::RowNumber { alias, output_type } = function {
             frame = execute_row_number_window(context, node, frame, alias.as_str(), output_type, metrics)?;
         }
     }
     for function in &node.spec.functions {
-        if let crate::plan::WindowFunction::LagLead { expr, offset, default, alias, direction } = function {
+        if let WindowFunction::LagLead { expr, offset, default, alias, direction } = function {
             frame = execute_lag_lead_window(
                 context,
                 node,
@@ -403,13 +407,13 @@ fn execute_partition_window_aggregate(
         .functions
         .iter()
         .filter_map(|function| match function {
-            crate::plan::WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::WholePartition } => {
+            WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::WholePartition } => {
                 Some(AggregateExpr::new(*function, expr.clone(), alias.clone()))
             },
-            crate::plan::WindowFunction::Aggregate { .. }
-            | crate::plan::WindowFunction::Rank { .. }
-            | crate::plan::WindowFunction::RowNumber { .. }
-            | crate::plan::WindowFunction::LagLead { .. } => None,
+            WindowFunction::Aggregate { .. }
+            | WindowFunction::Rank { .. }
+            | WindowFunction::RowNumber { .. }
+            | WindowFunction::LagLead { .. } => None,
         })
         .collect::<Vec<_>>();
     let aggregate_spec = AggregateSpec::new(group_exprs, aggr_exprs);
@@ -467,7 +471,7 @@ fn window_aggregate_schema(
         })?);
     }
     for function in &node.spec.functions {
-        let crate::plan::WindowFunction::Aggregate { alias, frame: WindowFrame::WholePartition, .. } = function else {
+        let WindowFunction::Aggregate { alias, frame: WindowFrame::WholePartition, .. } = function else {
             continue;
         };
         fields.push(output_schema.field_with_name(alias.as_str()).map_err(|_error| {
@@ -535,12 +539,8 @@ fn execute_cumulative_window_aggregate(
     })?;
 
     for (function_index, function) in node.spec.functions.iter().enumerate() {
-        let crate::plan::WindowFunction::Aggregate {
-            function,
-            expr,
-            alias,
-            frame: WindowFrame::RowsUnboundedPrecedingToCurrent,
-        } = function
+        let WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::RowsUnboundedPrecedingToCurrent } =
+            function
         else {
             continue;
         };
@@ -825,9 +825,9 @@ fn execute_lag_lead_window(
     frame: DataFrame,
     value_expr: &Expr,
     offset: u32,
-    default: Option<&crate::expr::LiteralValue>,
+    default: Option<&LiteralValue>,
     alias: &str,
-    direction: crate::plan::ShiftDirection,
+    direction: ShiftDirection,
     metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
@@ -902,7 +902,7 @@ fn execute_lag_lead_window(
     })?;
 
     let signed_offset: i32 = match direction {
-        crate::plan::ShiftDirection::Lag => i32::try_from(offset).map_err(|_| {
+        ShiftDirection::Lag => i32::try_from(offset).map_err(|_| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "query_engine.window.lag_lead",
@@ -910,7 +910,7 @@ fn execute_lag_lead_window(
             )
             .with_fact("offset", offset.to_string())
         })?,
-        crate::plan::ShiftDirection::Lead => {
+        ShiftDirection::Lead => {
             let positive = i32::try_from(offset).map_err(|_| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -988,13 +988,12 @@ fn execute_lag_lead_window(
 
 fn build_lag_lead_value_fill_scalar(
     context: &ExecutionContext,
-    default: Option<&crate::expr::LiteralValue>,
+    default: Option<&LiteralValue>,
     output_arrow_dtype: &ArrowDataType,
 ) -> Result<CudfScalar> {
-    use crate::expr::LiteralValue::*;
     let runtime = context.runtime()?;
     let null_for_output = || {
-        let cudf_dtype = crate::datatypes::cudf_dtype_from_arrow_type(output_arrow_dtype).ok_or_else(|| {
+        let cudf_dtype = cudf_dtype_from_arrow_type(output_arrow_dtype).ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "query_engine.window.lag_lead.fill_null",
@@ -1014,27 +1013,27 @@ fn build_lag_lead_value_fill_scalar(
     match default {
         None => null_for_output(),
         Some(value) => match value {
-            Boolean(v) => runtime.scalar(*v),
-            Int8(v) => runtime.scalar(*v),
-            Int16(v) => runtime.scalar(*v),
-            Int32(v) => runtime.scalar(*v),
-            Int64(v) => runtime.scalar(*v),
-            UInt8(v) => runtime.scalar(*v),
-            UInt16(v) => runtime.scalar(*v),
-            UInt32(v) => runtime.scalar(*v),
-            UInt64(v) => runtime.scalar(*v),
-            Float32(v) => runtime.scalar(*v),
-            Float64(v) => runtime.scalar(*v),
-            Utf8(s) | LargeUtf8(s) => runtime.string_scalar(s),
-            Null(_) => return null_for_output(),
-            Decimal128 { .. }
-            | Date32(_)
-            | Date64(_)
-            | Time32 { .. }
-            | Time64 { .. }
-            | Timestamp { .. }
-            | Duration { .. }
-            | IntervalMonthDayNano { .. } => {
+            LiteralValue::Boolean(v) => runtime.scalar(*v),
+            LiteralValue::Int8(v) => runtime.scalar(*v),
+            LiteralValue::Int16(v) => runtime.scalar(*v),
+            LiteralValue::Int32(v) => runtime.scalar(*v),
+            LiteralValue::Int64(v) => runtime.scalar(*v),
+            LiteralValue::UInt8(v) => runtime.scalar(*v),
+            LiteralValue::UInt16(v) => runtime.scalar(*v),
+            LiteralValue::UInt32(v) => runtime.scalar(*v),
+            LiteralValue::UInt64(v) => runtime.scalar(*v),
+            LiteralValue::Float32(v) => runtime.scalar(*v),
+            LiteralValue::Float64(v) => runtime.scalar(*v),
+            LiteralValue::Utf8(s) | LiteralValue::LargeUtf8(s) => runtime.string_scalar(s),
+            LiteralValue::Null(_) => return null_for_output(),
+            LiteralValue::Decimal128 { .. }
+            | LiteralValue::Date32(_)
+            | LiteralValue::Date64(_)
+            | LiteralValue::Time32 { .. }
+            | LiteralValue::Time64 { .. }
+            | LiteralValue::Timestamp { .. }
+            | LiteralValue::Duration { .. }
+            | LiteralValue::IntervalMonthDayNano { .. } => {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "query_engine.window.lag_lead.fill",
@@ -1077,7 +1076,7 @@ fn rank_partition_keys(
 
 fn unique_temp_column_name(frame: &DataFrame, base: &str) -> String {
     let names = frame.column_names();
-    crate::naming::unique_name_with_suffix_from(base, 0, |candidate| names.contains(&candidate))
+    unique_name_with_suffix_from(base, 0, |candidate| names.contains(&candidate))
 }
 
 pub(super) fn execute_limit_on_frame(

@@ -1,9 +1,10 @@
+use cudf::io::parquet::RemoteParquetSource;
 use query_planning::error::{QueryErrorCode, redact_uri_tokens};
 
 use super::{cudf_query_error, cudf_query_error_without_source};
 
 fn sample_cudf_error() -> cudf::Error {
-    cudf::io::parquet::RemoteParquetSource::s3("gs://bucket/key.parquet").expect_err("non-s3 scheme must be rejected")
+    RemoteParquetSource::s3("gs://bucket/key.parquet").expect_err("non-s3 scheme must be rejected")
 }
 
 fn cudf_allocation_error_for_test(

@@ -1,6 +1,7 @@
+use query_engine::plan::GraphVertexIdTypeSupport;
 use serde_json::{Value, json};
 
-use super::super::{CugraphAlgorithm, stable_result_schema};
+use crate::cugraph_sql::{CugraphAlgorithm, stable_result_schema};
 
 pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String {
     let mut args = vec![
@@ -243,7 +244,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     }
     if matches!(
         algorithm.native_algorithm().vertex_id_type_support(),
-        query_engine::plan::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
+        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
     ) {
         limitations.push("cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns");
     }

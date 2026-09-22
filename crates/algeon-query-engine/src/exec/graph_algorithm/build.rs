@@ -1,13 +1,26 @@
+#[cfg(feature = "cugraph")]
+use cugraph::ResourceHandle;
+#[cfg(feature = "cugraph")]
+use cugraph::cudf_interop::GraphConstructionPolicy as CugraphGraphConstructionPolicy;
+#[cfg(feature = "cugraph")]
+use cugraph::cudf_interop::TableGraphOptions;
+#[cfg(feature = "cugraph")]
+use cugraph::cudf_interop::graph_from_prepared_table_export;
+#[cfg(feature = "cugraph")]
+use cugraph::types::GraphProperties;
+
 use super::{
     DataFrame, EdgeColumnRole, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
     cudf_query_error, graph_build_range, map_cugraph_error, validate_edge_column,
 };
+#[cfg(feature = "cugraph")]
+use crate::plan::{GraphAlgorithmSpec, GraphConstructionPolicy};
 
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_uncached_cugraph_graph<T, F>(
     context: &ExecutionContext,
     edges: DataFrame,
-    options: cugraph::cudf_interop::TableGraphOptions,
+    options: TableGraphOptions,
     operation: &'static str,
     f: F,
 ) -> Result<GraphAlgorithmExecutionResult>
@@ -28,7 +41,7 @@ where
         .with_source(error)
     })?;
     let runtime = std::sync::Arc::new(context.runtime()?);
-    let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
         "query_engine.graph_algorithm.resource_handle",
         "failed to bind cuGraph resource handle to the algeon native runtime",
     ))?;
@@ -37,20 +50,15 @@ where
         "failed to enter cuGraph execution context",
     ))?;
     let _graph_build_range = graph_build_range(operation);
-    let mut graph = cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(
-        map_cugraph_error(
-            "query_engine.graph_algorithm.build_graph",
-            "failed to build cuGraph graph from edge-list table",
-        ),
-    )?;
+    let mut graph = graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(map_cugraph_error(
+        "query_engine.graph_algorithm.build_graph",
+        "failed to build cuGraph graph from edge-list table",
+    ))?;
     f(runtime.as_ref(), &entered, &mut graph)
 }
 
 #[cfg(feature = "cugraph")]
-pub(super) fn project_edge_list(
-    frame: &DataFrame,
-    spec: &crate::plan::GraphAlgorithmSpec,
-) -> Result<(DataFrame, cudf::TypeId)> {
+pub(super) fn project_edge_list(frame: &DataFrame, spec: &GraphAlgorithmSpec) -> Result<(DataFrame, cudf::TypeId)> {
     let source_type = validate_edge_column(frame, &spec.edge_columns.source, EdgeColumnRole::Vertex)?;
     let destination_type = validate_edge_column(frame, &spec.edge_columns.destination, EdgeColumnRole::Vertex)?;
     if source_type.id() != destination_type.id() {
@@ -112,13 +120,13 @@ pub(super) fn project_edge_list(
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_properties(directed: bool) -> cugraph::types::GraphProperties {
-    if directed { cugraph::types::GraphProperties::directed() } else { cugraph::types::GraphProperties::undirected() }
+fn graph_properties(directed: bool) -> GraphProperties {
+    if directed { GraphProperties::directed() } else { GraphProperties::undirected() }
 }
 
 #[cfg(feature = "cugraph")]
-pub(super) fn table_graph_options(spec: &crate::plan::GraphAlgorithmSpec) -> cugraph::cudf_interop::TableGraphOptions {
-    let mut options = cugraph::cudf_interop::TableGraphOptions::new(0, 1)
+pub(super) fn table_graph_options(spec: &GraphAlgorithmSpec) -> TableGraphOptions {
+    let mut options = TableGraphOptions::new(0, 1)
         .properties(graph_properties(spec.graph_options.directed))
         .construction_policy(graph_construction_policy(spec.graph_options.policy));
     if spec.graph_options.renumber {
@@ -138,15 +146,9 @@ pub(super) fn table_graph_options(spec: &crate::plan::GraphAlgorithmSpec) -> cug
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_construction_policy(
-    policy: crate::plan::GraphConstructionPolicy,
-) -> cugraph::cudf_interop::GraphConstructionPolicy {
+fn graph_construction_policy(policy: GraphConstructionPolicy) -> CugraphGraphConstructionPolicy {
     match policy {
-        crate::plan::GraphConstructionPolicy::PythonCugraph => {
-            cugraph::cudf_interop::GraphConstructionPolicy::PythonCugraph
-        },
-        crate::plan::GraphConstructionPolicy::RawLibcugraph => {
-            cugraph::cudf_interop::GraphConstructionPolicy::RawLibcugraph
-        },
+        GraphConstructionPolicy::PythonCugraph => CugraphGraphConstructionPolicy::PythonCugraph,
+        GraphConstructionPolicy::RawLibcugraph => CugraphGraphConstructionPolicy::RawLibcugraph,
     }
 }

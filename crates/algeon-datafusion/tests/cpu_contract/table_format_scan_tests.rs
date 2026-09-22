@@ -10,7 +10,7 @@ use algeon_datafusion::{
         TableFormatScanPlan, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
     },
 };
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::physical_plan::{ExecutionPlan, displayable, empty::EmptyExec};
 
 #[test]
@@ -92,7 +92,7 @@ fn no_delete_iceberg_parquet_scan_facts_are_native_admissible() {
 fn non_identity_partition_value_facts_do_not_reject_scan_admission_by_themselves() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("customerId", DataType::Utf8, false),
-        Field::new("event_ts", DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None), true),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
     ]));
     let day_partition = TableFormatPartitionValue::new(
         "event_ts_day",
@@ -120,7 +120,7 @@ fn non_identity_partition_value_facts_do_not_reject_scan_admission_by_themselves
             Some(2),
             "event_ts",
             Some("event_ts"),
-            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
             TableFormatColumnRole::Projected,

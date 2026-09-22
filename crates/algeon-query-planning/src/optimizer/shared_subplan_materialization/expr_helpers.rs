@@ -43,7 +43,7 @@ fn scalar_filtered_aggregate_streaming_supported(spec: &AggregateSpec) -> bool {
 }
 
 fn scalar_count_star_expr(expr: &Expr) -> bool {
-    matches!(expr, Expr::Literal(value) if !matches!(value, crate::expr::LiteralValue::Null(_)))
+    matches!(expr, Expr::Literal(value) if !matches!(value, LiteralValue::Null(_)))
         || matches!(expr, Expr::Alias { expr, .. } if scalar_count_star_expr(expr))
 }
 
@@ -208,10 +208,10 @@ fn collect_expr_column_names(expr: &Expr, columns: &mut BTreeSet<String>) {
 fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &mut BTreeSet<String>) {
     match expr {
         Expr::Column(column) => match column.qualifier() {
-            Some(crate::expr::ColumnQualifier::Input { index: 0 }) => {
+            Some(ColumnQualifier::Input { index: 0 }) => {
                 left.insert(column.name().to_string());
             },
-            Some(crate::expr::ColumnQualifier::Input { index: 1 }) => {
+            Some(ColumnQualifier::Input { index: 1 }) => {
                 right.insert(column.name().to_string());
             },
             _ => {},

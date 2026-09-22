@@ -1,3 +1,11 @@
+use arrow::array::Array;
+use arrow::array::Int64Array;
+use arrow::array::StringArray;
+use arrow::array::StringViewArray;
+use query_engine::optimizer::DimensionKeyFilter;
+use query_engine::optimizer::KeyRange;
+use query_engine::optimizer::dimension_key_filter_from_batch;
+
 #[test]
 fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_groups() {
     let plan = shared_fact_target_dimension_pruning_plan();
@@ -6,7 +14,7 @@ fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_gr
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -37,7 +45,7 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -169,7 +177,7 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -296,7 +304,7 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -340,9 +348,9 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
         Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
-            Arc::new(arrow::array::StringArray::from(vec!["Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44"]))
+            Arc::new(StringArray::from(vec!["Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44"]))
                 as ArrayRef,
-            Arc::new(arrow::array::StringViewArray::from(vec![
+            Arc::new(StringViewArray::from(vec![
                 "SMALL BRUSHED",
                 "SMALL BRUSHED",
                 "MEDIUM POLISHED COPPER",
@@ -354,7 +362,7 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
     )
     .expect("test batch should be valid");
 
-    let filter = query_engine::optimizer::dimension_key_filter_from_batch(
+    let filter = dimension_key_filter_from_batch(
         &batch,
         "p_partkey",
         &part_brand_type_size_predicate(),
@@ -362,11 +370,11 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
     .expect("part string predicate should be evaluable")
     .expect("qualifying part keys should build a filter");
 
-    assert_eq!(filter.bounds(), query_engine::optimizer::KeyRange { min: 10, max: 40 });
+    assert_eq!(filter.bounds(), KeyRange { min: 10, max: 40 });
     assert_eq!(filter.run_count(), 2);
-    assert!(filter.overlaps(query_engine::optimizer::KeyRange { min: 10, max: 10 }));
-    assert!(filter.overlaps(query_engine::optimizer::KeyRange { min: 40, max: 40 }));
-    assert!(!filter.overlaps(query_engine::optimizer::KeyRange { min: 20, max: 30 }));
+    assert!(filter.overlaps(KeyRange { min: 10, max: 10 }));
+    assert!(filter.overlaps(KeyRange { min: 40, max: 40 }));
+    assert!(!filter.overlaps(KeyRange { min: 20, max: 30 }));
 }
 
 #[test]
@@ -429,7 +437,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -502,7 +510,7 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
@@ -582,10 +590,10 @@ fn dimension_pruning_external_stats_narrow_existing_row_group_selection() {
         plan,
         source,
         &[vec![
-            Some(query_engine::optimizer::KeyRange { min: 10, max: 19 }),
-            Some(query_engine::optimizer::KeyRange { min: 30, max: 39 }),
+            Some(KeyRange { min: 10, max: 19 }),
+            Some(KeyRange { min: 30, max: 39 }),
         ]],
-        &query_engine::optimizer::DimensionKeyFilter::from_bounds(query_engine::optimizer::KeyRange {
+        &DimensionKeyFilter::from_bounds(KeyRange {
             min: 35,
             max: 35,
         }),
@@ -618,7 +626,7 @@ fn dimension_pruning_scattered_keyset_prunes_gaps_a_single_range_would_keep() {
     )));
     let plan = builder.finish_gpu_resident(source);
 
-    let scattered = query_engine::optimizer::DimensionKeyFilter::from_keys(&[5, 35])
+    let scattered = DimensionKeyFilter::from_keys(&[5, 35])
         .expect("non-empty keyset builds a filter");
     assert_eq!(scattered.run_count(), 2);
 
@@ -626,8 +634,8 @@ fn dimension_pruning_scattered_keyset_prunes_gaps_a_single_range_would_keep() {
         plan,
         source,
         &[vec![
-            Some(query_engine::optimizer::KeyRange { min: 10, max: 19 }),
-            Some(query_engine::optimizer::KeyRange { min: 30, max: 39 }),
+            Some(KeyRange { min: 10, max: 19 }),
+            Some(KeyRange { min: 30, max: 39 }),
         ]],
         &scattered,
     );
@@ -653,7 +661,7 @@ fn dimension_pruning_does_not_seed_right_side_left_join_group_key_filter() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -678,7 +686,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -694,7 +702,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
     fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
 }
 
-fn shared_fact_target_dimension_pruning_plan() -> query_engine::plan::QueryPlan {
+fn shared_fact_target_dimension_pruning_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source("store_sales", "fact_key", 512 * 1024 * 1024, 10_000_000));
     let output_schema = schema(&["dim_key", "fact_key"]);
@@ -725,7 +733,7 @@ fn shared_fact_target_dimension_pruning_plan() -> query_engine::plan::QueryPlan 
     builder.finish_gpu_resident(union)
 }
 
-fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> query_engine::plan::QueryPlan {
+fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> QueryPlan {
     aggregate_group_filter_dimension_pruning_plan_with_predicate(
         dir,
         Expr::binary(Expr::column("ss_sold_year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2000))),
@@ -735,7 +743,7 @@ fn aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> query_engine::pl
 fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
     dir: &Path,
     filter_predicate: Expr,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let fact_path = dir.join("store_sales.parquet");
     let date_path = dir.join("date_dim.parquet");
     let fact_schema = Arc::new(Schema::new(vec![
@@ -816,7 +824,7 @@ fn aggregate_group_filter_dimension_pruning_plan_with_predicate(
     builder.finish_gpu_resident(filtered)
 }
 
-fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> query_engine::plan::QueryPlan {
+fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> QueryPlan {
     let fact_path = dir.join("store_sales.parquet");
     let date_path = dir.join("date_dim.parquet");
     let fact_schema = Arc::new(Schema::new(vec![
@@ -902,7 +910,7 @@ fn shared_aggregate_group_filter_dimension_pruning_plan(dir: &Path) -> query_eng
     builder.finish_gpu_resident(union)
 }
 
-fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> query_engine::plan::QueryPlan {
+fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> QueryPlan {
     let fact_path = dir.join("left_fact.parquet");
     let dim_path = dir.join("right_dim.parquet");
     let fact_schema = Arc::new(Schema::new(vec![Field::new("fact_key", DataType::Int32, false)]));
@@ -981,7 +989,7 @@ fn part_brand_type_size_predicate() -> Expr {
 }
 
 fn write_i32_record_batch_parquet(path: &Path, schema: Arc<Schema>, columns: Vec<Int32Array>, row_group_rows: usize) {
-    let arrays = columns.into_iter().map(|column| Arc::new(column) as Arc<dyn arrow::array::Array>).collect::<Vec<_>>();
+    let arrays = columns.into_iter().map(|column| Arc::new(column) as Arc<dyn Array>).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).expect("test batch should be valid");
     write_record_batch_parquet(path, schema, &batch, row_group_rows);
 }
@@ -991,9 +999,9 @@ fn write_part_brand_type_size_dimension_parquet(path: &Path, schema: Arc<Schema>
         Arc::clone(&schema),
         vec![
             Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
-            Arc::new(arrow::array::StringArray::from(vec!["Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44"]))
+            Arc::new(StringArray::from(vec!["Brand#11", "Brand#45", "Brand#22", "Brand#33", "Brand#44"]))
                 as ArrayRef,
-            Arc::new(arrow::array::StringArray::from(vec![
+            Arc::new(StringArray::from(vec![
                 "SMALL BRUSHED",
                 "SMALL BRUSHED",
                 "MEDIUM POLISHED COPPER",
@@ -1131,7 +1139,7 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
         plan,
         &DimensionDerivedRowGroupPruningOptions::default(),
         rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        local_dimension_pruning_resolver(),
     );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
@@ -1161,7 +1169,7 @@ fn custom_dynamic_filter_execution_options() -> DynamicFilterExecutionOptions {
 }
 
 fn write_i64_parquet(path: &Path, schema: Arc<Schema>, values: &[i64], row_group_rows: usize) {
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(arrow::array::Int64Array::from(
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(
         values.to_vec(),
     ))])
     .expect("test record batch should be valid");

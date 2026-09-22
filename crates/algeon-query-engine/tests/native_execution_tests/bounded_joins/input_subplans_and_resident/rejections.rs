@@ -1,5 +1,9 @@
 use std::{path::Path, sync::Arc};
 
+use query_engine::{
+    admission::bounded_join_unsupported_shape_facts, expr::ColumnRef, rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -34,14 +38,11 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         right,
         JoinSpec::new(
             JoinType::LeftSemi,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "id", "left_id"),
-                query_engine::expr::ColumnRef::input(1, "id", "right_id"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "amount", "amount"), "amount"),
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
         ])
         .with_build_side(JoinSide::Left),
         join_schema,
@@ -55,7 +56,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         aggregate_schema,
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -112,26 +113,17 @@ fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
         right,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "id", "left_id"),
-                query_engine::expr::ColumnRef::input(1, "id", "right_id"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
         ])
         .with_build_side(JoinSide::Left),
         join_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(
-        query_engine::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            query_engine::rapids_backend::rapids_analysis_context()
-        )
-        .is_none()
-    );
+    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).expect("grouped aggregate join-build input should execute");

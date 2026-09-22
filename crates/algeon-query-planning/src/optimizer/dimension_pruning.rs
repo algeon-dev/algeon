@@ -21,9 +21,9 @@ use super::{
 };
 use crate::{
     backend::AnalysisContext,
-    error::{QueryError, QueryErrorCode},
+    error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan},
+    plan::{AggregateNode, JoinNode, JoinSide, JoinType, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan},
     source::{LocalParquetFile, LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
@@ -67,7 +67,7 @@ impl DimensionDerivedRowGroupPruningOptions {
     }
 
     /// Validates internal consistency for dimension-derived pruning limits.
-    pub fn validate(&self) -> crate::error::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.max_dimension_rows == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,

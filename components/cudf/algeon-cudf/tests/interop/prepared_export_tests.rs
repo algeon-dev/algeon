@@ -16,10 +16,29 @@ use cudf::{
     DataFrame, DeviceId, ErrorCode, Runtime, TypeId,
     core::Table,
     frame::dataframe::JsonReadOptions,
-    interop::cuda_explicit_completion_required_lease_backend,
+    interop::{cuda_event_handle, cuda_explicit_completion_required_lease_backend, cuda_stream_handle},
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
-    testing::prelude::*,
+    testing::{
+        interop::{
+            trigger_interop_column_index_limit_for_test, trigger_interop_projection_active_range_overflow_for_test,
+            trigger_interop_projection_dictionary_indices_width_mismatch_for_test,
+            trigger_interop_projection_host_offsets_too_small_for_test,
+            trigger_interop_projection_list_offsets_width_mismatch_for_test,
+            trigger_interop_projection_missing_null_mask_for_test,
+            trigger_interop_projection_missing_string_offsets_child_for_test,
+            trigger_interop_projection_negative_offset_for_test,
+            trigger_interop_projection_struct_missing_child_for_test,
+        },
+        prelude::*,
+    },
+};
+use cudf_sys::{
+    CUDF_SUCCESS,
+    test_support::{
+        cudf_test_event_raw_record_call_count_for_stream_raw, cudf_test_event_reset_observation,
+        cudf_test_event_stream_wait_call_count_for_event_raw, cudf_test_event_stream_wait_call_count_for_stream_raw,
+    },
 };
 use rapids_interop::{
     ActiveLeaseBackend, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding,
@@ -30,7 +49,10 @@ use rapids_interop::{
 };
 use tempfile::TempDir;
 
-use crate::common::{self, column_from_slice, interop_error_context_value, lock_event_observation};
+use crate::common::{
+    self, column_from_slice, dataframe_from_columns, interop_error_context_value, lock_event_observation,
+    run_named_cases, series, with_test_runtime,
+};
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -56,43 +78,40 @@ fn first_two_test_devices() -> (DeviceId, DeviceId) {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
+    unsafe { cudf_test_event_reset_observation() };
 }
 
 fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream wait observation count");
+    let status = unsafe { cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    assert_eq!(status, CUDF_SUCCESS, "failed to read per-stream wait observation count");
     out
 }
 
 fn observed_stream_wait_call_count_for_event_raw(event_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_event_raw(event_raw, &mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-event wait observation count");
+    let status = unsafe { cudf_test_event_stream_wait_call_count_for_event_raw(event_raw, &mut out) };
+    assert_eq!(status, CUDF_SUCCESS, "failed to read per-event wait observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
+    let status = unsafe { cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    assert_eq!(status, CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
     out
 }
 
 fn shared_same_device_completion(stream: &CudaStream) -> CompletionAuthority<'_> {
-    CompletionAuthority::SameDeviceStream { stream: cudf::interop::cuda_stream_handle(stream).unwrap() }
+    CompletionAuthority::SameDeviceStream { stream: cuda_stream_handle(stream).unwrap() }
 }
 
 fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'_> {
-    ReadStartAuthority::ConsumerStream { stream: cudf::interop::cuda_stream_handle(stream).unwrap() }
+    ReadStartAuthority::ConsumerStream { stream: cuda_stream_handle(stream).unwrap() }
 }
 
 fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'_> {
-    CompletionAuthority::CrossDeviceEvent { event: cudf::interop::cuda_event_handle(event).unwrap() }
+    CompletionAuthority::CrossDeviceEvent { event: cuda_event_handle(event).unwrap() }
 }
 
 fn binding<'a>(bindings: &'a [BufferBinding<'a>], id: BufferId) -> &'a BufferBinding<'a> {
@@ -812,7 +831,7 @@ mod lease_contracts {
 
     #[test]
     fn prepared_export_tests_cases_lease_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             ("shared_synchronous_completion_falls_back_by_return", shared_synchronous_completion_falls_back_by_return),
             (
                 "shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary",
@@ -863,7 +882,7 @@ mod device_export_contracts {
     use super::*;
 
     fn projection_active_range_overflow_hook_uses_row_count_context() {
-        let err = cudf::testing::interop::trigger_interop_projection_active_range_overflow_for_test().unwrap_err();
+        let err = trigger_interop_projection_active_range_overflow_for_test().unwrap_err();
         let expected = usize::MAX.to_string();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
@@ -879,7 +898,7 @@ mod device_export_contracts {
     }
 
     fn projection_negative_offset_hook_uses_offset_contract() {
-        let err = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test().unwrap_err();
+        let err = trigger_interop_projection_negative_offset_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -896,8 +915,7 @@ mod device_export_contracts {
     }
 
     fn projection_missing_string_offsets_child_hook_uses_child_count_contract() {
-        let err =
-            cudf::testing::interop::trigger_interop_projection_missing_string_offsets_child_for_test().unwrap_err();
+        let err = trigger_interop_projection_missing_string_offsets_child_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -913,8 +931,7 @@ mod device_export_contracts {
     }
 
     fn projection_list_offsets_width_mismatch_hook_uses_layout_contract() {
-        let err =
-            cudf::testing::interop::trigger_interop_projection_list_offsets_width_mismatch_for_test().unwrap_err();
+        let err = trigger_interop_projection_list_offsets_width_mismatch_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -929,8 +946,7 @@ mod device_export_contracts {
     }
 
     fn projection_dictionary_indices_width_mismatch_hook_uses_layout_contract() {
-        let err = cudf::testing::interop::trigger_interop_projection_dictionary_indices_width_mismatch_for_test()
-            .unwrap_err();
+        let err = trigger_interop_projection_dictionary_indices_width_mismatch_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -945,7 +961,7 @@ mod device_export_contracts {
     }
 
     fn projection_host_offsets_too_small_hook_uses_offsets_range_contract() {
-        let err = cudf::testing::interop::trigger_interop_projection_host_offsets_too_small_for_test().unwrap_err();
+        let err = trigger_interop_projection_host_offsets_too_small_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -961,7 +977,7 @@ mod device_export_contracts {
     }
 
     fn projection_missing_null_mask_hook_uses_null_mask_contract() {
-        let err = cudf::testing::interop::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
+        let err = trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -974,7 +990,7 @@ mod device_export_contracts {
     }
 
     fn projection_struct_missing_child_hook_uses_child_count_contract() {
-        let err = cudf::testing::interop::trigger_interop_projection_struct_missing_child_for_test().unwrap_err();
+        let err = trigger_interop_projection_struct_missing_child_for_test().unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -993,7 +1009,7 @@ mod device_export_contracts {
     }
 
     fn interop_column_index_limit_hook_uses_shared_i32_limit_contract() {
-        let err = cudf::testing::interop::trigger_interop_column_index_limit_for_test().unwrap_err();
+        let err = trigger_interop_column_index_limit_for_test().unwrap_err();
         let expected_column_index = usize::MAX.to_string();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
@@ -1007,7 +1023,7 @@ mod device_export_contracts {
 
     #[test]
     fn helper_built_exports_use_explicit_runtime_binding_and_cross_device_inputs_are_rejected() {
-        crate::common::with_test_runtime(|runtime| {
+        with_test_runtime(|runtime| {
             let column = column_from_slice(&[1i32, 2, 3]).unwrap();
             let view = column.testing_view().unwrap();
             let column_export = view.try_prepare_device_column_export().unwrap();
@@ -1018,8 +1034,8 @@ mod device_export_contracts {
                 runtime.device(),
             );
 
-            let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
-            let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
+            let ids = series("id", &[1i32, 2, 3]).unwrap();
+            let vals = series("value", &[10i64, 20, 30]).unwrap();
             let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
             let frame_export = frame.try_prepare_device_table_export().unwrap();
             assert_eq!(frame_export.diagnostics().profile(), ExportProfile::PreparedDeviceExport);
@@ -1041,8 +1057,7 @@ mod device_export_contracts {
 
         let left = rt0.column_from_slice(&[1i32, 2, 3]).unwrap();
         let right = rt1.column_from_slice(&[4i32, 5, 6]).unwrap();
-        let frame_err =
-            crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap_err();
+        let frame_err = dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap_err();
         assert_eq!(frame_err.code(), ErrorCode::CrossProvenanceInputs);
 
         let _left_domain_seed =
@@ -1310,7 +1325,7 @@ mod device_export_contracts {
 
     #[test]
     fn prepared_export_tests_cases_device_export_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "projection_active_range_overflow_hook_uses_row_count_context",
                 projection_active_range_overflow_hook_uses_row_count_context,
@@ -1608,7 +1623,7 @@ mod host_export_contracts {
 
     #[test]
     fn prepared_export_tests_cases_host_export_contracts() {
-        crate::common::run_named_cases(&[
+        run_named_cases(&[
             (
                 "host_fixed_width_exports_materialize_active_range_and_pack_validity",
                 host_fixed_width_exports_materialize_active_range_and_pack_validity,

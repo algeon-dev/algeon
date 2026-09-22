@@ -1,6 +1,9 @@
 use std::error::Error as StdError;
 
-use cudf::interop::contract::{InteropError, InteropErrorKind};
+use cudf::{
+    core::error::{FactKeyName, kind_for_code},
+    interop::contract::{InteropError, InteropErrorKind},
+};
 
 use crate::error::{Error, ErrorKind, ErrorStatus};
 
@@ -171,7 +174,7 @@ fn map_cudf_error_code(code: cudf::ErrorCode) -> ErrorKind {
         | cudf::ErrorCode::FatalCuda
         | cudf::ErrorCode::ForeignTransientDependencyFailure
         | cudf::ErrorCode::ForeignPersistentDependencyFailure => ErrorKind::Unexpected,
-        _ => match cudf::core::error::kind_for_code(code) {
+        _ => match kind_for_code(code) {
             cudf::ErrorKind::InvalidInput => ErrorKind::InvalidInput,
             cudf::ErrorKind::NotFound => ErrorKind::IoError,
             cudf::ErrorKind::Unsupported => ErrorKind::UnsupportedType,
@@ -184,23 +187,23 @@ fn map_cudf_error_code(code: cudf::ErrorCode) -> ErrorKind {
     }
 }
 
-fn cudf_fact_context_key(key: cudf::core::error::FactKeyName) -> &'static str {
+fn cudf_fact_context_key(key: FactKeyName) -> &'static str {
     match key {
-        cudf::core::error::FactKeyName::ColumnName => "cudf_column_name",
-        cudf::core::error::FactKeyName::ColumnIndex => "cudf_column_index",
-        cudf::core::error::FactKeyName::ExpectedRows => "cudf_expected_rows",
-        cudf::core::error::FactKeyName::ActualRows => "cudf_actual_rows",
-        cudf::core::error::FactKeyName::ExpectedCount => "cudf_expected_count",
-        cudf::core::error::FactKeyName::ActualCount => "cudf_actual_count",
-        cudf::core::error::FactKeyName::LeftTypeId => "cudf_left_type_id",
-        cudf::core::error::FactKeyName::RightTypeId => "cudf_right_type_id",
-        cudf::core::error::FactKeyName::LeftDevice => "cudf_left_device",
-        cudf::core::error::FactKeyName::RightDevice => "cudf_right_device",
-        cudf::core::error::FactKeyName::TableRowCount => "cudf_table_row_count",
-        cudf::core::error::FactKeyName::TableColumnCount => "cudf_table_column_count",
-        cudf::core::error::FactKeyName::KeysCount => "cudf_keys_count",
-        cudf::core::error::FactKeyName::DistinctKeysCount => "cudf_distinct_keys_count",
-        cudf::core::error::FactKeyName::TypeId => "cudf_type_id",
+        FactKeyName::ColumnName => "cudf_column_name",
+        FactKeyName::ColumnIndex => "cudf_column_index",
+        FactKeyName::ExpectedRows => "cudf_expected_rows",
+        FactKeyName::ActualRows => "cudf_actual_rows",
+        FactKeyName::ExpectedCount => "cudf_expected_count",
+        FactKeyName::ActualCount => "cudf_actual_count",
+        FactKeyName::LeftTypeId => "cudf_left_type_id",
+        FactKeyName::RightTypeId => "cudf_right_type_id",
+        FactKeyName::LeftDevice => "cudf_left_device",
+        FactKeyName::RightDevice => "cudf_right_device",
+        FactKeyName::TableRowCount => "cudf_table_row_count",
+        FactKeyName::TableColumnCount => "cudf_table_column_count",
+        FactKeyName::KeysCount => "cudf_keys_count",
+        FactKeyName::DistinctKeysCount => "cudf_distinct_keys_count",
+        FactKeyName::TypeId => "cudf_type_id",
         _ => "cudf_fact",
     }
 }
@@ -264,14 +267,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use cudf::interop::contract::{InteropError, InteropErrorKind};
+    use cudf::{
+        interop::contract::{InteropError, InteropErrorKind},
+        testing::error as cudf_testing_error,
+    };
 
     use super::*;
     use crate::error::ErrorKind;
 
     #[test]
     fn map_cudf_error_missing_column_is_invalid_input() {
-        let cudf_err = cudf::testing::error::new_with_for_test(
+        let cudf_err = cudf_testing_error::new_with_for_test(
             cudf::ErrorCode::MissingColumn,
             "cudf::testing::missing_column",
             "column 'foo' not found",
@@ -286,8 +292,8 @@ mod tests {
 
     #[test]
     fn map_cudf_error_runtime_binding_mismatch_is_invalid_state() {
-        let cudf_err = cudf::testing::error::reanchor_for_test(
-            cudf::testing::error::new_with_for_test(
+        let cudf_err = cudf_testing_error::reanchor_for_test(
+            cudf_testing_error::new_with_for_test(
                 cudf::ErrorCode::RuntimeBindingMismatch,
                 "cudf::testing::runtime_binding::inner",
                 "runtime must not use ambient provenance",
@@ -302,7 +308,7 @@ mod tests {
 
     #[test]
     fn map_cudf_error_cuda_runtime_is_temporary_unexpected() {
-        let cudf_err = cudf::testing::error::new_with_for_test(
+        let cudf_err = cudf_testing_error::new_with_for_test(
             cudf::ErrorCode::CudaRuntime,
             "cudf::testing::cuda_runtime",
             "device launch failed",
@@ -315,7 +321,7 @@ mod tests {
     #[test]
     fn map_cudf_error_out_of_memory() {
         let cudf_err =
-            cudf::testing::error::new_with_for_test(cudf::ErrorCode::OutOfMemory, "cudf::testing::oom", "alloc failed");
+            cudf_testing_error::new_with_for_test(cudf::ErrorCode::OutOfMemory, "cudf::testing::oom", "alloc failed");
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::OutOfMemory);
         assert!(err.is_temporary(), "OOM should be temporary");
@@ -324,7 +330,7 @@ mod tests {
     #[test]
     fn map_cudf_error_io_error() {
         let cudf_err =
-            cudf::testing::error::new_with_for_test(cudf::ErrorCode::IoFailure, "cudf::testing::io", "file not found");
+            cudf_testing_error::new_with_for_test(cudf::ErrorCode::IoFailure, "cudf::testing::io", "file not found");
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::IoError);
         assert!(err.is_permanent(), "I/O errors should be permanent by default");
@@ -332,7 +338,7 @@ mod tests {
 
     #[test]
     fn map_cudf_error_fatal_cuda_is_persistent_unexpected() {
-        let cudf_err = cudf::testing::error::new_with_for_test(
+        let cudf_err = cudf_testing_error::new_with_for_test(
             cudf::ErrorCode::FatalCuda,
             "cudf::testing::fatal_cuda",
             "device entered fatal state",
@@ -344,7 +350,7 @@ mod tests {
 
     #[test]
     fn map_cudf_error_foreign_invariant_violation_is_invalid_state() {
-        let cudf_err = cudf::testing::error::foreign_invariant_violation_for_test();
+        let cudf_err = cudf_testing_error::foreign_invariant_violation_for_test();
         let err = map_cudf_error(cudf_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert!(err.is_permanent(), "foreign invariant violations should be permanent");
@@ -385,7 +391,7 @@ mod tests {
     fn prepared_lease_completion_interop_readiness_unavailable_uses_persistent_source_status() {
         let interop_err =
             InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to finalize producer lease").set_source(
-                cudf::testing::error::new_with_for_test(
+                cudf_testing_error::new_with_for_test(
                     cudf::ErrorCode::FatalCuda,
                     "cudf::testing::fatal_cuda",
                     "device entered fatal state",
@@ -410,7 +416,7 @@ mod tests {
     #[test]
     fn prepared_projection_interop_readiness_unavailable_uses_temporary_source_status() {
         let interop_err = InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to project device export")
-            .set_source(cudf::testing::error::new_with_for_test(
+            .set_source(cudf_testing_error::new_with_for_test(
                 cudf::ErrorCode::OutOfMemory,
                 "cudf::testing::oom",
                 "allocation failed",

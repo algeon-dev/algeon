@@ -31,15 +31,9 @@ fn bounded_native_query_does_not_split_join_leaf_from_source_estimate() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
-                    "category",
-                ),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -103,15 +97,9 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(
-                    query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                    "order_id",
-                ),
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(
-                    query_engine::expr::ColumnRef::input(1, "category", "category"),
-                    "category",
-                ),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right),
         output_schema,

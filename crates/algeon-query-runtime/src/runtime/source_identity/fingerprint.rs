@@ -5,7 +5,10 @@ use std::{fmt::Write, hash::Hasher};
 use arrow::datatypes::SchemaRef;
 use fnv::FnvHasher;
 use query_planning::{
-    source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
+    source::{
+        LocalParquetSource, ParquetEqualityDeleteFile, ParquetPositionDeleteFile, ParquetReaderDecimalType,
+        ResolvedParquetSource, SourceColumnRef,
+    },
     util::escape_kv_delimited,
 };
 
@@ -88,7 +91,7 @@ pub(super) fn push_resolved_source_contract(
 pub(super) fn push_position_delete_files(
     output: &mut String,
     label: impl AsRef<str>,
-    delete_files: &[query_planning::source::ParquetPositionDeleteFile],
+    delete_files: &[ParquetPositionDeleteFile],
 ) {
     let label = label.as_ref();
     push_token(output, format!("{label}.len"), delete_files.len().to_string());
@@ -113,7 +116,7 @@ pub(super) fn push_position_delete_files(
 pub(super) fn push_equality_delete_files(
     output: &mut String,
     label: impl AsRef<str>,
-    delete_files: &[query_planning::source::ParquetEqualityDeleteFile],
+    delete_files: &[ParquetEqualityDeleteFile],
 ) {
     let label = label.as_ref();
     push_token(output, format!("{label}.len"), delete_files.len().to_string());

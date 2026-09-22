@@ -8,6 +8,17 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+use cudf_sys::{
+    CUDF_SUCCESS,
+    test_support::{
+        cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_mr_raw,
+        cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
+        cudf_test_memory_resource_active_allocation_count, cudf_test_memory_resource_allocation_count,
+        cudf_test_memory_resource_create_stats, cudf_test_memory_resource_set_current,
+        cudf_test_memory_resource_set_current_raw, cudf_test_stream_handle_value,
+    },
+};
+
 static SHIM_STATE_LOCK: Mutex<()> = Mutex::new(());
 
 pub const NO_SYNC_RECORDED: usize = usize::MAX;
@@ -38,8 +49,8 @@ impl Drop for CurrentDeviceResourceRestore {
 /// This private test helper deliberately wraps only the generated test-support
 /// declaration; it is not part of the `cudf_sys` production or test API.
 pub fn set_current_device_resource(mr: &cudf_sys::BorrowedMemoryResource<'_>) -> Result<(), cudf_sys::cudf_status_t> {
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current(mr.as_raw()) };
-    if status == cudf_sys::CUDF_SUCCESS { Ok(()) } else { Err(status) }
+    let status = unsafe { cudf_test_memory_resource_set_current(mr.as_raw()) };
+    if status == CUDF_SUCCESS { Ok(()) } else { Err(status) }
 }
 
 /// Restore a raw RMM resource pointer saved from the test process.
@@ -47,8 +58,8 @@ pub fn set_current_device_resource(mr: &cudf_sys::BorrowedMemoryResource<'_>) ->
 /// # Safety
 /// `raw_mr` must remain a valid RMM resource for this test scope.
 pub unsafe fn set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_sys::cudf_status_t> {
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current_raw(raw_mr) };
-    if status == cudf_sys::CUDF_SUCCESS { Ok(()) } else { Err(status) }
+    let status = unsafe { cudf_test_memory_resource_set_current_raw(raw_mr) };
+    if status == CUDF_SUCCESS { Ok(()) } else { Err(status) }
 }
 
 pub fn last_error_message() -> String {
@@ -60,48 +71,48 @@ pub fn last_error_message() -> String {
 }
 
 pub fn reset_exec_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_exec_reset_observation() };
+    unsafe { cudf_test_exec_reset_observation() };
 }
 
 pub fn last_exec_stream_value() -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::test_support::cudf_test_exec_last_stream_value(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_test_exec_last_stream_value(&mut out) };
+    assert_eq!(st, CUDF_SUCCESS);
     out
 }
 
 pub fn last_exec_sync_stream_value() -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::test_support::cudf_test_exec_last_sync_stream_value(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
+    assert_eq!(st, CUDF_SUCCESS);
     out
 }
 
 pub fn last_exec_mr_raw() -> *mut c_void {
     let mut out = ptr::null_mut();
-    let st = unsafe { cudf_sys::test_support::cudf_test_exec_last_mr_raw(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
+    assert_eq!(st, CUDF_SUCCESS);
     out
 }
 
 pub fn default_stream_value() -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::test_support::cudf_test_default_stream_value(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_test_default_stream_value(&mut out) };
+    assert_eq!(st, CUDF_SUCCESS);
     out
 }
 
 pub fn stream_value(stream: cudf_sys::cudf_stream_handle) -> usize {
     let mut out = usize::MAX;
-    let st = unsafe { cudf_sys::test_support::cudf_test_stream_handle_value(stream, &mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_test_stream_handle_value(stream, &mut out) };
+    assert_eq!(st, CUDF_SUCCESS);
     out
 }
 
 pub fn current_device_resource_raw() -> *mut c_void {
     let mut out = ptr::null_mut();
-    let st = unsafe { cudf_sys::test_support::cudf_test_current_device_resource_raw(&mut out) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_test_current_device_resource_raw(&mut out) };
+    assert_eq!(st, CUDF_SUCCESS);
     out
 }
 
@@ -258,7 +269,7 @@ impl OwnedMemoryResource {
     pub fn new_test_stats() -> Self {
         let device = current_device();
         let mut raw = ptr::null_mut();
-        let st = unsafe { cudf_sys::test_support::cudf_test_memory_resource_create_stats(&mut raw) };
+        let st = unsafe { cudf_test_memory_resource_create_stats(&mut raw) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert!(!raw.is_null());
         Self { raw, device }
@@ -270,15 +281,14 @@ impl OwnedMemoryResource {
 
     pub fn allocation_count(&self) -> i64 {
         let mut out = 0_i64;
-        let st = unsafe { cudf_sys::test_support::cudf_test_memory_resource_allocation_count(self.raw, &mut out) };
+        let st = unsafe { cudf_test_memory_resource_allocation_count(self.raw, &mut out) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         out
     }
 
     pub fn active_allocation_count(&self) -> i64 {
         let mut out = 0_i64;
-        let st =
-            unsafe { cudf_sys::test_support::cudf_test_memory_resource_active_allocation_count(self.raw, &mut out) };
+        let st = unsafe { cudf_test_memory_resource_active_allocation_count(self.raw, &mut out) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         out
     }

@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use query_engine::source::LocalParquetSource;
+use query_engine::{
+    plan::{NodeId, QueryPlan},
+    source::LocalParquetSource,
+};
 
 use super::*;
 
-pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
-    variant: AggregateOverJoinSubplanTopKVariant,
-) -> query_engine::plan::QueryPlan {
+pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(variant: AggregateOverJoinSubplanTopKVariant) -> QueryPlan {
     aggregate_over_join_subplan_topk_plan_inner(variant, false)
 }
 
@@ -36,7 +37,7 @@ pub(crate) enum AggregateOverJoinSubplanTopKVariant {
 pub(crate) fn aggregate_over_join_subplan_topk_plan_inner(
     variant: AggregateOverJoinSubplanTopKVariant,
     with_source_metadata: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-a", with_source_metadata);
     let b = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-b", with_source_metadata);
@@ -107,14 +108,14 @@ pub(crate) fn aggregate_over_join_subplan_topk_plan_inner(
 
 pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(variant, false)
 }
 
 pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
     with_source_metadata: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a =
         source_with_optional_metadata(&mut builder, "resident-aggregate-post-aggregate-topk-a", with_source_metadata);
@@ -223,13 +224,11 @@ pub(crate) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
     UnsupportedGroupedInputFilter,
 }
 
-pub(crate) fn resident_grouped_aggregate_subquery_filter_plan(
-    with_source_metadata: bool,
-) -> query_engine::plan::QueryPlan {
+pub(crate) fn resident_grouped_aggregate_subquery_filter_plan(with_source_metadata: bool) -> QueryPlan {
     resident_grouped_aggregate_subquery_filter_plan_inner(with_source_metadata)
 }
 
-fn resident_grouped_aggregate_subquery_filter_plan_inner(with_source_metadata: bool) -> query_engine::plan::QueryPlan {
+fn resident_grouped_aggregate_subquery_filter_plan_inner(with_source_metadata: bool) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source_with_optional_metadata(&mut builder, "resident-aggregate-subquery-filter-a", with_source_metadata);
     let b = source_with_optional_metadata(&mut builder, "resident-aggregate-subquery-filter-b", with_source_metadata);
@@ -252,7 +251,7 @@ fn resident_grouped_aggregate_subquery_filter_plan_inner(with_source_metadata: b
     builder.finish_with_host_sink(sort)
 }
 
-pub(crate) fn root_topk_grouped_aggregate_input_left_join_plan() -> query_engine::plan::QueryPlan {
+pub(crate) fn root_topk_grouped_aggregate_input_left_join_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let edges = source(&mut builder, "root-topk-grouped-aggregate-input-edges");
     let grouped = grouped_aggregate(&mut builder, edges);
@@ -286,7 +285,7 @@ pub(crate) fn root_topk_grouped_aggregate_input_left_join_plan() -> query_engine
 
 pub(crate) fn root_topk_keyless_conditional_direct_source_aggregates_plan(
     missing_right_grouped_source_reduction: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_grouped_source = source_with_reduction(&mut builder, "root-topk-direct-grouped-left", true);
     let left_scalar_source = source_with_reduction(&mut builder, "root-topk-direct-scalar-left", true);
@@ -309,9 +308,9 @@ pub(crate) fn root_topk_keyless_conditional_direct_source_aggregates_plan(
 
 fn root_topk_keyless_conditional_aggregate_branch(
     builder: &mut QueryPlanBuilder,
-    grouped_source: query_engine::plan::NodeId,
-    scalar_source: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+    grouped_source: NodeId,
+    scalar_source: NodeId,
+) -> NodeId {
     let grouped_aggregate = grouped_aggregate(builder, grouped_source);
     let grouped = project_key_value(builder, grouped_aggregate);
     let scalar_aggregate = scalar_key_value_aggregate(builder, scalar_source);
@@ -334,9 +333,7 @@ fn root_topk_keyless_conditional_aggregate_branch(
     )
 }
 
-pub(crate) fn root_topk_join_aggregate_variant_plan(
-    variant: RootTopKJoinAggregateVariant,
-) -> query_engine::plan::QueryPlan {
+pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggregateVariant) -> QueryPlan {
     if variant.is_null_filtered_aggregate_fan_in() {
         return root_topk_null_filtered_aggregate_fan_in_plan(variant);
     }
@@ -1079,9 +1076,7 @@ enum NullFilteredReturnBuildShape {
     FullLarge,
 }
 
-fn root_topk_null_filtered_aggregate_fan_in_plan(
-    variant: RootTopKJoinAggregateVariant,
-) -> query_engine::plan::QueryPlan {
+fn root_topk_null_filtered_aggregate_fan_in_plan(variant: RootTopKJoinAggregateVariant) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let store_return_shape = if matches!(
         variant,
@@ -1192,7 +1187,7 @@ fn null_filtered_aggregate_branch(
     wrong_build_side: bool,
     marker_escapes: bool,
     marker_filter_reuse: bool,
-) -> query_engine::plan::NodeId {
+) -> NodeId {
     let fact = if reduced_fact {
         source_with_reduction(builder, &format!("{label}-fact"), true)
     } else {
@@ -1252,11 +1247,7 @@ fn null_filtered_aggregate_branch(
     project_key_value(builder, aggregate)
 }
 
-fn aggregate_fan_in_left_join(
-    builder: &mut QueryPlanBuilder,
-    left: query_engine::plan::NodeId,
-    right: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn aggregate_fan_in_left_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId) -> NodeId {
     builder.add_join(
         left,
         right,
@@ -1275,10 +1266,7 @@ fn aggregate_fan_in_left_join(
     )
 }
 
-fn grouped_aggregate_with_extra_key(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn grouped_aggregate_with_extra_key(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     let schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("v", DataType::Int64, true),
@@ -1295,7 +1283,7 @@ fn grouped_aggregate_with_extra_key(
     builder.add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
 }
 
-fn root_topk_aggregate_window_filter_topk_plan(variant: RootTopKJoinAggregateVariant) -> query_engine::plan::QueryPlan {
+fn root_topk_aggregate_window_filter_topk_plan(variant: RootTopKJoinAggregateVariant) -> QueryPlan {
     if matches!(variant, RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK) {
         return root_topk_cumulative_window_full_outer_topk_plan();
     }
@@ -1368,7 +1356,7 @@ fn root_topk_aggregate_window_filter_topk_plan(variant: RootTopKJoinAggregateVar
     builder.finish_with_host_sink(limit)
 }
 
-fn root_topk_cumulative_window_full_outer_topk_plan() -> query_engine::plan::QueryPlan {
+fn root_topk_cumulative_window_full_outer_topk_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = cumulative_window_grouped_aggregate_branch(&mut builder, "root-topk-cumulative-full-outer-left");
     let right = cumulative_window_grouped_aggregate_branch(&mut builder, "root-topk-cumulative-full-outer-right");
@@ -1395,10 +1383,7 @@ fn root_topk_cumulative_window_full_outer_topk_plan() -> query_engine::plan::Que
     builder.finish_with_host_sink(limit)
 }
 
-fn cumulative_window_grouped_aggregate_branch(
-    builder: &mut QueryPlanBuilder,
-    label: &str,
-) -> query_engine::plan::NodeId {
+fn cumulative_window_grouped_aggregate_branch(builder: &mut QueryPlanBuilder, label: &str) -> NodeId {
     let fact = source(builder, &format!("{label}-fact"));
     let date = source(builder, &format!("{label}-date"));
     let fact_date = join(builder, fact, date, "fact_date");
@@ -1412,7 +1397,7 @@ fn cumulative_window_grouped_aggregate_branch(
 }
 
 #[expect(dead_code, reason = "shared across test binaries; not all path-includes call this constructor")]
-pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> query_engine::plan::QueryPlan {
+pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "shared-grouped-aggregate-fanout-a");
     let b = source(&mut builder, "shared-grouped-aggregate-fanout-b");
@@ -1434,7 +1419,7 @@ pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan
     builder.finish_with_host_sink(sort)
 }
 
-fn source(builder: &mut QueryPlanBuilder, label: &str) -> query_engine::plan::NodeId {
+fn source(builder: &mut QueryPlanBuilder, label: &str) -> NodeId {
     builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         format!("/tmp/{label}.parquet"),
         key_value_schema(),
@@ -1442,11 +1427,7 @@ fn source(builder: &mut QueryPlanBuilder, label: &str) -> query_engine::plan::No
     )))
 }
 
-fn source_with_optional_metadata(
-    builder: &mut QueryPlanBuilder,
-    label: &str,
-    with_source_metadata: bool,
-) -> query_engine::plan::NodeId {
+fn source_with_optional_metadata(builder: &mut QueryPlanBuilder, label: &str, with_source_metadata: bool) -> NodeId {
     if !with_source_metadata {
         return source(builder, label);
     }
@@ -1459,11 +1440,7 @@ fn source_with_optional_metadata(
     )))
 }
 
-fn source_with_reduction(
-    builder: &mut QueryPlanBuilder,
-    label: &str,
-    selected_subset: bool,
-) -> query_engine::plan::NodeId {
+fn source_with_reduction(builder: &mut QueryPlanBuilder, label: &str, selected_subset: bool) -> NodeId {
     let file = if selected_subset {
         LocalParquetFile::new(format!("/tmp/{label}.parquet"))
             .with_file_size_bytes(4096)
@@ -1480,11 +1457,7 @@ fn source_with_reduction(
     )))
 }
 
-fn source_with_known_size(
-    builder: &mut QueryPlanBuilder,
-    label: &str,
-    file_size_bytes: u64,
-) -> query_engine::plan::NodeId {
+fn source_with_known_size(builder: &mut QueryPlanBuilder, label: &str, file_size_bytes: u64) -> NodeId {
     let file = LocalParquetFile::new(format!("/tmp/{label}.parquet")).with_file_size_bytes(file_size_bytes);
     builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![file],
@@ -1493,7 +1466,7 @@ fn source_with_known_size(
     )))
 }
 
-fn filter_source(builder: &mut QueryPlanBuilder, input: query_engine::plan::NodeId) -> query_engine::plan::NodeId {
+fn filter_source(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_filter(
         input,
         Expr::binary(Expr::column("k"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
@@ -1501,12 +1474,7 @@ fn filter_source(builder: &mut QueryPlanBuilder, input: query_engine::plan::Node
     )
 }
 
-fn join(
-    builder: &mut QueryPlanBuilder,
-    left: query_engine::plan::NodeId,
-    right: query_engine::plan::NodeId,
-    _value_name: &str,
-) -> query_engine::plan::NodeId {
+fn join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId, _value_name: &str) -> NodeId {
     let output_schema = key_value_schema();
     builder.add_join(
         left,
@@ -1524,12 +1492,7 @@ fn join(
     )
 }
 
-fn full_join(
-    builder: &mut QueryPlanBuilder,
-    left: query_engine::plan::NodeId,
-    right: query_engine::plan::NodeId,
-    output: FullJoinOutput,
-) -> query_engine::plan::NodeId {
+fn full_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId, output: FullJoinOutput) -> NodeId {
     let output_projection = match output {
         FullJoinOutput::BothSides => vec![
             JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
@@ -1555,11 +1518,7 @@ enum FullJoinOutput {
     LeftOnly,
 }
 
-fn semi_join(
-    builder: &mut QueryPlanBuilder,
-    left: query_engine::plan::NodeId,
-    right: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn semi_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId) -> NodeId {
     builder.add_join(
         left,
         right,
@@ -1576,11 +1535,7 @@ fn semi_join(
     )
 }
 
-fn residual_join_against_grouped_aggregate(
-    builder: &mut QueryPlanBuilder,
-    grouped: query_engine::plan::NodeId,
-    subtree: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn residual_join_against_grouped_aggregate(builder: &mut QueryPlanBuilder, grouped: NodeId, subtree: NodeId) -> NodeId {
     builder.add_join(
         grouped,
         subtree,
@@ -1602,7 +1557,7 @@ fn residual_join_against_grouped_aggregate(
     )
 }
 
-fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: query_engine::plan::NodeId) -> query_engine::plan::NodeId {
+fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(
@@ -1613,7 +1568,7 @@ fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: query_engine::plan::
     )
 }
 
-fn scalar_aggregate(builder: &mut QueryPlanBuilder, input: query_engine::plan::NodeId) -> query_engine::plan::NodeId {
+fn scalar_aggregate(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(vec![], vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("v"), "v")]),
@@ -1621,10 +1576,7 @@ fn scalar_aggregate(builder: &mut QueryPlanBuilder, input: query_engine::plan::N
     )
 }
 
-fn scalar_key_value_aggregate(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn scalar_key_value_aggregate(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(
@@ -1638,7 +1590,7 @@ fn scalar_key_value_aggregate(
     )
 }
 
-fn rank_window(builder: &mut QueryPlanBuilder, input: query_engine::plan::NodeId) -> query_engine::plan::NodeId {
+fn rank_window(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_window(
         input,
         WindowSpec::new(
@@ -1658,18 +1610,12 @@ fn rank_window_schema() -> Arc<Schema> {
     ]))
 }
 
-fn rank_window_project_key_value(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn rank_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     let window = rank_window(builder, input);
     project_key_value(builder, window)
 }
 
-fn sorted_rank_window_project_key_value(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn sorted_rank_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     let sort = builder.add_sort(
         input,
         SortSpec::new(vec![
@@ -1681,10 +1627,7 @@ fn sorted_rank_window_project_key_value(
     rank_window_project_key_value(builder, sort)
 }
 
-fn unordered_aggregate_window(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn unordered_aggregate_window(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_window(
         input,
         WindowSpec::new(
@@ -1704,18 +1647,12 @@ fn unordered_aggregate_window_schema() -> Arc<Schema> {
     ]))
 }
 
-fn unordered_aggregate_window_project_key_value(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn unordered_aggregate_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     let window = unordered_aggregate_window(builder, input);
     project_key_value(builder, window)
 }
 
-fn unordered_global_aggregate_window_project_key_value(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn unordered_global_aggregate_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     let window_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("v", DataType::Int64, true),
@@ -1733,10 +1670,7 @@ fn unordered_global_aggregate_window_project_key_value(
     project_key_value(builder, window)
 }
 
-fn cumulative_aggregate_window(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn cumulative_aggregate_window(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_window(
         input,
         WindowSpec::new(
@@ -1756,10 +1690,7 @@ fn cumulative_aggregate_window_schema() -> Arc<Schema> {
     ]))
 }
 
-fn rank_filter_window_project_key_value(
-    builder: &mut QueryPlanBuilder,
-    input: query_engine::plan::NodeId,
-) -> query_engine::plan::NodeId {
+fn rank_filter_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     let sorted = builder.add_sort(
         input,
         SortSpec::new(vec![
@@ -1790,7 +1721,7 @@ fn rank_filter_window_project_key_value(
     project_key_value(builder, filter)
 }
 
-fn project_key_value(builder: &mut QueryPlanBuilder, input: query_engine::plan::NodeId) -> query_engine::plan::NodeId {
+fn project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
     builder.add_projection(input, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
 }
 

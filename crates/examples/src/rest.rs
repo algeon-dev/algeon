@@ -11,7 +11,7 @@ use algeon_datafusion::{
     report::PlanningReport,
     session::AlgeonSessionStateBuilderExt,
 };
-use arrow::record_batch::RecordBatch;
+use arrow::{error::ArrowError, record_batch::RecordBatch};
 use arrow_json::{WriterBuilder, writer::JsonArray};
 use axum::{
     Json, Router,
@@ -20,7 +20,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use datafusion::{common::DataFusionError, execution::SessionStateBuilder};
+use datafusion::{common::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -146,7 +146,7 @@ async fn planning_report(state: &AppState, rendered: RenderedPipeline) -> Result
     let planning_state = SessionStateBuilder::new_from_existing(state.ctx.state())
         .with_algeon_native_rule(Arc::clone(&native_rule))
         .build();
-    let planning_ctx = datafusion::prelude::SessionContext::new_with_state(planning_state);
+    let planning_ctx = SessionContext::new_with_state(planning_state);
     let mut df = planning_ctx.sql(&rendered.sql).await.map_err(AppError::from_datafusion)?;
     if !rendered.param_values.is_empty() {
         df = df.with_param_values(rendered.param_values).map_err(AppError::from_datafusion)?;
@@ -249,7 +249,7 @@ impl AppError {
         }
     }
 
-    fn from_arrow(error: arrow::error::ArrowError) -> Self {
+    fn from_arrow(error: ArrowError) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "arrow_json_error", error.to_string())
     }
 

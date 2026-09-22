@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    fmt,
+    fmt, mem,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +21,7 @@ use super::{
     SealedRuntimeObservationSnapshot, SourceLocationDigestKeyProvider, SourceLocationDigestKeyState,
     SourceLocationDigestKeyUnavailable, SourceReadFact, SourceReadRuntimeMetrics, SystemRuntimeObservationClock,
 };
+use crate::{metrics::BoundaryMetrics, observability::recorder::ExecutionProgress};
 
 /// Growing detail families and the loss class each is retained under.
 ///
@@ -307,7 +308,7 @@ impl RuntimeObservationHandle {
             data: Arc::new(inner.take_sealed_snapshot_data(&mut state, outcome, attempt_report_provider)),
         };
         state.sealed_snapshot = Some(snapshot.clone());
-        let observers = std::mem::take(&mut state.seal_observers);
+        let observers = mem::take(&mut state.seal_observers);
         DeferredRuntimeObservationSeal { snapshot: Some(snapshot), observers }
     }
 
@@ -413,9 +414,9 @@ impl RuntimeObservationHandle {
     }
 
     /// Returns the data-boundary counters of a plan execution.
-    pub(crate) fn boundary_metrics(&self, plan_execution_id: &PlanExecutionId) -> crate::metrics::BoundaryMetrics {
+    pub(crate) fn boundary_metrics(&self, plan_execution_id: &PlanExecutionId) -> BoundaryMetrics {
         let Some(inner) = &self.inner else {
-            return crate::metrics::BoundaryMetrics::default();
+            return BoundaryMetrics::default();
         };
         let state = inner.lock_state();
         state.metrics.get(plan_execution_id).map(|execution| execution.reduction.boundary.clone()).unwrap_or_default()
@@ -424,7 +425,7 @@ impl RuntimeObservationHandle {
     /// Returns the progress counters of a plan execution.
     pub(crate) fn execution_progress(&self, plan_execution_id: &PlanExecutionId) -> super::ExecutionProgress {
         let Some(inner) = &self.inner else {
-            return super::ExecutionProgress::default();
+            return ExecutionProgress::default();
         };
         let state = inner.lock_state();
         state.metrics.get(plan_execution_id).map_or_else(Default::default, |execution| super::ExecutionProgress {

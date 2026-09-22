@@ -1,10 +1,11 @@
 use algeon_datafusion::native_report::{
-    CandidateOutcomeKind, FinalPlanDisposition,
+    CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionRuntimeOutcome,
     bench_support::{
         NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityReport,
         NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
     },
 };
+use query_engine::mode::StatisticalAggregateExecutionMode;
 
 #[test]
 fn parity_tsv_header_pins_columns() {
@@ -57,7 +58,7 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
         native_plan_fragment_count: Some(0),
         host_datafusion_boundary_count: Some(0),
         native_runtime_started: false,
-        native_runtime_outcome: algeon_datafusion::native_report::NativeDataFusionRuntimeOutcome::NotStarted,
+        native_runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
         parity_status: ParityStatus::NativeRejected,
         parity_detail: None,
         cpu_output_rows: Some(0),
@@ -72,9 +73,7 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
         native_runtime_failure: None,
     };
     let report = NativeTpcdsParityReport::from_rows(vec![row], ParityFloatTolerance::exact())
-        .with_statistical_aggregate_execution_mode(
-            query_engine::mode::StatisticalAggregateExecutionMode::GpuNativeTolerant,
-        );
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant);
     let tsv = report.to_tsv();
     let first_line = tsv.lines().next().unwrap();
     assert_eq!(first_line, "# parity_float_tolerance_absolute=0");

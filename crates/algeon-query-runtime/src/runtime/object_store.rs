@@ -1,14 +1,18 @@
 //! Object-store control-plane handles and shared runtime registry.
 
 use std::{
+    collections,
     collections::HashMap,
     fmt,
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
+use object_store::aws::{AmazonS3, AmazonS3Builder, AwsCredential, AwsCredentialProvider};
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::runtime::{Builder, Runtime as TokioRuntime};
 
 /// Storage profile used by native remote reads and cache maintenance.
 ///
@@ -250,14 +254,14 @@ pub struct ObjectStoreCustomFetchResult<T> {
 pub(super) const RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW: Duration = Duration::from_secs(60);
 
 struct ResolvedSourceCredential {
-    resolved_at: std::time::Instant,
-    credential: Arc<object_store::aws::AwsCredential>,
+    resolved_at: Instant,
+    credential: Arc<AwsCredential>,
 }
 
 // Per-context S3 store and credential cache keyed by source storage profile.
 pub(super) struct SourceObjectStoreRegistry {
     profiles: HashMap<String, SourceStorageProfile>,
-    stores: Mutex<HashMap<S3ObjectStoreKey, Arc<object_store::aws::AmazonS3>>>,
+    stores: Mutex<HashMap<S3ObjectStoreKey, Arc<AmazonS3>>>,
     resolved_credentials: Mutex<HashMap<S3ObjectStoreKey, ResolvedSourceCredential>>,
 }
 
@@ -282,7 +286,7 @@ impl SourceObjectStoreRegistry {
     }
 
     pub(super) fn validate_profiles(profiles: &[SourceStorageProfile]) -> Result<()> {
-        let mut profile_ids = std::collections::HashSet::with_capacity(profiles.len());
+        let mut profile_ids = collections::HashSet::with_capacity(profiles.len());
         for profile in profiles {
             if profile.id().trim().is_empty() {
                 return Err(QueryError::new(
@@ -311,18 +315,12 @@ impl SourceObjectStoreRegistry {
     }
 
     /// Returns the S3 credential provider shared with remote KvikIO reads.
-    pub(super) fn s3_credential_provider(
-        &self,
-        key: S3ObjectStoreKey,
-    ) -> Result<object_store::aws::AwsCredentialProvider> {
+    pub(super) fn s3_credential_provider(&self, key: S3ObjectStoreKey) -> Result<AwsCredentialProvider> {
         Ok(Arc::clone(self.s3_typed_store(key)?.credentials()))
     }
 
     /// Returns a cached resolved credential still within the reuse window.
-    pub(super) fn recently_resolved_s3_credential(
-        &self,
-        key: &S3ObjectStoreKey,
-    ) -> Option<Arc<object_store::aws::AwsCredential>> {
+    pub(super) fn recently_resolved_s3_credential(&self, key: &S3ObjectStoreKey) -> Option<Arc<AwsCredential>> {
         let resolved_credentials = self.resolved_credentials.lock().ok()?;
         let resolved = resolved_credentials.get(key)?;
         if resolved.resolved_at.elapsed() < RESOLVED_SOURCE_CREDENTIAL_REUSE_WINDOW {
@@ -333,18 +331,14 @@ impl SourceObjectStoreRegistry {
     }
 
     /// Records a freshly resolved credential for reuse.
-    pub(super) fn record_resolved_s3_credential(
-        &self,
-        key: S3ObjectStoreKey,
-        credential: Arc<object_store::aws::AwsCredential>,
-    ) {
+    pub(super) fn record_resolved_s3_credential(&self, key: S3ObjectStoreKey, credential: Arc<AwsCredential>) {
         if let Ok(mut resolved_credentials) = self.resolved_credentials.lock() {
             resolved_credentials
-                .insert(key, ResolvedSourceCredential { resolved_at: std::time::Instant::now(), credential });
+                .insert(key, ResolvedSourceCredential { resolved_at: time::Instant::now(), credential });
         }
     }
 
-    fn s3_typed_store(&self, key: S3ObjectStoreKey) -> Result<Arc<object_store::aws::AmazonS3>> {
+    fn s3_typed_store(&self, key: S3ObjectStoreKey) -> Result<Arc<AmazonS3>> {
         let mut stores = self.stores.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,
@@ -386,10 +380,7 @@ impl SourceObjectStoreRegistry {
     }
 }
 
-fn build_s3_store(
-    key: &S3ObjectStoreKey,
-    profile: Option<&SourceStorageProfile>,
-) -> Result<object_store::aws::AmazonS3> {
+fn build_s3_store(key: &S3ObjectStoreKey, profile: Option<&SourceStorageProfile>) -> Result<AmazonS3> {
     let s3_profile = profile.map(SourceStorageProfile::s3_profile);
     let region = s3_profile
         .and_then(|profile| profile.region.as_deref())
@@ -397,18 +388,15 @@ fn build_s3_store(
         .unwrap_or(key.region.as_str());
     let mut builder = match s3_profile.map(|profile| &profile.credential) {
         Some(S3SourceStorageCredential::Static { access_key_id, secret_access_key, session_token }) => {
-            let mut builder = object_store::aws::AmazonS3Builder::new()
-                .with_access_key_id(access_key_id)
-                .with_secret_access_key(secret_access_key);
+            let mut builder =
+                AmazonS3Builder::new().with_access_key_id(access_key_id).with_secret_access_key(secret_access_key);
             if let Some(token) = session_token.as_ref().filter(|token| !token.is_empty()) {
                 builder = builder.with_token(token);
             }
             builder
         },
-        Some(S3SourceStorageCredential::Unsigned) => {
-            object_store::aws::AmazonS3Builder::new().with_skip_signature(true)
-        },
-        _ => object_store::aws::AmazonS3Builder::from_env(),
+        Some(S3SourceStorageCredential::Unsigned) => AmazonS3Builder::new().with_skip_signature(true),
+        _ => AmazonS3Builder::from_env(),
     }
     .with_bucket_name(key.bucket.as_str())
     .with_region(region);
@@ -469,8 +457,8 @@ impl fmt::Debug for SourceObjectStoreRegistry {
     }
 }
 
-pub(super) fn default_object_store_control_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
-    static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+pub(super) fn default_object_store_control_runtime() -> Result<Arc<TokioRuntime>> {
+    static RUNTIME: OnceLock<Arc<TokioRuntime>> = OnceLock::new();
     static INIT_LOCK: Mutex<()> = Mutex::new(());
     if let Some(runtime) = RUNTIME.get() {
         return Ok(Arc::clone(runtime));
@@ -485,20 +473,17 @@ pub(super) fn default_object_store_control_runtime() -> Result<Arc<tokio::runtim
     if let Some(runtime) = RUNTIME.get() {
         return Ok(Arc::clone(runtime));
     }
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .thread_name("algeon-object-store-control")
-            .enable_all()
-            .build()
-            .map_err(|error| {
+    let runtime =
+        Arc::new(Builder::new_multi_thread().thread_name("algeon-object-store-control").enable_all().build().map_err(
+            |error| {
                 QueryError::new(
                     QueryErrorCode::CudfDependencyFailure,
                     "query_engine.runtime.object_store_control_runtime",
                     "failed to initialize object-store control runtime",
                 )
                 .with_source(error)
-            })?,
-    );
+            },
+        )?);
     assert!(
         RUNTIME.set(Arc::clone(&runtime)).is_ok(),
         "object-store control runtime initialized while holding init lock"
@@ -670,7 +655,7 @@ mod tests {
         let other_key = S3ObjectStoreKey { bucket: "other-bucket".to_string(), ..key.clone() };
         assert!(registry.recently_resolved_s3_credential(&key).is_none());
 
-        let credential = Arc::new(object_store::aws::AwsCredential {
+        let credential = Arc::new(AwsCredential {
             key_id: "resolved-access-key".to_string(),
             secret_key: "resolved-secret-key".to_string(),
             token: None,

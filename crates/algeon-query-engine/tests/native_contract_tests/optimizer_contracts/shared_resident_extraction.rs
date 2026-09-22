@@ -70,7 +70,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
     assert_eq!(routed_candidate.decision, SharedResidentExtractionDecision::Skipped);
     assert_eq!(routed_candidate.reason, SharedResidentExtractionReason::DynamicFilterRoutesUnremappable);
 
-    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::disabled(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::disabled(), rapids_analysis_context(), local_dimension_pruning_resolver());
     let split = SharedResidentPlan {
         consumer: optimized.plan,
         producers: optimized.shared_resident_producers,
@@ -113,7 +113,7 @@ fn repeated_filtered_source_becomes_one_resident_producer() {
     );
 }
 
-fn resident_sources_node_id(plan: &query_engine::plan::QueryPlan) -> NodeId {
+fn resident_sources_node_id(plan: &QueryPlan) -> NodeId {
     plan.nodes()
         .iter()
         .find(|node| {

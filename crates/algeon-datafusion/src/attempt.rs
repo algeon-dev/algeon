@@ -24,12 +24,13 @@ use std::{
     time::Instant,
 };
 
+use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
     common::{
         DataFusionError, Result as DataFusionResult,
-        config::{ConfigExtension, ExtensionOptions},
+        config::{ConfigEntry, ConfigExtension, ExtensionOptions},
     },
-    execution::SessionStateBuilder,
+    execution::{SessionState, SessionStateBuilder, context::TaskContext},
     physical_plan::{
         ExecutionPlan, RecordBatchStream, SendableRecordBatchStream, execute_stream as execute_physical_stream,
     },
@@ -41,7 +42,9 @@ use query_engine::{
         AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptCompletionFactory, AttemptHandle, AttemptOwner,
         BeginAttemptRequest,
     },
+    error::QueryError,
     observability::AttemptFailureSummary,
+    runtime::GpuBackendSession,
 };
 pub use query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
@@ -58,6 +61,7 @@ pub use crate::native_exec::{
 use crate::{
     backend::AlgeonGpuBackend,
     error::{DataFusionErrorExt, Error, ErrorCode, Result},
+    final_plan_observation::observe_final_plan,
     native_exec::{
         SealedAttemptMetricsTarget,
         admission::{
@@ -127,12 +131,11 @@ struct AttemptExecutionState {
     query_id: Option<AttemptQueryId>,
     query_cap_bytes: Option<u64>,
     cancellation: AttemptCancellation,
-    ticket: Mutex<Option<Arc<crate::native_exec::admission::QueryAdmissionTicket>>>,
+    ticket: Mutex<Option<Arc<QueryAdmissionTicket>>>,
     /// The one elected native root that may receive the fixed-cardinality
     /// attempt metric after this attempt's report has sealed. The target is
     /// consumed at seal, so no wrapper can publish a second row.
-    sealed_metrics_target:
-        Mutex<Option<(SealedAttemptMetricsTarget, crate::final_plan_observation::FinalPlanCoverage)>>,
+    sealed_metrics_target: Mutex<Option<(SealedAttemptMetricsTarget, FinalPlanCoverage)>>,
     /// Typed graph claim/peak rows frozen by the elected target at the same
     /// seal point as the immutable attempt report.
     sealed_graph_claim_calibration: Mutex<Option<SealedAttemptGraphClaimCalibrationSnapshot>>,
@@ -146,7 +149,7 @@ impl AttemptExecutionState {
         // Planning supplies a fallback for paths such as CTAS; the actual
         // execution root replaces it before terminal publication so a replan
         // never projects into an unexecuted wrapper.
-        *slot = Some((target, crate::final_plan_observation::observe_final_plan(plan)));
+        *slot = Some((target, observe_final_plan(plan)));
     }
 
     fn publish_sealed_metrics(&self, report: &QueryAttemptReport) {
@@ -278,7 +281,7 @@ impl ExtensionOptions for AlgeonAttemptExtension {
     fn set(&mut self, _key: &str, _value: &str) -> DataFusionResult<()> {
         Err(DataFusionError::Configuration("execution-attempt extension has no options".to_string()))
     }
-    fn entries(&self) -> Vec<datafusion::common::config::ConfigEntry> {
+    fn entries(&self) -> Vec<ConfigEntry> {
         Vec::new()
     }
 }
@@ -295,7 +298,7 @@ pub struct AlgeonAttempt {
     owner: Mutex<Option<AttemptOwner>>,
     state: Arc<AttemptExecutionState>,
     completion_factory: AttemptCompletionFactory,
-    session: query_engine::runtime::GpuBackendSession,
+    session: GpuBackendSession,
 }
 
 impl std::fmt::Debug for AlgeonAttempt {
@@ -467,14 +470,14 @@ impl AlgeonAttempt {
     fn take_owner(&self) -> DataFusionResult<AttemptOwner> {
         self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| {
             DataFusionError::from(Error::new(
-                crate::error::ErrorCode::Internal,
+                ErrorCode::Internal,
                 "algeon_datafusion.attempt.execute",
                 "execution attempt already has a result stream",
             ))
         })
     }
 
-    fn invocation_state(&self, state: datafusion::execution::SessionState) -> datafusion::execution::SessionState {
+    fn invocation_state(&self, state: SessionState) -> SessionState {
         let mut builder = SessionStateBuilder::new_from_existing(state);
         let config = builder.config().get_or_insert_with(Default::default);
         config.options_mut().extensions.insert(AlgeonAttemptExtension::new(Arc::clone(&self.state)));
@@ -501,12 +504,9 @@ impl AlgeonAttempt {
         if !self.session.is_closing() {
             return Ok(());
         }
-        let error = Error::new(
-            crate::error::ErrorCode::Cancelled,
-            operation,
-            "backend is closing; the attempt cannot start planning",
-        )
-        .with_fact("reason", "backend_closing");
+        let error =
+            Error::new(ErrorCode::Cancelled, operation, "backend is closing; the attempt cannot start planning")
+                .with_fact("reason", "backend_closing");
         // Close and caller cancellation are independent typed causes.
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(owner) = owner.as_ref() {
@@ -636,8 +636,8 @@ impl AlgeonAttempt {
     fn task_context_with_attempt_ticket(
         &self,
         plan: &dyn ExecutionPlan,
-        task_context: Arc<datafusion::execution::context::TaskContext>,
-    ) -> Arc<datafusion::execution::context::TaskContext> {
+        task_context: Arc<TaskContext>,
+    ) -> Arc<TaskContext> {
         let Some(admission) = native_admission_plan(plan) else { return task_context };
         let ticket = {
             let mut state = self.state.ticket.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -709,11 +709,9 @@ fn commit_datafusion_error(owner: &AttemptOwner, error: &DataFusionError, cancel
 }
 
 fn commit_adapter_error(owner: &AttemptOwner, error: &Error) {
-    if error.code() == crate::error::ErrorCode::Cancelled {
+    if error.code() == ErrorCode::Cancelled {
         let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
-    } else if let Some(native) =
-        error.source_error().and_then(|source| source.downcast_ref::<query_engine::error::QueryError>())
-    {
+    } else if let Some(native) = error.source_error().and_then(|source| source.downcast_ref::<QueryError>()) {
         let _ = owner.commit_query_error(native);
     } else {
         let _ = owner.commit_failure_summary(AttemptFailureSummary::datafusion_fallback());
@@ -731,7 +729,7 @@ pub struct AttemptStream {
     /// afterwards drops a native admission round, so its cleanup commit sees
     /// the attempt's canonical terminal state before it returns capacity.
     inner: Option<SendableRecordBatchStream>,
-    schema: arrow::datatypes::SchemaRef,
+    schema: SchemaRef,
     owner: AttemptOwner,
     state: Arc<AttemptExecutionState>,
     physical_start_recorded: bool,
@@ -788,23 +786,21 @@ impl AttemptStream {
             Err(error) => {
                 DataFusionError::from(Error::from_native(operation, "execution attempt was cancelled", error))
             },
-            Ok(()) => DataFusionError::from(Error::new(
-                crate::error::ErrorCode::Cancelled,
-                operation,
-                "execution attempt was cancelled",
-            )),
+            Ok(()) => {
+                DataFusionError::from(Error::new(ErrorCode::Cancelled, operation, "execution attempt was cancelled"))
+            },
         }
     }
 }
 
 impl RecordBatchStream for AttemptStream {
-    fn schema(&self) -> arrow::datatypes::SchemaRef {
+    fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
 }
 
 impl Stream for AttemptStream {
-    type Item = DataFusionResult<arrow::record_batch::RecordBatch>;
+    type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();

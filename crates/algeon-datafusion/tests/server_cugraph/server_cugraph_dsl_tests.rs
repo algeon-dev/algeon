@@ -9,8 +9,8 @@ use std::{
 use algeon_datafusion::{
     backend::GpuMemoryOwnership,
     server::{
-        ALGEON_SERVER_CUGRAPH_ENABLED_ENV, PREDICATE_ROLE_METADATA_KEY, REASON_METADATA_KEY, Result as ServerResult,
-        ServerConfig, serve_with_listener,
+        ALGEON_SERVER_CONFIG_FILE_ENV, ALGEON_SERVER_CUGRAPH_ENABLED_ENV, PREDICATE_ROLE_METADATA_KEY,
+        REASON_METADATA_KEY, Result as ServerResult, ServerConfig, init_cuda_device, serve_with_listener,
     },
 };
 use arrow::{
@@ -21,7 +21,10 @@ use arrow::{
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use tonic::transport::Endpoint;
+use tokio::{task::JoinHandle, time::sleep};
+use tonic::transport::{Channel, Endpoint};
+
+use crate::server_gpu_fixture::lock_async;
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {
     config.gpu_memory_ownership =
@@ -32,13 +35,13 @@ fn test_server_config(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("server.toml");
     fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
-    env.insert(algeon_datafusion::server::ALGEON_SERVER_CONFIG_FILE_ENV, path.to_string_lossy().into_owned());
+    env.insert(ALGEON_SERVER_CONFIG_FILE_ENV, path.to_string_lossy().into_owned());
     ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("explicit test device profile")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
-    let _guard = crate::server_gpu_fixture::lock_async().await;
+    let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = test_server_config(env);
@@ -162,7 +165,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
-    let _guard = crate::server_gpu_fixture::lock_async().await;
+    let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = test_server_config(env);
@@ -210,7 +213,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
-    let _guard = crate::server_gpu_fixture::lock_async().await;
+    let _guard = lock_async().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(ALGEON_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = test_server_config(env);
@@ -444,7 +447,7 @@ fn warm_cuda_once() {
     static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     CUDA_WARM.get_or_init(|| {
         // Best-effort: serve_with_listener re-runs (and surfaces) any error.
-        let _ = algeon_datafusion::server::init_cuda_device(0);
+        let _ = init_cuda_device(0);
     });
 }
 
@@ -459,7 +462,7 @@ fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
 }
 
 struct ScopedServer {
-    handle: tokio::task::JoinHandle<ServerResult<()>>,
+    handle: JoinHandle<ServerResult<()>>,
 }
 
 impl ScopedServer {
@@ -602,7 +605,7 @@ fn write_key_parquet(path: &Path, key_col: &str, keys: &[i64]) {
     writer.close().unwrap();
 }
 
-async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
+async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<Channel> {
     let uri = format!("http://{addr}");
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     let mut backoff = Duration::from_millis(10);
@@ -613,28 +616,25 @@ async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClien
                 if std::time::Instant::now() >= deadline {
                     panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
                 }
-                tokio::time::sleep(backoff).await;
+                sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
     }
 }
 
-async fn execute_batches(
-    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
-    sql: &str,
-) -> Vec<arrow::record_batch::RecordBatch> {
+async fn execute_batches(client: &mut FlightSqlServiceClient<Channel>, sql: &str) -> Vec<RecordBatch> {
     let flight_info = client.execute(sql.to_string(), None).await.unwrap();
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
 }
 
-fn single_batch(batches: &[arrow::record_batch::RecordBatch]) -> &arrow::record_batch::RecordBatch {
+fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
     assert_eq!(batches.len(), 1);
     &batches[0]
 }
 
-fn string_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: usize) -> String {
+fn string_value(batch: &RecordBatch, column: usize, row: usize) -> String {
     batch
         .column(column)
         .as_any()
@@ -644,7 +644,7 @@ fn string_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: us
         .to_string()
 }
 
-fn string_values(batches: &[arrow::record_batch::RecordBatch]) -> String {
+fn string_values(batches: &[RecordBatch]) -> String {
     let mut values = Vec::new();
     for batch in batches {
         for column in batch.columns() {
@@ -658,15 +658,15 @@ fn string_values(batches: &[arrow::record_batch::RecordBatch]) -> String {
     values.join("\n")
 }
 
-fn bool_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: usize) -> bool {
+fn bool_value(batch: &RecordBatch, column: usize, row: usize) -> bool {
     batch.column(column).as_any().downcast_ref::<BooleanArray>().expect("column must be BooleanArray").value(row)
 }
 
-fn is_null_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: usize) -> bool {
+fn is_null_value(batch: &RecordBatch, column: usize, row: usize) -> bool {
     batch.column(column).is_null(row)
 }
 
-fn int64_column(batch: &arrow::record_batch::RecordBatch, column: usize) -> Vec<i64> {
+fn int64_column(batch: &RecordBatch, column: usize) -> Vec<i64> {
     let array = batch.column(column).as_any().downcast_ref::<Int64Array>().expect("column must be Int64Array");
     (0..array.len()).map(|row| array.value(row)).collect()
 }

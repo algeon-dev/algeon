@@ -7,7 +7,11 @@
 
 use std::sync::Arc;
 
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::{
+    common::{DataFusionError, Result as DataFusionResult},
+    execution::context::TaskContext,
+    physical_plan::ExecutionPlan,
+};
 pub use query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
@@ -19,6 +23,11 @@ pub use query_engine::{
         ExecutionBoundaryPolicy, LakehouseCacheFillConfig, MemoryControlPolicy, SourceChunkPlanningMode,
         SourceSchedulerPolicy, SourceStorageProfile,
     },
+};
+
+use crate::{
+    attempt::AlgeonAttemptExtension,
+    error::{Error, ErrorCode},
 };
 
 #[cfg(test)]
@@ -83,23 +92,23 @@ pub(crate) fn transparent_root_wrapper_input(plan: &dyn ExecutionPlan) -> Option
 /// Validates every host-materializing GPU descendant against the outer
 /// final-plan occurrence manifest.
 pub(crate) fn validate_host_wrapped_gpu_execution(
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
-    task_context: &datafusion::execution::context::TaskContext,
-) -> datafusion::common::Result<()> {
+    plan: &dyn ExecutionPlan,
+    task_context: &TaskContext,
+) -> DataFusionResult<()> {
     let ticket = admission::query_admission_ticket_from_task_context(task_context)
         .or_else(|| {
             task_context
                 .session_config()
                 .options()
                 .extensions
-                .get::<crate::attempt::AlgeonAttemptExtension>()
-                .and_then(crate::attempt::AlgeonAttemptExtension::bound_ticket)
+                .get::<AlgeonAttemptExtension>()
+                .and_then(AlgeonAttemptExtension::bound_ticket)
         })
         .filter(|ticket| ticket.has_execution_manifest())
         .ok_or_else(|| {
-            datafusion::common::DataFusionError::from(
-                crate::error::Error::new(
-                    crate::error::ErrorCode::InvalidExecutionPlan,
+            DataFusionError::from(
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
                     "algeon_datafusion.native_exec.host_input_staging",
                     "host staging cannot execute a GPU descendant without a final-plan occurrence manifest",
                 )
@@ -107,15 +116,12 @@ pub(crate) fn validate_host_wrapped_gpu_execution(
             )
         })?;
 
-    fn validate(
-        plan: &dyn datafusion::physical_plan::ExecutionPlan,
-        ticket: &std::sync::Arc<admission::QueryAdmissionTicket>,
-    ) -> datafusion::common::Result<bool> {
+    fn validate(plan: &dyn ExecutionPlan, ticket: &Arc<admission::QueryAdmissionTicket>) -> DataFusionResult<bool> {
         if let Some(producer) = gpu_resident_producer(plan) {
             let host_plan = producer.host_result_query_plan()?.ok_or_else(|| {
-                datafusion::common::DataFusionError::from(
-                    crate::error::Error::new(
-                        crate::error::ErrorCode::InvalidExecutionPlan,
+                DataFusionError::from(
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
                         "algeon_datafusion.native_exec.host_input_staging",
                         "a host-wrapped GPU producer does not expose its host execution identity",
                     )
@@ -124,9 +130,9 @@ pub(crate) fn validate_host_wrapped_gpu_execution(
                 )
             })?;
             ticket.validate_host_occurrence(producer.gpu_result_input_name(), &host_plan)?.ok_or_else(|| {
-                datafusion::common::DataFusionError::from(
-                    crate::error::Error::new(
-                        crate::error::ErrorCode::InvalidExecutionPlan,
+                DataFusionError::from(
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
                         "algeon_datafusion.native_exec.host_input_staging",
                         "a host-wrapped GPU producer is not covered by the final-plan occurrence manifest",
                     )
@@ -144,8 +150,8 @@ pub(crate) fn validate_host_wrapped_gpu_execution(
     }
 
     if !validate(plan, &ticket)? {
-        return Err(crate::error::Error::new(
-            crate::error::ErrorCode::InvalidExecutionPlan,
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
             "algeon_datafusion.native_exec.host_input_staging",
             "a host-wrapped native subtree has no admitted GPU function occurrence",
         )

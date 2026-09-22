@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cudf::io::parquet::{RemoteParquetBackendBuildStatus, remote_parquet_backend_build_status};
 use fnv::FnvHasher;
 
 #[cfg(test)]
@@ -13,6 +14,7 @@ use super::{
     LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ResolvedParquetSource, Result,
     TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
 };
+use crate::error::{Error, ErrorCode};
 
 /// Read capability required for a table-format data file location.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,14 +173,14 @@ pub fn resolve_table_format_parquet_source_with_metadata(
         TableFormatReadCapability::ObjectStore { scheme } if scheme == "s3" => {
             resolve_s3_table_format_parquet_source(location, config, metadata)
         },
-        TableFormatReadCapability::ObjectStore { scheme } => Err(crate::error::Error::new(
-            crate::error::ErrorCode::InvalidExecutionPlan,
+        TableFormatReadCapability::ObjectStore { scheme } => Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
             "algeon_datafusion.table_format.resolve_parquet_source",
             "unsupported table-format object-store parquet source scheme",
         )
         .with_fact("source_location_scheme", scheme.as_str())),
-        TableFormatReadCapability::Unsupported { reason } => Err(crate::error::Error::new(
-            crate::error::ErrorCode::InvalidExecutionPlan,
+        TableFormatReadCapability::Unsupported { reason } => Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
             "algeon_datafusion.table_format.resolve_parquet_source",
             "unsupported table-format parquet source location",
         )
@@ -284,12 +286,12 @@ fn remote_kvikio_or_capability_error(
     if let Some(reason) = config.remote_direct_profile_unsupported_reason {
         return reject_remote_kvikio_source(reason);
     }
-    match cudf::io::parquet::remote_parquet_backend_build_status() {
-        cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {},
-        cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
+    match remote_parquet_backend_build_status() {
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {},
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
             return reject_remote_kvikio_source("remote_kvikio_backend_disabled");
         },
-        cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown => {
+        RemoteParquetBackendBuildStatus::Unknown => {
             return reject_remote_kvikio_source("remote_kvikio_backend_unknown");
         },
     }
@@ -298,13 +300,12 @@ fn remote_kvikio_or_capability_error(
 
 #[cfg(test)]
 fn remote_direct_backend_disabled() -> bool {
-    cudf::io::parquet::remote_parquet_backend_build_status()
-        == cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled
+    remote_parquet_backend_build_status() == RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled
 }
 
 fn reject_remote_kvikio_source(unavailable_reason: &'static str) -> Result<ResolvedParquetSource> {
-    Err(crate::error::Error::new(
-        crate::error::ErrorCode::InvalidExecutionPlan,
+    Err(Error::new(
+        ErrorCode::InvalidExecutionPlan,
         "algeon_datafusion.table_format.resolve_parquet_source",
         "native GPU queries require the remote KvikIO source contract",
     )
@@ -465,9 +466,10 @@ mod tests {
 
     use super::*;
     use crate::table_format::{
-        CredentialMode, SourceStorageProfile, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
-        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
-        TableFormatDeleteFileContent, TableFormatLakehouseCacheReadPolicy, TableFormatScanPlan,
+        CredentialMode, ResolvedParquetInput, S3SourceStorageProfile, SourceStorageProfile, TableFormat,
+        TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
+        TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
+        TableFormatLakehouseCacheReadPolicy, TableFormatScanPlan,
         scan::{
             CapabilityReason, DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
             table_format_parquet_read_strategy_config_from_env, table_format_source_read_contract,
@@ -522,7 +524,7 @@ mod tests {
     fn table_format_parquet_read_strategy_config_uses_storage_profile_capability() {
         let default_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-            query_engine::runtime::S3SourceStorageProfile::default_chain(),
+            S3SourceStorageProfile::default_chain(),
         );
         let default_config = TableFormatParquetReadStrategyConfig::default()
             .with_source_storage_profile_remote_direct_capability(&default_profile);
@@ -530,7 +532,7 @@ mod tests {
 
         let region_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-            query_engine::runtime::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
+            S3SourceStorageProfile::default_chain().with_region("us-west-2"),
         );
         let region_config = TableFormatParquetReadStrategyConfig::default()
             .with_source_storage_profile_remote_direct_capability(&region_profile);
@@ -538,7 +540,7 @@ mod tests {
 
         let scoped_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
-            query_engine::runtime::S3SourceStorageProfile::default_chain()
+            S3SourceStorageProfile::default_chain()
                 .with_endpoint("http://localhost:9000")
                 .with_static_credentials("access", "secret", None),
         );
@@ -689,18 +691,18 @@ mod tests {
     }
 
     fn assert_expected_remote_foreground_source(
-        result: crate::error::Result<ResolvedParquetSource>,
+        result: Result<ResolvedParquetSource>,
     ) -> Option<ResolvedParquetSource> {
         if remote_direct_backend_disabled() {
             let error = result.unwrap_err();
-            assert_eq!(error.code(), crate::error::ErrorCode::InvalidExecutionPlan);
+            assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
             assert_eq!(error.fact_value("reason"), Some("remote_kvikio_unavailable"));
             assert_eq!(error.fact_value("remote_kvikio_unavailable_reason"), Some("remote_kvikio_backend_disabled"));
             None
         } else {
             let source = result.unwrap();
             assert_eq!(source.read_strategy().as_str(), "remote_direct");
-            assert!(matches!(&source.input, query_engine::source::ResolvedParquetInput::RemoteKvikio { .. }));
+            assert!(matches!(&source.input, ResolvedParquetInput::RemoteKvikio { .. }));
             Some(source)
         }
     }
@@ -748,10 +750,7 @@ mod tests {
             assert_eq!(source.read_strategy().as_str(), "remote_direct");
             assert!(matches!(
                 &source.input,
-                query_engine::source::ResolvedParquetInput::RemoteKvikio {
-                    credential_mode: CredentialMode::ScopedResolved,
-                    ..
-                }
+                ResolvedParquetInput::RemoteKvikio { credential_mode: CredentialMode::ScopedResolved, .. }
             ));
         }
     }
@@ -777,7 +776,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(source.read_strategy().as_str(), "local_cache_kvikio");
-        assert!(matches!(&source.input, query_engine::source::ResolvedParquetInput::LocalKvikio { .. }));
+        assert!(matches!(&source.input, ResolvedParquetInput::LocalKvikio { .. }));
         assert_eq!(source.cache_status, LakehouseCacheStatus::Hit);
         assert_eq!(source.reader_location(), cache_path.display().to_string());
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));

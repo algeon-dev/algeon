@@ -131,7 +131,7 @@ install_telemetry = true
     let first = &config.gpu_device_profiles[0];
     let second = &config.gpu_device_profiles[1];
     assert_eq!(first.device_ordinal(), 0);
-    assert_eq!(first.memory_limit(), algeon_datafusion::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 });
+    assert_eq!(first.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 });
     assert_eq!(first.backend_reserve_bytes(), 0);
     assert_eq!(first.default_query_limit_bytes(), Some(512));
     assert_eq!(first.cache_cap_bytes(), 0);
@@ -141,7 +141,7 @@ install_telemetry = true
     assert!(!first.install_telemetry());
 
     assert_eq!(second.device_ordinal(), 3);
-    assert_eq!(second.memory_limit(), algeon_datafusion::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 });
+    assert_eq!(second.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 });
     assert_eq!(second.backend_reserve_bytes(), 128);
     assert_eq!(second.default_query_limit_bytes(), Some(1024));
     assert_eq!(second.cache_cap_bytes(), 2048);

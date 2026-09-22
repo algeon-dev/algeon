@@ -1,4 +1,4 @@
-use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
+use arrow::datatypes::{DataType as ArrowDataType, Field, FieldRef, Fields, TimeUnit};
 use query_engine::{
     error::QueryErrorCode,
     materialization_sizing::{
@@ -202,12 +202,8 @@ fn unsupported_dtypes_are_rejected() {
         ArrowDataType::LargeBinary,
         ArrowDataType::FixedSizeBinary(32),
         ArrowDataType::Float16,
-        ArrowDataType::List(arrow::datatypes::FieldRef::new(arrow::datatypes::Field::new(
-            "item",
-            ArrowDataType::Int32,
-            true,
-        ))),
-        ArrowDataType::Struct(arrow::datatypes::Fields::empty()),
+        ArrowDataType::List(FieldRef::new(Field::new("item", ArrowDataType::Int32, true))),
+        ArrowDataType::Struct(Fields::empty()),
     ] {
         let error = join_output_upper_bound_bytes(10, &[fixed_column(dtype.clone())]).unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape, "dtype {dtype:?}");

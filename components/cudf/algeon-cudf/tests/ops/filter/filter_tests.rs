@@ -3,7 +3,7 @@ use cudf::{ErrorCode, ErrorKind, core::Table, ops::filter, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, error_context_value, explicit_bool_column, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases,
 };
 
 fn test_boolean_mask_basic() {
@@ -118,7 +118,7 @@ fn test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract() 
 
 #[test]
 fn filter_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_boolean_mask_basic", test_boolean_mask_basic),
         ("test_boolean_mask_all_false", test_boolean_mask_all_false),
         ("test_boolean_mask_all_true", test_boolean_mask_all_true),

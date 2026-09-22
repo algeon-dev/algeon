@@ -1,5 +1,17 @@
 use std::sync::Arc;
 
+use query_engine::{
+    error::Result as QueryEngineResult,
+    exec::{
+        CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
+        CompiledTaskExecutor, CompiledTaskOutput, ExecutionMetrics,
+    },
+    expr::ColumnRef,
+    pipeline::{PipelineTask, PipelineTaskKind, ResidentResourceId, compile_pipeline},
+    plan::NodeId,
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -134,7 +146,7 @@ fn incremental_partitioned_merge_builder(
     dir: &Path,
     row_groups: usize,
     rows_per_row_group: usize,
-) -> (QueryPlanBuilder, query_engine::plan::NodeId, Arc<Schema>) {
+) -> (QueryPlanBuilder, NodeId, Arc<Schema>) {
     let path = dir.join(format!("input-{row_groups}.parquet"));
     let input_schema = write_unique_key_row_grouped_parquet(&path, row_groups, rows_per_row_group);
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -180,14 +192,11 @@ fn incremental_partitioned_merge_builder(
         dimension,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "d", "d"),
-                query_engine::expr::ColumnRef::input(1, "d", "d"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "d", "d"), ColumnRef::input(1, "d", "d"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "key", "key"), "key"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "value", "value"), "value"),
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -366,28 +375,24 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "count_value", "count_value"),
-                query_engine::expr::ColumnRef::input(1, "count_value", "count_value"),
+                ColumnRef::input(0, "count_value", "count_value"),
+                ColumnRef::input(1, "count_value", "count_value"),
             )],
         )
         .with_build_side(JoinSide::Right)
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "key", "key"), "left_key"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "key", "key"), "right_key"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "sum_value", "sum_value"), "left_sum"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "sum_value", "sum_value"), "right_sum"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "avg_value", "avg_value"), "left_avg"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "avg_value", "avg_value"), "right_avg"),
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "left_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "key", "key"), "right_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sum_value", "sum_value"), "left_sum"),
+            JoinOutputColumn::right(ColumnRef::input(1, "sum_value", "sum_value"), "right_sum"),
+            JoinOutputColumn::left(ColumnRef::input(0, "avg_value", "avg_value"), "left_avg"),
+            JoinOutputColumn::right(ColumnRef::input(1, "avg_value", "avg_value"), "right_avg"),
         ]),
         output_schema,
     );
     let plan = builder.finish_with_host_sink(joined);
-    let pipeline = query_engine::pipeline::compile_pipeline(
-        &plan,
-        &plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()),
-    )
-    .unwrap();
-    let scheduler = query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
+    let pipeline = compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context())).unwrap();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).unwrap();
     let cap = 960 * 1024 * 1024;
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
         device_budget_bytes: cap,
@@ -398,17 +403,11 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     });
     let admitted = context.admit_plan_for_compiled_executor_test(&plan).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
-    let metrics_recorder = query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_recorder = ExecutionMetrics::detached("metrics");
     let (state, batch) = {
         let metrics_context = metrics_recorder.scope_context(&admitted).unwrap();
-        let mut executor = query_engine::exec::CompiledGpuTaskExecutor::new(
-            &metrics_context,
-            &plan,
-            &pipeline,
-            &gpu_inputs,
-            &metrics_recorder,
-        )
-        .unwrap();
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
         let state = scheduler.run(&mut executor).unwrap();
         (state, executor.take_host_output().unwrap())
     };
@@ -433,10 +432,10 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
     drop(admitted);
 
     let admitted = context.admit_plan_for_compiled_executor_test(&plan).unwrap();
-    let cancellation_metrics_recorder = query_engine::exec::ExecutionMetrics::detached("cancellation_metrics");
+    let cancellation_metrics_recorder = ExecutionMetrics::detached("cancellation_metrics");
     let (result, retained_at_cancel) = {
         let cancellation_metrics_context = cancellation_metrics_recorder.scope_context(&admitted).unwrap();
-        let mut executor = query_engine::exec::CompiledGpuTaskExecutor::new(
+        let mut executor = CompiledGpuTaskExecutor::new(
             &cancellation_metrics_context,
             &plan,
             &pipeline,
@@ -459,36 +458,32 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
 }
 
 struct CancelAfterFinalAggregateConsumer<'a, 'execution> {
-    executor: &'a mut query_engine::exec::CompiledGpuTaskExecutor<'execution>,
+    executor: &'a mut CompiledGpuTaskExecutor<'execution>,
     context: &'a ExecutionContext,
     retained_at_cancel: Option<u64>,
 }
 
-impl query_engine::exec::CompiledTaskExecutor for CancelAfterFinalAggregateConsumer<'_, '_> {
-    type Resource = query_engine::exec::CompiledGpuResource;
+impl CompiledTaskExecutor for CancelAfterFinalAggregateConsumer<'_, '_> {
+    type Resource = CompiledGpuResource;
 
     fn execute_task(
         &mut self,
-        task: &query_engine::pipeline::PipelineTask,
-        state: &mut query_engine::exec::CompiledPipelineState<Self::Resource>,
-    ) -> query_engine::error::Result<query_engine::exec::CompiledTaskOutput<Self::Resource>> {
+        task: &PipelineTask,
+        state: &mut CompiledPipelineState<Self::Resource>,
+    ) -> QueryEngineResult<CompiledTaskOutput<Self::Resource>> {
         let output = self.executor.execute_task(task, state)?;
-        if task.kind() == query_engine::pipeline::PipelineTaskKind::FinalSort && self.retained_at_cancel.is_none() {
+        if task.kind() == PipelineTaskKind::FinalSort && self.retained_at_cancel.is_none() {
             self.retained_at_cancel = Some(self.context.attempt_allocation_domain_usage()?.unwrap().current_bytes);
             self.context.cancellation().cancel();
         }
         Ok(output)
     }
 
-    fn release_resource(
-        &mut self,
-        resource: query_engine::pipeline::ResidentResourceId,
-        payload: Self::Resource,
-    ) -> query_engine::error::Result<()> {
+    fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> QueryEngineResult<()> {
         self.executor.release_resource(resource, payload)
     }
 
-    fn cleanup_after_error(&mut self) -> query_engine::error::Result<()> {
+    fn cleanup_after_error(&mut self) -> QueryEngineResult<()> {
         self.executor.cleanup_after_error()
     }
 }

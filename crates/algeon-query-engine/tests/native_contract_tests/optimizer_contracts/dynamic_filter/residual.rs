@@ -91,7 +91,7 @@ fn native_optimizer_discovers_residual_equality_route_between_filtered_dimension
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     let route = result
         .plan
@@ -226,7 +226,7 @@ fn native_optimizer_rejects_residual_equality_route_when_producer_lineage_crosse
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     assert!(result.diagnostics.dynamic_filter_route_discovery.candidates.iter().any(|candidate| {
         candidate.candidate_node_id == root
@@ -343,7 +343,7 @@ fn native_optimizer_avoids_mutual_residual_equality_dynamic_filter_cycle() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
 
     let residual_week_routes = result
         .plan

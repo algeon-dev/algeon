@@ -1,10 +1,11 @@
 use std::{collections::HashSet, sync::Arc};
 
-use algeon_datafusion::error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorStatus};
+use algeon_datafusion::error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorStatus, Result};
 use arrow::error::ArrowError;
 use datafusion::common::{DataFusionError, Diagnostic, Result as DataFusionResult};
 use query_engine::{
     error::{QueryError, QueryErrorCode, QueryErrorStatus},
+    runtime::ExecutionCancellation,
     triage::{TriageCode, TriageVerdict},
 };
 
@@ -253,31 +254,31 @@ fn error_code_projections_are_stable_policy_contracts() {
 fn native_source_storage_errors_preserve_adapter_status_mapping() {
     for (native_code, adapter_code, adapter_kind, adapter_status) in [
         (
-            query_engine::error::QueryErrorCode::SourceAccessDenied,
+            QueryErrorCode::SourceAccessDenied,
             ErrorCode::SourceAccessDenied,
             ErrorKind::PermissionDenied,
             ErrorStatus::Permanent,
         ),
         (
-            query_engine::error::QueryErrorCode::SourceUnauthenticated,
+            QueryErrorCode::SourceUnauthenticated,
             ErrorCode::SourceUnauthenticated,
             ErrorKind::Unauthenticated,
             ErrorStatus::Permanent,
         ),
         (
-            query_engine::error::QueryErrorCode::SourceObjectNotFound,
+            QueryErrorCode::SourceObjectNotFound,
             ErrorCode::SourceObjectNotFound,
             ErrorKind::NotFound,
             ErrorStatus::Permanent,
         ),
         (
-            query_engine::error::QueryErrorCode::SourceTemporaryFailure,
+            QueryErrorCode::SourceTemporaryFailure,
             ErrorCode::SourceTemporaryFailure,
             ErrorKind::DependencyFailure,
             ErrorStatus::Temporary,
         ),
     ] {
-        let native_error = query_engine::error::QueryError::new(
+        let native_error = QueryError::new(
             native_code,
             "query_engine.source_metadata.object_store_footer",
             "source object storage failure",
@@ -299,8 +300,8 @@ fn native_source_storage_errors_preserve_adapter_status_mapping() {
 
 #[test]
 fn native_service_overloaded_error_preserves_adapter_classification_and_facts() {
-    let native_error = query_engine::error::QueryError::new(
-        query_engine::error::QueryErrorCode::ServiceOverloaded,
+    let native_error = QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
         "query_engine.query_service.admit",
         "native query service is overloaded",
     )
@@ -359,17 +360,14 @@ fn native_query_error_json_uses_fact_only_correlation_ids() {
 
 #[test]
 fn native_query_error_triage_codes_preserve_invalid_input_and_unsupported_capability() {
-    assert_eq!(query_engine::triage::TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
-    assert_eq!(
-        query_engine::triage::TriageCode::from(QueryErrorCode::CudfUnsupported),
-        TriageCode::UnsupportedPlanShape
-    );
+    assert_eq!(TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
+    assert_eq!(TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedPlanShape);
 }
 
 #[test]
 fn native_error_message_is_preserved_as_adapter_fact() {
-    let native_error = query_engine::error::QueryError::new(
-        query_engine::error::QueryErrorCode::InvalidPlan,
+    let native_error = QueryError::new(
+        QueryErrorCode::InvalidPlan,
         "query_engine.graph_algorithm.betweenness_seed_policy",
         "exact betweenness requires explicit seeds or k above the configured vertex threshold",
     );
@@ -388,8 +386,8 @@ fn native_error_message_is_preserved_as_adapter_fact() {
 
 #[test]
 fn native_correlation_facts_follow_stamped_query_error() {
-    let native_error = query_engine::error::QueryError::new(
-        query_engine::error::QueryErrorCode::InvalidPlan,
+    let native_error = QueryError::new(
+        QueryErrorCode::InvalidPlan,
         "query_engine.query_service.context",
         "query service handle was released before context acquisition",
     )
@@ -407,8 +405,8 @@ fn native_correlation_facts_follow_stamped_query_error() {
 
 #[test]
 fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
-    let native_error = query_engine::error::QueryError::new(
-        query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+    let native_error = QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
         "query_engine.plan.lower",
         "native plan shape is not supported",
     )
@@ -499,7 +497,7 @@ fn plain_pre_algeon_datafusion_failure_keeps_its_variant_and_prose() {
     assert!(error.find_algeon_error().is_none());
 }
 
-fn algeon_control_plane_failure() -> algeon_datafusion::error::Result<()> {
+fn algeon_control_plane_failure() -> Result<()> {
     Err(algeon_error("algeon_datafusion.control_plane.open", "failed to open Algeon backend"))
 }
 
@@ -639,7 +637,7 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
 
 #[test]
 fn native_cancelled_error_preserves_adapter_classification_and_facts() {
-    let native_error = query_engine::runtime::ExecutionCancellation::new();
+    let native_error = ExecutionCancellation::new();
     native_error.cancel();
     let adapter_error = Error::from_native(
         "algeon_datafusion.native_exec.execute",
@@ -656,8 +654,8 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
 
 #[test]
 fn native_retry_error_preserves_resume_boundary_facts() {
-    let native_error = query_engine::error::QueryError::new(
-        query_engine::error::QueryErrorCode::MemoryReservationFailed,
+    let native_error = QueryError::new(
+        QueryErrorCode::MemoryReservationFailed,
         "query_engine.final_sort.topk_concat",
         "native final sort exhausted bounded memory",
     )

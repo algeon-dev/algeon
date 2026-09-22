@@ -8,7 +8,11 @@ use arrow::{
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use datafusion::{datasource::MemTable, execution::SessionStateBuilder, prelude::SessionContext};
+use datafusion::{
+    datasource::MemTable,
+    execution::{SessionState, SessionStateBuilder},
+    prelude::SessionContext,
+};
 
 pub const KNN_OPTIONS: &str = r#"{
   "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
@@ -38,7 +42,7 @@ pub fn cuvs_context_with_native_execution_config(config: AlgeonNativeExecutionCo
     context_with_state(state)
 }
 
-fn context_with_state(state: datafusion::execution::SessionState) -> SessionContext {
+fn context_with_state(state: SessionState) -> SessionContext {
     let ctx = SessionContext::new_with_state(state);
     register_table(&ctx, "dataset_vectors", vector_schema("item_id", DataType::Int64, false, 2));
     register_table(&ctx, "query_vectors", vector_schema("query_id", DataType::Utf8, false, 2));

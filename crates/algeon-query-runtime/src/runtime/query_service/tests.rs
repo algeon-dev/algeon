@@ -6,16 +6,43 @@ use std::{
     time::{Duration, Instant},
 };
 
+use arrow::{
+    array::Int32Array,
+    datatypes::{DataType, Field, Schema, SchemaRef},
+    record_batch::RecordBatch,
+};
+use cudf::{
+    DataFrame, DeviceId, ErrorKind as CudfErrorKind, QueryMemoryDomainUsage, Runtime as CudfRuntime,
+    runtime::{DeviceFaultKind, DeviceFaultNativeStatus, report_device_fault},
+    testing::device_safety::DeviceSafetyTestScope,
+};
+use query_planning::admission::AttemptCapabilityEvidence;
+use tokio::{
+    sync::{Barrier as TokioBarrier, Semaphore, oneshot},
+    task::yield_now,
+    time::{Instant as TokioInstant, sleep_until, timeout},
+};
+
 use super::{admission::AdmissionTicket, *};
 use crate::{
+    attempt::{AttemptBackendCounters, AttemptLifecycleError, AttemptOwner, BeginAttemptRequest},
     observability::{
-        AdmissionLifecycleState, AttemptFailureCode, AttemptFailureStatus, GpuJobLifecycleState, PlanExecutionId,
-        QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
-        RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, RuntimeTraceId, StreamLeaseLifecycleState,
+        AdmissionLifecycleState, AttemptAdmissionFact, AttemptAllocatorEventAction, AttemptAllocatorEventSource,
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDeviceHealthStatus, AttemptDisposition,
+        AttemptEvidenceField, AttemptEvidenceProvenance, AttemptFailureCode, AttemptFailureStatus,
+        AttemptFaultIsolation, AttemptHealthTransition, AttemptNativeFaultKind, AttemptNativeStatus,
+        AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTeardownHealth, CleanupFailurePhase,
+        CleanupFailureSummary, GpuJobLifecycleState, PlanExecutionId, QueryBoundaryKind, RuntimeObservationConfig,
+        RuntimeObservationOwner, RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome,
+        RuntimeTraceId, StreamLeaseLifecycleState,
     },
     runtime::{
-        DeviceResourceEnvelope, DeviceResourceProfile, GdsDriverProbeStatus, GpuBackendDeviceInstallationBounds,
-        GpuBackendDeviceProfile, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+        BackendLifecycle, DeviceResourceEnvelope, DeviceResourceProfile, GdsDriverProbeStatus,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, KvikioCompatModeStatus, LakehouseCacheFillEvent,
+        LakehouseCacheFillOutcome, NvidiaFsProbeStatus,
+        gpu::DeviceAdmissionHealth,
+        resident::{GpuDataFrame, GpuResultHandle},
+        service_stream::{StreamCleanupOutcome, block_stream_cleanup_thread_for_test},
     },
 };
 

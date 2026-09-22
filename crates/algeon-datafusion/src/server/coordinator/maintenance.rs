@@ -1,9 +1,13 @@
 //! Maintenance loop, shutdown plan, and clock abstraction.
 
-use std::{sync::Arc, time::Instant};
+use std::{result::Result as StdResult, sync::Arc, time::Instant};
 
 use futures::future::BoxFuture;
-use tokio::{sync::futures::Notified, task::JoinHandle};
+use tokio::{
+    sync::futures::Notified,
+    task::{JoinError, JoinHandle},
+    time::{Instant as TokioInstant, sleep_until},
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -35,7 +39,7 @@ impl CoordinatorMaintenanceClock for TokioCoordinatorMaintenanceClock {
     }
 
     fn sleep_until(&self, deadline: Instant) -> BoxFuture<'_, ()> {
-        Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)))
+        Box::pin(sleep_until(TokioInstant::from_std(deadline)))
     }
 }
 
@@ -64,10 +68,7 @@ impl QueryCoordinatorMaintenance {
 
     /// Join only after graceful finalization or the configured forced,
     /// incomplete shutdown conversion has made the live registry empty.
-    pub(crate) async fn finish(
-        mut self,
-        plan: QueryCoordinatorShutdownPlan,
-    ) -> std::result::Result<bool, tokio::task::JoinError> {
+    pub(crate) async fn finish(mut self, plan: QueryCoordinatorShutdownPlan) -> StdResult<bool, JoinError> {
         let mut deadline_expired = false;
         loop {
             let now = self.clock.now();

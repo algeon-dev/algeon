@@ -1,24 +1,23 @@
 use cudf::{Runtime, StreamDependencyOutcome, testing::prelude::*};
+use cudf_sys::test_support;
 use rapids_interop::{CudaStreamHandle, ExecutionBinding, InteropErrorKind};
 
-use crate::common::lock_event_observation;
+use crate::common::{lock_event_observation, run_named_cases};
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
+    unsafe { test_support::cudf_test_event_reset_observation() };
 }
 
 fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream wait observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
     out
 }
@@ -123,7 +122,7 @@ fn order_after_execution_binding_rejects_cross_device_bindings_before_cuda_order
 
 #[test]
 fn runtime_execution_binding_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "runtime_execution_binding_matches_retained_runtime_provenance",
             runtime_execution_binding_matches_retained_runtime_provenance,

@@ -8,16 +8,18 @@ static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
+    fmt::{self, Formatter},
     panic::{AssertUnwindSafe, catch_unwind},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     task::{Context, Poll},
+    thread,
     time::Duration,
 };
 
-use arrow::datatypes::SchemaRef;
+use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
+    common::{DataFusionError, Result as DataFusionResult, Statistics, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
     physical_expr::{OrderingRequirements, PhysicalExpr},
     physical_plan::{
@@ -32,12 +34,15 @@ use query_engine::metrics::QueryId;
 use query_engine::{
     admission::AttemptCapabilityEvidence,
     attempt::{
-        AttemptAdmissionBinding, AttemptCancellation, AttemptExecutionRound, AttemptHandle, AttemptHostOccurrence,
+        AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptCancellation, AttemptExecutionRound, AttemptHandle,
+        AttemptHostOccurrence,
     },
+    error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
     observability::{
-        AttemptAdmissionFact, AttemptComposedScheduleProjection, RuntimeObservationConfig, RuntimeObservationOwner,
-        RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+        AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptFailureSummary,
+        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
     },
+    plan::QueryPlan,
     runtime::{AdmittedQueryContext, ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryHandle},
 };
 use tokio::sync::Notify;
@@ -75,7 +80,7 @@ impl QueryAdmissionSource {
 pub(crate) struct QueryAdmissionFacts {
     pub(crate) admission_sequence: u64,
     pub(crate) admission_wait: Duration,
-    pub(crate) admission_wait_fact: Option<query_engine::observability::AttemptAdmissionWaitFact>,
+    pub(crate) admission_wait_fact: Option<AttemptAdmissionWaitFact>,
     pub(crate) device_ordinal: usize,
     pub(crate) query_grant_bytes: u64,
 }
@@ -104,7 +109,7 @@ impl TicketQueryHandle {
         self.0.admission_wait()
     }
 
-    fn admission_wait_fact(&self) -> Option<query_engine::observability::AttemptAdmissionWaitFact> {
+    fn admission_wait_fact(&self) -> Option<AttemptAdmissionWaitFact> {
         self.0.admission_wait_fact()
     }
 
@@ -119,7 +124,7 @@ impl TicketQueryHandle {
     async fn acquire_context_with_cancellation_async(
         &self,
         cancellation: ExecutionCancellation,
-    ) -> query_engine::error::Result<AdmittedQueryContext> {
+    ) -> QueryEngineResult<AdmittedQueryContext> {
         self.0.acquire_context_with_cancellation_async(cancellation).await
     }
 
@@ -173,7 +178,7 @@ pub(crate) fn query_admission_ticket_from_task_context(
 #[derive(Debug, Clone)]
 pub(crate) struct AttemptTicketBinding {
     pub(crate) handle: AttemptHandle,
-    pub(crate) admission_rejection: query_engine::attempt::AttemptAdmissionRejection,
+    pub(crate) admission_rejection: AttemptAdmissionRejection,
     pub(crate) admission_binding: AttemptAdmissionBinding,
     pub(crate) cancellation: AttemptCancellation,
     /// Exact cap supplied by the invocation owner, if any. It is copied into
@@ -429,7 +434,7 @@ impl QueryAdmissionTicket {
         task_context: &Arc<TaskContext>,
         occurrence_id: &str,
         producer_identity: &str,
-        plan: &query_engine::plan::QueryPlan,
+        plan: &QueryPlan,
     ) -> DataFusionResult<Option<AttemptHostOccurrence>> {
         if !self.has_execution_manifest() {
             return Ok(None);
@@ -468,7 +473,7 @@ impl QueryAdmissionTicket {
     pub(crate) fn validate_host_occurrence(
         &self,
         producer_identity: &str,
-        plan: &query_engine::plan::QueryPlan,
+        plan: &QueryPlan,
     ) -> DataFusionResult<Option<()>> {
         let Some(evidence) = self.current_capability_evidence() else {
             return Ok(None);
@@ -488,7 +493,7 @@ impl QueryAdmissionTicket {
     fn current_capability_evidence(&self) -> Option<AttemptCapabilityEvidence> {
         self.rebound_capability_evidence
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .or_else(|| self.attempt_capability_evidence.clone())
     }
@@ -499,19 +504,19 @@ impl QueryAdmissionTicket {
     pub(crate) fn extend_capability_evidence_before_admission(
         &self,
         fragments: impl IntoIterator<Item = AttemptCapabilityEvidence>,
-    ) -> query_engine::error::Result<()> {
+    ) -> QueryEngineResult<()> {
         let state = self.lock_state()?;
         if !state.admitting.is_empty() || state.rounds.values().any(|round| round.handle.is_some()) {
-            return Err(query_engine::error::QueryError::new(
-                query_engine::error::QueryErrorCode::InvalidPlan,
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
                 "algeon_datafusion.native_exec.admission_ticket",
                 "cannot extend query admission capability evidence after admission has started",
             )
             .with_fact("reason", "capability_evidence_extension_after_admission"));
         }
         let mut rebound = self.rebound_capability_evidence.lock().map_err(|_| {
-            query_engine::error::QueryError::new(
-                query_engine::error::QueryErrorCode::Internal,
+            QueryError::new(
+                QueryErrorCode::Internal,
                 "algeon_datafusion.native_exec.admission_ticket",
                 "query admission capability evidence lock was poisoned",
             )
@@ -567,13 +572,13 @@ impl QueryAdmissionTicket {
     pub(crate) fn record_attempt_composed_schedule_projection(
         &self,
         projection: AttemptComposedScheduleProjection,
-    ) -> query_engine::error::Result<()> {
+    ) -> QueryEngineResult<()> {
         let Some(binding) = &self.attempt else {
             return Ok(());
         };
         binding.handle.record_composed_schedule_projection(projection).map_err(|error| {
-            query_engine::error::QueryError::new(
-                query_engine::error::QueryErrorCode::Internal,
+            QueryError::new(
+                QueryErrorCode::Internal,
                 "algeon_datafusion.native_exec.admission_ticket",
                 "failed to publish the admitted composed schedule to the attempt report",
             )
@@ -585,7 +590,7 @@ impl QueryAdmissionTicket {
     /// Captures a native failure while it is still borrowed by this adapter
     /// path.  This is deliberately record-only: the post-cleanup finalizer
     /// remains the sole admitted terminal/seal authority.
-    fn record_attempt_native_failure(&self, error: &query_engine::error::QueryError) {
+    fn record_attempt_native_failure(&self, error: &QueryError) {
         if let Some(binding) = &self.attempt {
             binding.handle.record_native_failure(error);
         }
@@ -597,9 +602,7 @@ impl QueryAdmissionTicket {
     /// for ordinary non-admitted terminalization.
     fn record_attempt_datafusion_failure(&self, error: &DataFusionError) {
         let Some(error) = error.find_algeon_error() else { return };
-        let Some(native) =
-            error.source_error().and_then(|source| source.downcast_ref::<query_engine::error::QueryError>())
-        else {
+        let Some(native) = error.source_error().and_then(|source| source.downcast_ref::<QueryError>()) else {
             return;
         };
         self.record_attempt_native_failure(native);
@@ -609,7 +612,7 @@ impl QueryAdmissionTicket {
         self.attempt.as_ref().map(|binding| binding.cancellation.execution_cancellation()).unwrap_or(fallback)
     }
 
-    fn terminalize_attempt_admission_error(&self, error: &query_engine::error::QueryError) {
+    fn terminalize_attempt_admission_error(&self, error: &QueryError) {
         let Some(binding) = &self.attempt else { return };
         let _ = binding.admission_rejection.reject(error);
     }
@@ -649,7 +652,7 @@ impl QueryAdmissionTicket {
     pub(crate) fn begin_execution_round(
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
-    ) -> query_engine::error::Result<QueryAdmissionExecutionRoundGuard> {
+    ) -> QueryEngineResult<QueryAdmissionExecutionRoundGuard> {
         let task_key = Self::task_key(&task_context);
         let execution_manifest =
             self.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned());
@@ -693,7 +696,7 @@ impl QueryAdmissionTicket {
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
-    ) -> query_engine::error::Result<TicketAdmissionContext> {
+    ) -> QueryEngineResult<TicketAdmissionContext> {
         let task_key = Self::task_key(&task_context);
         let execution_manifest =
             self.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned());
@@ -785,7 +788,7 @@ impl QueryAdmissionTicket {
         epoch: u64,
         cancellation: ExecutionCancellation,
         observation: NativeRuntimeObservation,
-    ) -> query_engine::error::Result<TicketAdmissionContext> {
+    ) -> QueryEngineResult<TicketAdmissionContext> {
         let cancellation = self.attempt_cancellation(cancellation);
         if let Some(binding) = &self.attempt {
             let _ = binding.handle.record_admission_requested();
@@ -877,8 +880,8 @@ impl QueryAdmissionTicket {
             let Some(round) = state.rounds.get_mut(&task_key) else {
                 reset_guard.disarmed = true;
                 self.notify.notify_waiters();
-                let error = query_engine::error::QueryError::new(
-                    query_engine::error::QueryErrorCode::Internal,
+                let error = QueryError::new(
+                    QueryErrorCode::Internal,
                     "algeon_datafusion.native_exec.admission_ticket",
                     "query admission ticket execution round disappeared during admission",
                 );
@@ -890,8 +893,8 @@ impl QueryAdmissionTicket {
             if round.epoch != epoch {
                 reset_guard.disarmed = true;
                 self.notify.notify_waiters();
-                let error = query_engine::error::QueryError::new(
-                    query_engine::error::QueryErrorCode::Internal,
+                let error = QueryError::new(
+                    QueryErrorCode::Internal,
                     "algeon_datafusion.native_exec.admission_ticket",
                     "query admission ticket execution round changed during admission",
                 );
@@ -917,7 +920,7 @@ impl QueryAdmissionTicket {
         task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
         observation: NativeRuntimeObservation,
-    ) -> query_engine::error::Result<TicketAdmissionContext> {
+    ) -> QueryEngineResult<TicketAdmissionContext> {
         let mut pending_guard = QueryAdmissionPendingContextGuard {
             ticket: Arc::clone(self),
             task_key,
@@ -1042,7 +1045,7 @@ impl QueryAdmissionTicket {
     }
 
     fn drop_outcome(normal: RuntimeTerminalOutcome) -> RuntimeTerminalOutcome {
-        if std::thread::panicking() { RuntimeTerminalOutcome::Panicked } else { normal }
+        if thread::panicking() { RuntimeTerminalOutcome::Panicked } else { normal }
     }
 
     fn reset_admitting(&self, task_key: usize) {
@@ -1054,15 +1057,11 @@ impl QueryAdmissionTicket {
         self.notify.notify_waiters();
     }
 
-    fn observation_outcome_for_error(error: &query_engine::error::QueryError) -> RuntimeTerminalOutcome {
+    fn observation_outcome_for_error(error: &QueryError) -> RuntimeTerminalOutcome {
         RuntimeTerminalOutcome::from_query_error(error)
     }
 
-    fn record_observation_outcome_for_error(
-        &self,
-        observation: &NativeRuntimeObservation,
-        error: &query_engine::error::QueryError,
-    ) {
+    fn record_observation_outcome_for_error(&self, observation: &NativeRuntimeObservation, error: &QueryError) {
         // An attempt-bound ticket has only a coordinated observation handle
         // here, so its release can otherwise finalise before the outer
         // adapter gets a chance to inspect this borrowed error.
@@ -1072,18 +1071,14 @@ impl QueryAdmissionTicket {
         }
     }
 
-    fn finish_observation_for_error(
-        &self,
-        observation: &NativeRuntimeObservation,
-        error: &query_engine::error::QueryError,
-    ) {
+    fn finish_observation_for_error(&self, observation: &NativeRuntimeObservation, error: &QueryError) {
         self.finish_observation(observation, Self::observation_outcome_for_error(error));
     }
 
-    fn lock_state(&self) -> query_engine::error::Result<std::sync::MutexGuard<'_, TicketState>> {
+    fn lock_state(&self) -> QueryEngineResult<MutexGuard<'_, TicketState>> {
         self.state.lock().map_err(|_error| {
-            query_engine::error::QueryError::new(
-                query_engine::error::QueryErrorCode::Internal,
+            QueryError::new(
+                QueryErrorCode::Internal,
                 "algeon_datafusion.native_exec.admission_ticket",
                 "query admission ticket state mutex was poisoned",
             )
@@ -1113,11 +1108,11 @@ impl QueryAdmissionTicket {
 impl Drop for QueryAdmissionTicket {
     fn drop(&mut self) {
         let observation_capture = self.observation_capture.clone();
-        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
         let initial_observation = state.initial_observation.take();
         let orphaned_rounds = state.rounds.drain().map(|(_, round)| round).collect::<Vec<_>>();
         let outcome =
-            if std::thread::panicking() { RuntimeTerminalOutcome::Panicked } else { RuntimeTerminalOutcome::Dropped };
+            if thread::panicking() { RuntimeTerminalOutcome::Panicked } else { RuntimeTerminalOutcome::Dropped };
         if let Some(observation) = initial_observation {
             Self::finish_observation_isolated(&observation, outcome.clone(), observation_capture.as_ref());
         }
@@ -1181,9 +1176,7 @@ impl QueryAdmissionExecutionRoundGuard {
         self.ticket.record_attempt_datafusion_failure(error);
         let outcome = match error.find_algeon_error() {
             Some(error) if error.code() == ErrorCode::Cancelled => RuntimeTerminalOutcome::Cancelled,
-            Some(_) | None => RuntimeTerminalOutcome::failed(
-                &query_engine::observability::AttemptFailureSummary::datafusion_fallback(),
-            ),
+            Some(_) | None => RuntimeTerminalOutcome::failed(&AttemptFailureSummary::datafusion_fallback()),
         };
         self.record_terminal_outcome(outcome);
     }
@@ -1259,7 +1252,7 @@ pub(crate) fn query_admission_wrapped_input(plan: &dyn ExecutionPlan) -> Option<
 }
 
 impl DisplayAs for NativeAdmissionExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter<'_>) -> fmt::Result {
         self.input.fmt_as(t, f)
     }
 }
@@ -1362,7 +1355,7 @@ impl ExecutionPlan for NativeAdmissionExec {
         self.input.metrics()
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
         StatisticsContext::new().compute(self.input.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 }
@@ -1381,7 +1374,7 @@ impl NativeAdmissionRoundStream {
 impl Unpin for NativeAdmissionRoundStream {}
 
 impl Stream for NativeAdmissionRoundStream {
-    type Item = DataFusionResult<arrow::record_batch::RecordBatch>;
+    type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();

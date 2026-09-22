@@ -44,14 +44,14 @@ fn native_query_executes_inner_join_with_equi_key_and_residual_predicate() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
-                query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
+                ColumnRef::input(0, "order_id", "left_order_id"),
+                ColumnRef::input(1, "order_id", "right_order_id"),
             )],
         )
         .with_residual_predicate(residual)
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
@@ -118,8 +118,8 @@ fn native_query_executes_join_residual_cast_predicate() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(residual)
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -177,8 +177,8 @@ fn native_query_executes_join_residual_decimal_to_float_cast_predicate() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(residual)
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "amount", "amount"), "amount"),
-                JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -239,8 +239,8 @@ fn native_query_executes_join_residual_literal_in_list_predicate() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(residual)
             .with_output_projection(vec![
-                JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
             ])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
             .with_build_side(JoinSide::Right),

@@ -10,7 +10,7 @@ use datafusion::{
         },
     },
     physical_plan::{
-        aggregates::{AggregateExec, AggregateMode},
+        aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
         projection::ProjectionExec,
     },
@@ -153,9 +153,7 @@ fn validate_aggregate_filters(aggregate: &AggregateExec) -> Result<(), Capabilit
     Ok(())
 }
 
-fn validate_grouping_sets(
-    group_by: &datafusion::physical_plan::aggregates::PhysicalGroupBy,
-) -> Result<(), CapabilityReason> {
+fn validate_grouping_sets(group_by: &PhysicalGroupBy) -> Result<(), CapabilityReason> {
     let group_expr_count = group_by.expr().len();
     if group_expr_count == 0 || group_expr_count > 64 {
         return Err(CapabilityReason::UnsupportedOperator);

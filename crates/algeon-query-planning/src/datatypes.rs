@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::{
-    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal32Type, Decimal64Type, Decimal128Type, Field, Fields,
-    validate_decimal_precision_and_scale,
+    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal32Type, Decimal64Type, Decimal128Type, Field, FieldRef,
+    Fields, validate_decimal_precision_and_scale,
 };
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
@@ -166,7 +166,7 @@ pub fn arrow_data_types_match_except_list_child_names(left: &ArrowDataType, righ
     }
 }
 
-fn is_supported_basic_list_child(field: &arrow::datatypes::FieldRef) -> bool {
+fn is_supported_basic_list_child(field: &FieldRef) -> bool {
     matches!(
         field.data_type(),
         ArrowDataType::Boolean
@@ -186,7 +186,7 @@ fn is_supported_basic_list_child(field: &arrow::datatypes::FieldRef) -> bool {
     )
 }
 
-fn is_supported_fixed_size_list_child(field: &arrow::datatypes::FieldRef) -> bool {
+fn is_supported_fixed_size_list_child(field: &FieldRef) -> bool {
     matches!(
         field.data_type(),
         ArrowDataType::Int8

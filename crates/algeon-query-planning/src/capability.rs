@@ -15,7 +15,7 @@ use crate::{
     },
     plan::{
         AggregateNode, GraphAlgorithm, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan,
-        WindowFunction,
+        ResultSink, WindowFunction,
     },
     source::{SourceNode, validate_local_parquet_source},
 };

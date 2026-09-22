@@ -4,7 +4,7 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorCode, Result},
+        error::{Error, ErrorCode, Result, invariant_violation},
         types::DataType,
     },
     internal::hash::{FastHashMap, fast_hash_map_with_capacity},
@@ -411,7 +411,7 @@ impl DataFrame {
     pub fn query_memory_observation(&self) -> Result<QueryMemoryObservation> {
         let info = self.info_with(InfoDetail::MEMORY)?;
         let memory = info.memory_accounting.ok_or_else(|| {
-            crate::core::error::invariant_violation(
+            invariant_violation(
                 "dataframe::query_memory_observation",
                 "InfoDetail::MEMORY must populate top-level memory accounting",
             )
@@ -507,6 +507,7 @@ fn checked_dataframe_memory_total(
 #[cfg(test)]
 mod size_accounting_tests {
     use super::*;
+    use crate::core::error::ErrorStatus;
 
     #[test]
     fn dataframe_memory_total_overflow_is_typed_and_does_not_wrap() {
@@ -514,7 +515,7 @@ mod size_accounting_tests {
             let error = checked_dataframe_memory_total(usize::MAX, 1, "oversized", accounting_kind)
                 .expect_err("usize overflow must be rejected");
             assert_eq!(error.code(), ErrorCode::SizeOverflow);
-            assert_eq!(error.status(), crate::core::error::ErrorStatus::Permanent);
+            assert_eq!(error.status(), ErrorStatus::Permanent);
             assert_eq!(error.detail_value("accounting_kind"), Some(accounting_kind));
             assert_eq!(error.detail_value("accumulated_bytes"), Some(usize::MAX.to_string().as_str()));
             assert_eq!(error.detail_value("column_bytes"), Some("1"));

@@ -2,6 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use cudf::runtime::CudaStream;
+use cudf_sys::{CUDF_SUCCESS, test_support};
+
 use super::*;
 use crate::{
     observability::{AdmissionRequestId, AttemptId},
@@ -12,21 +15,21 @@ struct StreamSynchronizeHookReset;
 
 impl StreamSynchronizeHookReset {
     fn new() -> Self {
-        unsafe { cudf_sys::test_support::cudf_test_stream_synchronize_reset() };
+        unsafe { test_support::cudf_test_stream_synchronize_reset() };
         Self
     }
 }
 
 impl Drop for StreamSynchronizeHookReset {
     fn drop(&mut self) {
-        unsafe { cudf_sys::test_support::cudf_test_stream_synchronize_reset() };
+        unsafe { test_support::cudf_test_stream_synchronize_reset() };
     }
 }
 
 fn stream_synchronize_call_count() -> i32 {
     let mut count = 0;
-    let status = unsafe { cudf_sys::test_support::cudf_test_stream_synchronize_call_count(&mut count) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    let status = unsafe { test_support::cudf_test_stream_synchronize_call_count(&mut count) };
+    assert_eq!(status, CUDF_SUCCESS);
     count
 }
 
@@ -285,7 +288,7 @@ fn final_resident_consumer_fence_retains_capacity_until_completion() {
     let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
     let producer_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
     producer_owner
-        .set_completion_stream(cudf::runtime::CudaStream::new().expect("completion stream"))
+        .set_completion_stream(CudaStream::new().expect("completion stream"))
         .expect("completion stream binds once");
     let consumer_owner = producer_owner.clone();
     grant.freeze_resident(200).expect("resident charge freezes");
@@ -293,7 +296,7 @@ fn final_resident_consumer_fence_retains_capacity_until_completion() {
     drop(grant);
     assert_eq!(ledger.snapshot().unwrap().frozen_resident_bytes, 200);
 
-    unsafe { cudf_sys::test_support::cudf_test_stream_block_synchronize() };
+    unsafe { test_support::cudf_test_stream_block_synchronize() };
     let release = std::thread::spawn(move || drop(consumer_owner));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while stream_synchronize_call_count() == 0 {
@@ -304,7 +307,7 @@ fn final_resident_consumer_fence_retains_capacity_until_completion() {
     assert_eq!(ledger.snapshot().unwrap().frozen_resident_bytes, 200);
     assert!(ledger.try_admit(request(2), Some(801)).unwrap().is_none());
 
-    unsafe { cudf_sys::test_support::cudf_test_stream_unblock_synchronize() };
+    unsafe { test_support::cudf_test_stream_unblock_synchronize() };
     release.join().expect("final resident release completes");
     assert_eq!(ledger.snapshot().unwrap().frozen_resident_bytes, 0);
     let replacement = ledger.try_admit(request(3), Some(1_000)).unwrap().expect("released capacity is reusable");
@@ -318,12 +321,12 @@ fn resident_completion_failure_closes_device_admission() {
     let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("producer grant admits");
     let resident_owner = grant.retain_resident_owner(200).expect("resident owner").expect("positive owner bytes");
     resident_owner
-        .set_completion_stream(cudf::runtime::CudaStream::new().expect("completion stream"))
+        .set_completion_stream(CudaStream::new().expect("completion stream"))
         .expect("completion stream binds once");
     grant.freeze_resident(200).expect("resident charge freezes");
     drop(grant);
 
-    unsafe { cudf_sys::test_support::cudf_test_stream_fail_synchronize() };
+    unsafe { test_support::cudf_test_stream_fail_synchronize() };
     drop(resident_owner);
     let snapshot = ledger.snapshot().expect("ledger snapshot after failed fence");
     let DeviceAdmissionHealth::Closed { reason, .. } = snapshot.health else {

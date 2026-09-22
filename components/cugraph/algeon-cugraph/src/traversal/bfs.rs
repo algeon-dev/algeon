@@ -11,6 +11,7 @@ use cugraph_sys::{
 use crate::{
     array::DeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
+    cudf_interop::bfs_result_to_dataframe,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
     handle::{EnteredContext, ResourceHandleLease},
@@ -19,7 +20,7 @@ use crate::{
         VertexSelection,
         typed_results::{Distances, VertexIds},
     },
-    traversal::paths::{ExtractPathsResult, PathsResult},
+    traversal::paths::{ExtractPathsResult, PathsResult, extract_paths},
     types::{CugraphElement, to_bool_t, try_from_bool_t},
 };
 
@@ -399,14 +400,7 @@ impl BfsResult {
         sources: impl Into<VertexSelection<'a, V>>,
         destinations: impl Into<VertexSelection<'a, V>>,
     ) -> Result<ExtractPathsResult> {
-        crate::traversal::paths::extract_paths(
-            handle,
-            graph,
-            &self.paths,
-            sources,
-            destinations,
-            "BfsResult::extract_paths",
-        )
+        extract_paths(handle, graph, &self.paths, sources, destinations, "BfsResult::extract_paths")
     }
 
     /// Convert this BFS result to a cudf DataFrame.
@@ -422,8 +416,7 @@ impl BfsResult {
     /// Device-to-device copy: unavoidable because the cugraph C API owns
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::bfs_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("BfsResult::to_dataframe"))
+        bfs_result_to_dataframe(self, runtime).map_err(|e: Error| e.with_operation("BfsResult::to_dataframe"))
     }
 }
 
@@ -633,7 +626,7 @@ mod tests {
         let err = graph
             .bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates)
             .expect_err("include/exclude vertex predicates are mutually exclusive");
-        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "Graph::bfs_with_predicates");
         assert!(err.message().contains("include_vertices and exclude_vertices are mutually exclusive"));
     }
@@ -693,7 +686,7 @@ mod tests {
         let err = graph
             .bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates)
             .expect_err("edge-id predicates require graph edge ids");
-        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "Graph::bfs_with_predicates");
         assert!(err.message().contains("include_edge_ids requires a graph with edge IDs"));
     }
@@ -722,7 +715,7 @@ mod tests {
         let err = graph
             .bfs_with_predicates(&entered, &sources_view, &BfsParams::default(), &predicates)
             .expect_err("include_edge_ids dtype should match graph edge-id dtype");
-        assert_eq!(err.kind(), crate::error::ErrorKind::UnsupportedType);
+        assert_eq!(err.kind(), ErrorKind::UnsupportedType);
         assert_eq!(err.operation(), "Graph::bfs_with_predicates");
         assert!(err.message().contains("include_edge_ids dtype Int64 does not match graph edge-id dtype Int32"));
     }

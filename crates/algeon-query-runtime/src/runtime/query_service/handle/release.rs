@@ -2,6 +2,9 @@
 
 use std::{
     collections::BTreeMap,
+    mem, panic,
+    panic::AssertUnwindSafe,
+    sync,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +19,12 @@ use super::{
 };
 use crate::{
     observability::AttemptTimedDomainUsage,
-    runtime::{AttemptStreamProviderRoute, allocator_correlation::AttemptCacheScopeAllocatorCorrelation},
+    runtime::{
+        AttemptStreamProviderRoute,
+        allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
+        query_service::service::{disposition::CleanupEvidence, transaction::AdmissionEnvelope},
+        service_stream::StreamCleanupOutcome,
+    },
 };
 
 pub(super) fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -> Option<T> {
@@ -41,7 +49,7 @@ pub(super) struct QueryHandleRelease {
     pub(super) compatible_devices: Vec<usize>,
     pub(super) root_context: Option<ExecutionContext>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
-    pub(super) envelope: Option<super::super::service::transaction::AdmissionEnvelope>,
+    pub(super) envelope: Option<AdmissionEnvelope>,
     /// Set by the report commit when the sealed report published a frozen
     /// resident disposition. The B-to-R ledger transition is applied only
     /// after the envelope releases this attempt's lane and root stream, so a
@@ -82,7 +90,7 @@ impl QueryHandleReleaseGuard {
 impl Drop for QueryHandleReleaseGuard {
     fn drop(&mut self) {
         if let Some(release) = self.release.take() {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| release.finish()));
+            let _ = panic::catch_unwind(AssertUnwindSafe(|| release.finish()));
         }
     }
 }
@@ -96,7 +104,7 @@ impl QueryHandleRelease {
         // allocation domain from admission time. Their destruction must run on
         // the device executor even when execution never reached
         // context acquisition. Ledger-only envelopes own no CUDA state.
-        self.envelope.as_ref().is_some_and(super::super::service::transaction::AdmissionEnvelope::holds_gpu_resources)
+        self.envelope.as_ref().is_some_and(AdmissionEnvelope::holds_gpu_resources)
     }
 
     pub(super) fn begin_query_cleanup(&self) {
@@ -151,8 +159,7 @@ impl QueryHandleRelease {
             let external_completion = self.take_external_completion();
             let commit = self.prepare_report_commit();
             let terminal_outcome = self.terminal_outcome.clone();
-            let internal_cleanup =
-                QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
+            let internal_cleanup = QueryHandleReleaseGuard::new(mem::replace(self, Self::empty_recovered_release()));
             // The health commit, usage sample, and observation seal run before
             // the capacity release callback.
             let activity_tail = Arc::new(Mutex::new(None));
@@ -163,20 +170,17 @@ impl QueryHandleRelease {
                         .as_ref()
                         .is_some_and(|route| route.synchronize_auxiliary_for_teardown().is_err())
                     {
-                        crate::runtime::service_stream::StreamCleanupOutcome::StreamSynchronizationFailed
+                        StreamCleanupOutcome::StreamSynchronizationFailed
                     } else {
                         outcome
                     };
                     drop_recovering(stream_provider_route, "attempt stream provider route");
-                    *activity_tail_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = commit.run(
-                        external_completion,
-                        terminal_outcome,
-                        super::super::service::disposition::CleanupEvidence::from(outcome),
-                    )
+                    *activity_tail_slot.lock().unwrap_or_else(sync::PoisonError::into_inner) =
+                        commit.run(external_completion, terminal_outcome, CleanupEvidence::from(outcome))
                 },
                 move || {
                     internal_cleanup.finish();
-                    if let Some(tail) = activity_tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+                    if let Some(tail) = activity_tail.lock().unwrap_or_else(sync::PoisonError::into_inner).take() {
                         tail.finish();
                     }
                 },
@@ -193,21 +197,17 @@ impl QueryHandleRelease {
         if let Some(stream_lease) = self.envelope.as_mut().and_then(|envelope| envelope.release_unconsumed_physical()) {
             let external_completion = self.take_external_completion();
             let terminal_outcome = self.terminal_outcome.clone();
-            let internal_cleanup =
-                QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
+            let internal_cleanup = QueryHandleReleaseGuard::new(mem::replace(self, Self::empty_recovered_release()));
             let activity_tail = Arc::new(Mutex::new(None));
             let activity_tail_slot = Arc::clone(&activity_tail);
             let installed = stream_lease.install_cleanup_completion(
                 move |outcome| {
-                    *activity_tail_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = commit.run(
-                        external_completion,
-                        terminal_outcome,
-                        super::super::service::disposition::CleanupEvidence::from(outcome),
-                    )
+                    *activity_tail_slot.lock().unwrap_or_else(sync::PoisonError::into_inner) =
+                        commit.run(external_completion, terminal_outcome, CleanupEvidence::from(outcome))
                 },
                 move || {
                     internal_cleanup.finish();
-                    if let Some(tail) = activity_tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+                    if let Some(tail) = activity_tail.lock().unwrap_or_else(sync::PoisonError::into_inner).take() {
                         tail.finish();
                     }
                 },
@@ -221,11 +221,7 @@ impl QueryHandleRelease {
         // Ledger-only or context-consumed release: no stream fence remains.
         // The report commit still precedes the capacity release.
         let external_completion = self.take_external_completion();
-        let activity_tail = commit.run(
-            external_completion,
-            self.terminal_outcome.clone(),
-            super::super::service::disposition::CleanupEvidence::Completed,
-        );
+        let activity_tail = commit.run(external_completion, self.terminal_outcome.clone(), CleanupEvidence::Completed);
         self.complete_without_stream_cleanup();
         if let Some(tail) = activity_tail {
             tail.finish();
@@ -284,7 +280,7 @@ impl QueryHandleRelease {
             domain,
             memory_grant,
             allocator_domain_attempt,
-            cache_scope_allocator_correlation: std::mem::take(&mut self.cache_scope_allocator_correlation),
+            cache_scope_allocator_correlation: mem::take(&mut self.cache_scope_allocator_correlation),
             outcome_terminal_domain_usage: self.outcome_terminal_domain_usage.take(),
             pending_frozen_resident_publish: Arc::clone(&self.pending_frozen_resident_publish),
             #[cfg(test)]
@@ -382,7 +378,7 @@ impl Drop for QueryHandleRelease {
         let activity_tail = commit.run(
             self.take_external_completion(),
             self.terminal_outcome.clone(),
-            super::super::service::disposition::CleanupEvidence::CallbackAbandoned,
+            CleanupEvidence::CallbackAbandoned,
         );
         self.complete_internal_cleanup();
         if let Some(tail) = activity_tail {
@@ -392,7 +388,7 @@ impl Drop for QueryHandleRelease {
 }
 
 fn drop_recovering<T>(value: Option<T>, resource: &'static str) {
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value))).is_err() {
+    if panic::catch_unwind(AssertUnwindSafe(|| drop(value))).is_err() {
         eprintln!("[query-engine] warning: query service {resource} drop panicked during cleanup recovery");
     }
 }

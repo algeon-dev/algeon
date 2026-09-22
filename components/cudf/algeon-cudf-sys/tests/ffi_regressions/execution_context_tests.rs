@@ -3,16 +3,18 @@ use std::{
     ptr,
 };
 
+use cudf_sys::test_support;
+
 use crate::{
     helpers::*,
     support::{
-        NO_SYNC_RECORDED, OwnedStream, current_device_resource_raw, last_exec_mr_raw, last_exec_stream_value,
-        last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource, owned_string_value,
-        required_exec_options, reset_exec_observation, stream_value,
+        NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
+        last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
+        owned_string_value, required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
-fn strict_exec_owners() -> (OwnedStream, crate::support::OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+fn strict_exec_owners() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
@@ -339,7 +341,7 @@ fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_data_copy() 
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_fixed_width_host_import_after_data_copy() };
+    unsafe { test_support::cudf_test_fail_next_fixed_width_host_import_after_data_copy() };
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host_ex(
@@ -371,7 +373,7 @@ fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_null_mask_co
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy() };
+    unsafe { test_support::cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy() };
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host_ex(
@@ -496,7 +498,7 @@ fn test_column_view_slice_ex_uses_explicit_stream_for_null_count() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_after_offsets_copy() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_offsets_copy,
+        test_support::cudf_test_fail_next_strings_host_import_after_offsets_copy,
         &["ab", "", "cde"],
         None,
     );
@@ -505,7 +507,7 @@ fn test_column_create_strings_ex_syncs_on_error_after_offsets_copy() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_after_chars_copy() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_chars_copy,
+        test_support::cudf_test_fail_next_strings_host_import_after_chars_copy,
         &["ab", "", "cde"],
         None,
     );
@@ -515,7 +517,7 @@ fn test_column_create_strings_ex_syncs_on_error_after_chars_copy() {
 fn test_column_create_strings_ex_syncs_on_error_after_null_mask_copy() {
     let validity = [true, false, true];
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_null_mask_copy,
+        test_support::cudf_test_fail_next_strings_host_import_after_null_mask_copy,
         &["ab", "", "cde"],
         Some(&validity),
     );
@@ -524,7 +526,7 @@ fn test_column_create_strings_ex_syncs_on_error_after_null_mask_copy() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_before_make_strings_column() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_before_make_strings_column,
+        test_support::cudf_test_fail_next_strings_host_import_before_make_strings_column,
         &["ab", "", "cde"],
         None,
     );
@@ -533,7 +535,7 @@ fn test_column_create_strings_ex_syncs_on_error_before_make_strings_column() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_after_make_strings_column() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_make_strings_column,
+        test_support::cudf_test_fail_next_strings_host_import_after_make_strings_column,
         &["ab", "", "cde"],
         None,
     );

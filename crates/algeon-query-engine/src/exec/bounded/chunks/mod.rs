@@ -1,11 +1,11 @@
-use super::{
-    super::source::{
+use super::*;
+use crate::{
+    exec::source::{
         ScheduledLocalParquetReadOutput, apply_source_scan_limit_to_frame, read_local_parquet_chunk,
         read_local_parquet_chunk_batch,
     },
-    *,
+    source::{LocalParquetFile, ParquetReadStrategy},
 };
-use crate::source::{LocalParquetFile, ParquetReadStrategy};
 
 mod execution;
 mod retry;

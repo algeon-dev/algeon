@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use query_engine::{expr::ColumnRef, rapids_backend::rapids_analysis_context};
+
 use super::*;
 
 #[test]
@@ -59,15 +61,15 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                query_engine::expr::ColumnRef::input(1, "p_partkey", "p_partkey"),
+                ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                ColumnRef::input(1, "p_partkey", "p_partkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "p_size", "p_size"), "p_size"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
+            JoinOutputColumn::right(ColumnRef::input(1, "p_type", "p_type"), "p_type"),
+            JoinOutputColumn::right(ColumnRef::input(1, "p_size", "p_size"), "p_size"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -78,15 +80,15 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
-                query_engine::expr::ColumnRef::input(1, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                ColumnRef::input(1, "s_suppkey", "s_suppkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "p_size", "p_size"), "p_size"),
+            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "p_brand", "p_brand"), "p_brand"),
+            JoinOutputColumn::left(ColumnRef::input(0, "p_type", "p_type"), "p_type"),
+            JoinOutputColumn::left(ColumnRef::input(0, "p_size", "p_size"), "p_size"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -125,7 +127,7 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
         projected_schema,
     );
     let plan = builder.finish_with_host_sink(sort);
-    assert!(!plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
+    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

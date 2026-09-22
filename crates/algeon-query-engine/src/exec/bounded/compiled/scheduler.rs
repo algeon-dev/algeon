@@ -717,8 +717,9 @@ mod tests {
     use super::*;
     use crate::{
         observability::{
-            PlanExecutionId, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession,
-            RuntimeQueryLifecycle, RuntimeTerminalOutcome, TaskLifecycleState,
+            AttemptFailureCode, AttemptFailureOperation, AttemptFailureStatus, PlanExecutionId,
+            RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession, RuntimeQueryLifecycle,
+            RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, TaskLifecycleState,
         },
         pipeline::{
             PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, ResidentLifetime,
@@ -949,9 +950,9 @@ mod tests {
             })
             .expect("secondary cleanup evidence is retained");
         assert_eq!(cleanup.phase(), CleanupFailurePhase::TaskExecution);
-        assert_eq!(cleanup.failure().code(), crate::observability::AttemptFailureCode::MemoryReservationFailed);
-        assert_eq!(cleanup.failure().status(), crate::observability::AttemptFailureStatus::Temporary);
-        assert_eq!(cleanup.failure().operation(), crate::observability::AttemptFailureOperation::Cleanup);
+        assert_eq!(cleanup.failure().code(), AttemptFailureCode::MemoryReservationFailed);
+        assert_eq!(cleanup.failure().status(), AttemptFailureStatus::Temporary);
+        assert_eq!(cleanup.failure().operation(), AttemptFailureOperation::Cleanup);
     }
 
     #[test]
@@ -986,9 +987,7 @@ mod tests {
         )
     }
 
-    fn task_states(
-        snapshot: &crate::observability::SealedRuntimeObservationSnapshot,
-    ) -> Vec<(String, TaskLifecycleState)> {
+    fn task_states(snapshot: &SealedRuntimeObservationSnapshot) -> Vec<(String, TaskLifecycleState)> {
         snapshot
             .events()
             .iter()

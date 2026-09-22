@@ -20,8 +20,8 @@ use query_engine::{
         RuntimeObservationPayload, RuntimeObservationRecord, RuntimeObservationRecordClass,
         RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimePlanNodeId, RuntimeQueryId,
         RuntimeQueryLifecycle, RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceRow, RuntimeSpanId,
-        RuntimeTaskId, RuntimeTerminalOutcome, RuntimeTopologyRecord, RuntimeTraceId, TaskDefinitionRow,
-        write_runtime_observation_jsonl,
+        RuntimeTaskId, RuntimeTerminalOutcome, RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId,
+        TaskDefinitionRow, write_runtime_observation_jsonl,
     },
 };
 
@@ -474,7 +474,7 @@ fn runtime_observation_micro_measurement() {
         contended_p95,
         retained_bytes_p95,
         std::mem::size_of::<RuntimeObservationPayload>(),
-        std::mem::size_of::<query_engine::observability::RuntimeTimelineEvent>(),
+        std::mem::size_of::<RuntimeTimelineEvent>(),
     );
 
     assert!(disabled_p95 <= 2.0, "disabled p95 {disabled_p95:.2} ns/event exceeds 2 ns/event budget");

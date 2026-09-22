@@ -49,6 +49,8 @@ use query_engine::{
 };
 #[cfg(feature = "cugraph")]
 use tokio::sync::{Notify, watch};
+#[cfg(feature = "cugraph")]
+use tokio::time::sleep;
 
 #[cfg(feature = "cugraph")]
 use crate::error::{Error, ErrorCode, Result};
@@ -680,7 +682,7 @@ impl GpuHandoffDrain {
             }
             tokio::select! {
                 () = self.notify.notified() => {},
-                () = tokio::time::sleep(Duration::from_millis(5)) => {},
+                () = sleep(Duration::from_millis(5)) => {},
             }
         }
     }
@@ -837,7 +839,7 @@ impl GraphBfsFollower {
                         return Ok(GraphBfsFollowerOutcome::Retry);
                     }
                 },
-                () = tokio::time::sleep(Duration::from_millis(5)) => {},
+                () = sleep(Duration::from_millis(5)) => {},
             }
         }
     }
@@ -1096,10 +1098,10 @@ mod tests {
             let drain = Arc::new(GpuHandoffDrain::new(2));
             let waiter = Arc::clone(&drain);
             let settled = tokio::spawn(async move { waiter.wait_until_drained(&ExecutionCancellation::new()).await });
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(20)).await;
             assert!(!settled.is_finished(), "the leader waits while followers still hold the handoff");
             drain.signal_copy_settled();
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(20)).await;
             assert!(!settled.is_finished(), "one outstanding follower still holds the leader");
             drain.signal_copy_settled();
             settled.await.expect("drain wait does not panic").expect("a settled handoff releases the leader");

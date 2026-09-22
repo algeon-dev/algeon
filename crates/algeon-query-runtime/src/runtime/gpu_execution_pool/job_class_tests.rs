@@ -3,7 +3,10 @@ use std::{
     time::Instant,
 };
 
+use tokio::sync::oneshot;
+
 use super::*;
+use crate::observability::RuntimeObservationHandle;
 
 #[test]
 fn execution_spawn_is_rejected_when_its_class_is_saturated() {
@@ -87,11 +90,11 @@ async fn a_second_island_execution_job_charges_the_class_its_context_owns() {
     let root = GpuExecutorLease::from_pool(pool.clone());
     let second_island = GpuExecutorLease::from_pool_for_auxiliary_fragment(pool.clone());
 
-    let (entered_sender, entered_receiver) = tokio::sync::oneshot::channel();
-    let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+    let (entered_sender, entered_receiver) = oneshot::channel();
+    let (release_sender, release_receiver) = oneshot::channel();
     let root_job = tokio::spawn(root.run_observed_scoped(
         GpuExecutionJobKind::QueryExecution,
-        crate::observability::RuntimeObservationHandle::disabled(),
+        RuntimeObservationHandle::disabled(),
         move |_scope| async move {
             let _ = entered_sender.send(());
             let _ = release_receiver.await;
@@ -103,7 +106,7 @@ async fn a_second_island_execution_job_charges_the_class_its_context_owns() {
     second_island
         .run_observed_scoped(
             GpuExecutionJobKind::QueryExecution,
-            crate::observability::RuntimeObservationHandle::disabled(),
+            RuntimeObservationHandle::disabled(),
             move |_scope| async move {},
         )
         .await

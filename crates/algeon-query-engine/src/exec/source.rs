@@ -14,6 +14,20 @@ use super::{
     plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
+use crate::{
+    chunk::{SourceChunkBatch, source_chunk_row_position_range, source_file_for_chunk},
+    rapids_backend::rapids_analysis_context,
+    runtime::{
+        cache::local_parquet::{
+            GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheLoad, GpuLocalParquetSourceCacheLoadClaim,
+        },
+        source_identity::GpuLocalParquetSourceCacheKey,
+    },
+    source::{
+        LiteralBatchSource, ParquetReadStrategy, parquet_source_path_fact, redacted_path_diagnostic,
+        validate_literal_batch_source,
+    },
+};
 
 mod cache_runtime;
 mod cudf_contract;
@@ -61,7 +75,7 @@ use crate::{
 };
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
-    crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)
+    parquet_source_path_fact(&chunk.location, &chunk.path)
 }
 
 /// Folds one source-read fact into the active plan execution's totals.
@@ -87,7 +101,7 @@ pub(in crate::exec) fn read_local_parquet_source(
     source: &LocalParquetSource,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
+    validate_local_parquet_source(source, rapids_analysis_context())?;
 
     // The DataFusion exact-statistical-order implementation carries hidden
     // order columns whose presence depends on a thread-local execution scope.
@@ -98,13 +112,13 @@ pub(in crate::exec) fn read_local_parquet_source(
         return read_local_parquet_source_uncached(context, source_node_id, source, metrics);
     };
     let cache_schema = source_cache_frame_schema(source)?;
-    let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_source(source);
+    let key = GpuLocalParquetSourceCacheKey::from_source(source);
     match cache.checkout_or_claim(key, context, &cache_schema)? {
-        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
+        GpuLocalParquetSourceCacheLoad::Hit(handle) => {
             record_source_read(context, SourceReadFact::InputBatch { rows: handle.num_rows() as u64 });
             Ok(handle.into_gpu_frame())
         },
-        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
+        GpuLocalParquetSourceCacheLoad::Leader(claim) => {
             let frame = match read_local_parquet_source_uncached(context, source_node_id, source, metrics) {
                 Ok(frame) => frame,
                 Err(error) => {
@@ -122,9 +136,7 @@ pub(in crate::exec) fn read_local_parquet_source(
 /// a stable schema. DataFusion's exact-order scope injects hidden columns, so
 /// retaining that scope-dependent output would violate the cache key's schema
 /// contract.
-fn resident_source_cache(
-    context: &ExecutionContext,
-) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
+fn resident_source_cache(context: &ExecutionContext) -> Option<GpuLocalParquetSourceCache> {
     (!context.datafusion_order_tracking()).then(|| context.resident_source_cache()).flatten()
 }
 
@@ -140,8 +152,8 @@ fn source_cache_frame_schema(source: &LocalParquetSource) -> Result<SchemaRef> {
 /// transfers `frame`, so a skipped promotion leaves the current attempt as
 /// the sole owner and remains a successful query result.
 fn promote_source_cache_load(
-    cache: &crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache,
-    claim: crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoadClaim,
+    cache: &GpuLocalParquetSourceCache,
+    claim: GpuLocalParquetSourceCacheLoadClaim,
     context: &ExecutionContext,
     frame: &GpuDataFrame,
     schema: &SchemaRef,
@@ -160,10 +172,10 @@ fn promote_source_cache_load(
 /// Import a literal host Arrow source into a GPU dataframe.
 pub(in crate::exec) fn read_literal_batch_source(
     context: &ExecutionContext,
-    source: &crate::source::LiteralBatchSource,
+    source: &LiteralBatchSource,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    crate::source::validate_literal_batch_source(source, crate::rapids_backend::rapids_analysis_context())?;
+    validate_literal_batch_source(source, rapids_analysis_context())?;
     context.check_cancellation("query_engine.literal_batch_source.read")?;
     let timer = Instant::now();
     let frame = DataFrame::from_record_batches(&context.runtime()?, &source.batches).map_err(|error| {
@@ -218,13 +230,12 @@ fn read_local_parquet_source_uncached(
         let frame = if columns.is_empty() {
             context.runtime()?.empty_dataframe()
         } else {
-            let _cache_read_pin =
-                if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-                    ensure_local_cache_parquet_file(context, file)?;
-                    Some(acquire_lakehouse_cache_file_read_pin(context, file)?)
-                } else {
-                    None
-                };
+            let _cache_read_pin = if file.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio {
+                ensure_local_cache_parquet_file(context, file)?;
+                Some(acquire_lakehouse_cache_file_read_pin(context, file)?)
+            } else {
+                None
+            };
             let (cudf_source, _cudf_chunk) =
                 cudf_local_parquet_source_file_selection(context, source, file, file_index, file_index)?;
             let frame = read_local_parquet_file(
@@ -387,13 +398,13 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
         );
     };
     let cache_schema = source_cache_frame_schema(source)?;
-    let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_chunk(source, chunk);
+    let key = GpuLocalParquetSourceCacheKey::from_chunk(source, chunk);
     match cache.checkout_or_claim(key, context, &cache_schema)? {
-        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
+        GpuLocalParquetSourceCacheLoad::Hit(handle) => {
             record_source_read(context, SourceReadFact::InputBatch { rows: handle.num_rows() as u64 });
             Ok(handle.into_gpu_frame())
         },
-        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
+        GpuLocalParquetSourceCacheLoad::Leader(claim) => {
             let frame = match read_local_parquet_chunk_uncached(
                 context,
                 source,
@@ -459,16 +470,15 @@ fn read_local_parquet_chunk_uncached(
         return Ok(GpuDataFrame::new(frame));
     }
 
-    let _cache_read_pin =
-        if chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
-            ensure_local_cache_parquet_chunk(context, chunk)?;
-            Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
-        } else {
-            None
-        };
-    let file = crate::chunk::source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.position_deletes")?;
+    let _cache_read_pin = if chunk.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio {
+        ensure_local_cache_parquet_chunk(context, chunk)?;
+        Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
+    } else {
+        None
+    };
+    let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.position_deletes")?;
     let row_position_range =
-        if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
+        if file.has_position_delete_files() { source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
         attach_row_group_facts(
@@ -609,7 +619,7 @@ fn count_star_probe_weight_frame(
             error,
         )
     })?;
-    let frame = DataFrame::from_series([(crate::source::ZERO_COLUMN_COUNT_COLUMN, series)]).map_err(|error| {
+    let frame = DataFrame::from_series([(ZERO_COLUMN_COUNT_COLUMN, series)]).map_err(|error| {
         cudf_query_error(
             "query_engine.local_parquet_source.count_star_probe",
             "failed to construct native count-star probe weight frame",
@@ -626,7 +636,7 @@ fn count_star_probe_weight_frame(
 pub(super) fn read_local_parquet_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
+    batch: &SourceChunkBatch,
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
@@ -658,13 +668,13 @@ pub(super) fn read_local_parquet_chunk_batch(
         );
     };
     let cache_schema = source_cache_frame_schema(source)?;
-    let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_chunk_batch(source, batch);
+    let key = GpuLocalParquetSourceCacheKey::from_chunk_batch(source, batch);
     match cache.checkout_or_claim(key, context, &cache_schema)? {
-        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
+        GpuLocalParquetSourceCacheLoad::Hit(handle) => {
             record_source_read(context, SourceReadFact::InputBatch { rows: handle.num_rows() as u64 });
             Ok(handle.into_gpu_frame())
         },
-        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
+        GpuLocalParquetSourceCacheLoad::Leader(claim) => {
             let frame = match read_local_parquet_chunk_batch_uncached(
                 context,
                 source,
@@ -689,7 +699,7 @@ pub(super) fn read_local_parquet_chunk_batch(
 fn read_local_parquet_chunk_batch_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
+    batch: &SourceChunkBatch,
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
@@ -731,7 +741,7 @@ fn read_local_parquet_chunk_batch_uncached(
     let optimized_cache_entry = local_cache_optimized_batch_entry(source, batch);
     let mut cache_read_pins = Vec::with_capacity(batch.chunk_count());
     for chunk in &batch.chunks {
-        if chunk.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+        if chunk.resolved_source.read_strategy() == ParquetReadStrategy::LocalCacheKvikio {
             ensure_local_cache_parquet_chunk(context, chunk)?;
             cache_read_pins.push(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?);
         }
@@ -822,13 +832,12 @@ fn read_local_parquet_chunk_batch_uncached(
     Ok(GpuDataFrame::new(frame))
 }
 
-fn validate_local_parquet_chunk_batch(
-    source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
-) -> Result<()> {
-    if source.reader_predicate.as_ref().is_some_and(|predicate| {
-        !source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
-    }) {
+fn validate_local_parquet_chunk_batch(source: &LocalParquetSource, batch: &SourceChunkBatch) -> Result<()> {
+    if source
+        .reader_predicate
+        .as_ref()
+        .is_some_and(|predicate| !source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
+    {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.local_parquet_chunk_batch",
@@ -849,9 +858,9 @@ fn validate_local_parquet_chunk_batch(
         if chunk.zero_column_count
             || !matches!(
                 chunk.resolved_source.read_strategy(),
-                crate::source::ParquetReadStrategy::LocalKvikio
-                    | crate::source::ParquetReadStrategy::LocalCacheKvikio
-                    | crate::source::ParquetReadStrategy::RemoteDirect
+                ParquetReadStrategy::LocalKvikio
+                    | ParquetReadStrategy::LocalCacheKvikio
+                    | ParquetReadStrategy::RemoteDirect
             )
             || chunk.scan_limit_rows.is_some()
             || chunk.reads_all_row_groups
@@ -878,7 +887,7 @@ fn validate_local_parquet_chunk_batch(
 }
 
 fn optimized_cache_path_fact(entry: &LakehouseOptimizedBatchCacheEntry) -> String {
-    crate::source::redacted_path_diagnostic(&entry.path)
+    redacted_path_diagnostic(&entry.path)
 }
 
 fn cudf_error_for_chunk_with_budget_details(
@@ -924,9 +933,22 @@ fn cudf_error_for_chunk_batch_with_budget_details(
 mod tests {
     use std::time::Duration;
 
+    use cudf::{
+        io::parquet::{ParquetPruningEvidence, ParquetReadEvidence, RemoteParquetBackendBuildStatus},
+        testing::error::new_with_for_test,
+    };
+
     use super::*;
-    use crate::source::{
-        CredentialMode, LakehouseCacheFillMode, MissingColumn, ParquetEqualityDeleteFile, ResolvedParquetSource,
+    use crate::{
+        chunk::{SourceChunkBatch, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+        observability::{
+            PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession, RuntimePlanExecutionLifecycle,
+        },
+        rapids_backend::rapids_analysis_context,
+        source::{
+            CredentialMode, LakehouseCacheFillMode, MissingColumn, ParquetEqualityDeleteFile,
+            ParquetPositionDeleteFile, ResolvedParquetSource,
+        },
     };
 
     fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {
@@ -974,14 +996,10 @@ mod tests {
             vec!["c1".to_string()],
         );
         let node_id = NodeId::from_index_for_internal_use(7);
-        let plan = crate::chunk::plan_local_parquet_source_chunks(
-            node_id,
-            &source,
-            crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
-        )
-        .expect("chunk planning should split the file by row group");
+        let plan = plan_local_parquet_source_chunks(node_id, &source, SourceChunkPlanningPolicy::new(None, 1))
+            .expect("chunk planning should split the file by row group");
         assert_eq!(plan.chunks.len(), 2);
-        let batch = crate::chunk::SourceChunkBatch {
+        let batch = SourceChunkBatch {
             batch_index: 0,
             chunks: vec![plan.chunks[0].clone()],
             estimated_source_read_bytes: Some(10),
@@ -996,7 +1014,7 @@ mod tests {
 
     #[test]
     fn position_delete_referenced_data_file_matches_local_file_uri_variants() {
-        let delete_file = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
+        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
             "delete-1",
             ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
         )
@@ -1012,7 +1030,7 @@ mod tests {
 
     #[test]
     fn position_delete_file_path_filter_values_include_local_file_uri_variants_without_referenced_file() {
-        let delete_file = crate::source::ParquetPositionDeleteFile::from_resolved_parquet_source(
+        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
             "delete-1",
             ResolvedParquetSource::local_kvikio("/tmp/delete.parquet"),
         )
@@ -1035,14 +1053,14 @@ mod tests {
             .with_row_groups(vec![0])
             .with_row_group_rows(vec![1]);
         let source = test_source(vec![file], vec!["c1".to_string()]);
-        let plan = crate::chunk::plan_local_parquet_source_chunks(
+        let plan = plan_local_parquet_source_chunks(
             NodeId::from_index_for_internal_use(1),
             &source,
-            crate::chunk::SourceChunkPlanningPolicy::default(),
+            SourceChunkPlanningPolicy::default(),
         )
         .expect("chunk planning succeeds");
         let chunk = plan.chunks.first().expect("one chunk");
-        let cudf_error = cudf::testing::error::new_with_for_test(
+        let cudf_error = new_with_for_test(
             cudf::ErrorCode::IoFailure,
             "io::parquet::read_parquet_table",
             format!("failed to open {sensitive_uri}"),
@@ -1090,8 +1108,7 @@ mod tests {
         let mut source = test_source(vec![file], Vec::new());
         source.missing_columns.push(MissingColumn::new("missing", ArrowDataType::Int32, true));
 
-        let error =
-            validate_local_parquet_source(&source, crate::rapids_backend::rapids_analysis_context()).unwrap_err();
+        let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
         let rendered = format!("{error:?}");
 
         assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
@@ -1131,16 +1148,11 @@ mod tests {
             .unwrap()
             .with_file_size_bytes(1024);
         let source = test_source(vec![file.clone()], vec!["c1".to_string()]);
-        let session = crate::observability::RuntimeObservationSession::new(
-            "background-fill",
-            None,
-            crate::observability::RuntimeObservationConfig::bounded(16, 1024 * 1024),
-        );
-        let scope = crate::observability::RuntimePlanExecutionLifecycle::from_handle(
-            session.handle(),
-            crate::observability::PlanExecutionId::new("background-fill-plan"),
-        )
-        .execution_scope();
+        let session =
+            RuntimeObservationSession::new("background-fill", None, RuntimeObservationConfig::bounded(16, 1024 * 1024));
+        let scope =
+            RuntimePlanExecutionLifecycle::from_handle(session.handle(), PlanExecutionId::new("background-fill-plan"))
+                .execution_scope();
         let context = context.with_runtime_execution_scope(scope.clone()).unwrap();
 
         record_background_cache_file_fill_enqueue(&context, NodeId::from_index_for_internal_use(1), &source, &file, 0);
@@ -1154,7 +1166,7 @@ mod tests {
 
     #[test]
     fn parquet_evidence_metrics_compare_bloom_pruning_after_stats_pruning() {
-        let read_evidence = cudf::io::parquet::ParquetReadEvidence {
+        let read_evidence = ParquetReadEvidence {
             requested_remote_read_mode: None,
             input_kind: "local_path",
             backend: "libcudf_path_reader",
@@ -1162,8 +1174,8 @@ mod tests {
             remote_bytes: None,
             remote_range_count: None,
             device_read_support: "not_applicable",
-            backend_build_status: cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown,
-            pruning: Some(cudf::io::parquet::ParquetPruningEvidence {
+            backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: Some(ParquetPruningEvidence {
                 input_row_groups: 9,
                 row_groups_after_stats_filter: Some(6),
                 row_groups_after_bloom_filter: Some(6),

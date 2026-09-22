@@ -7,6 +7,7 @@ use algeon_datafusion::{
     },
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    report::PlanningReport,
 };
 use arrow::{
     array::{ArrayRef, Decimal128Array},
@@ -15,7 +16,12 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
+use cudf::testing::arrow::{
+    arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
+    reset_arrow_host_interop_observation_for_test,
+};
 use datafusion::{
+    common::ScalarValue,
     config::ConfigOptions,
     datasource::{
         physical_plan::{
@@ -40,11 +46,13 @@ use datafusion::{
         collect, displayable,
         filter::FilterExec,
         limit::LocalLimitExec,
+        metrics::MetricsSet,
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+use query_engine::source::SourceDiagnostics;
 use tokio::sync::Mutex;
 use workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 
@@ -154,7 +162,7 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
     assert_algeon_native_exec(&optimization.plan, "median aggregate must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "partial_aggregate_count"), 0, "median must stay single-stage");
@@ -264,8 +272,7 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
         parquet_scan_with_pushed_down_payload_predicate(parquet_scan(&path).await, 10),
         3,
     );
-    let cpu_batches =
-        collect(Arc::clone(&scan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let cpu_batches = collect(Arc::clone(&scan), Arc::new(TaskContext::default())).await.unwrap();
     let optimization = optimize_with_pruning_template(scan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
@@ -274,7 +281,7 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     assert_algeon_native_exec(&optimization.plan, "pushed-predicate plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal(&cpu_batches, &native_batches);
 
@@ -470,13 +477,13 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     assert_algeon_native_exec(&optimization.plan, "discounted-revenue plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
     let revenue = decimal128_array(&native_batches[0], 0);
@@ -494,16 +501,11 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
 
     let scan = parquet_scan_with_order_sensitive_limit(parquet_scan(&path).await, 3);
     let scan_schema = scan.schema();
-    let predicate = binary(
-        col("payload", &scan_schema).unwrap(),
-        Operator::GtEq,
-        lit(datafusion::common::ScalarValue::Int32(Some(0))),
-        &scan_schema,
-    )
-    .unwrap();
+    let predicate =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(0))), &scan_schema)
+            .unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
-    let cpu_batches =
-        collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let cpu_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
     let optimization = optimize_with_pruning_template(plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
@@ -514,13 +516,13 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     assert_algeon_native_exec(&optimization.plan, "order-sensitive plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
 
@@ -538,14 +540,12 @@ async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
         cpu_plan.properties().output_ordering().is_some(),
         "Parquet sorting_columns metadata should infer scan output ordering"
     );
-    let cpu_batches =
-        collect(Arc::clone(&cpu_plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let cpu_batches = collect(Arc::clone(&cpu_plan), Arc::new(TaskContext::default())).await.unwrap();
     let native_plan = native_datafusion_sql_plan(&path, "SELECT key, payload FROM bench LIMIT 3").await;
     assert_algeon_native_exec(&native_plan, "sorting_columns scan should optimize to native exec");
     assert_eq!(native_plan.properties().output_ordering(), cpu_plan.properties().output_ordering());
 
-    let native_batches =
-        collect(native_plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
 
     assert_batches_equal(&cpu_batches, &native_batches);
 
@@ -567,7 +567,7 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     assert_algeon_native_exec(&optimization.plan, "decimal-avg plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
@@ -584,10 +584,7 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let native_physical_plan = count_only_sort_limit_plan(parquet_scan(&path).await);
-    let cpu_batches =
-        collect(Arc::clone(&native_physical_plan), Arc::new(datafusion::execution::context::TaskContext::default()))
-            .await
-            .unwrap();
+    let cpu_batches = collect(Arc::clone(&native_physical_plan), Arc::new(TaskContext::default())).await.unwrap();
     let optimization = optimize_with_pruning_template(native_physical_plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
@@ -596,15 +593,15 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     assert_algeon_native_exec(&optimization.plan, "zero-column plan must rewrite to AlgeonNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "read_columns"), 0);
     assert_eq!(metric_usize(&metrics, "input_rows"), 8);
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
 
@@ -619,13 +616,9 @@ async fn native_runtime_default_sql_not_filter_matches_cpu() {
 
     let scan = parquet_scan(&path).await;
     let scan_schema = scan.schema();
-    let payload_lt_10 = binary(
-        col("payload", &scan_schema).unwrap(),
-        Operator::Lt,
-        lit(datafusion::common::ScalarValue::Int32(Some(10))),
-        &scan_schema,
-    )
-    .unwrap();
+    let payload_lt_10 =
+        binary(col("payload", &scan_schema).unwrap(), Operator::Lt, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
     let predicate = Arc::new(NotExpr::new(payload_lt_10));
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
     assert_native_physical_plan_parity(plan, None).await;
@@ -641,13 +634,9 @@ async fn native_runtime_widening_numeric_cast_matches_cpu() {
 
     let scan = parquet_scan(&path).await;
     let scan_schema = scan.schema();
-    let predicate = binary(
-        col("payload", &scan_schema).unwrap(),
-        Operator::GtEq,
-        lit(datafusion::common::ScalarValue::Int32(Some(10))),
-        &scan_schema,
-    )
-    .unwrap();
+    let predicate =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
     let cast_payload = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Int64, None));
     let x00 = binary(cast_payload, Operator::Plus, col("m00", &scan_schema).unwrap(), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_projected_x00(scan, predicate, x00);
@@ -687,13 +676,9 @@ async fn native_runtime_partial_byte_range_access_plan_intersection_matches_cpu(
         access_plan,
     );
     let scan_schema = scan.schema();
-    let predicate = binary(
-        col("payload", &scan_schema).unwrap(),
-        Operator::GtEq,
-        lit(datafusion::common::ScalarValue::Int32(Some(0))),
-        &scan_schema,
-    )
-    .unwrap();
+    let predicate =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(0))), &scan_schema)
+            .unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
     assert_native_physical_plan_parity(plan, Some((1, 4))).await;
 
@@ -726,7 +711,7 @@ async fn assert_sql_native_parity(
     }
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
 
@@ -741,25 +726,21 @@ async fn assert_sql_native_parity(
     assert!(metric_usize(&metrics, "source_chunks_committed") > 0);
     assert!(metric_usize(&metrics, "source_chunks_committed") <= metric_usize(&metrics, "source_chunks_planned"));
     assert_eq!(metric_usize(&metrics, "row_groups_planned"), metric_usize(&metrics, "row_groups_committed"));
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
 }
 
 async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan>) {
-    let cpu_batches =
-        collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let cpu_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
     let optimization = optimize_with_pruning_template(plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert!(optimization.source_diagnostics.is_empty());
     assert_algeon_native_exec(&optimization.plan, "empty scan aggregate must rewrite to AlgeonNativeExec");
 
-    let native_batches =
-        collect(Arc::clone(&optimization.plan), Arc::new(datafusion::execution::context::TaskContext::default()))
-            .await
-            .unwrap();
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
 }
 
@@ -767,8 +748,7 @@ async fn assert_native_physical_plan_parity(
     plan: Arc<dyn ExecutionPlan>,
     expected_selected_row_groups: Option<(usize, usize)>,
 ) {
-    let cpu_batches =
-        collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let cpu_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
     let optimization = optimize_with_pruning_template(plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
@@ -779,32 +759,32 @@ async fn assert_native_physical_plan_parity(
     }
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
-    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
     let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
 
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "host_to_device_uploaded_rows"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
-    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_eq!(arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(arrow_host_export_call_count_for_test(), 1);
 
     assert_batches_equal(&cpu_batches, &native_batches);
 }
 
 async fn cpu_sql_output(path: &std::path::Path, sql: &str) -> Vec<RecordBatch> {
     let plan = sql_plan(path, SessionConfig::new(), sql).await;
-    collect(plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap()
+    collect(plan, Arc::new(TaskContext::default())).await.unwrap()
 }
 
 async fn cpu_lineitem_sql_output(path: &std::path::Path, sql: &str) -> Vec<RecordBatch> {
     let plan = lineitem_sql_plan(path, direct_friendly_sql_session_config(), sql).await;
-    collect(plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap()
+    collect(plan, Arc::new(TaskContext::default())).await.unwrap()
 }
 
 async fn cpu_tpch_sql_output(root: &std::path::Path, sql: &str) -> Vec<RecordBatch> {
     let plan = tpch_sql_plan(root, tpch_report_session_config(), sql).await;
-    collect(plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap()
+    collect(plan, Arc::new(TaskContext::default())).await.unwrap()
 }
 
 async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
@@ -849,7 +829,7 @@ fn parquet_scan_with_pushed_down_payload_predicate(scan: Arc<dyn ExecutionPlan>,
     let predicate = binary(
         col("payload", &scan_schema).unwrap(),
         Operator::GtEq,
-        lit(datafusion::common::ScalarValue::Int32(Some(value))),
+        lit(ScalarValue::Int32(Some(value))),
         &scan_schema,
     )
     .unwrap();

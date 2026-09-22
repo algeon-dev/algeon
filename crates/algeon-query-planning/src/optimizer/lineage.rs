@@ -1,6 +1,6 @@
 use crate::{
     expr::Expr,
-    plan::{JoinSide, NodeId, PlanNode, QueryPlan},
+    plan::{AggregateNode, JoinSide, NodeId, PlanNode, QueryPlan},
     source::SourceNode,
 };
 
@@ -166,7 +166,7 @@ pub(super) fn lineages_for_column(
 fn aggregate_group_key_lineages(
     plan: &QueryPlan,
     parent_counts: &[usize],
-    aggregate: &crate::plan::AggregateNode,
+    aggregate: &AggregateNode,
     aggregate_node_id: NodeId,
     column_name: &str,
     aggregate_group_key_lineage: AggregateGroupKeyLineage,

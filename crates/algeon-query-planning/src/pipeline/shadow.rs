@@ -3,7 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::{CompiledPipeline, ResidentLifetime};
-use crate::plan::QueryPlan;
+use crate::{
+    error::{QueryError, QueryErrorCode, Result},
+    plan::{QueryPlan, canonical_execution_scope_fingerprint},
+    util::log_safe_fingerprint,
+};
 
 /// A modelled allocation quantity. Unknown never contributes an invented zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,11 +91,11 @@ impl CompiledPipeline {
         &self,
         plan: &QueryPlan,
         models: ShadowMemoryModels,
-    ) -> crate::error::Result<ShadowPipelineEstimate> {
+    ) -> Result<ShadowPipelineEstimate> {
         self.validate()?;
         if models.task_workspace.len() != self.tasks().len() || models.resources.len() != self.resources().len() {
-            return Err(crate::error::QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
                 "pipeline.shadow_memory_estimate",
                 "shadow models must use the compiled task and resource index spaces",
             ));
@@ -158,9 +162,7 @@ impl CompiledPipeline {
         }
         Ok(ShadowPipelineEstimate {
             schema: "algeon.shadow_pipeline_estimate.v1".to_owned(),
-            execution_scope: crate::util::log_safe_fingerprint(&crate::plan::canonical_execution_scope_fingerprint(
-                plan,
-            )),
+            execution_scope: log_safe_fingerprint(&canonical_execution_scope_fingerprint(plan)),
             query_owned_peak: maximum(envelopes.iter().map(|envelope| &envelope.query_owned_bytes)),
             borrowed_resident_peak: maximum(envelopes.iter().map(|envelope| &envelope.borrowed_resident_bytes)),
             task_workspace: models.task_workspace,

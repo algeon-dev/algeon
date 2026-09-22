@@ -8,6 +8,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    fmt, mem,
     sync::{Arc, Condvar, Mutex, MutexGuard},
     time::Duration,
 };
@@ -21,7 +22,7 @@ use crate::runtime::{
     ExecutionContext,
     cache::{
         CacheResidency, CacheResidencyChargeTransaction, CacheResidencyDestruction, CacheResidencyPin,
-        CacheSourceActivity, CacheSourceEventSnapshot, cache_observation_fingerprint,
+        CacheResidencyState, CacheSourceActivity, CacheSourceEventSnapshot, cache_observation_fingerprint,
     },
     gpu::DeviceLedger,
     resident::{GpuLocalParquetCachedResult, GpuResultHandle},
@@ -264,8 +265,8 @@ impl Clone for GpuLocalParquetSourceCache {
     }
 }
 
-impl std::fmt::Debug for GpuLocalParquetSourceCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for GpuLocalParquetSourceCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.inner.state.lock().ok();
         f.debug_struct("GpuLocalParquetSourceCache")
             .field("cache_domain_id", &self.inner.allocation_lease.domain_id())
@@ -860,7 +861,7 @@ impl GpuLocalParquetSourceCache {
                 return Ok(());
             }
             for entry in state.entries.values() {
-                if entry.residency.state()? != crate::runtime::cache::CacheResidencyState::Evictable {
+                if entry.residency.state()? != CacheResidencyState::Evictable {
                     return Err(QueryError::new(
                         QueryErrorCode::ServiceOverloaded,
                         "query_engine.gpu_local_parquet_source_cache.close_and_drain",
@@ -872,7 +873,7 @@ impl GpuLocalParquetSourceCache {
             state.closed = true;
             state.loads.clear();
             state.promotions.clear();
-            std::mem::take(&mut state.entries)
+            mem::take(&mut state.entries)
         };
         self.inner.load_complete.notify_all();
         for (_key, entry) in entries {
@@ -894,7 +895,7 @@ impl GpuLocalParquetSourceCache {
             let mut state = self.lock("evict_one_lru")?;
             let mut candidate = None;
             for (key, entry) in &state.entries {
-                if entry.residency.state()? == crate::runtime::cache::CacheResidencyState::Evictable
+                if entry.residency.state()? == CacheResidencyState::Evictable
                     && candidate.as_ref().is_none_or(|(_key, oldest_epoch): &(GpuLocalParquetSourceCacheKey, u64)| {
                         entry.last_access_epoch < *oldest_epoch
                     })

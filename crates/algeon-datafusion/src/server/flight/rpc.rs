@@ -1,7 +1,11 @@
 use std::time::Instant;
 
+use arrow_flight::{Result as FlightResult, sql::metadata::GetCatalogsBuilder};
+use futures::stream::{iter, once, unfold};
+use prost::bytes::Bytes;
+
 use super::*;
-use crate::server::observability::RedactedSql;
+use crate::server::{attempt::AttemptOptions, error::adapter_error_to_status, observability::RedactedSql};
 
 #[tonic::async_trait]
 impl FlightSqlService for DatafusionAlgeonFlightSqlService {
@@ -55,7 +59,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         let explain_gpu = match parse_explain_gpu(&sql) {
             Ok(statement) => statement,
             Err(error) => {
-                let attempt = match self.admission.begin_attempt(crate::server::attempt::AttemptOptions {
+                let attempt = match self.admission.begin_attempt(AttemptOptions {
                     query_id: Some(query_id.clone()),
                     trace_context: correlation_id.clone(),
                     deadline: None,
@@ -228,7 +232,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         let descriptor = request.into_inner();
         // `CommandGetCatalogs` is a unit message; the builder produces a
         // static schema, and we echo the (Copy) command back as the ticket.
-        let schema = arrow_flight::sql::metadata::GetCatalogsBuilder::new().schema();
+        let schema = GetCatalogsBuilder::new().schema();
         Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
     }
 
@@ -462,7 +466,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         let builder = query.into_builder(&sql_info);
         let schema = builder.schema();
         let batch = builder.build();
-        let stream = encode_flight_data_stream(schema, futures::stream::once(async { batch })).map_err(|error| {
+        let stream = encode_flight_data_stream(schema, once(async { batch })).map_err(|error| {
             arrow_flight_error_to_status_for_operation(
                 error,
                 "algeon_datafusion.server.flight.do_get_sql_info.encode",
@@ -791,7 +795,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 },
             }
         } else {
-            prost::bytes::Bytes::new()
+            Bytes::new()
         };
 
         // DDL prepares without a result-set schema; classify it once here so
@@ -827,7 +831,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
         Ok(ActionCreatePreparedStatementResult {
             prepared_statement_handle: handle.into_bytes().into(),
             dataset_schema: dataset_schema_ipc,
-            parameter_schema: prost::bytes::Bytes::new(),
+            parameter_schema: Bytes::new(),
         })
     }
 
@@ -898,7 +902,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 .admission
                 .diagnostics_payload()
                 .map_err(|error| Status::internal(format!("failed to read admission diagnostics: {error}")))?;
-            let output = futures::stream::iter(vec![Ok(arrow_flight::Result { body: payload.into_bytes().into() })]);
+            let output = iter(vec![Ok(FlightResult { body: payload.into_bytes().into() })]);
             return Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream));
         }
         if action_type == GET_QUERY_RUNTIME_ARTIFACT_ACTION {
@@ -916,13 +920,13 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                 .coordinator
                 .lease_runtime_artifact(query_id)
                 .map_err(|error| {
-                    crate::server::error::adapter_error_to_status(
+                    adapter_error_to_status(
                         &error.adapter_error("algeon_datafusion.server.flight.get_query_runtime_artifact.egress"),
                     )
                 })?
                 .ok_or_else(|| Status::not_found(format!("unknown or expired query_id: {query_id}")))?;
-            let output = futures::stream::unfold(response, |mut response| async move {
-                response.next_frame().map(|body| (Ok(arrow_flight::Result { body }), response))
+            let output = unfold(response, |mut response| async move {
+                response.next_frame().map(|body| (Ok(FlightResult { body }), response))
             });
             return Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream));
         }
@@ -943,13 +947,11 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             .coordinator
             .lease_query_stats(query_id)
             .map_err(|error| {
-                crate::server::error::adapter_error_to_status(
-                    &error.adapter_error("algeon_datafusion.server.flight.get_query_stats.egress"),
-                )
+                adapter_error_to_status(&error.adapter_error("algeon_datafusion.server.flight.get_query_stats.egress"))
             })?
             .ok_or_else(|| Status::not_found(format!("unknown or expired query_id: {query_id}")))?;
-        let output = futures::stream::unfold(response, |mut response| async move {
-            response.next_frame().map(|body| (Ok(arrow_flight::Result { body }), response))
+        let output = unfold(response, |mut response| async move {
+            response.next_frame().map(|body| (Ok(FlightResult { body }), response))
         });
         Ok(Response::new(Box::pin(output) as <Self as FlightService>::DoActionStream))
     }

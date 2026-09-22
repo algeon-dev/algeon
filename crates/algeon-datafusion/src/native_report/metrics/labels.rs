@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-pub(super) fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
+use datafusion::physical_plan::metrics::Label;
+
+pub(super) fn labels_by_name(labels: &[Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
 }
 

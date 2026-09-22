@@ -10,6 +10,7 @@ use cudf::{
     io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
     testing::prelude::*,
 };
+use cudf_sys::test_support;
 use tempfile::TempDir;
 
 use crate::common::{
@@ -194,7 +195,7 @@ fn test_json_read_metadata_negative_name_count_maps_to_invariant_violation() {
 
     std::fs::write(&path, "{\"id\":1,\"value\":10}\n{\"id\":2,\"value\":20}\n").unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_NEGATIVE_NAME_COUNT);
+    arm_next_io_metadata_fault(test_support::CUDF_TEST_IO_METADATA_FAULT_NEGATIVE_NAME_COUNT);
     let err = match json::read_json_table(&JsonTableReadOptions::builder().filepath(&path).with_runtime(&rt).build()) {
         Ok(_) => panic!("malformed metadata should fail"),
         Err(err) => err,

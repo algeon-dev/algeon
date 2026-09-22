@@ -286,7 +286,8 @@ mod tests {
     use super::*;
     use crate::{
         backend::InstalledTestGpuBackend, native_exec::AlgeonNativeExecutionConfig,
-        planner::AlgeonNativeOptimizerConfig, session::AlgeonSessionStateBuilderExt,
+        physical_plan::DataFusionCpuBoundaryExec, planner::AlgeonNativeOptimizerConfig,
+        session::AlgeonSessionStateBuilderExt,
     };
 
     fn test_optimizer_config() -> AlgeonNativeOptimizerConfig {
@@ -441,7 +442,7 @@ mod tests {
         let df = ctx.sql("SELECT * FROM algeon_explain_coverage('SELECT 1')").await.unwrap();
         let plan = df.create_physical_plan().await.unwrap();
         assert!(
-            plan.downcast_ref::<crate::physical_plan::DataFusionCpuBoundaryExec>().is_some(),
+            plan.downcast_ref::<DataFusionCpuBoundaryExec>().is_some(),
             "expected DataFusionCpuBoundaryExec at physical root, got {}",
             plan.name()
         );

@@ -11,6 +11,7 @@ use crate::{
     core::{
         column::Column,
         error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
+        native_teardown::drop_device_owned_handle,
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -167,7 +168,7 @@ impl Table {
         if status != cudf_sys::CUDF_SUCCESS {
             for &h in &handles {
                 if !h.is_null() {
-                    crate::core::native_teardown::drop_device_owned_handle(
+                    drop_device_owned_handle(
                         h,
                         domain.device_id(),
                         "table::from_columns::cleanup_column",
@@ -282,7 +283,7 @@ impl Table {
             let primary_error = error::check_status_in(status, "table::into_columns").unwrap_err();
             // On failure, the C shim did NOT consume the table.
             // We must destroy it ourselves to avoid a leak.
-            crate::core::native_teardown::drop_device_owned_handle(
+            drop_device_owned_handle(
                 raw_handle,
                 domain.device_id(),
                 "table::into_columns::cleanup_table",
@@ -337,11 +338,8 @@ impl Table {
 
 impl Drop for Table {
     fn drop(&mut self) {
-        crate::core::native_teardown::drop_device_owned_handle(
-            self.handle.as_ptr(),
-            self.domain.device_id(),
-            "Table::drop",
-            |owned| unsafe { cudf_sys::cudf_table_destroy(owned) },
-        );
+        drop_device_owned_handle(self.handle.as_ptr(), self.domain.device_id(), "Table::drop", |owned| unsafe {
+            cudf_sys::cudf_table_destroy(owned)
+        });
     }
 }

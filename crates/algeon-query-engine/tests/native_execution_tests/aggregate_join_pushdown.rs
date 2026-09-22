@@ -1,5 +1,14 @@
 use std::{path::Path, sync::Arc};
 
+use arrow::array::{Int32Array, Int64Array};
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    expr::ColumnRef,
+    optimizer::{AggregateJoinPushdownRejectedReason, NativeOptimizerChange, optimize_query_plan},
+    plan::QueryPlan,
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -13,13 +22,13 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     let left_schema = write_aggregate_join_pushdown_left_parquet(&runtime, &left_path);
     let right_schema = write_aggregate_join_pushdown_right_parquet(&runtime, &right_path);
     let plan = aggregate_join_pushdown_execution_plan(&left_path, &left_schema, &right_path, &right_schema);
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
-    assert_eq!(optimizer_result.change, query_engine::optimizer::NativeOptimizerChange::Changed);
+    assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
     let original = execute_query_plan(&context, &plan).unwrap();
@@ -57,13 +66,13 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     let left_schema = write_left_count_customer_parquet(&runtime, &left_path);
     let right_schema = write_left_count_orders_parquet(&runtime, &right_path);
     let plan = aggregate_join_pushdown_left_count_plan(&left_path, &left_schema, &right_path, &right_schema);
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
-    assert_eq!(optimizer_result.change, query_engine::optimizer::NativeOptimizerChange::Changed);
+    assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
     let original = execute_query_plan(&context, &plan).unwrap();
@@ -95,7 +104,7 @@ fn aggregate_join_pushdown_execution_plan(
     left_schema: &Arc<Schema>,
     right_path: &Path,
     right_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("ss_net_profit", DataType::Int64, true),
         Field::new("s_store_name", DataType::Utf8, true),
@@ -118,19 +127,13 @@ fn aggregate_join_pushdown_execution_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "zip_prefix", "zip_prefix"),
-                query_engine::expr::ColumnRef::input(1, "zip_prefix", "zip_prefix"),
+                ColumnRef::input(0, "zip_prefix", "zip_prefix"),
+                ColumnRef::input(1, "zip_prefix", "zip_prefix"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "ss_net_profit", "ss_net_profit"),
-                "ss_net_profit",
-            ),
-            JoinOutputColumn::left(
-                query_engine::expr::ColumnRef::input(0, "s_store_name", "s_store_name"),
-                "s_store_name",
-            ),
+            JoinOutputColumn::left(ColumnRef::input(0, "ss_net_profit", "ss_net_profit"), "ss_net_profit"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_store_name", "s_store_name"), "s_store_name"),
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
@@ -170,7 +173,7 @@ fn aggregate_join_pushdown_left_count_plan(
     left_schema: &Arc<Schema>,
     right_path: &Path,
     right_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("c_custkey", DataType::Int32, false),
         Field::new("o_orderkey", DataType::Int64, true),
@@ -193,13 +196,13 @@ fn aggregate_join_pushdown_left_count_plan(
         JoinSpec::new(
             JoinType::Left,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
-                query_engine::expr::ColumnRef::input(1, "o_custkey", "o_custkey"),
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
@@ -304,7 +307,7 @@ fn write_semi_group_filter_detail_parquet(path: &Path) -> Arc<Schema> {
     let quantities = (0..SEMI_GROUP_FILTER_ROWS).map(|row| i64::from(row) * 2 + 1).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
-        vec![Arc::new(arrow::array::Int32Array::from(order_ids)), Arc::new(arrow::array::Int64Array::from(quantities))],
+        vec![Arc::new(Int32Array::from(order_ids)), Arc::new(Int64Array::from(quantities))],
     )
     .unwrap();
     write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, SEMI_GROUP_FILTER_ROW_GROUP_ROWS);
@@ -314,8 +317,7 @@ fn write_semi_group_filter_detail_parquet(path: &Path) -> Arc<Schema> {
 fn write_semi_group_filter_keyset_parquet(path: &Path, order_ids: &[i32]) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, false)]));
     let batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(arrow::array::Int32Array::from(order_ids.to_vec()))])
-            .unwrap();
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(order_ids.to_vec()))]).unwrap();
     write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, SEMI_GROUP_FILTER_ROW_GROUP_ROWS);
     schema
 }
@@ -326,7 +328,7 @@ fn left_semi_group_filter_aggregate_plan(
     keyset_path: &Path,
     keyset_schema: &Arc<Schema>,
     keyset_filter: Option<Expr>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, true),
         Field::new("sum_qty", DataType::Int64, true),
@@ -350,13 +352,13 @@ fn left_semi_group_filter_aggregate_plan(
         JoinSpec::new(
             JoinType::LeftSemi,
             vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
-                query_engine::expr::ColumnRef::input(1, "order_id", "order_id"),
+                ColumnRef::input(0, "order_id", "order_id"),
+                ColumnRef::input(1, "order_id", "order_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(detail_schema),
@@ -389,17 +391,17 @@ fn bounded_native_query_filters_left_semi_groups_before_the_final_aggregate() {
         write_semi_group_filter_keyset_parquet(&keyset_path, &[1_500_003, 7, 7, SEMI_GROUP_FILTER_ROWS + 5, 42]);
 
     let plan = left_semi_group_filter_aggregate_plan(&detail_path, &detail_schema, &keyset_path, &keyset_schema, None);
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
     let pushdown = &optimizer_result.diagnostics.aggregate_join_pushdown;
     assert_eq!(pushdown.applied_count, 0, "{pushdown:?}");
     assert_eq!(
         pushdown.candidates[0].rejected_reason,
-        Some(query_engine::optimizer::AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups)
+        Some(AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups)
     );
     assert_eq!(optimizer_result.plan, plan, "the semi filter must stay directly below the grouped aggregate");
 

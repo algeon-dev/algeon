@@ -1,10 +1,10 @@
 #[test]
 fn large_keyed_inner_build_selects_partitioned_strategy() {
     let plan = large_keyed_join_strategy_plan(JoinType::Inner);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections());
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("large partitioned join should still be admitted");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("large partitioned join should still be admitted");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:100000000"));
@@ -12,7 +12,7 @@ fn large_keyed_inner_build_selects_partitioned_strategy() {
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
 
-    query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
+    compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
 }
 
 #[test]
@@ -22,12 +22,12 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
         .with_large_keyed_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024)
         .with_small_reusable_hash_build_row_threshold(200_000_000)
         .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024);
-    let optimized = query_engine::optimizer::optimize_query_plan(
+    let optimized = optimize_query_plan(
         large_keyed_join_strategy_plan(JoinType::Inner),
-        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() }, query_engine::rapids_backend::rapids_analysis_context(),query_engine::dimension_pruning::local_dimension_pruning_resolver());
+        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() }, rapids_analysis_context(),local_dimension_pruning_resolver());
     let plan = optimized.plan;
 
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("custom strategy thresholds should keep the join admitted");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("custom strategy thresholds should keep the join admitted");
 
     assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
@@ -37,10 +37,10 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
 fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(!analysis.has_rejections(), "{join_type} large partitioned join should be admitted");
-        let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("large partitioned join should report modeled bounded facts");
+        let facts = modeled_facts(&plan, rapids_analysis_context()).expect("large partitioned join should report modeled bounded facts");
         assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
         assert_eq!(
             facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -50,17 +50,17 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
         assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
         assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 
-        query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
+        compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
     }
 }
 
 #[test]
 fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(10, 1024);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "large probe reusable join with small build should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("large probe reusable join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("large probe reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -71,10 +71,10 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
 #[test]
 fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Inner, None);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "small single-use inner join should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("small single-use inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("small single-use inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -84,16 +84,16 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
     assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:true"));
 
-    query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
+    compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
 }
 
 #[test]
 fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Inner, Some("small-reusable-build"));
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "small join with build artifact should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("small join with build artifact should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("small join with build artifact should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -102,10 +102,10 @@ fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
 #[test]
 fn small_keyed_left_join_keeps_reusable_strategy() {
     let plan = small_keyed_join_strategy_plan(JoinType::Left, None);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "small left join should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("small left join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("small left join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -114,10 +114,10 @@ fn small_keyed_left_join_keeps_reusable_strategy() {
 #[test]
 fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let plan = byte_small_row_non_small_keyed_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "byte-small row-non-small inner join should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("byte-small row-non-small inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("byte-small row-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -129,10 +129,10 @@ fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
 #[test]
 fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let plan = row_small_byte_non_small_keyed_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "row-small byte-non-small inner join should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("row-small byte-non-small inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("row-small byte-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -144,10 +144,10 @@ fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
 #[test]
 fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
     let plan = unknown_probe_small_left_build_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "unknown probe reusable join with small build should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("small-build reusable join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("small-build reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -158,10 +158,10 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
 #[test]
 fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild() {
     let plan = string_keyed_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("flat string-key hash join should report a modeled bounded contract");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("flat string-key hash join should report a modeled bounded contract");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
 }
@@ -169,10 +169,10 @@ fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild
 #[test]
 fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
     let plan = string_keyed_join_strategy_plan_with_probe(10_000_000, 3 * 1024 * 1024 * 1024, 10, 1024);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("small flat string build should report a modeled bounded contract");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("small flat string build should report a modeled bounded contract");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
@@ -181,10 +181,10 @@ fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
 #[test]
 fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(2_000_000, 128 * 1024 * 1024);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "large probe partitioned join should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("large probe partitioned join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("large probe partitioned join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:probe_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
@@ -194,10 +194,10 @@ fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
 #[test]
 fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     let plan = medium_single_use_keyed_build_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "single-use non-small build should remain admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("single-use non-small build should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("single-use non-small build should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -207,17 +207,17 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1048576"));
 
-    query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    compile_pipeline(&plan, &analysis)
         .expect("single-use non-small partitioned join should compile");
 }
 
 #[test]
 fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
     let plan = large_keyed_residual_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "large keyed inner residual partitioned join should be admitted");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("large partitioned residual join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("large partitioned residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:9663676416"));
@@ -225,16 +225,16 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 
-    query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned residual join should compile");
+    compile_pipeline(&plan, &analysis).expect("partitioned residual join should compile");
 }
 
 #[test]
 fn keyed_inner_residual_or_selects_mixed_join_strategy() {
     let plan = large_keyed_residual_or_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through mixed join");
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("keyed residual OR join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("keyed residual OR join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -257,20 +257,20 @@ fn left_build_keyed_residual_semi_anti_stays_on_stateful_mixed_strategy() {
             panic!("strategy fixture root should remain the join");
         };
 
-        assert!(query_engine::capability::keyed_residual_left_match_join_capable(join), "{join_type}");
-        assert!(query_engine::capability::keyed_residual_mixed_join_capable(join), "{join_type}");
+        assert!(keyed_residual_left_match_join_capable(join), "{join_type}");
+        assert!(keyed_residual_mixed_join_capable(join), "{join_type}");
         assert!(
-            !query_engine::capability::partitioned_keyed_residual_join_supported(join),
+            !partitioned_keyed_residual_join_supported(join),
             "left-build {join_type} must stay out of partitioned mixed execution"
         );
         assert_eq!(
-            query_engine::capability::join_node_execution_capability(join),
-            Some(query_engine::capability::JoinExecutionCapability::KeyedResidualMixed),
+            join_node_execution_capability(join),
+            Some(JoinExecutionCapability::KeyedResidualMixed),
             "{join_type} should expose the stateful mixed capability"
         );
         assert!(matches!(
-            query_engine::admission::CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
-            Ok(Some(query_engine::admission::CompiledJoinExecutionStrategy::MixedKeyedResidual))
+            CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
+            Ok(Some(CompiledJoinExecutionStrategy::MixedKeyedResidual))
         ));
     }
 }
@@ -291,12 +291,12 @@ fn right_build_keyed_residual_semi_anti_remains_partitioned_mixed_when_large() {
             panic!("strategy fixture root should remain the join");
         };
 
-        assert!(!query_engine::capability::keyed_residual_left_match_join_capable(join), "{join_type}");
-        assert!(query_engine::capability::keyed_residual_mixed_join_capable(join), "{join_type}");
-        assert!(query_engine::capability::partitioned_keyed_residual_join_supported(join), "{join_type}");
+        assert!(!keyed_residual_left_match_join_capable(join), "{join_type}");
+        assert!(keyed_residual_mixed_join_capable(join), "{join_type}");
+        assert!(partitioned_keyed_residual_join_supported(join), "{join_type}");
         assert!(matches!(
-            query_engine::admission::CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
-            Ok(Some(query_engine::admission::CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual))
+            CompiledJoinExecutionStrategy::from_plan_join_node(&plan, node_id, join),
+            Ok(Some(CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual))
         ));
     }
 }
@@ -308,7 +308,7 @@ fn keyed_residual_semi_anti_join_strategy_plan(
     left_rows: u64,
     right_bytes: u64,
     right_rows: u64,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("left_key", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -365,13 +365,13 @@ fn keyed_residual_semi_anti_join_strategy_plan(
 #[test]
 fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
     let plan = decimal_division_residual_join_strategy_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         !analysis.has_rejections(),
         "keyed decimal-division residual join should be admitted through post-join filtering"
     );
-    let facts = modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).expect("keyed decimal-division residual join should report modeled bounded facts");
+    let facts = modeled_facts(&plan, rapids_analysis_context()).expect("keyed decimal-division residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -384,7 +384,7 @@ fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 }
 
-pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> query_engine::plan::QueryPlan {
+pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -439,7 +439,7 @@ pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> query_engin
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> query_engine::plan::QueryPlan {
+fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -494,7 +494,7 @@ fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> qu
     builder.finish_with_host_sink(join)
 }
 
-fn medium_single_use_keyed_build_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn medium_single_use_keyed_build_join_strategy_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -552,15 +552,15 @@ fn medium_single_use_keyed_build_join_strategy_plan() -> query_engine::plan::Que
 fn small_keyed_join_strategy_plan(
     join_type: JoinType,
     build_artifact_id: Option<&str>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     sized_keyed_join_strategy_plan(join_type, build_artifact_id, 10, 1024)
 }
 
-fn byte_small_row_non_small_keyed_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn byte_small_row_non_small_keyed_join_strategy_plan() -> QueryPlan {
     sized_keyed_join_strategy_plan(JoinType::Inner, None, 2_000_000, 16 * 1024 * 1024)
 }
 
-fn row_small_byte_non_small_keyed_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn row_small_byte_non_small_keyed_join_strategy_plan() -> QueryPlan {
     sized_keyed_join_strategy_plan(JoinType::Inner, None, 10, 128 * 1024 * 1024)
 }
 
@@ -569,7 +569,7 @@ fn sized_keyed_join_strategy_plan(
     build_artifact_id: Option<&str>,
     build_rows: u64,
     build_bytes: u64,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -623,7 +623,7 @@ fn sized_keyed_join_strategy_plan(
     builder.finish_with_host_sink(join)
 }
 
-fn unknown_probe_small_left_build_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn unknown_probe_small_left_build_join_strategy_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -671,7 +671,7 @@ fn unknown_probe_small_left_build_join_strategy_plan() -> query_engine::plan::Qu
     builder.finish_with_host_sink(join)
 }
 
-fn string_keyed_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn string_keyed_join_strategy_plan() -> QueryPlan {
     string_keyed_join_strategy_plan_with_probe(10_000, 1024 * 1024, 10, 1024)
 }
 
@@ -680,7 +680,7 @@ fn string_keyed_join_strategy_plan_with_probe(
     probe_bytes: u64,
     build_rows: u64,
     build_bytes: u64,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("customer_id", DataType::Utf8, false),
         Field::new("qty", DataType::Int32, false),
@@ -735,7 +735,7 @@ fn string_keyed_join_strategy_plan_with_probe(
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_residual_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn large_keyed_residual_join_strategy_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -795,7 +795,7 @@ fn large_keyed_residual_join_strategy_plan() -> query_engine::plan::QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_residual_or_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn large_keyed_residual_or_join_strategy_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, true),
@@ -859,7 +859,7 @@ fn large_keyed_residual_or_join_strategy_plan() -> query_engine::plan::QueryPlan
     builder.finish_with_host_sink(join)
 }
 
-fn decimal_division_residual_join_strategy_plan() -> query_engine::plan::QueryPlan {
+fn decimal_division_residual_join_strategy_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("sales_cnt_decimal", DataType::Decimal128(17, 2), false),

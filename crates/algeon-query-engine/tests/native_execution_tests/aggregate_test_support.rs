@@ -6,7 +6,7 @@ pub(super) fn nullable_global_aggregate_plan(
     path: &Path,
     input_schema: Arc<Schema>,
     filter: Option<Expr>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("sum_m00", DataType::Int64, true),
         Field::new("avg_m00", DataType::Float64, true),

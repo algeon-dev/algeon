@@ -15,6 +15,7 @@ use crate::{
             BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection,
             execute_bounded_generic_unary,
         },
+        operators::execute_filter_with_budget,
     },
     plan::{FilterNode, NodeId, ProjectionNode},
     runtime::resident::GpuDataFrame,
@@ -447,7 +448,7 @@ impl UnaryMappedResidentFrameStreamSource {
                 input,
                 true,
                 |context, input, token, metrics| {
-                    crate::exec::operators::execute_filter_with_budget(
+                    execute_filter_with_budget(
                         context,
                         filter,
                         input,

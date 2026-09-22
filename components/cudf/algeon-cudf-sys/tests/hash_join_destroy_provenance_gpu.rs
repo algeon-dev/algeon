@@ -5,6 +5,7 @@ mod helpers;
 
 use std::ptr;
 
+use cudf_sys::test_support;
 use helpers::{make_i32_column, make_table_from_one_column, make_table_view};
 use support::{OwnedMemoryResource, OwnedStream, current_device, lock_shim_state};
 
@@ -12,7 +13,7 @@ use support::{OwnedMemoryResource, OwnedStream, current_device, lock_shim_state}
 fn column_destroy_keeps_explicit_memory_resource_alive_after_handle_destroy() {
     let _shim_state = lock_shim_state();
     let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_create_stats(&mut mr) };
+    let status = unsafe { test_support::cudf_test_memory_resource_create_stats(&mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
 

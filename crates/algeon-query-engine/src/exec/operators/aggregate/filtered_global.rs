@@ -16,6 +16,7 @@ use super::{
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
     *,
 };
+use crate::naming::unique_alias_with_suffix;
 
 // Admission decision plus segmentation plan for filtered global aggregates.
 #[derive(Debug, Clone)]
@@ -748,7 +749,7 @@ fn prepare_filtered_global_partial_segment(
 }
 
 fn unique_filtered_global_segment_alias(base: &str, fields: &[Field]) -> String {
-    crate::naming::unique_alias_with_suffix(base, |alias| fields.iter().any(|field| field.name() == alias))
+    unique_alias_with_suffix(base, |alias| fields.iter().any(|field| field.name() == alias))
 }
 
 fn indexed_partial_global_aggregate_spec(indexed_exprs: &[(usize, AggregateExpr)]) -> AggregateSpec {

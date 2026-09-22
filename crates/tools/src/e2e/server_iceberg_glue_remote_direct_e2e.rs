@@ -568,7 +568,7 @@ fn require_absent(label: &str, surface: &str, haystack: &str, needle: &str) -> E
 async fn query_batches(
     client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
     sql: &str,
-) -> E2eResult<Vec<arrow::record_batch::RecordBatch>> {
+) -> E2eResult<Vec<RecordBatch>> {
     let flight_info = client.execute(sql.to_string(), None).await?;
     let ticket =
         flight_info.endpoint.first().and_then(|ep| ep.ticket.clone()).ok_or("Flight SQL response missing ticket")?;
@@ -701,7 +701,7 @@ async fn connect_flight_sql(
 
 /// Renders RecordBatches to a sorted Vec of row strings for order-insensitive,
 /// substrate-agnostic parity comparison.
-fn sorted_rows(batches: &[arrow::record_batch::RecordBatch]) -> Vec<String> {
+fn sorted_rows(batches: &[RecordBatch]) -> Vec<String> {
     use std::fmt::Write;
     let mut rows = Vec::new();
     for batch in batches {

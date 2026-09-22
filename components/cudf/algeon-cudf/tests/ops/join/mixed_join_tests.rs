@@ -8,19 +8,20 @@ use cudf::{
         ast::AstExpression,
         join::{self, JoinIndices, JoinType, NullEquality, SingleSideJoinIndices},
     },
+    runtime::CudaStream,
     testing::prelude::*,
 };
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, lock_event_observation,
-    reset_exec_observation,
+    reset_exec_observation, run_named_cases,
 };
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
 fn mixed_left_state_preserves_duplicate_rows_and_late_residual_matches() {
     let rt = Runtime::new().unwrap();
-    let probe_rt = Runtime::builder().with_stream(cudf::runtime::CudaStream::new().unwrap()).build().unwrap();
+    let probe_rt = Runtime::builder().with_stream(CudaStream::new().unwrap()).build().unwrap();
     let left = DataFrame::from_series([
         ("key", rt.series(&[1i32, 1, 1, 2, 3]).unwrap()),
         ("value", rt.series(&[5i32, 5, 9, 2, 7]).unwrap()),
@@ -934,7 +935,7 @@ fn dataframe_filter_join_indices_filter_existing_hash_probe_pairs() {
 
 #[test]
 fn mixed_join_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         (
             "mixed_left_state_preserves_duplicate_rows_and_late_residual_matches",
             mixed_left_state_preserves_duplicate_rows_and_late_residual_matches,

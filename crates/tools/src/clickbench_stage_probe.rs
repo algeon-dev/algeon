@@ -20,19 +20,22 @@ use std::{
 };
 
 use algeon_datafusion::{
-    backend::AlgeonGpuBackend, native_exec::AlgeonNativeExecutionConfig, planner::AlgeonNativeOptimizerConfig,
-    session::AlgeonSessionStateBuilderExt,
+    attempt::AttemptOptions, backend::AlgeonGpuBackend, native_exec::AlgeonNativeExecutionConfig,
+    planner::AlgeonNativeOptimizerConfig, session::AlgeonSessionStateBuilderExt,
 };
 use bench::report_workload::clickbench::{
-    clickbench_native_profile_settings_from_env, clickbench_report_session_config,
+    ClickbenchNativeProfileSettings, clickbench_native_profile_settings_from_env, clickbench_report_session_config,
 };
-use datafusion::{common::DataFusionError, physical_plan::ExecutionPlan, prelude::SessionContext};
+use datafusion::{
+    common::DataFusionError, execution::SessionStateBuilder, physical_plan::ExecutionPlan, prelude::SessionContext,
+};
 use futures::TryStreamExt;
 use query_engine::{
     exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     observability::{
-        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
-        RuntimeOperatorStageState, RuntimeQueryId, write_runtime_observation_jsonl,
+        LiveRuntimeObservationSnapshot, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig,
+        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload, RuntimeOperatorStageState,
+        RuntimeQueryId, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
     },
     runtime::{
         ExecutionCancellation, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
@@ -165,7 +168,7 @@ fn record_verdict(config: &ProbeConfig, verdict: &ProbeVerdict) -> ToolResult<()
 async fn probe_native_observed(
     query_id: &str,
     root: &Path,
-    profile: &bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
+    profile: &ClickbenchNativeProfileSettings,
     config: &ProbeConfig,
     query_handle: Arc<QueryHandle>,
     observation: RuntimeObservationHandle,
@@ -277,7 +280,7 @@ async fn probe_native_observed(
 async fn probe_datafusion_collect(
     query_id: &str,
     root: &Path,
-    profile: &bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
+    profile: &ClickbenchNativeProfileSettings,
     config: &ProbeConfig,
     backend: &AlgeonGpuBackend,
 ) -> ToolResult<ProbeVerdict> {
@@ -312,10 +315,9 @@ async fn probe_datafusion_collect(
     });
 
     let started = Instant::now();
-    let result = match backend.begin_attempt(algeon_datafusion::attempt::AttemptOptions {
-        query_id: Some(query_id.to_string()),
-        ..algeon_datafusion::attempt::AttemptOptions::default()
-    }) {
+    let result = match backend
+        .begin_attempt(AttemptOptions { query_id: Some(query_id.to_string()), ..AttemptOptions::default() })
+    {
         Ok(attempt) => match attempt.execute_physical_plan(physical, &ctx) {
             Ok(stream) => stream.try_collect::<Vec<_>>().await,
             Err(error) => Err(error),
@@ -369,7 +371,7 @@ async fn plan_native_physical(
     query_id: &str,
     root: &Path,
     sql: &str,
-    profile: &bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
+    profile: &ClickbenchNativeProfileSettings,
 ) -> ToolResult<Arc<dyn ExecutionPlan>> {
     let layout = discover_clickbench_layout(root)?;
     let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
@@ -384,7 +386,7 @@ async fn plan_native_physical(
         .with_query_id(query_id),
     );
 
-    let state = datafusion::execution::SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_config(clickbench_report_session_config())
         .with_default_features()
         .with_algeon_native(optimizer_config)
@@ -408,9 +410,7 @@ async fn plan_native_physical_for_attempt(
 ) -> ToolResult<(SessionContext, Arc<dyn ExecutionPlan>)> {
     let layout = discover_clickbench_layout(root)?;
     let builder = backend.install_on(
-        datafusion::execution::SessionStateBuilder::new()
-            .with_config(clickbench_report_session_config())
-            .with_default_features(),
+        SessionStateBuilder::new().with_config(clickbench_report_session_config()).with_default_features(),
     )?;
     let ctx = SessionContext::new_with_state(builder.build());
     register_clickbench_table(&ctx, &layout).await?;
@@ -420,9 +420,7 @@ async fn plan_native_physical_for_attempt(
     Ok((ctx, physical))
 }
 
-fn build_probe_attempt_backend(
-    profile: &bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
-) -> ToolResult<AlgeonGpuBackend> {
+fn build_probe_attempt_backend(profile: &ClickbenchNativeProfileSettings) -> ToolResult<AlgeonGpuBackend> {
     let execution_config = AlgeonNativeExecutionConfig::bounded(
         profile.device_budget_bytes,
         profile.max_source_chunk_bytes,
@@ -442,9 +440,7 @@ fn build_probe_attempt_backend(
     Ok(AlgeonGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device]).build()?)
 }
 
-fn build_probe_backend(
-    profile: &bench::report_workload::clickbench::ClickbenchNativeProfileSettings,
-) -> ToolResult<ToolGpuBackend> {
+fn build_probe_backend(profile: &ClickbenchNativeProfileSettings) -> ToolResult<ToolGpuBackend> {
     let service_config = QueryExecutionConfig {
         source_chunk_planning_mode: profile.source_chunk_planning_mode,
         max_source_chunk_bytes: profile.max_source_chunk_bytes,
@@ -464,7 +460,7 @@ fn build_probe_backend(
 }
 
 fn spawn_watchdog(
-    handle: query_engine::observability::RuntimeObservationHandle,
+    handle: RuntimeObservationHandle,
     live_dir: PathBuf,
     interval: Duration,
     stop: Arc<AtomicBool>,
@@ -500,7 +496,7 @@ fn spawn_watchdog(
 }
 
 fn write_runtime_observation_jsonl_live(
-    snapshot: &query_engine::observability::LiveRuntimeObservationSnapshot,
+    snapshot: &LiveRuntimeObservationSnapshot,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     // Live snapshots share the sealed exporter shape except footer is incomplete.
@@ -511,7 +507,7 @@ fn write_runtime_observation_jsonl_live(
         "{}",
         serde_json::json!({
             "record_type": "live_marker",
-            "schema": query_engine::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA,
+            "schema": RUNTIME_OBSERVATION_JSONL_SCHEMA,
             "event_count": snapshot.events().len(),
         })
     )?;
@@ -555,10 +551,7 @@ fn absorb_stage(
     }
 }
 
-fn summarize_stages(
-    sealed: Option<&query_engine::observability::SealedRuntimeObservationSnapshot>,
-    live_dir: &Path,
-) -> StageSummary {
+fn summarize_stages(sealed: Option<&SealedRuntimeObservationSnapshot>, live_dir: &Path) -> StageSummary {
     let mut started = BTreeSet::new();
     let mut finished = BTreeSet::new();
     let mut last_active = None;

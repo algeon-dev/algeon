@@ -1,6 +1,8 @@
 // Transactional admission: fault-injection rollback and envelope
 // identity evidence.
 
+use crate::runtime::query_service::service::transaction::{AdmissionStep, AdmissionTransactionProbe};
+
 /// Wait for the controller's complete cleanup boundary: returning streams are
 /// not sufficient because the release commit still owns the ledger grant and
 /// lane until it publishes the terminal report.
@@ -16,7 +18,7 @@ fn wait_for_transaction_cleanup(service: &QueryService, what: &str) {
 /// later admission.
 #[test]
 fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
-    for step in crate::runtime::query_service::service::transaction::AdmissionStep::ALL {
+    for step in AdmissionStep::ALL {
         let service =
             try_guaranteed_runtime_test_service().expect("runtime-backed service for transaction rollback coverage");
         let resources = service.inner.resources.as_ref().expect("runtime-backed service");
@@ -27,7 +29,7 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
         let (_, root_capacity, _, aux_capacity) = device.stream_pool().class_counters();
 
         service.set_admission_transaction_probe(
-            crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::failing_at(step),
+            AdmissionTransactionProbe::failing_at(step),
         );
         let error = service.admit_query().expect_err("injected fault rejects the admission");
         assert_eq!(error.fact_value("reason"), Some("injected_admission_step_fault"), "step {step:?}");
@@ -53,7 +55,7 @@ fn injected_fault_at_every_transaction_step_restores_all_counters_exactly() {
         // The service stays healthy: a later admission publishes a complete
         // matching envelope.
         service.set_admission_transaction_probe(
-            crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::disabled(),
+            AdmissionTransactionProbe::disabled(),
         );
         let handle = service.admit_query().expect("admission succeeds after rollback");
         let (domain_id, grant_id, worker_scope) =
@@ -83,11 +85,9 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
         try_guaranteed_runtime_test_service().expect("runtime-backed service for rollback cleanup-fence coverage");
     let resources = service.inner.resources.as_ref().expect("runtime-backed service");
     let device = resources.devices.context_by_ordinal(0).expect("device context");
-    let cleanup_blocker = crate::runtime::service_stream::block_stream_cleanup_thread_for_test(device.stream_pool());
+    let cleanup_blocker = block_stream_cleanup_thread_for_test(device.stream_pool());
     service.set_admission_transaction_probe(
-        crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::failing_at(
-            crate::runtime::query_service::service::transaction::AdmissionStep::AfterRootMember,
-        ),
+        AdmissionTransactionProbe::failing_at(AdmissionStep::AfterRootMember),
     );
 
     let error = service.admit_query().expect_err("injected post-stream fault rejects admission");
@@ -99,7 +99,7 @@ fn rollback_retains_lane_and_grant_until_stream_cleanup_quiesces() {
     assert_eq!(root_out, 1, "root stream remains outstanding while cleanup is blocked");
 
     service.set_admission_transaction_probe(
-        crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::disabled(),
+        AdmissionTransactionProbe::disabled(),
     );
     assert!(
         service.try_admit_query().expect("replacement admission attempt").is_none(),
@@ -135,9 +135,9 @@ fn rejected_complete_envelope_keeps_close_from_reporting_false_quiescence() {
         .devices
         .context_by_ordinal(0)
         .expect("device context");
-    let cleanup_blocker = crate::runtime::service_stream::block_stream_cleanup_thread_for_test(device.stream_pool());
+    let cleanup_blocker = block_stream_cleanup_thread_for_test(device.stream_pool());
     let (probe, rollback_pause) =
-        crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::pausing_after_rollback_accounting();
+        AdmissionTransactionProbe::pausing_after_rollback_accounting();
     service.set_admission_transaction_probe(probe);
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || admission_service.admit_query());
@@ -187,12 +187,8 @@ fn transaction_deadline_expiry_after_acquisition_rolls_back_complete_envelope() 
         .expect("runtime-backed service for post-acquisition deadline rollback coverage");
     let resources = service.inner.resources.as_ref().expect("runtime-backed service");
     let device = resources.devices.context_by_ordinal(0).expect("device context");
-    let (probe, pause) = crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::pausing_at(
-        crate::runtime::query_service::service::transaction::AdmissionStep::AfterRootMember,
-    );
-    probe.force_deadline_after_acquisition_step(
-        crate::runtime::query_service::service::transaction::AdmissionStep::AfterRootMember,
-    );
+    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
+    probe.force_deadline_after_acquisition_step(AdmissionStep::AfterRootMember);
     service.set_admission_transaction_probe(probe);
     let queue_deadline = Instant::now() + Duration::from_secs(10);
     let owner = RuntimeObservationOwner::new(
@@ -236,9 +232,7 @@ fn deadline_is_rechecked_after_admission_mutex_reacquisition_before_publication(
         try_guaranteed_runtime_test_service().expect("runtime-backed service for pre-publication deadline coverage");
     let resources = service.inner.resources.as_ref().expect("runtime-backed service");
     let device = resources.devices.context_by_ordinal(0).expect("device context");
-    let (probe, pause) = crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::pausing_at(
-        crate::runtime::query_service::service::transaction::AdmissionStep::AfterWorkerScope,
-    );
+    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterWorkerScope);
     probe.force_deadline_before_publication();
     service.set_admission_transaction_probe(probe);
     let queue_deadline = Instant::now() + Duration::from_secs(10);
@@ -288,9 +282,7 @@ fn deadline_is_rechecked_after_admission_mutex_reacquisition_before_publication(
 fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes() {
     let service =
         try_guaranteed_runtime_test_service().expect("runtime-backed service for provisional admission visibility");
-    let (probe, pause) = crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::pausing_at(
-        crate::runtime::query_service::service::transaction::AdmissionStep::AfterRootMember,
-    );
+    let (probe, pause) = AdmissionTransactionProbe::pausing_at(AdmissionStep::AfterRootMember);
     service.set_admission_transaction_probe(probe);
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || admission_service.admit_query());
@@ -310,7 +302,7 @@ fn provisional_admission_is_not_visible_before_the_complete_envelope_publishes()
     // Future admissions must not inherit the pause, while the in-flight probe
     // remains held until the second rendezvous releases it.
     service.set_admission_transaction_probe(
-        crate::runtime::query_service::service::transaction::AdmissionTransactionProbe::disabled(),
+        AdmissionTransactionProbe::disabled(),
     );
     pause.release();
     let handle = admission

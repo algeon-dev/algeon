@@ -26,9 +26,14 @@ use datafusion::{
 
 #[cfg(feature = "cugraph")]
 use crate::native_exec::AlgeonNativeExecutionConfig;
+#[cfg(all(test, feature = "cugraph"))]
+use crate::planner::AlgeonGpuExecutionMode;
+#[cfg(feature = "cugraph")]
+use crate::planner::RelationalNativeRewritePolicy;
 use crate::{
     cugraph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions},
     cuvs_sql::{CuvsGpuFunctionFamily, CuvsQueryPlanner, cuvs_gpu_function_availability, cuvs_relation_planner},
+    error::{Error, ErrorCode},
     gpu_coverage::gpu_coverage_table_function,
     gpu_functions::{GpuFunctionCatalog, install_gpu_function_family},
     planner::{
@@ -99,8 +104,8 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 .as_ref()
                 .is_some_and(|planner| (planner.as_ref() as &dyn std::any::Any).is::<CuvsQueryPlanner>());
             if !is_cuvs_planner {
-                return Err(crate::error::Error::new(
-                    crate::error::ErrorCode::InvalidRequest,
+                return Err(Error::new(
+                    ErrorCode::InvalidRequest,
                     "algeon_datafusion.cuvs_sql.install",
                     "cannot install cuVS SQL over an existing query planner",
                 )
@@ -111,8 +116,8 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
                 let has_cuvs_relation_planner =
                     relation_planners.iter().any(|p| format!("{p:?}").contains("CuvsRelationPlanner"));
                 if !has_cuvs_relation_planner {
-                    return Err(crate::error::Error::new(
-                        crate::error::ErrorCode::InvalidRequest,
+                    return Err(Error::new(
+                        ErrorCode::InvalidRequest,
                         "algeon_datafusion.cuvs_sql.install",
                         "inconsistent cuVS SQL installation: catalog contains cuVS family but relation planner is missing",
                     )
@@ -124,8 +129,8 @@ impl AlgeonSessionStateBuilderExt for SessionStateBuilder {
         }
 
         if self.query_planner().is_some() {
-            return Err(crate::error::Error::new(
-                crate::error::ErrorCode::InvalidRequest,
+            return Err(Error::new(
+                ErrorCode::InvalidRequest,
                 "algeon_datafusion.cuvs_sql.install",
                 "cannot install cuVS SQL over an existing query planner",
             )
@@ -163,7 +168,7 @@ pub(crate) fn session_state_with_native_execution_config(
     let optimizer_config =
         installed_algeon_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
     let relational_rewrite_enabled =
-        optimizer_config.relational_native_rewrite_policy() == crate::planner::RelationalNativeRewritePolicy::Enabled;
+        optimizer_config.relational_native_rewrite_policy() == RelationalNativeRewritePolicy::Enabled;
     let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
     insert_algeon_native_rules_for_cugraph_subplan(&mut rules, rule);
@@ -287,7 +292,11 @@ fn remove_algeon_native_rules(rules: &mut PhysicalOptimizerRules) {
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::{datasource::MemTable, prelude::SessionContext};
+    use datafusion::{
+        datasource::MemTable,
+        prelude::{SessionConfig, SessionContext},
+    };
+    use futures::executor::block_on;
 
     use super::*;
     use crate::{
@@ -357,10 +366,10 @@ mod tests {
 
     #[test]
     fn functions_only_cugraph_subplanning_preserves_parent_parallelism() {
-        let optimizer_config = AlgeonNativeOptimizerConfig::default()
-            .with_execution_mode(crate::planner::AlgeonGpuExecutionMode::FunctionsOnly);
+        let optimizer_config =
+            AlgeonNativeOptimizerConfig::default().with_execution_mode(AlgeonGpuExecutionMode::FunctionsOnly);
         let state = SessionStateBuilder::new()
-            .with_config(datafusion::prelude::SessionConfig::new().with_target_partitions(4))
+            .with_config(SessionConfig::new().with_target_partitions(4))
             .with_algeon_native(optimizer_config.clone())
             .build();
         let nested =
@@ -388,7 +397,7 @@ mod tests {
         .expect("nested cuGraph planning requires installed native selection");
 
         assert!(
-            futures::executor::block_on(ctx.table("graph_edges")).is_ok(),
+            block_on(ctx.table("graph_edges")).is_ok(),
             "cuGraph subplanning must not overwrite the parent catalog"
         );
     }

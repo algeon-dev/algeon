@@ -6,7 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use cudf::testing::memory::{PhysicalMemoryPressureFacts, PhysicalMemoryPressureLease};
+use datafusion::common::DataFusionError;
+use tokio::{task::JoinHandle, time::sleep};
+
 use super::*;
+use crate::single_node_multi_gpu_validate::schedule::ScheduledArrival;
 
 #[derive(Clone, Copy)]
 pub(super) struct FeatureOffCugraphProbeSchedule {
@@ -113,7 +118,7 @@ pub(super) async fn drive_physical_allocator_pressure(
     let run_deadline = timing.completion_deadline;
     let device = cudf::DeviceId::new(target_ordinal)
         .map_err(|error| format!("--physical-allocator-pressure cannot resolve device {target_ordinal}: {error}"))?;
-    let lease = cudf::testing::memory::PhysicalMemoryPressureLease::establish(device).map_err(|error| {
+    let lease = PhysicalMemoryPressureLease::establish(device).map_err(|error| {
         format!("--physical-allocator-pressure could not establish real external pressure: {error}")
     })?;
     let pressure = project_physical_pressure_facts(lease.facts());
@@ -202,9 +207,7 @@ pub(super) async fn drive_physical_allocator_pressure(
     })
 }
 
-pub(super) fn project_physical_pressure_facts(
-    facts: cudf::testing::memory::PhysicalMemoryPressureFacts,
-) -> PhysicalPressureLeaseFacts {
+pub(super) fn project_physical_pressure_facts(facts: PhysicalMemoryPressureFacts) -> PhysicalPressureLeaseFacts {
     PhysicalPressureLeaseFacts {
         device_ordinal: facts.device.ordinal(),
         method: facts.method,
@@ -234,12 +237,7 @@ pub(super) struct OutputCapture {
     pub(super) graph_claim_calibration: Option<GraphClaimCalibrationSnapshot>,
 }
 
-pub(super) type AttemptTask = tokio::task::JoinHandle<(
-    super::super::schedule::ScheduledArrival,
-    SelectedQuery,
-    Arc<QueryAttemptReport>,
-    OutputCapture,
-)>;
+pub(super) type AttemptTask = JoinHandle<(ScheduledArrival, SelectedQuery, Arc<QueryAttemptReport>, OutputCapture)>;
 
 /// Schedules each runner-owned feature-off request through the ordinary public attempt
 /// path.  Only the selected query and sequence differ from a planned
@@ -264,7 +262,7 @@ pub(super) fn spawn_feature_off_cugraph_probes(
     for _ in 0..count {
         let sequence = *next_sequence;
         *next_sequence = (*next_sequence).saturating_add(1);
-        let arrival = super::super::schedule::ScheduledArrival {
+        let arrival = ScheduledArrival {
             sequence,
             round,
             step_index,
@@ -302,7 +300,7 @@ pub(super) fn spawn_attempt_task(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
     queries: &[SelectedQuery],
-    arrival: super::super::schedule::ScheduledArrival,
+    arrival: ScheduledArrival,
     closed_loop: bool,
     warmup_deadline: Instant,
     attempt_deadline: Instant,
@@ -336,7 +334,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
     backend: &AlgeonGpuBackend,
     sessions: &SessionPool,
     queries: &[SelectedQuery],
-    mut arrival: super::super::schedule::ScheduledArrival,
+    mut arrival: ScheduledArrival,
     closed_loop: bool,
     warmup_deadline: Instant,
     attempt_deadline: Instant,
@@ -365,7 +363,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
         } else {
             let requested = Arc::clone(&requested);
             Some(tokio::spawn(async move {
-                tokio::time::sleep(requested_after).await;
+                sleep(requested_after).await;
                 cancellation.cancel();
                 requested.store(true, Ordering::Release);
             }))
@@ -388,7 +386,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
         } else {
             let requested = Arc::clone(&requested);
             Some(tokio::spawn(async move {
-                tokio::time::sleep(requested_after).await;
+                sleep(requested_after).await;
                 cancellation.cancel();
                 requested.store(true, Ordering::Release);
             }))
@@ -446,7 +444,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
         let completion_sink = query.completion_sink().cloned();
         let _completion_sink_permit = if let Some(sink) = completion_sink.as_ref() {
             let permit = sink.acquire().await;
-            tokio::time::sleep(sink.delay()).await;
+            sleep(sink.delay()).await;
             Some(permit)
         } else {
             None
@@ -465,9 +463,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
 /// log-safe facts. The artifact receives only equality bits for the stable
 /// contract, so neither display text nor an arbitrary source chain can leak
 /// into a measured-run artifact.
-pub(super) fn feature_off_cugraph_source_error(
-    error: &datafusion::common::DataFusionError,
-) -> FeatureOffCugraphSourceError {
+pub(super) fn feature_off_cugraph_source_error(error: &DataFusionError) -> FeatureOffCugraphSourceError {
     let Some(error) = error.find_algeon_error() else {
         return FeatureOffCugraphSourceError { source_error_observed: true, ..FeatureOffCugraphSourceError::default() };
     };

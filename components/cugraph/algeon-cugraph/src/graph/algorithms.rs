@@ -4,7 +4,65 @@ use std::num::NonZeroUsize;
 
 use super::{Forward, Graph, Transposed, Transposition};
 use crate::{
-    array::DeviceArrayView, error::Result, handle::EnteredContext, structure::VertexSelection, types::CugraphElement,
+    array::DeviceArrayView,
+    centrality::{
+        BetweennessCentralityParams, BetweennessCentralityResult, EdgeBetweennessCentralityParams,
+        EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult, KatzCentralityResult, PageRankResult,
+        betweenness::betweenness_centrality,
+        edge_betweenness::edge_betweenness_centrality,
+        hits::{HitsInitialHubs, HitsParams, hits},
+        pagerank::{
+            InitialGuess, PageRankParams, PersonalizationVector, PersonalizedPageRankParams, PrecomputedWeights,
+            pagerank, personalized_pagerank,
+        },
+        vertex::{EigenvectorCentralityParams, KatzCentralityParams, eigenvector_centrality, katz_centrality},
+    },
+    community::{
+        EcgResult, ExtractEgoParams, ExtractEgoResult, KTrussSubgraphParams, KTrussSubgraphResult, LeidenResult,
+        LouvainResult, SpectralClusteringResult, TriangleCountResult,
+        clustering::{
+            SpectralClusteringParams, analyze_clustering_edge_cut, analyze_clustering_modularity,
+            analyze_clustering_ratio_cut, spectral_modularity_maximization,
+        },
+        ecg::{EcgParams, ecg},
+        leiden::{LeidenParams, leiden},
+        louvain::{LouvainParams, louvain},
+        subgraph::{extract_ego, k_truss_subgraph},
+        triangle_count::{TriangleCountParams, triangle_count},
+    },
+    error::Result,
+    handle::EnteredContext,
+    labeling::{
+        ConnectedComponentsParams, StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult,
+        connected_components::{strongly_connected_components, weakly_connected_components},
+    },
+    layout::force_atlas2::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions, LayoutResult, force_atlas2},
+    random::RngState,
+    sampling::{
+        NeighborSamplingParams, Node2VecRandomWalkParams, RandomWalkParams, RandomWalkResult, SampleResult,
+        biased_random_walks, homogeneous_biased_neighbor_sample, homogeneous_biased_temporal_neighbor_sample,
+        homogeneous_uniform_neighbor_sample, homogeneous_uniform_temporal_neighbor_sample, node2vec_random_walks,
+        uniform_random_walks,
+    },
+    similarity::{
+        AllPairsSimilarityParams, CosineSimilarityResult, JaccardSimilarityResult, OverlapSimilarityResult,
+        SimilarityParams, SorensenSimilarityResult, VertexPairs, all_pairs_cosine_similarity_coefficients,
+        all_pairs_jaccard_coefficients, all_pairs_overlap_coefficients, all_pairs_sorensen_coefficients,
+        cosine_similarity_coefficients, create_vertex_pairs, jaccard_coefficients, overlap_coefficients,
+        sorensen_coefficients,
+    },
+    structure::{
+        CoreNumberParams, CoreNumberResult, DegreesResult, InDegreesResult, KCoreParams, KCoreResult, OutDegreesResult,
+        VertexSelection,
+        core::{core_number, k_core},
+        degrees::{degrees, in_degrees, out_degrees},
+    },
+    traversal::{
+        bfs::{BfsParams, BfsPredicateParams, BfsResult, bfs, bfs_with_predicates},
+        sssp::{SsspParams, SsspResult, sssp},
+    },
+    tree::{MinimumSpanningTreeParams, MinimumSpanningTreeResult, minimum_spanning_tree::minimum_spanning_tree},
+    types::CugraphElement,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -14,7 +72,7 @@ use crate::{
 impl Graph<Transposed> {
     /// Compute PageRank on this transposed graph.
     ///
-    /// Returns a [`PageRankResult`](crate::centrality::PageRankResult)
+    /// Returns a [`PageRankResult`]
     /// containing vertex ids, scores, iteration count, and convergence status.
     ///
     /// This convenience method does not expose any typed auxiliary arrays, so
@@ -22,12 +80,8 @@ impl Graph<Transposed> {
     /// dtype. For advanced features (precomputed weights, initial guess), use
     /// [`pagerank_with`](Self::pagerank_with) and ensure those typed inputs
     /// match the graph's runtime dtypes.
-    pub fn pagerank(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::centrality::PageRankParams,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank::<i32, f32>(handle, self, params, None, None)
+    pub fn pagerank(&mut self, handle: &EnteredContext<'_>, params: &PageRankParams) -> Result<PageRankResult> {
+        pagerank::<i32, f32>(handle, self, params, None, None)
     }
 
     /// Compute PageRank with optional precomputed weights and/or initial guess.
@@ -38,49 +92,42 @@ impl Graph<Transposed> {
     pub fn pagerank_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::PageRankParams,
-        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
-        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank(handle, self, params, precomputed_weights, initial_guess)
+        params: &PageRankParams,
+        precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+        initial_guess: Option<&InitialGuess<'_, V, W>>,
+    ) -> Result<PageRankResult> {
+        pagerank(handle, self, params, precomputed_weights, initial_guess)
     }
 
     /// Compute personalized PageRank using the allow-nonconvergence native API.
     pub fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::PersonalizedPageRankParams,
-        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::personalized_pagerank(handle, self, params, personalization, None, None)
+        params: &PersonalizedPageRankParams,
+        personalization: &PersonalizationVector<'_, V, W>,
+    ) -> Result<PageRankResult> {
+        personalized_pagerank(handle, self, params, personalization, None, None)
     }
 
     /// Compute personalized PageRank with optional precomputed weights and/or initial guess.
     pub fn personalized_pagerank_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::PersonalizedPageRankParams,
-        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
-        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
-        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::personalized_pagerank(
-            handle,
-            self,
-            params,
-            personalization,
-            precomputed_weights,
-            initial_guess,
-        )
+        params: &PersonalizedPageRankParams,
+        personalization: &PersonalizationVector<'_, V, W>,
+        precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
+        initial_guess: Option<&InitialGuess<'_, V, W>>,
+    ) -> Result<PageRankResult> {
+        personalized_pagerank(handle, self, params, personalization, precomputed_weights, initial_guess)
     }
 
     /// Compute eigenvector centrality.
     pub fn eigenvector_centrality(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::EigenvectorCentralityParams,
-    ) -> Result<crate::centrality::EigenvectorCentralityResult> {
-        crate::centrality::vertex::eigenvector_centrality(handle, self, params)
+        params: &EigenvectorCentralityParams,
+    ) -> Result<EigenvectorCentralityResult> {
+        eigenvector_centrality(handle, self, params)
     }
 
     /// Compute Katz centrality using a scalar beta value.
@@ -91,28 +138,24 @@ impl Graph<Transposed> {
     pub fn katz_centrality(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::KatzCentralityParams,
-    ) -> Result<crate::centrality::KatzCentralityResult> {
-        crate::centrality::vertex::katz_centrality(handle, self, params)
+        params: &KatzCentralityParams,
+    ) -> Result<KatzCentralityResult> {
+        katz_centrality(handle, self, params)
     }
 
     /// Compute HITS hub and authority scores.
-    pub fn hits(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::centrality::HitsParams,
-    ) -> Result<crate::centrality::HitsResult> {
-        crate::centrality::hits::hits::<i32, f32>(handle, self, params, None)
+    pub fn hits(&mut self, handle: &EnteredContext<'_>, params: &HitsParams) -> Result<HitsResult> {
+        hits::<i32, f32>(handle, self, params, None)
     }
 
     /// Compute HITS hub and authority scores with an optional initial hub guess.
     pub fn hits_with_initial_hubs<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::HitsParams,
-        initial_hubs: Option<&crate::centrality::HitsInitialHubs<'_, V, W>>,
-    ) -> Result<crate::centrality::HitsResult> {
-        crate::centrality::hits::hits(handle, self, params, initial_hubs)
+        params: &HitsParams,
+        initial_hubs: Option<&HitsInitialHubs<'_, V, W>>,
+    ) -> Result<HitsResult> {
+        hits(handle, self, params, initial_hubs)
     }
 
     /// Compute both in-degrees and out-degrees for vertices in this graph.
@@ -129,12 +172,12 @@ impl Graph<Transposed> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-    ) -> Result<crate::structure::DegreesResult> {
+    ) -> Result<DegreesResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::structure::degrees::degrees(handle, self, view.as_ref(), false)
+        degrees(handle, self, view.as_ref(), false)
     }
 
     /// Compute degrees with optional expensive input validation.
@@ -143,17 +186,17 @@ impl Graph<Transposed> {
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
         do_expensive_check: bool,
-    ) -> Result<crate::structure::DegreesResult> {
+    ) -> Result<DegreesResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::structure::degrees::degrees(handle, self, view.as_ref(), do_expensive_check)
+        degrees(handle, self, view.as_ref(), do_expensive_check)
     }
 
     /// Compute degrees for every vertex in the graph.
-    pub fn degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<crate::structure::DegreesResult> {
-        self.degrees(handle, crate::structure::VertexSelection::<i32>::All)
+    pub fn degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<DegreesResult> {
+        self.degrees(handle, VertexSelection::<i32>::All)
     }
 
     /// Compute only in-degrees for vertices in this graph.
@@ -170,12 +213,12 @@ impl Graph<Transposed> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-    ) -> Result<crate::structure::InDegreesResult> {
+    ) -> Result<InDegreesResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::in_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::structure::degrees::in_degrees(handle, self, view.as_ref(), false)
+        in_degrees(handle, self, view.as_ref(), false)
     }
 
     /// Compute in-degrees with optional expensive input validation.
@@ -184,24 +227,24 @@ impl Graph<Transposed> {
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
         do_expensive_check: bool,
-    ) -> Result<crate::structure::InDegreesResult> {
+    ) -> Result<InDegreesResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::in_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::structure::degrees::in_degrees(handle, self, view.as_ref(), do_expensive_check)
+        in_degrees(handle, self, view.as_ref(), do_expensive_check)
     }
 
     /// Compute in-degrees for every vertex in the graph.
-    pub fn in_degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<crate::structure::InDegreesResult> {
-        self.in_degrees(handle, crate::structure::VertexSelection::<i32>::All)
+    pub fn in_degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<InDegreesResult> {
+        self.in_degrees(handle, VertexSelection::<i32>::All)
     }
 }
 
 impl Graph<Forward> {
     /// Perform breadth-first search from one or more source vertices.
     ///
-    /// Returns a [`BfsResult`](crate::traversal::BfsResult) containing vertex
+    /// Returns a [`BfsResult`] containing vertex
     /// ids, distances, and optionally predecessors.
     ///
     /// # Errors
@@ -212,13 +255,13 @@ impl Graph<Forward> {
         &mut self,
         handle: &EnteredContext<'_>,
         sources: impl Into<VertexSelection<'a, V>>,
-        params: &crate::traversal::BfsParams,
-    ) -> Result<crate::traversal::BfsResult> {
+        params: &BfsParams,
+    ) -> Result<BfsResult> {
         let sources = sources.into();
         self.validate_vertex_selection(&sources, "Graph::bfs", "sources", false)?;
         let resolved = sources.resolve(handle)?;
         let view = self.resolved_vertex_view(&resolved, "Graph::bfs", "sources")?;
-        crate::traversal::bfs::bfs(handle, self, &view, params)
+        bfs(handle, self, &view, params)
     }
 
     /// Perform breadth-first search with optional edge, vertex, and target predicates.
@@ -230,9 +273,9 @@ impl Graph<Forward> {
         &mut self,
         handle: &EnteredContext<'_>,
         sources: impl Into<VertexSelection<'a, V>>,
-        params: &crate::traversal::BfsParams,
-        predicates: &crate::traversal::BfsPredicateParams<'a, V, E>,
-    ) -> Result<crate::traversal::BfsResult>
+        params: &BfsParams,
+        predicates: &BfsPredicateParams<'a, V, E>,
+    ) -> Result<BfsResult>
     where
         V: CugraphElement + 'a,
         E: CugraphElement + 'a,
@@ -241,71 +284,63 @@ impl Graph<Forward> {
         self.validate_vertex_selection(&sources, "Graph::bfs_with_predicates", "sources", false)?;
         let resolved = sources.resolve(handle)?;
         let view = self.resolved_vertex_view(&resolved, "Graph::bfs_with_predicates", "sources")?;
-        crate::traversal::bfs::bfs_with_predicates(handle, self, &view, params, predicates)
+        bfs_with_predicates(handle, self, &view, params, predicates)
     }
 
     /// Perform single-source shortest path from one source vertex.
     ///
-    /// Returns an [`SsspResult`](crate::traversal::SsspResult) containing
+    /// Returns an [`SsspResult`] containing
     /// vertex ids, weighted distances, and optionally predecessors.
-    pub fn sssp<V>(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        source: V,
-        params: &crate::traversal::SsspParams,
-    ) -> Result<crate::traversal::SsspResult>
-    where
-        V: CugraphElement + TryInto<usize> + Copy + std::fmt::Debug,
-    {
+    pub fn sssp<V>(&mut self, handle: &EnteredContext<'_>, source: V, params: &SsspParams) -> Result<SsspResult>
+    where V: CugraphElement + TryInto<usize> + Copy + std::fmt::Debug {
         self.validate_vertex_input_dtype(V::data_type(), "Graph::sssp", "source")?;
         let weight_mode = if self.has_weights { "weighted" } else { "unit_weight" };
-        crate::traversal::sssp::sssp(handle, self, source, params)
-            .map_err(|error| error.with_context("weight_mode", weight_mode))
+        sssp(handle, self, source, params).map_err(|error| error.with_context("weight_mode", weight_mode))
     }
 
     /// Compute uniform random walks from explicit start vertices.
     pub fn uniform_random_walks<V: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         start_vertices: &DeviceArrayView<'_, V>,
-        params: &crate::sampling::RandomWalkParams,
-    ) -> Result<crate::sampling::RandomWalkResult> {
-        crate::sampling::uniform_random_walks(handle, rng_state, self, start_vertices, params)
+        params: &RandomWalkParams,
+    ) -> Result<RandomWalkResult> {
+        uniform_random_walks(handle, rng_state, self, start_vertices, params)
     }
 
     /// Compute biased random walks from explicit start vertices.
     pub fn biased_random_walks<V: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         start_vertices: &DeviceArrayView<'_, V>,
-        params: &crate::sampling::RandomWalkParams,
-    ) -> Result<crate::sampling::RandomWalkResult> {
-        crate::sampling::biased_random_walks(handle, rng_state, self, start_vertices, params)
+        params: &RandomWalkParams,
+    ) -> Result<RandomWalkResult> {
+        biased_random_walks(handle, rng_state, self, start_vertices, params)
     }
 
     /// Compute node2vec random walks from explicit start vertices.
     pub fn node2vec_random_walks<V: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         start_vertices: &DeviceArrayView<'_, V>,
-        params: &crate::sampling::Node2VecRandomWalkParams,
-    ) -> Result<crate::sampling::RandomWalkResult> {
-        crate::sampling::node2vec_random_walks(handle, rng_state, self, start_vertices, params)
+        params: &Node2VecRandomWalkParams,
+    ) -> Result<RandomWalkResult> {
+        node2vec_random_walks(handle, rng_state, self, start_vertices, params)
     }
 
     /// Sample homogeneous neighborhoods uniformly from explicit start vertices.
     pub fn homogeneous_uniform_neighbor_sample<V: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         start_vertices: &DeviceArrayView<'_, V>,
         starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
-        params: &crate::sampling::NeighborSamplingParams,
-    ) -> Result<crate::sampling::SampleResult> {
-        crate::sampling::homogeneous_uniform_neighbor_sample(
+        params: &NeighborSamplingParams,
+    ) -> Result<SampleResult> {
+        homogeneous_uniform_neighbor_sample(
             handle,
             rng_state,
             self,
@@ -319,12 +354,12 @@ impl Graph<Forward> {
     pub fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         start_vertices: &DeviceArrayView<'_, V>,
         starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
-        params: &crate::sampling::NeighborSamplingParams,
-    ) -> Result<crate::sampling::SampleResult> {
-        crate::sampling::homogeneous_biased_neighbor_sample(
+        params: &NeighborSamplingParams,
+    ) -> Result<SampleResult> {
+        homogeneous_biased_neighbor_sample(
             handle,
             rng_state,
             self,
@@ -338,18 +373,18 @@ impl Graph<Forward> {
     pub fn homogeneous_uniform_temporal_neighbor_sample<V, Tm>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         temporal_property_name: &str,
         start_vertices: &DeviceArrayView<'_, V>,
         starting_vertex_times: Option<&DeviceArrayView<'_, Tm>>,
         starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
-        params: &crate::sampling::NeighborSamplingParams,
-    ) -> Result<crate::sampling::SampleResult>
+        params: &NeighborSamplingParams,
+    ) -> Result<SampleResult>
     where
         V: CugraphElement,
         Tm: CugraphElement,
     {
-        crate::sampling::homogeneous_uniform_temporal_neighbor_sample(
+        homogeneous_uniform_temporal_neighbor_sample(
             handle,
             rng_state,
             self,
@@ -365,18 +400,18 @@ impl Graph<Forward> {
     pub fn homogeneous_biased_temporal_neighbor_sample<V, Tm>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
+        rng_state: &mut RngState,
         temporal_property_name: &str,
         start_vertices: &DeviceArrayView<'_, V>,
         starting_vertex_times: Option<&DeviceArrayView<'_, Tm>>,
         starting_vertex_label_offsets: Option<&DeviceArrayView<'_, usize>>,
-        params: &crate::sampling::NeighborSamplingParams,
-    ) -> Result<crate::sampling::SampleResult>
+        params: &NeighborSamplingParams,
+    ) -> Result<SampleResult>
     where
         V: CugraphElement,
         Tm: CugraphElement,
     {
-        crate::sampling::homogeneous_biased_temporal_neighbor_sample(
+        homogeneous_biased_temporal_neighbor_sample(
             handle,
             rng_state,
             self,
@@ -396,14 +431,10 @@ impl Graph<Forward> {
     /// Rust-side hard check that the graph was constructed with undirected
     /// properties.
     ///
-    /// Returns a [`LouvainResult`](crate::community::LouvainResult)
+    /// Returns a [`LouvainResult`]
     /// containing vertex ids, per-vertex partitions, and modularity.
-    pub fn louvain(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::community::LouvainParams,
-    ) -> Result<crate::community::LouvainResult> {
-        crate::community::louvain::louvain(handle, self, params)
+    pub fn louvain(&mut self, handle: &EnteredContext<'_>, params: &LouvainParams) -> Result<LouvainResult> {
+        louvain(handle, self, params)
     }
 
     /// Compute Leiden communities on this forward-stored graph.
@@ -414,10 +445,10 @@ impl Graph<Forward> {
     pub fn leiden(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
-        params: &crate::community::LeidenParams,
-    ) -> Result<crate::community::LeidenResult> {
-        crate::community::leiden::leiden(handle, rng_state, self, params)
+        rng_state: &mut RngState,
+        params: &LeidenParams,
+    ) -> Result<LeidenResult> {
+        leiden(handle, rng_state, self, params)
     }
 
     /// Compute ECG communities on this forward-stored graph.
@@ -428,10 +459,10 @@ impl Graph<Forward> {
     pub fn ecg(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
-        params: &crate::community::EcgParams,
-    ) -> Result<crate::community::EcgResult> {
-        crate::community::ecg::ecg(handle, rng_state, self, params)
+        rng_state: &mut RngState,
+        params: &EcgParams,
+    ) -> Result<EcgResult> {
+        ecg(handle, rng_state, self, params)
     }
 
     /// Compute legacy spectral modularity maximization clusters.
@@ -442,10 +473,10 @@ impl Graph<Forward> {
     pub fn spectral_modularity_maximization(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
-        params: &crate::community::SpectralClusteringParams,
-    ) -> Result<crate::community::SpectralClusteringResult> {
-        crate::community::clustering::spectral_modularity_maximization(handle, rng_state, self, params)
+        rng_state: &mut RngState,
+        params: &SpectralClusteringParams,
+    ) -> Result<SpectralClusteringResult> {
+        spectral_modularity_maximization(handle, rng_state, self, params)
     }
 
     /// Compute modularity for explicit clustering columns.
@@ -456,7 +487,7 @@ impl Graph<Forward> {
         vertices: &DeviceArrayView<'_, V>,
         clusters: &DeviceArrayView<'_, V>,
     ) -> Result<f64> {
-        crate::community::clustering::analyze_clustering_modularity(handle, self, n_clusters, vertices, clusters)
+        analyze_clustering_modularity(handle, self, n_clusters, vertices, clusters)
     }
 
     /// Compute edge cut for explicit clustering columns.
@@ -467,7 +498,7 @@ impl Graph<Forward> {
         vertices: &DeviceArrayView<'_, V>,
         clusters: &DeviceArrayView<'_, V>,
     ) -> Result<f64> {
-        crate::community::clustering::analyze_clustering_edge_cut(handle, self, n_clusters, vertices, clusters)
+        analyze_clustering_edge_cut(handle, self, n_clusters, vertices, clusters)
     }
 
     /// Compute ratio cut for explicit clustering columns.
@@ -478,7 +509,7 @@ impl Graph<Forward> {
         vertices: &DeviceArrayView<'_, V>,
         clusters: &DeviceArrayView<'_, V>,
     ) -> Result<f64> {
-        crate::community::clustering::analyze_clustering_ratio_cut(handle, self, n_clusters, vertices, clusters)
+        analyze_clustering_ratio_cut(handle, self, n_clusters, vertices, clusters)
     }
 }
 
@@ -497,22 +528,22 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertex_list: impl Into<VertexSelection<'a, V>>,
-        params: &crate::centrality::BetweennessCentralityParams,
-    ) -> Result<crate::centrality::BetweennessCentralityResult> {
+        params: &BetweennessCentralityParams,
+    ) -> Result<BetweennessCentralityResult> {
         let vertex_list = vertex_list.into();
         self.validate_vertex_selection(&vertex_list, "Graph::betweenness_centrality", "vertex_list", true)?;
         let resolved = vertex_list.resolve(handle)?;
         let view = resolved.view()?;
-        crate::centrality::betweenness::betweenness_centrality(handle, self, view.as_ref(), params)
+        betweenness_centrality(handle, self, view.as_ref(), params)
     }
 
     /// Compute exact betweenness centrality over all vertices.
     pub fn betweenness_centrality_all(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::BetweennessCentralityParams,
-    ) -> Result<crate::centrality::BetweennessCentralityResult> {
-        self.betweenness_centrality(handle, crate::structure::VertexSelection::<i32>::All, params)
+        params: &BetweennessCentralityParams,
+    ) -> Result<BetweennessCentralityResult> {
+        self.betweenness_centrality(handle, VertexSelection::<i32>::All, params)
     }
 
     /// Compute edge betweenness centrality on this graph.
@@ -524,22 +555,22 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertex_list: impl Into<VertexSelection<'a, V>>,
-        params: &crate::centrality::EdgeBetweennessCentralityParams,
-    ) -> Result<crate::centrality::EdgeBetweennessCentralityResult> {
+        params: &EdgeBetweennessCentralityParams,
+    ) -> Result<EdgeBetweennessCentralityResult> {
         let vertex_list = vertex_list.into();
         self.validate_vertex_selection(&vertex_list, "Graph::edge_betweenness_centrality", "vertex_list", true)?;
         let resolved = vertex_list.resolve(handle)?;
         let view = resolved.view()?;
-        crate::centrality::edge_betweenness::edge_betweenness_centrality(handle, self, view.as_ref(), params)
+        edge_betweenness_centrality(handle, self, view.as_ref(), params)
     }
 
     /// Compute exact edge betweenness centrality over all vertices.
     pub fn edge_betweenness_centrality_all(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::centrality::EdgeBetweennessCentralityParams,
-    ) -> Result<crate::centrality::EdgeBetweennessCentralityResult> {
-        self.edge_betweenness_centrality(handle, crate::structure::VertexSelection::<i32>::All, params)
+        params: &EdgeBetweennessCentralityParams,
+    ) -> Result<EdgeBetweennessCentralityResult> {
+        self.edge_betweenness_centrality(handle, VertexSelection::<i32>::All, params)
     }
 
     /// Compute weakly connected components.
@@ -553,55 +584,47 @@ impl<T: Transposition> Graph<T> {
     pub fn weakly_connected_components(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::labeling::ConnectedComponentsParams,
-    ) -> Result<crate::labeling::WeaklyConnectedComponentsResult> {
-        crate::labeling::connected_components::weakly_connected_components(handle, self, params)
+        params: &ConnectedComponentsParams,
+    ) -> Result<WeaklyConnectedComponentsResult> {
+        weakly_connected_components(handle, self, params)
     }
 
     /// Compute strongly connected components.
     pub fn strongly_connected_components(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::labeling::ConnectedComponentsParams,
-    ) -> Result<crate::labeling::StronglyConnectedComponentsResult> {
-        crate::labeling::connected_components::strongly_connected_components(handle, self, params)
+        params: &ConnectedComponentsParams,
+    ) -> Result<StronglyConnectedComponentsResult> {
+        strongly_connected_components(handle, self, params)
     }
 
     /// Compute core numbers for all vertices.
-    pub fn core_number(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::structure::CoreNumberParams,
-    ) -> Result<crate::structure::CoreNumberResult> {
-        crate::structure::core::core_number(handle, self, params)
+    pub fn core_number(&mut self, handle: &EnteredContext<'_>, params: &CoreNumberParams) -> Result<CoreNumberResult> {
+        core_number(handle, self, params)
     }
 
     /// Extract a k-core subgraph, computing core numbers internally.
-    pub fn k_core(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::structure::KCoreParams,
-    ) -> Result<crate::structure::KCoreResult> {
-        crate::structure::core::k_core(handle, self, params, None)
+    pub fn k_core(&mut self, handle: &EnteredContext<'_>, params: &KCoreParams) -> Result<KCoreResult> {
+        k_core(handle, self, params, None)
     }
 
     /// Extract a k-core subgraph using a precomputed core-number result.
     pub fn k_core_with_core_numbers(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::structure::KCoreParams,
-        core_numbers: &crate::structure::CoreNumberResult,
-    ) -> Result<crate::structure::KCoreResult> {
-        crate::structure::core::k_core(handle, self, params, Some(core_numbers))
+        params: &KCoreParams,
+        core_numbers: &CoreNumberResult,
+    ) -> Result<KCoreResult> {
+        k_core(handle, self, params, Some(core_numbers))
     }
 
     /// Compute a minimum spanning tree.
     pub fn minimum_spanning_tree(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::tree::MinimumSpanningTreeParams,
-    ) -> Result<crate::tree::MinimumSpanningTreeResult> {
-        crate::tree::minimum_spanning_tree::minimum_spanning_tree(handle, self, params)
+        params: &MinimumSpanningTreeParams,
+    ) -> Result<MinimumSpanningTreeResult> {
+        minimum_spanning_tree(handle, self, params)
     }
 
     /// Create an owned vertex-pair collection for pairwise similarity algorithms.
@@ -614,7 +637,7 @@ impl<T: Transposition> Graph<T> {
         handle: &EnteredContext<'_>,
         first: impl Into<VertexSelection<'a, V>>,
         second: impl Into<VertexSelection<'a, V>>,
-    ) -> Result<crate::similarity::VertexPairs> {
+    ) -> Result<VertexPairs> {
         let first = first.into();
         let second = second.into();
         self.validate_vertex_selection(&first, "Graph::vertex_pairs", "first", false)?;
@@ -623,7 +646,7 @@ impl<T: Transposition> Graph<T> {
         let second = second.resolve(handle)?;
         let first_view = self.resolved_vertex_view(&first, "Graph::vertex_pairs", "first")?;
         let second_view = self.resolved_vertex_view(&second, "Graph::vertex_pairs", "second")?;
-        crate::similarity::create_vertex_pairs(handle, self, &first_view, &second_view)
+        create_vertex_pairs(handle, self, &first_view, &second_view)
             .map_err(|error| error.with_operation("Graph::vertex_pairs"))
     }
 
@@ -634,10 +657,10 @@ impl<T: Transposition> Graph<T> {
     pub fn jaccard_coefficients(
         &mut self,
         handle: &EnteredContext<'_>,
-        pairs: crate::similarity::VertexPairs,
-        params: &crate::similarity::SimilarityParams,
-    ) -> Result<crate::similarity::JaccardSimilarityResult> {
-        crate::similarity::jaccard_coefficients(handle, self, pairs, params)
+        pairs: VertexPairs,
+        params: &SimilarityParams,
+    ) -> Result<JaccardSimilarityResult> {
+        jaccard_coefficients(handle, self, pairs, params)
     }
 
     /// Compute Sorensen similarity coefficients for explicit vertex pairs.
@@ -647,10 +670,10 @@ impl<T: Transposition> Graph<T> {
     pub fn sorensen_coefficients(
         &mut self,
         handle: &EnteredContext<'_>,
-        pairs: crate::similarity::VertexPairs,
-        params: &crate::similarity::SimilarityParams,
-    ) -> Result<crate::similarity::SorensenSimilarityResult> {
-        crate::similarity::sorensen_coefficients(handle, self, pairs, params)
+        pairs: VertexPairs,
+        params: &SimilarityParams,
+    ) -> Result<SorensenSimilarityResult> {
+        sorensen_coefficients(handle, self, pairs, params)
     }
 
     /// Compute overlap similarity coefficients for explicit vertex pairs.
@@ -660,10 +683,10 @@ impl<T: Transposition> Graph<T> {
     pub fn overlap_coefficients(
         &mut self,
         handle: &EnteredContext<'_>,
-        pairs: crate::similarity::VertexPairs,
-        params: &crate::similarity::SimilarityParams,
-    ) -> Result<crate::similarity::OverlapSimilarityResult> {
-        crate::similarity::overlap_coefficients(handle, self, pairs, params)
+        pairs: VertexPairs,
+        params: &SimilarityParams,
+    ) -> Result<OverlapSimilarityResult> {
+        overlap_coefficients(handle, self, pairs, params)
     }
 
     /// Compute cosine similarity coefficients for explicit vertex pairs.
@@ -673,10 +696,10 @@ impl<T: Transposition> Graph<T> {
     pub fn cosine_similarity_coefficients(
         &mut self,
         handle: &EnteredContext<'_>,
-        pairs: crate::similarity::VertexPairs,
-        params: &crate::similarity::SimilarityParams,
-    ) -> Result<crate::similarity::CosineSimilarityResult> {
-        crate::similarity::cosine_similarity_coefficients(handle, self, pairs, params)
+        pairs: VertexPairs,
+        params: &SimilarityParams,
+    ) -> Result<CosineSimilarityResult> {
+        cosine_similarity_coefficients(handle, self, pairs, params)
     }
 
     /// Compute all-pairs Jaccard similarity coefficients.
@@ -687,13 +710,13 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-        params: &crate::similarity::AllPairsSimilarityParams,
-    ) -> Result<crate::similarity::JaccardSimilarityResult> {
+        params: &AllPairsSimilarityParams,
+    ) -> Result<JaccardSimilarityResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::all_pairs_jaccard_coefficients", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::similarity::all_pairs_jaccard_coefficients(handle, self, view.as_ref(), params)
+        all_pairs_jaccard_coefficients(handle, self, view.as_ref(), params)
     }
 
     /// Compute all-pairs Sorensen similarity coefficients.
@@ -704,13 +727,13 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-        params: &crate::similarity::AllPairsSimilarityParams,
-    ) -> Result<crate::similarity::SorensenSimilarityResult> {
+        params: &AllPairsSimilarityParams,
+    ) -> Result<SorensenSimilarityResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::all_pairs_sorensen_coefficients", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::similarity::all_pairs_sorensen_coefficients(handle, self, view.as_ref(), params)
+        all_pairs_sorensen_coefficients(handle, self, view.as_ref(), params)
     }
 
     /// Compute all-pairs overlap similarity coefficients.
@@ -721,13 +744,13 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-        params: &crate::similarity::AllPairsSimilarityParams,
-    ) -> Result<crate::similarity::OverlapSimilarityResult> {
+        params: &AllPairsSimilarityParams,
+    ) -> Result<OverlapSimilarityResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::all_pairs_overlap_coefficients", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::similarity::all_pairs_overlap_coefficients(handle, self, view.as_ref(), params)
+        all_pairs_overlap_coefficients(handle, self, view.as_ref(), params)
     }
 
     /// Compute all-pairs cosine similarity coefficients.
@@ -738,18 +761,18 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-        params: &crate::similarity::AllPairsSimilarityParams,
-    ) -> Result<crate::similarity::CosineSimilarityResult> {
+        params: &AllPairsSimilarityParams,
+    ) -> Result<CosineSimilarityResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::all_pairs_cosine_similarity_coefficients", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::similarity::all_pairs_cosine_similarity_coefficients(handle, self, view.as_ref(), params)
+        all_pairs_cosine_similarity_coefficients(handle, self, view.as_ref(), params)
     }
 
     /// Compute a Force Atlas 2 layout for this graph.
     ///
-    /// Returns a [`LayoutResult`](crate::layout::LayoutResult) containing
+    /// Returns a [`LayoutResult`] containing
     /// vertex ids and (x, y) coordinates.
     ///
     /// For advanced features (per-vertex mass/radius, initial positions for
@@ -757,10 +780,10 @@ impl<T: Transposition> Graph<T> {
     pub fn force_atlas2(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
-        params: &crate::layout::ForceAtlas2Params,
-    ) -> Result<crate::layout::LayoutResult> {
-        crate::layout::force_atlas2::force_atlas2::<T, i32, f32>(handle, rng_state, self, params, None, None)
+        rng_state: &mut RngState,
+        params: &ForceAtlas2Params,
+    ) -> Result<LayoutResult> {
+        force_atlas2::<T, i32, f32>(handle, rng_state, self, params, None, None)
     }
 
     /// Compute a Force Atlas 2 layout with optional per-vertex attributes
@@ -772,12 +795,12 @@ impl<T: Transposition> Graph<T> {
     pub fn force_atlas2_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
-        params: &crate::layout::ForceAtlas2Params,
-        vertex_attrs: Option<&crate::layout::ForceAtlas2VertexAttrs<'_, V, W>>,
-        initial_positions: Option<&crate::layout::InitialPositions<'_, V, W>>,
-    ) -> Result<crate::layout::LayoutResult> {
-        crate::layout::force_atlas2::force_atlas2(handle, rng_state, self, params, vertex_attrs, initial_positions)
+        rng_state: &mut RngState,
+        params: &ForceAtlas2Params,
+        vertex_attrs: Option<&ForceAtlas2VertexAttrs<'_, V, W>>,
+        initial_positions: Option<&InitialPositions<'_, V, W>>,
+    ) -> Result<LayoutResult> {
+        force_atlas2(handle, rng_state, self, params, vertex_attrs, initial_positions)
     }
 
     /// Compute only out-degrees for vertices in this graph.
@@ -794,12 +817,12 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
-    ) -> Result<crate::structure::OutDegreesResult> {
+    ) -> Result<OutDegreesResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::out_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::structure::degrees::out_degrees(handle, self, view.as_ref(), false)
+        out_degrees(handle, self, view.as_ref(), false)
     }
 
     /// Compute out-degrees with optional expensive input validation.
@@ -808,17 +831,17 @@ impl<T: Transposition> Graph<T> {
         handle: &EnteredContext<'_>,
         vertices: impl Into<VertexSelection<'a, V>>,
         do_expensive_check: bool,
-    ) -> Result<crate::structure::OutDegreesResult> {
+    ) -> Result<OutDegreesResult> {
         let vertices = vertices.into();
         self.validate_vertex_selection(&vertices, "Graph::out_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::structure::degrees::out_degrees(handle, self, view.as_ref(), do_expensive_check)
+        out_degrees(handle, self, view.as_ref(), do_expensive_check)
     }
 
     /// Compute out-degrees for every vertex in the graph.
-    pub fn out_degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<crate::structure::OutDegreesResult> {
-        self.out_degrees(handle, crate::structure::VertexSelection::<i32>::All)
+    pub fn out_degrees_all(&mut self, handle: &EnteredContext<'_>) -> Result<OutDegreesResult> {
+        self.out_degrees(handle, VertexSelection::<i32>::All)
     }
 
     /// Compute triangle counts for all vertices or an explicit start-vertex list.
@@ -835,31 +858,31 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         start_vertices: impl Into<VertexSelection<'a, V>>,
-        params: &crate::community::TriangleCountParams,
-    ) -> Result<crate::community::TriangleCountResult> {
+        params: &TriangleCountParams,
+    ) -> Result<TriangleCountResult> {
         let start_vertices = start_vertices.into();
         self.validate_vertex_selection(&start_vertices, "Graph::triangle_count", "start_vertices", true)?;
         let resolved = start_vertices.resolve(handle)?;
         let view = resolved.view()?;
-        crate::community::triangle_count::triangle_count(handle, self, view.as_ref(), params)
+        triangle_count(handle, self, view.as_ref(), params)
     }
 
     /// Compute triangle counts for every vertex in the graph.
     pub fn triangle_count_all(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::community::TriangleCountParams,
-    ) -> Result<crate::community::TriangleCountResult> {
-        self.triangle_count(handle, crate::structure::VertexSelection::<i32>::All, params)
+        params: &TriangleCountParams,
+    ) -> Result<TriangleCountResult> {
+        self.triangle_count(handle, VertexSelection::<i32>::All, params)
     }
 
     /// Extract a k-truss subgraph.
     pub fn k_truss_subgraph(
         &mut self,
         handle: &EnteredContext<'_>,
-        params: &crate::community::KTrussSubgraphParams,
-    ) -> Result<crate::community::KTrussSubgraphResult> {
-        crate::community::subgraph::k_truss_subgraph(handle, self, params)
+        params: &KTrussSubgraphParams,
+    ) -> Result<KTrussSubgraphResult> {
+        k_truss_subgraph(handle, self, params)
     }
 
     /// Extract ego subgraphs for explicit source vertices.
@@ -870,12 +893,12 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         source_vertices: impl Into<VertexSelection<'a, V>>,
-        params: &crate::community::ExtractEgoParams,
-    ) -> Result<crate::community::ExtractEgoResult> {
+        params: &ExtractEgoParams,
+    ) -> Result<ExtractEgoResult> {
         let source_vertices = source_vertices.into();
         self.validate_vertex_selection(&source_vertices, "Graph::extract_ego", "source_vertices", false)?;
         let resolved = source_vertices.resolve(handle)?;
         let view = self.resolved_vertex_view(&resolved, "Graph::extract_ego", "source_vertices")?;
-        crate::community::subgraph::extract_ego(handle, self, &view, params)
+        extract_ego(handle, self, &view, params)
     }
 }

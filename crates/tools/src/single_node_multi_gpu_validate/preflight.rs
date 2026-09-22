@@ -9,7 +9,9 @@ use std::{
 use serde::Serialize;
 use workloads::{
     clickbench::describe_clickbench_dataset_with_content_fingerprint,
-    graph::{DblpDatasetMetadata, WorkloadResult, describe_canonical_dblp_dataset, describe_dblp_dataset},
+    graph::{
+        DblpDatasetMetadata, WorkloadError, WorkloadResult, describe_canonical_dblp_dataset, describe_dblp_dataset,
+    },
     metadata::WorkloadDatasetMetadata,
     tpcds::describe_tpcds_dataset_with_content_fingerprint,
     tpch::describe_tpch_dataset_with_content_fingerprint,
@@ -240,19 +242,19 @@ fn describe_dblp_for_contract(
                 return describe_canonical_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command);
             }
             if !workload.scale.starts_with("v12_slice_") {
-                return Err(workloads::graph::WorkloadError::InvalidDataset(
+                return Err(WorkloadError::InvalidDataset(
                     "DBLP fixture scale must be v12 or v12_slice_<index>".to_string(),
                 ));
             }
             let metadata = describe_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command)?;
             let slice = metadata.multi_graph_slice.as_ref().ok_or_else(|| {
-                workloads::graph::WorkloadError::InvalidDataset(
+                WorkloadError::InvalidDataset(
                     "DBLP slice profile requires generator-authenticated multi_graph_slice metadata".to_string(),
                 )
             })?;
             let expected_scale = format!("v12_slice_{:02}", slice.slice_index);
             if workload.scale != expected_scale {
-                return Err(workloads::graph::WorkloadError::InvalidDataset(format!(
+                return Err(WorkloadError::InvalidDataset(format!(
                     "DBLP slice profile scale {} does not match fixture slice index {}; expected {expected_scale}",
                     workload.scale, slice.slice_index
                 )));
@@ -261,7 +263,7 @@ fn describe_dblp_for_contract(
         },
         #[cfg(test)]
         DblpFixtureContract::Sample => {
-            workloads::graph::describe_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command)
+            describe_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command)
         },
     }
 }

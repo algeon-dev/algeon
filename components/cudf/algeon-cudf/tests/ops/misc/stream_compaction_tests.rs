@@ -10,7 +10,7 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value};
+use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value, run_named_cases};
 
 // ===== CU-3: drop_nulls =====================================================
 
@@ -314,7 +314,7 @@ fn test_distinct_rejects_out_of_bounds_key_index_with_canonical_context() {
 
 #[test]
 fn stream_compaction_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_drop_nulls_basic", test_drop_nulls_basic),
         ("test_drop_nulls_no_nulls", test_drop_nulls_no_nulls),
         ("test_drop_nulls_all_null", test_drop_nulls_all_null),

@@ -7,12 +7,18 @@ use arrow::datatypes::{DataType, Field, Schema};
 
 use super::rewrite;
 use crate::{
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr},
+    expr::{
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, Expr,
+        LiteralValue,
+    },
     plan::{
-        AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
+        AggregateNode, FilterNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
         ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
-    source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef, SourceNode},
+    source::{
+        LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ParquetSourceLocation, ResolvedParquetSource,
+        SourceColumnRef, SourceNode,
+    },
     util::fnv1a64,
 };
 

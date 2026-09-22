@@ -19,13 +19,18 @@ use cudf::{
 use cudf_sys::{
     CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device,
     test_support::{
-        cudf_test_event_last_wait_stream_raw, cudf_test_event_reset_observation,
-        cudf_test_event_stream_wait_call_count, cudf_test_event_stream_wait_call_count_for_stream_raw,
-        cudf_test_exec_last_device, cudf_test_exec_last_memory_resource_destroy_raw,
-        cudf_test_exec_last_memory_resource_destroy_sequence, cudf_test_exec_last_mr_raw,
-        cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_sequence, cudf_test_exec_last_sync_stream_value,
-        cudf_test_exec_observed_mr_count, cudf_test_exec_observed_mr_overflowed, cudf_test_exec_observed_mr_raw_at,
-        cudf_test_exec_reset_observation,
+        cudf_test_apply_boolean_mask_call_count, cudf_test_event_last_wait_stream_raw,
+        cudf_test_event_reset_observation, cudf_test_event_stream_wait_call_count,
+        cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device,
+        cudf_test_exec_last_memory_resource_destroy_raw, cudf_test_exec_last_memory_resource_destroy_sequence,
+        cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_sequence,
+        cudf_test_exec_last_sync_stream_value, cudf_test_exec_observed_mr_count, cudf_test_exec_observed_mr_overflowed,
+        cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
+        cudf_test_fail_next_column_view_metadata_read, cudf_test_groupby_fail_next_negative_total_columns,
+        cudf_test_io_metadata_fault_t, cudf_test_io_reset_metadata_fault, cudf_test_io_set_next_metadata_fault,
+        cudf_test_row_predicate_compute_mask_call_count, cudf_test_row_predicate_filter_call_count,
+        cudf_test_row_predicate_final_filter_call_count, cudf_test_row_predicate_reset_observation,
+        cudf_test_table_view_fail_next_negative_num_columns, cudf_test_table_view_fail_next_negative_num_rows,
     },
 };
 use rapids_interop::{ColumnLayout, InteropError, Placement};
@@ -244,18 +249,18 @@ pub fn reset_exec_observation() {
 }
 
 pub fn fail_next_column_view_metadata_read() {
-    unsafe { cudf_sys::test_support::cudf_test_fail_next_column_view_metadata_read() };
+    unsafe { cudf_test_fail_next_column_view_metadata_read() };
 }
 
-pub fn arm_next_io_metadata_fault(fault: cudf_sys::test_support::cudf_test_io_metadata_fault_t) {
+pub fn arm_next_io_metadata_fault(fault: cudf_test_io_metadata_fault_t) {
     unsafe {
-        cudf_sys::test_support::cudf_test_io_reset_metadata_fault();
-        cudf_sys::test_support::cudf_test_io_set_next_metadata_fault(fault);
+        cudf_test_io_reset_metadata_fault();
+        cudf_test_io_set_next_metadata_fault(fault);
     }
 }
 
 pub fn reset_io_metadata_fault() {
-    unsafe { cudf_sys::test_support::cudf_test_io_reset_metadata_fault() };
+    unsafe { cudf_test_io_reset_metadata_fault() };
 }
 
 pub fn reset_sync_observation() {
@@ -267,19 +272,19 @@ pub fn reset_dependency_observation() {
 }
 
 pub fn reset_row_predicate_observation() {
-    unsafe { cudf_sys::test_support::cudf_test_row_predicate_reset_observation() };
+    unsafe { cudf_test_row_predicate_reset_observation() };
 }
 
 pub fn arm_next_groupby_negative_total_columns_fault() {
-    unsafe { cudf_sys::test_support::cudf_test_groupby_fail_next_negative_total_columns() };
+    unsafe { cudf_test_groupby_fail_next_negative_total_columns() };
 }
 
 pub fn arm_next_table_view_negative_num_columns_fault() {
-    unsafe { cudf_sys::test_support::cudf_test_table_view_fail_next_negative_num_columns() };
+    unsafe { cudf_test_table_view_fail_next_negative_num_columns() };
 }
 
 pub fn arm_next_table_view_negative_num_rows_fault() {
-    unsafe { cudf_sys::test_support::cudf_test_table_view_fail_next_negative_num_rows() };
+    unsafe { cudf_test_table_view_fail_next_negative_num_rows() };
 }
 
 pub fn lock_event_observation() -> MutexGuard<'static, ()> {
@@ -411,28 +416,28 @@ pub fn last_dependency_wait_stream_value() -> usize {
 
 pub fn last_row_predicate_filter_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_row_predicate_filter_call_count(&mut out) };
+    let status = unsafe { cudf_test_row_predicate_filter_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate filter call count");
     out
 }
 
 pub fn last_row_predicate_compute_mask_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_row_predicate_compute_mask_call_count(&mut out) };
+    let status = unsafe { cudf_test_row_predicate_compute_mask_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate compute-mask call count");
     out
 }
 
 pub fn last_row_predicate_final_filter_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_row_predicate_final_filter_call_count(&mut out) };
+    let status = unsafe { cudf_test_row_predicate_final_filter_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate final-filter call count");
     out
 }
 
 pub fn last_row_predicate_mask_api_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::test_support::cudf_test_apply_boolean_mask_call_count(&mut out) };
+    let status = unsafe { cudf_test_apply_boolean_mask_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read apply_boolean_mask call count");
     out
 }

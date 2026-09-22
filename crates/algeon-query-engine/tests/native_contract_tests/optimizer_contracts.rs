@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
+
 use query_engine::{
     capability::KeyedHashJoinStrategyOptions,
+    dimension_pruning::local_dimension_pruning_resolver,
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
         DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
@@ -36,7 +39,7 @@ use query_engine::{
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance, GraphAlgorithm,
         GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
-        GraphConstructionOptions, GraphEdgeColumnBindings, GraphPredicateInput, NodeId,
+        GraphConstructionOptions, GraphEdgeColumnBindings, GraphPredicateInput, NodeId, QueryPlan,
     },
     rapids_backend::rapids_analysis_context,
     source::LocalParquetSource,

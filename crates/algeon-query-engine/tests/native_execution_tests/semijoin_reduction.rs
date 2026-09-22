@@ -1,5 +1,12 @@
 use std::{path::Path, sync::Arc};
 
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver,
+    expr::ColumnRef,
+    optimizer::{NativeOptimizerChange, optimize_query_plan},
+    rapids_backend::rapids_analysis_context,
+};
+
 use super::*;
 
 #[test]
@@ -35,13 +42,13 @@ fn native_semijoin_reduction_keeps_row_parity_once_both_candidates_execute() {
     write_i32_parquet(&runtime, &keyset_path, Arc::clone(&keyset_schema), vec![("b_key", vec![2, 2, 4])]);
 
     let plan = semijoin_reduction_execution_plan(&a_path, &a_schema, &b_path, &b_schema, &keyset_path, &keyset_schema);
-    let optimizer_result = query_engine::optimizer::optimize_query_plan(
+    let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        query_engine::rapids_backend::rapids_analysis_context(),
-        query_engine::dimension_pruning::local_dimension_pruning_resolver(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
     );
-    assert_eq!(optimizer_result.change, query_engine::optimizer::NativeOptimizerChange::Changed);
+    assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     // S3 admits both the original and the rewritten candidate through the
@@ -82,7 +89,7 @@ fn semijoin_reduction_execution_plan(
     b_schema: &Arc<Schema>,
     keyset_path: &Path,
     keyset_schema: &Arc<Schema>,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("a_key", DataType::Int32, false),
         Field::new("a_payload", DataType::Int32, false),
@@ -105,16 +112,13 @@ fn semijoin_reduction_execution_plan(
         b,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "a_key", "a_key"),
-                query_engine::expr::ColumnRef::input(1, "b_key", "b_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "a_key", "a_key"), ColumnRef::input(1, "b_key", "b_key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "b_key", "b_key"), "b_key"),
-            JoinOutputColumn::right(query_engine::expr::ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "b_key", "b_key"), "b_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -124,16 +128,13 @@ fn semijoin_reduction_execution_plan(
         keyset,
         JoinSpec::new(
             JoinType::LeftSemi,
-            vec![JoinKey::new(
-                query_engine::expr::ColumnRef::input(0, "b_key", "b_key"),
-                query_engine::expr::ColumnRef::input(1, "b_key", "b_key"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "b_key", "b_key"))],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "b_key", "b_key"), "b_key"),
-            JoinOutputColumn::left(query_engine::expr::ColumnRef::input(0, "b_payload", "b_payload"), "b_payload"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
+            JoinOutputColumn::left(ColumnRef::input(0, "b_key", "b_key"), "b_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "b_payload", "b_payload"), "b_payload"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),

@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
-use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
+use datafusion::{
+    datasource::physical_plan::{FileSource, ParquetSource},
+    physical_plan::filter::FilterExec,
+};
 use query_engine::{
     expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr},
+    rapids_backend::rapids_analysis_context,
     source::LocalParquetSource as NativeLocalParquetSource,
 };
 
@@ -35,7 +39,7 @@ pub(in crate::native::lowering) fn reader_predicate_proves_local_parquet_at_most
 
 pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
     parquet_source: &ParquetSource,
-    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    filter: Option<&FilterExec>,
     scan_limit: Option<usize>,
     _scan_projection_requires_native: bool,
     source_output_schema: &SchemaRef,
@@ -103,8 +107,7 @@ pub(super) fn supported_reader_pushdown_predicate(
     native_source: &NativeLocalParquetSource,
     allow_expr: impl Fn(&NativeExpr) -> bool,
 ) -> Option<SupportedReaderPushdownPredicate> {
-    if let Some(expr) = native_source
-        .reader_predicate_supported_expression(predicate, query_engine::rapids_backend::rapids_analysis_context())
+    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate, rapids_analysis_context())
         && allow_expr(&expr)
     {
         return Some(SupportedReaderPushdownPredicate { expr, covers_predicate: true });
@@ -122,8 +125,7 @@ fn collect_supported_reader_pushdown_conjuncts(
     allow_expr: &impl Fn(&NativeExpr) -> bool,
     conjuncts: &mut Vec<NativeExpr>,
 ) {
-    if let Some(expr) = native_source
-        .reader_predicate_supported_expression(predicate, query_engine::rapids_backend::rapids_analysis_context())
+    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate, rapids_analysis_context())
         && allow_expr(&expr)
     {
         conjuncts.push(expr);

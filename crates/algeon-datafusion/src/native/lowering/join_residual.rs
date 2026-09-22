@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::{
     common::JoinSide as DataFusionJoinSide,
+    logical_expr::Operator,
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
@@ -11,7 +12,9 @@ use datafusion::{
     },
     physical_plan::joins::utils::JoinFilter,
 };
-use query_engine::expr::{CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue};
+use query_engine::expr::{
+    BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue,
+};
 
 use super::{
     LoweredNativeInput,
@@ -146,7 +149,7 @@ fn lower_join_filter_expr(
         let left = lower_join_filter_expr(binary.left(), context, left_required, right_required, materializations)?;
         let right = lower_join_filter_expr(binary.right(), context, left_required, right_required, materializations)?;
         let op = lower_binary_operator(binary.op());
-        if matches!(binary.op(), datafusion::logical_expr::Operator::Divide)
+        if matches!(binary.op(), Operator::Divide)
             && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())
                 .expect("validated join-residual decimal division must have a supported output type")
         {
@@ -241,7 +244,7 @@ fn lower_join_filter_case_expr(
             let when = match &base_expr {
                 Some(base_expr) => NativeExpr::binary(
                     base_expr.clone(),
-                    query_engine::expr::BinaryOp::Eq,
+                    NativeBinaryOp::Eq,
                     lower_join_filter_expr(when, context, left_required, right_required, materializations)?,
                 ),
                 None => lower_join_filter_expr(when, context, left_required, right_required, materializations)?,
@@ -327,7 +330,7 @@ fn lower_join_filter_side_expr(
         let left = lower_join_filter_side_expr(binary.left(), context, side_schema, side, required)?;
         let right = lower_join_filter_side_expr(binary.right(), context, side_schema, side, required)?;
         let op = lower_binary_operator(binary.op());
-        if matches!(binary.op(), datafusion::logical_expr::Operator::Divide)
+        if matches!(binary.op(), Operator::Divide)
             && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())
                 .expect("validated materialized decimal division must have a supported output type")
         {
@@ -410,7 +413,7 @@ fn lower_join_filter_side_case_expr(
             let when = match &base_expr {
                 Some(base_expr) => NativeExpr::binary(
                     base_expr.clone(),
-                    query_engine::expr::BinaryOp::Eq,
+                    NativeBinaryOp::Eq,
                     lower_join_filter_side_expr(when, context, side_schema, side, required)?,
                 ),
                 None => lower_join_filter_side_expr(when, context, side_schema, side, required)?,
@@ -578,7 +581,7 @@ mod tests {
         common::{JoinSide, ScalarValue},
         config::ConfigOptions,
         functions::{string, unicode},
-        logical_expr::Operator,
+        logical_expr::{Operator, ScalarUDF},
         physical_expr::{
             PhysicalExpr, ScalarFunctionExpr,
             expressions::{CaseExpr, CastExpr, IsNotNullExpr, IsNullExpr, NotExpr, binary, col, in_list, lit},
@@ -592,7 +595,7 @@ mod tests {
 
     fn scalar_function(
         name: &str,
-        function: Arc<datafusion::logical_expr::ScalarUDF>,
+        function: Arc<ScalarUDF>,
         args: Vec<Arc<dyn PhysicalExpr>>,
         output_type: DataType,
     ) -> Arc<dyn PhysicalExpr> {

@@ -1,8 +1,23 @@
+use query_engine::{
+    dimension_pruning::local_dimension_pruning_resolver as optimizer_options_local_dimension_pruning_resolver,
+    optimizer::{
+        DimensionKeyFilter as OptionsDimensionKeyFilter,
+        DIMENSION_KEY_FILTER_MAX_RUNS as OPTIONS_DIMENSION_KEY_FILTER_MAX_RUNS,
+        JoinFilterReassociationOptions as OptionsJoinFilterReassociationOptions,
+        OuterJoinNullRejectionOptions as OptionsOuterJoinNullRejectionOptions,
+    },
+};
+
 #[test]
 fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {
     let plan = single_source_plan();
 
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default(), rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        optimizer_options_local_dimension_pruning_resolver(),
+    );
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -28,7 +43,12 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
     let plan = single_source_plan();
     let options = NativeOptimizerOptions::disabled();
 
-    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan.clone(),
+        &options,
+        rapids_analysis_context(),
+        optimizer_options_local_dimension_pruning_resolver(),
+    );
 
     assert!(!options.projection_simplification.enabled);
     assert!(!options.semijoin_reduction.enabled);
@@ -45,7 +65,12 @@ fn native_optimizer_captures_keyed_hash_join_strategy_options_in_plan() {
         KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
     let options = NativeOptimizerOptions { keyed_hash_join_strategy, ..NativeOptimizerOptions::disabled() };
 
-    let result = optimize_query_plan(single_source_plan(), &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        single_source_plan(),
+        &options,
+        rapids_analysis_context(),
+        optimizer_options_local_dimension_pruning_resolver(),
+    );
 
     assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
 }
@@ -66,7 +91,12 @@ fn native_optimizer_preserves_keyed_hash_join_strategy_options_through_projectio
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), query_engine::dimension_pruning::local_dimension_pruning_resolver());
+    let result = optimize_query_plan(
+        plan,
+        &options,
+        rapids_analysis_context(),
+        optimizer_options_local_dimension_pruning_resolver(),
+    );
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.projection_simplification.applied_count, 1);
@@ -130,18 +160,18 @@ fn count_non_null_column_pruning_options_and_rule_name_are_stable() {
 #[test]
 fn outer_join_null_rejection_options_and_rule_name_are_stable() {
     assert_eq!(OUTER_JOIN_NULL_REJECTION_RULE_NAME, "outer_join_null_rejection");
-    assert!(query_engine::optimizer::OuterJoinNullRejectionOptions::default().enabled);
-    assert!(!query_engine::optimizer::OuterJoinNullRejectionOptions::disabled().enabled);
+    assert!(OptionsOuterJoinNullRejectionOptions::default().enabled);
+    assert!(!OptionsOuterJoinNullRejectionOptions::disabled().enabled);
 }
 
 #[test]
 fn join_filter_reassociation_options_and_rule_name_are_stable() {
     assert_eq!(JOIN_FILTER_REASSOCIATION_RULE_NAME, "join_filter_reassociation");
-    assert!(query_engine::optimizer::JoinFilterReassociationOptions::default().enabled);
-    assert!(query_engine::optimizer::JoinFilterReassociationOptions::default().residual_filter_pushdown_enabled);
-    assert!(!query_engine::optimizer::JoinFilterReassociationOptions::disabled().enabled);
+    assert!(OptionsJoinFilterReassociationOptions::default().enabled);
+    assert!(OptionsJoinFilterReassociationOptions::default().residual_filter_pushdown_enabled);
+    assert!(!OptionsJoinFilterReassociationOptions::disabled().enabled);
     assert!(
-        !query_engine::optimizer::JoinFilterReassociationOptions::disabled().residual_filter_pushdown_enabled
+        !OptionsJoinFilterReassociationOptions::disabled().residual_filter_pushdown_enabled
     );
 }
 
@@ -155,8 +185,8 @@ fn dimension_derived_row_group_pruning_options_and_rule_name_are_stable() {
     );
     assert!(!DimensionDerivedRowGroupPruningOptions::disabled().enabled);
     assert_eq!(
-        query_engine::optimizer::DIMENSION_KEY_FILTER_MAX_RUNS,
-        query_engine::optimizer::DimensionKeyFilter::MAX_RUNS
+        OPTIONS_DIMENSION_KEY_FILTER_MAX_RUNS,
+        OptionsDimensionKeyFilter::MAX_RUNS
     );
     DimensionDerivedRowGroupPruningOptions::default().validate().unwrap();
 }

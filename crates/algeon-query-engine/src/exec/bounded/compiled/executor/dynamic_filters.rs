@@ -1,10 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 
-use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use arrow::datatypes::{DataType as ArrowDataType, Schema, SchemaRef as ArrowSchemaRef};
 use cudf::DataFrame;
 
 use super::{
-    super::{ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid},
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor, cudf_query_error,
 };
 use crate::{
@@ -15,9 +14,16 @@ use crate::{
         dynamic_filter_predicate_for_schema,
     },
     error::{QueryError, Result},
-    exec::bounded::{
-        BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame, execute_bounded_generic_unary,
-        execute_bounded_generic_unary_from_frame,
+    exec::{
+        bounded::{
+            BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
+            compiled::{
+                ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid,
+            },
+            execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
+        },
+        operators::execute_filter_with_budget,
+        util::record_batch_memory_size,
     },
     expr::Expr,
     metrics::DynamicFilterSourceSnapshot,
@@ -143,7 +149,7 @@ impl CompiledGpuTaskExecutor<'_> {
 
     fn produce_dynamic_filters_from_frames(
         &mut self,
-        routes: &[crate::dynamic_filter::DynamicFilterRoute],
+        routes: &[DynamicFilterRoute],
         producer_schema: &ArrowSchemaRef,
         producer_frames: &[&DataFrame],
         missing_key_reason: &'static str,
@@ -231,7 +237,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let selected_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(selected_fields));
+        let selected_schema = Arc::new(Schema::new(selected_fields));
         let mut batches = Vec::with_capacity(producer_frames.len());
         for producer_frame in producer_frames {
             let selected_frame = producer_frame.select(&selected_columns).map_err(|error| {
@@ -253,7 +259,7 @@ impl CompiledGpuTaskExecutor<'_> {
             self.execution.metrics().add_materialization_time(timer.elapsed());
             self.execution.metrics().record_device_to_host_materialization(
                 batch.num_rows() as u64,
-                crate::exec::util::record_batch_memory_size(&batch) as u64,
+                record_batch_memory_size(&batch) as u64,
             );
             batches.push(batch);
         }
@@ -496,7 +502,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     frame,
                     true,
                     |context, input, token, metrics| {
-                        crate::exec::operators::execute_filter_with_budget(
+                        execute_filter_with_budget(
                             context,
                             &filter_node,
                             input,
@@ -512,7 +518,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     input.take().expect("first source dynamic filter consumes the cloned shared input"),
                     true,
                     |context, input, token, metrics| {
-                        crate::exec::operators::execute_filter_with_budget(
+                        execute_filter_with_budget(
                             context,
                             &filter_node,
                             input,
@@ -568,7 +574,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 frame,
                 true,
                 |context, input, token, metrics| {
-                    crate::exec::operators::execute_filter_with_budget(
+                    execute_filter_with_budget(
                         context,
                         &filter_node,
                         input,
@@ -613,7 +619,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 frame,
                 true,
                 |context, input, token, metrics| {
-                    crate::exec::operators::execute_filter_with_budget(
+                    execute_filter_with_budget(
                         context,
                         &dynamic_filter_node,
                         input,
@@ -664,7 +670,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     frame,
                     true,
                     |context, input, token, metrics| {
-                        crate::exec::operators::execute_filter_with_budget(
+                        execute_filter_with_budget(
                             context,
                             &dynamic_filter_node,
                             input,
@@ -680,7 +686,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     input.take().expect("first dynamic filter consumes the cloned shared input"),
                     true,
                     |context, input, token, metrics| {
-                        crate::exec::operators::execute_filter_with_budget(
+                        execute_filter_with_budget(
                             context,
                             &dynamic_filter_node,
                             input,
@@ -770,7 +776,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     frame,
                     true,
                     |context, input, token, metrics| {
-                        crate::exec::operators::execute_filter_with_budget(
+                        execute_filter_with_budget(
                             context,
                             &filter_node,
                             input,
@@ -786,7 +792,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     input.take().expect("first dynamic filter consumes the cloned shared input"),
                     true,
                     |context, input, token, metrics| {
-                        crate::exec::operators::execute_filter_with_budget(
+                        execute_filter_with_budget(
                             context,
                             &filter_node,
                             input,
@@ -847,7 +853,7 @@ impl CompiledGpuTaskExecutor<'_> {
     fn resolve_dynamic_filter_predicate(
         &mut self,
         route: &DynamicFilterRoute,
-        schema: &arrow::datatypes::Schema,
+        schema: &Schema,
     ) -> Option<(DynamicFilter, Expr)> {
         let dynamic_filter = self.dynamic_filters.produced(route.id).cloned()?;
         let Some(column) = route.consumer_columns.first() else {
@@ -861,7 +867,7 @@ impl CompiledGpuTaskExecutor<'_> {
         Some((dynamic_filter, predicate))
     }
 
-    fn join_probe_dynamic_filter_routes(&self, join_node_id: NodeId) -> Vec<crate::dynamic_filter::DynamicFilterRoute> {
+    fn join_probe_dynamic_filter_routes(&self, join_node_id: NodeId) -> Vec<DynamicFilterRoute> {
         self.plan
             .dynamic_filter_routes()
             .iter()
@@ -878,7 +884,7 @@ impl CompiledGpuTaskExecutor<'_> {
             .collect()
     }
 
-    fn filter_dynamic_filter_routes(&self, filter_node_id: NodeId) -> Vec<crate::dynamic_filter::DynamicFilterRoute> {
+    fn filter_dynamic_filter_routes(&self, filter_node_id: NodeId) -> Vec<DynamicFilterRoute> {
         self.plan
             .dynamic_filter_routes()
             .iter()
@@ -894,10 +900,7 @@ impl CompiledGpuTaskExecutor<'_> {
             .collect()
     }
 
-    fn source_post_decode_dynamic_filter_routes(
-        &self,
-        source_node_id: NodeId,
-    ) -> Vec<crate::dynamic_filter::DynamicFilterRoute> {
+    fn source_post_decode_dynamic_filter_routes(&self, source_node_id: NodeId) -> Vec<DynamicFilterRoute> {
         self.plan
             .dynamic_filter_routes()
             .iter()
@@ -952,11 +955,7 @@ impl CompiledGpuTaskExecutor<'_> {
         })
     }
 
-    fn ensure_dynamic_filter_routes_ready(
-        &self,
-        join_node_id: NodeId,
-        routes: &[crate::dynamic_filter::DynamicFilterRoute],
-    ) -> Result<()> {
+    fn ensure_dynamic_filter_routes_ready(&self, join_node_id: NodeId, routes: &[DynamicFilterRoute]) -> Result<()> {
         for route in routes {
             if !self.dynamic_filters.is_ready(route.id) {
                 return Err(invalid("compiled dynamic-filter probe consumer ran before its producer completed")
@@ -1013,10 +1012,10 @@ fn merge_dynamic_filter_ranges(left: DynamicFilter, right: DynamicFilter) -> Dyn
 
 fn dynamic_filter_i64_range_from_series(
     series: &cudf::Series,
-    data_type: &arrow::datatypes::DataType,
+    data_type: &ArrowDataType,
 ) -> Result<Option<DynamicFilter>> {
     let range = match data_type {
-        arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Date32 => {
+        ArrowDataType::Int32 | ArrowDataType::Date32 => {
             let min = series
                 .min_value::<i32>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?
@@ -1027,7 +1026,7 @@ fn dynamic_filter_i64_range_from_series(
                 .map(i64::from);
             Some((min, max))
         },
-        arrow::datatypes::DataType::Int64 => {
+        ArrowDataType::Int64 => {
             let min = series
                 .min_value::<i64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?;
@@ -1036,7 +1035,7 @@ fn dynamic_filter_i64_range_from_series(
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "max", data_type))?;
             Some((min, max))
         },
-        arrow::datatypes::DataType::UInt32 => {
+        ArrowDataType::UInt32 => {
             let min = series
                 .min_value::<u32>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?
@@ -1047,7 +1046,7 @@ fn dynamic_filter_i64_range_from_series(
                 .map(i64::from);
             Some((min, max))
         },
-        arrow::datatypes::DataType::UInt64 => {
+        ArrowDataType::UInt64 => {
             let min = series
                 .min_value::<u64>()
                 .map_err(|error| dynamic_filter_range_reduction_error(error, "min", data_type))?;
@@ -1082,7 +1081,7 @@ fn dynamic_filter_i64_range_from_series(
 fn dynamic_filter_range_reduction_error(
     error: cudf::Error,
     reduction: &'static str,
-    data_type: &arrow::datatypes::DataType,
+    data_type: &ArrowDataType,
 ) -> QueryError {
     cudf_query_error(
         "query_engine.dynamic_filter.producer_range",

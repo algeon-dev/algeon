@@ -3,6 +3,12 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
+use {
+    examples::otlp_metrics::BackendMetricsOtlpExporter, opentelemetry::global,
+    opentelemetry_proto::tonic::resource::v1::Resource, tokio::runtime::Builder,
+};
+
 use super::*;
 
 /// Runtime-only OTLP exporter input. Its full endpoint is deliberately never
@@ -59,16 +65,14 @@ impl OtlpExportWorker {
         let interval_ms = interval.as_millis().min(u128::from(u64::MAX)) as u64;
         let backend = backend.clone();
         let handle = std::thread::spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let runtime = match Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,
                 Err(_) => return OtlpExportEvidence::requested(endpoint_host_port, interval_ms, 0, 0, 1),
             };
-            let meter = opentelemetry::global::meter("algeon-datafusion-stress");
+            let meter = global::meter("algeon-datafusion-stress");
             let snapshot_backend = backend.clone();
-            let exporter = examples::otlp_metrics::BackendMetricsOtlpExporter::new(&meter, move || {
-                snapshot_backend.backend_metrics_snapshot()
-            });
-            let resource = opentelemetry_proto::tonic::resource::v1::Resource::default();
+            let exporter = BackendMetricsOtlpExporter::new(&meter, move || snapshot_backend.backend_metrics_snapshot());
+            let resource = Resource::default();
             let start_time_unix_nano = unix_epoch_ns();
             let mut export_attempts = 0_u64;
             let mut successful_exports = 0_u64;

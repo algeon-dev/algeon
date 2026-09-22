@@ -1,50 +1,69 @@
-fn pagerank_plan(edge_schema: std::sync::Arc<arrow::datatypes::Schema>) -> crate::plan::QueryPlan {
-    let params = crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default());
+use std::{
+    collections::BTreeMap,
+    env,
+    fs,
+    path::Path,
+    process,
+    sync::{Arc, Barrier},
+    thread,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
+
+use arrow::{
+    array::{Float64Array, Int32Array, Int64Array, StringArray},
+    datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema},
+    record_batch::RecordBatch,
+};
+use cudf::DataFrame as CudfDataFrame;
+use parquet::{arrow as parquet_arrow, file::properties as parquet_properties};
+
+fn pagerank_plan(edge_schema: Arc<ArrowSchema>) -> plan::QueryPlan {
+    let params = plan::GraphAlgorithmParams::PageRank(plan::GraphPageRankParams::default());
     let vertex_type = edge_schema.field_with_name("src").unwrap().data_type().clone();
-    let mut builder = crate::plan::QueryPlanBuilder::new();
-    let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
+    let mut builder = plan::QueryPlanBuilder::new();
+    let edges = builder.add_source(source::SourceNode::GpuResident(source::GpuResidentSource::new(
         "edges",
-        std::sync::Arc::clone(&edge_schema),
+        Arc::clone(&edge_schema),
     )));
     let output_schema =
-        crate::plan::graph_result_schema_for_vertex_type(crate::plan::GraphAlgorithm::PageRank, &params, &vertex_type);
-    let spec = crate::plan::GraphAlgorithmSpec::new(
-        crate::plan::GraphAlgorithm::PageRank,
-        crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        crate::plan::GraphConstructionOptions {
+        plan::graph_result_schema_for_vertex_type(plan::GraphAlgorithm::PageRank, &params, &vertex_type);
+    let spec = plan::GraphAlgorithmSpec::new(
+        plan::GraphAlgorithm::PageRank,
+        plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        plan::GraphConstructionOptions {
             directed: true,
             renumber: true,
-            policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
+            policy: plan::GraphConstructionPolicy::RawLibcugraph,
         },
         params,
-        std::sync::Arc::clone(&output_schema),
+        Arc::clone(&output_schema),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     builder.finish_with_host_sink_schema(graph, output_schema)
 }
 
-fn bfs_plan(edge_schema: std::sync::Arc<arrow::datatypes::Schema>) -> crate::plan::QueryPlan {
-    let params = crate::plan::GraphAlgorithmParams::Bfs(Box::new(crate::plan::GraphBfsParams::new(0, None)));
+fn bfs_plan(edge_schema: Arc<ArrowSchema>) -> plan::QueryPlan {
+    let params = plan::GraphAlgorithmParams::Bfs(Box::new(plan::GraphBfsParams::new(0, None)));
     let vertex_type = edge_schema.field_with_name("src").unwrap().data_type().clone();
-    let mut builder = crate::plan::QueryPlanBuilder::new();
-    let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
+    let mut builder = plan::QueryPlanBuilder::new();
+    let edges = builder.add_source(source::SourceNode::GpuResident(source::GpuResidentSource::new(
         "edges",
-        std::sync::Arc::clone(&edge_schema),
+        Arc::clone(&edge_schema),
     )));
     let output_schema =
-        crate::plan::graph_result_schema_for_vertex_type(crate::plan::GraphAlgorithm::Bfs, &params, &vertex_type);
+        plan::graph_result_schema_for_vertex_type(plan::GraphAlgorithm::Bfs, &params, &vertex_type);
     let graph = builder.add_graph_algorithm(
         edges,
-        crate::plan::GraphAlgorithmSpec::new(
-            crate::plan::GraphAlgorithm::Bfs,
-            crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-            crate::plan::GraphConstructionOptions {
+        plan::GraphAlgorithmSpec::new(
+            plan::GraphAlgorithm::Bfs,
+            plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            plan::GraphConstructionOptions {
                 directed: true,
                 renumber: true,
-                policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
+                policy: plan::GraphConstructionPolicy::RawLibcugraph,
             },
             params,
-            std::sync::Arc::clone(&output_schema),
+            Arc::clone(&output_schema),
         ),
     );
     builder.finish_with_host_sink_schema(graph, output_schema)
@@ -67,20 +86,20 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         )],
     )
     .expect("single-flight full-cap service");
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    let edge_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("src", ArrowDataType::Int32, false),
+        ArrowField::new("dst", ArrowDataType::Int32, false),
     ]));
-    let pagerank = pagerank_plan(std::sync::Arc::clone(&edge_schema));
-    let bfs = bfs_plan(std::sync::Arc::clone(&edge_schema));
-    let mut producer_evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
+    let pagerank = pagerank_plan(Arc::clone(&edge_schema));
+    let bfs = bfs_plan(Arc::clone(&edge_schema));
+    let mut producer_evidence = admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
     producer_evidence.attest_cugraph_graph_execution_scope(&pagerank);
-    let lifecycle = crate::runtime::BackendLifecycle::new();
-    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
-    let observed = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
-            observation: crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+    let lifecycle = runtime::BackendLifecycle::new();
+    let counters = Arc::new(attempt::AttemptBackendCounters::default());
+    let observed = attempt::AttemptOwner::begin(
+        attempt::BeginAttemptRequest {
+            observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..attempt::BeginAttemptRequest::default()
         },
         lifecycle.try_begin_observation().expect("observation permit"),
         counters,
@@ -91,7 +110,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     let producer_observation = producer_owner.handle();
     producer_observation.record_planning_started().unwrap();
     producer_observation.record_planning_finished().unwrap();
-    producer_observation.set_disposition(crate::observability::AttemptDisposition::Native).unwrap();
+    producer_observation.set_disposition(observability::AttemptDisposition::Native).unwrap();
     producer_observation.record_admission_requested().unwrap();
     let producer = service
         .admit_query_with_request(
@@ -101,7 +120,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         )
         .expect("producer admission");
     producer_observation
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(observability::AttemptAdmissionFact {
             admission_sequence: producer.admission_sequence(),
             admission_wait_ns: producer.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: producer.device_ordinal(),
@@ -112,16 +131,16 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     producer_observation.record_gpu_execution_started().unwrap();
     let producer_context = producer.acquire_context().expect("producer context");
     let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
-    let batch = arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::clone(&edge_schema),
+    let batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
         vec![
-            std::sync::Arc::new(arrow::array::Int32Array::from(vec![0, 1, 2, 2])),
-            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 0, 3])),
+            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
+            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
         ],
     )
     .unwrap();
-    let gpu_edges = crate::runtime::resident::GpuDataFrame::new(
-        cudf::DataFrame::from_record_batch(producer_runtime.as_ref(), &batch).expect("edge upload"),
+    let gpu_edges = runtime::resident::GpuDataFrame::new(
+        CudfDataFrame::from_record_batch(producer_runtime.as_ref(), &batch).expect("edge upload"),
     );
     let resident_bytes = gpu_edges.device_allocated_size_bytes().expect("resident edge bytes");
     let resident_lease = producer_context
@@ -131,10 +150,10 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         .expect("producer grant")
         .retain_resident_owner(resident_bytes)
         .expect("resident edges fit the producer cap");
-    let resident = crate::runtime::resident::GpuResultHandle::new_with_resident_owner(
+    let resident = runtime::resident::GpuResultHandle::new_with_resident_owner(
         producer_context.context(),
         gpu_edges,
-        std::sync::Arc::clone(&edge_schema),
+        Arc::clone(&edge_schema),
         resident_lease,
     )
     .expect("resident edge owner");
@@ -142,32 +161,32 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     let frozen_edge_bits = resident.to_host_record_batch().expect("baseline frozen edge values");
     let resident_view = resident.clone();
     drop(resident);
-    let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
+    let mut inputs = runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), resident_view);
     drop(producer_runtime);
     drop(producer_context);
-    producer_owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+    producer_owner.commit_terminal(observability::RuntimeTerminalOutcome::Succeeded).unwrap();
     producer.finish();
     drop(producer);
 
     let producer_report =
-        producer_completion.wait_timeout(std::time::Duration::from_secs(10)).expect("producer frozen report");
-    assert_eq!(producer_report.capacity_disposition, crate::observability::AttemptCapacityDisposition::FrozenResident);
-    let freeze_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        producer_completion.wait_timeout(Duration::from_secs(10)).expect("producer frozen report");
+    assert_eq!(producer_report.capacity_disposition, observability::AttemptCapacityDisposition::FrozenResident);
+    let freeze_deadline = Instant::now() + Duration::from_secs(10);
     let frozen = loop {
         let snapshot = service.device_ledger_reports().unwrap().remove(0);
         if snapshot.active_attempts == 0 && snapshot.frozen_resident_bytes > 0 {
             break snapshot;
         }
-        assert!(std::time::Instant::now() < freeze_deadline, "frozen charge publishes after the attempt report");
-        std::thread::yield_now();
+        assert!(Instant::now() < freeze_deadline, "frozen charge publishes after the attempt report");
+        thread::yield_now();
     };
     assert_eq!(frozen.active_attempts, 0);
     assert_eq!(frozen.live_grants_bytes, 0);
     assert!(frozen.frozen_resident_bytes > 0);
     assert!(frozen.frozen_resident_bytes < CAPACITY_BYTES);
 
-    let mut tiny_evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
+    let mut tiny_evidence = admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
     tiny_evidence.attest_cugraph_graph_execution_scope(&pagerank);
     let tiny = service
         .admit_query_with_request(
@@ -181,7 +200,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     };
     assert_eq!(
         tiny_error.code(),
-        query_engine::error::QueryErrorCode::QueryMemoryLimitExceeded,
+        error::QueryErrorCode::QueryMemoryLimitExceeded,
         "unexpected tiny-cap failure: {tiny_error:?}"
     );
     drop(tiny_context);
@@ -189,7 +208,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     drop(tiny);
 
     for plan in [&pagerank, &bfs] {
-        let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(plan);
+        let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(plan);
         evidence.attest_cugraph_graph_execution_scope(plan);
         let consumer = service
             .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
@@ -214,24 +233,24 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
 
     assert!(service.device_ledger_reports().unwrap().remove(0).frozen_resident_bytes > 0);
     drop(inputs);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while service.device_ledger_reports().unwrap().remove(0).frozen_resident_bytes != 0 {
-        assert!(std::time::Instant::now() < deadline, "resident charge releases after final owner");
-        std::thread::yield_now();
+        assert!(Instant::now() < deadline, "resident charge releases after final owner");
+        thread::yield_now();
     }
-    service.close_and_wait_for_quiescence(std::time::Duration::from_secs(10)).unwrap();
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).unwrap();
 }
 
 #[test]
 fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_without_copy() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2)
         .expect("runtime-backed service with two same-device attempt lanes");
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    let edge_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("src", ArrowDataType::Int32, false),
+        ArrowField::new("dst", ArrowDataType::Int32, false),
     ]));
-    let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
-    let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    let plan = pagerank_plan(Arc::clone(&edge_schema));
+    let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     evidence.attest_cugraph_graph_execution_scope(&plan);
     let producer_attempt = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()))
@@ -256,20 +275,20 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
         consumer_runtime.binding_id(),
         "same-device attempts must use distinct exact execution bindings"
     );
-    let edge_batch = arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::clone(&edge_schema),
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
         vec![
-            std::sync::Arc::new(arrow::array::Int32Array::from(vec![0, 1, 2, 2])),
-            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 0, 3])),
+            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
+            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
         ],
     )
     .expect("valid edge batch");
-    let producer_input = crate::runtime::resident::GpuResultHandle::new(
+    let producer_input = runtime::resident::GpuResultHandle::new(
         producer_context.context(),
-        crate::runtime::resident::GpuDataFrame::new(
-            cudf::DataFrame::from_record_batch(producer_runtime.as_ref(), &edge_batch).expect("producer edge upload"),
+        runtime::resident::GpuDataFrame::new(
+            CudfDataFrame::from_record_batch(producer_runtime.as_ref(), &edge_batch).expect("producer edge upload"),
         ),
-        std::sync::Arc::clone(&edge_schema),
+        Arc::clone(&edge_schema),
     )
     .expect("producer GPU input handle");
     let producer_usage_before = producer_context
@@ -279,7 +298,7 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
         .expect("producer domain usage is present");
     assert!(producer_usage_before.current_bytes > 0, "producer input must be retained in its own domain");
 
-    let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
+    let mut inputs = runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), producer_input);
     let same_attempt =
         execute_plan(producer_context.context(), &plan, Some(&inputs)).expect("same-attempt zero-copy graph execution");
@@ -298,7 +317,7 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
     assert_eq!(result.metrics().boundary.gpu_resident_input_handoffs, 1);
     assert_eq!(result.metrics().boundary.device_to_device_copies, 0);
     assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1, "the graph runs from the resident borrow");
-    let crate::exec::output::QueryOutput::HostArrow(output) = result.output() else {
+    let exec::output::QueryOutput::HostArrow(output) = result.output() else {
         panic!("graph plan must materialize its result at the declared host sink");
     };
     assert_eq!(output.num_rows(), 4, "PageRank must see the copied four-vertex edge list");
@@ -332,7 +351,7 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
     drop(producer_attempt);
     drop(consumer_attempt);
     service
-        .close_and_wait_for_quiescence(std::time::Duration::from_secs(10))
+        .close_and_wait_for_quiescence(Duration::from_secs(10))
         .expect("query service cleanup after cross-attempt graph handoff");
 }
 
@@ -355,22 +374,22 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         )],
     )
     .expect("cache-enabled runtime service");
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    let edge_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("src", ArrowDataType::Int32, false),
+        ArrowField::new("dst", ArrowDataType::Int32, false),
     ]));
-    let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
-    let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    let plan = pagerank_plan(Arc::clone(&edge_schema));
+    let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     evidence.attest_cugraph_graph_execution_scope(&plan);
-    let backend_lifecycle = crate::runtime::BackendLifecycle::new();
-    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
-    let observed_attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
-            observation: crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+    let backend_lifecycle = runtime::BackendLifecycle::new();
+    let counters = Arc::new(attempt::AttemptBackendCounters::default());
+    let observed_attempt = attempt::AttemptOwner::begin(
+        attempt::BeginAttemptRequest {
+            observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..attempt::BeginAttemptRequest::default()
         },
         backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-        std::sync::Arc::clone(&counters),
+        Arc::clone(&counters),
         None,
     );
     let attempt_owner = observed_attempt.owner;
@@ -378,7 +397,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
-    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let attempt = service
         .admit_query_with_request(
@@ -388,7 +407,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         )
         .expect("admission");
     attempt_handle
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(observability::AttemptAdmissionFact {
             admission_sequence: attempt.admission_sequence(),
             admission_wait_ns: attempt.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: attempt.device_ordinal(),
@@ -398,31 +417,31 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
     let runtime = context.runtime().expect("attempt runtime");
-    let edge_batch = arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::clone(&edge_schema),
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
         vec![
-            std::sync::Arc::new(arrow::array::Int32Array::from(vec![0, 1, 2, 2])),
-            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 0, 3])),
+            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
+            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
         ],
     )
     .expect("valid edge batch");
-    let descriptor = crate::plan::GraphResidencyDescriptor::for_content_identity(
+    let descriptor = plan::GraphResidencyDescriptor::for_content_identity(
         "accounted-pagerank-graph-v1",
-        arrow::datatypes::DataType::Int32,
+        ArrowDataType::Int32,
         None,
         None,
     )
     .expect("stable graph source identity");
-    let input = crate::runtime::resident::GpuResultHandle::new(
+    let input = runtime::resident::GpuResultHandle::new(
         context,
-        crate::runtime::resident::GpuDataFrame::new(
-            cudf::DataFrame::from_record_batch(&runtime, &edge_batch).expect("attempt edge upload"),
+        runtime::resident::GpuDataFrame::new(
+            CudfDataFrame::from_record_batch(&runtime, &edge_batch).expect("attempt edge upload"),
         )
         .with_graph_residency(descriptor),
-        std::sync::Arc::clone(&edge_schema),
+        Arc::clone(&edge_schema),
     )
     .expect("resident graph input");
-    let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
+    let mut inputs = runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), input);
     let result = execute_plan(context, &plan, Some(&inputs))
         .expect("cache-enabled PageRank execution");
@@ -438,11 +457,11 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner
-        .commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded)
+        .commit_terminal(observability::RuntimeTerminalOutcome::Succeeded)
         .expect("primary attempt outcome commits before release");
     attempt.finish();
     drop(attempt);
-    let sealed = completion.wait_timeout(std::time::Duration::from_secs(10)).expect("sealed attempt report");
+    let sealed = completion.wait_timeout(Duration::from_secs(10)).expect("sealed attempt report");
     let evidence = sealed.resource_evidence.expect("admitted cache attempt retains sealed resource evidence");
     assert_eq!(
         evidence.cache_evictable_resident_bytes.value,
@@ -459,7 +478,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         Some(ledger_report.sequence),
         "all cache evidence fields retain the ledger snapshot sequence"
     );
-    service.close_and_wait_for_quiescence(std::time::Duration::from_secs(10)).expect("service drains cache entries");
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains cache entries");
     let drained_report = service.device_ledger_reports().expect("drained ledger report").remove(0);
     assert_eq!(drained_report.cache_evictable_resident_bytes, 0);
     assert_eq!(drained_report.cache_pinned_in_use_bytes, 0);
@@ -501,11 +520,11 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
         )],
     )
     .expect("cache-enabled runtime service");
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    let edge_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("src", ArrowDataType::Int32, false),
+        ArrowField::new("dst", ArrowDataType::Int32, false),
     ]));
-    let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
+    let plan = pagerank_plan(Arc::clone(&edge_schema));
     // Deterministic 2-regular-ish digraph: a directed cycle plus long chords.
     // PageRank workspace holds several vertex-sized vectors live at once,
     // which dominates the edge upload (two int32 columns) and the output copy
@@ -520,11 +539,11 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
             }
         })
         .unzip();
-    let edge_batch = arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::clone(&edge_schema),
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
         vec![
-            std::sync::Arc::new(arrow::array::Int32Array::from(src)),
-            std::sync::Arc::new(arrow::array::Int32Array::from(dst)),
+            Arc::new(Int32Array::from(src)),
+            Arc::new(Int32Array::from(dst)),
         ],
     )
     .expect("valid edge batch");
@@ -567,7 +586,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     .expect_err("workspace-sized grant cannot fund warm-graph workspace");
     assert_eq!(
         tiny_error.code(),
-        crate::error::QueryErrorCode::QueryMemoryLimitExceeded,
+        error::QueryErrorCode::QueryMemoryLimitExceeded,
         "unexpected capped-grant failure: {tiny_error:?}"
     );
     assert!(
@@ -585,7 +604,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
     assert_eq!(cache_evictable_bytes(), parked_bytes, "warm execution adds no cache-share charge");
     assert_eq!(warm_batch, cold_batch, "results are identical before and after the failed cleanup");
 
-    service.close_and_wait_for_quiescence(std::time::Duration::from_secs(10)).expect("service drains cache entries");
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains cache entries");
     assert_eq!(cache_evictable_bytes(), 0);
 }
 
@@ -618,12 +637,12 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
         )],
     )
     .expect("cache-enabled runtime service");
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    let edge_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("src", ArrowDataType::Int32, false),
+        ArrowField::new("dst", ArrowDataType::Int32, false),
     ]));
-    let pagerank = pagerank_plan(std::sync::Arc::clone(&edge_schema));
-    let bfs = bfs_plan(std::sync::Arc::clone(&edge_schema));
+    let pagerank = pagerank_plan(Arc::clone(&edge_schema));
+    let bfs = bfs_plan(Arc::clone(&edge_schema));
     // Same directed-cycle shape, different chords, so the two graphs have
     // distinct content while staying comparable in size.
     let pagerank_edges = cycle_chord_edge_batch(&edge_schema, VERTEX_COUNT, VERTEX_COUNT / 2 + 1);
@@ -652,9 +671,9 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     // barrier holds pre-admission skew to microseconds against executions
     // that each take orders of magnitude longer, so a two-grant observation
     // lands inside genuine execution overlap rather than timer luck.
-    let start = std::sync::Barrier::new(3);
+    let start = Barrier::new(3);
     let mut overlapped = false;
-    let (pagerank_outcome, bfs_outcome) = std::thread::scope(|scope| {
+    let (pagerank_outcome, bfs_outcome) = thread::scope(|scope| {
         let pagerank_worker = scope.spawn(|| {
             start.wait();
             execute_pagerank_attempt(&service, &pagerank, &edge_schema, &pagerank_edges, PAGERANK_GRAPH_IDENTITY, None)
@@ -664,14 +683,14 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
             execute_pagerank_attempt(&service, &bfs, &edge_schema, &bfs_edges, BFS_GRAPH_IDENTITY, None)
         });
         start.wait();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !(pagerank_worker.is_finished() && bfs_worker.is_finished()) {
             if live_grants() >= 2 {
                 overlapped = true;
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "overlapping attempts did not finish in time");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert!(Instant::now() < deadline, "overlapping attempts did not finish in time");
+            thread::sleep(Duration::from_millis(1));
         }
         (
             pagerank_worker.join().expect("pagerank worker does not panic"),
@@ -688,7 +707,7 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
     assert!(pagerank_domain.is_some() && bfs_domain.is_some(), "both attempts report their allocation domain");
     assert_eq!(cache_evictable_bytes(), parked_bytes, "overlapped warm execution adds no cache-share charge");
 
-    service.close_and_wait_for_quiescence(std::time::Duration::from_secs(10)).expect("service drains cache entries");
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains cache entries");
     assert_eq!(cache_evictable_bytes(), 0);
 }
 
@@ -696,10 +715,10 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
 /// chords of the given offset. Shared by the mixed-overlap graphs so their
 /// sizes stay comparable while their contents differ.
 fn cycle_chord_edge_batch(
-    edge_schema: &std::sync::Arc<arrow::datatypes::Schema>,
+    edge_schema: &Arc<ArrowSchema>,
     vertex_count: i32,
     chord_offset: i32,
-) -> arrow::record_batch::RecordBatch {
+) -> RecordBatch {
     let (src, dst): (Vec<i32>, Vec<i32>) = (0..2 * vertex_count)
         .map(|edge| {
             let vertex = edge % vertex_count;
@@ -710,11 +729,11 @@ fn cycle_chord_edge_batch(
             }
         })
         .unzip();
-    arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::clone(edge_schema),
+    RecordBatch::try_new(
+        Arc::clone(edge_schema),
         vec![
-            std::sync::Arc::new(arrow::array::Int32Array::from(src)),
-            std::sync::Arc::new(arrow::array::Int32Array::from(dst)),
+            Arc::new(Int32Array::from(src)),
+            Arc::new(Int32Array::from(dst)),
         ],
     )
     .expect("valid edge batch")
@@ -726,24 +745,24 @@ fn cycle_chord_edge_batch(
 /// uses expect like the surrounding tests. The attempt is fully finished and
 /// released before returning.
 fn execute_pagerank_attempt(
-    service: &crate::runtime::QueryService,
-    plan: &crate::plan::QueryPlan,
-    edge_schema: &std::sync::Arc<arrow::datatypes::Schema>,
-    edge_batch: &arrow::record_batch::RecordBatch,
+    service: &runtime::QueryService,
+    plan: &plan::QueryPlan,
+    edge_schema: &Arc<ArrowSchema>,
+    edge_batch: &RecordBatch,
     graph_identity: &str,
     cap_bytes: Option<u64>,
-) -> crate::error::Result<(arrow::record_batch::RecordBatch, u64, Option<u64>)> {
-    let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(plan);
+) -> error::Result<(RecordBatch, u64, Option<u64>)> {
+    let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(plan);
     evidence.attest_cugraph_graph_execution_scope(plan);
-    let backend_lifecycle = crate::runtime::BackendLifecycle::new();
-    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
-    let observed_attempt = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
-            observation: crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+    let backend_lifecycle = runtime::BackendLifecycle::new();
+    let counters = Arc::new(attempt::AttemptBackendCounters::default());
+    let observed_attempt = attempt::AttemptOwner::begin(
+        attempt::BeginAttemptRequest {
+            observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..attempt::BeginAttemptRequest::default()
         },
         backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
-        std::sync::Arc::clone(&counters),
+        Arc::clone(&counters),
         None,
     );
     let attempt_owner = observed_attempt.owner;
@@ -751,7 +770,7 @@ fn execute_pagerank_attempt(
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
-    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.set_disposition(observability::AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let mut request = QueryAdmissionRequest::new()
         .with_attempt_binding(attempt_owner.admission_binding())
@@ -761,7 +780,7 @@ fn execute_pagerank_attempt(
     }
     let attempt = service.admit_query_with_request(request).expect("attempt admits");
     attempt_handle
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(observability::AttemptAdmissionFact {
             admission_sequence: attempt.admission_sequence(),
             admission_wait_ns: attempt.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: attempt.device_ordinal(),
@@ -774,11 +793,11 @@ fn execute_pagerank_attempt(
     // Edge upload already charges the attempt domain: an undersized grant
     // fails here with the same typed capacity error as workspace exhaustion.
     let result = (|| {
-        let input = crate::runtime::resident::GpuResultHandle::new(
+        let input = runtime::resident::GpuResultHandle::new(
             context,
-            crate::runtime::resident::GpuDataFrame::new(
-                cudf::DataFrame::from_record_batch(&runtime, edge_batch).map_err(|error| {
-                    crate::native_error::cudf_query_error(
+            runtime::resident::GpuDataFrame::new(
+                CudfDataFrame::from_record_batch(&runtime, edge_batch).map_err(|error| {
+                    native_error::cudf_query_error(
                         "query_engine.graph_algorithm.attempt_domain.upload_edges",
                         "failed to upload warm-graph test edges into the attempt domain",
                         error,
@@ -786,17 +805,17 @@ fn execute_pagerank_attempt(
                 })?,
             )
             .with_graph_residency(
-                crate::plan::GraphResidencyDescriptor::for_content_identity(
+                plan::GraphResidencyDescriptor::for_content_identity(
                     graph_identity,
-                    arrow::datatypes::DataType::Int32,
+                    ArrowDataType::Int32,
                     None,
                     None,
                 )
                 .expect("stable graph source identity"),
             ),
-            std::sync::Arc::clone(edge_schema),
+            Arc::clone(edge_schema),
         )?;
-        let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
+        let mut inputs = runtime::resident::GpuResidentInputMap::new();
         inputs.insert("edges".to_string(), input);
         execute_plan(context, plan, Some(&inputs))
     })();
@@ -809,17 +828,17 @@ fn execute_pagerank_attempt(
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     if result.is_ok() {
         attempt_owner
-            .commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded)
+            .commit_terminal(observability::RuntimeTerminalOutcome::Succeeded)
             .expect("terminal outcome commits");
         attempt.finish();
         drop(attempt);
-        completion.wait_timeout(std::time::Duration::from_secs(10)).expect("sealed attempt report");
+        completion.wait_timeout(Duration::from_secs(10)).expect("sealed attempt report");
     } else {
         attempt.finish();
         drop(attempt);
     }
     let result = result?;
-    let crate::exec::output::QueryOutput::HostArrow(batch) = result.output() else {
+    let exec::output::QueryOutput::HostArrow(batch) = result.output() else {
         panic!("PageRank host sink should materialize Arrow output");
     };
     Ok((batch.clone(), peak_bytes, domain_id))
@@ -829,10 +848,10 @@ fn execute_pagerank_attempt(
 /// string. Per-chunk string offsets and null-mask padding make the sum of the
 /// chunk reservations larger than the concatenated output, so the executor's
 /// retained charge and the allocator's measurement disagree by construction.
-fn write_multi_row_group_string_parquet(path: &std::path::Path) -> std::sync::Arc<arrow::datatypes::Schema> {
+fn write_multi_row_group_string_parquet(path: &Path) -> Arc<ArrowSchema> {
     use arrow::datatypes::{DataType, Field, Schema};
 
-    let schema = std::sync::Arc::new(Schema::new(vec![
+    let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
         Field::new("dst", DataType::Int32, false),
         Field::new("label", DataType::Utf8, true),
@@ -844,20 +863,20 @@ fn write_multi_row_group_string_parquet(path: &std::path::Path) -> std::sync::Ar
     let label =
         (0..rows).map(|row| (row % 7 != 0).then(|| format!("edge-label-{row:06}"))).collect::<Vec<Option<String>>>();
     let weight = (0..rows).map(|row| (row % 5 != 0).then_some(row as i64)).collect::<Vec<Option<i64>>>();
-    let batch = arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::clone(&schema),
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
         vec![
-            std::sync::Arc::new(arrow::array::Int32Array::from(src)),
-            std::sync::Arc::new(arrow::array::Int32Array::from(dst)),
-            std::sync::Arc::new(arrow::array::StringArray::from(label)),
-            std::sync::Arc::new(arrow::array::Int64Array::from(weight)),
+            Arc::new(Int32Array::from(src)),
+            Arc::new(Int32Array::from(dst)),
+            Arc::new(StringArray::from(label)),
+            Arc::new(Int64Array::from(weight)),
         ],
     )
     .expect("multi row-group fixture batch");
     let properties =
-        parquet::file::properties::WriterProperties::builder().set_max_row_group_row_count(Some(512)).build();
-    let file = std::fs::File::create(path).expect("fixture parquet file");
-    let mut writer = parquet::arrow::ArrowWriter::try_new(file, std::sync::Arc::clone(&schema), Some(properties))
+        parquet_properties::WriterProperties::builder().set_max_row_group_row_count(Some(512)).build();
+    let file = fs::File::create(path).expect("fixture parquet file");
+    let mut writer = parquet_arrow::ArrowWriter::try_new(file, Arc::clone(&schema), Some(properties))
         .expect("fixture parquet writer");
     writer.write(&batch).expect("fixture parquet rows");
     writer.close().expect("fixture parquet footer");
@@ -892,43 +911,43 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     )
     .expect("runtime-backed service for executor-produced resident freeze");
 
-    let dir = std::env::temp_dir().join(format!(
+    let dir = env::temp_dir().join(format!(
         "algeon-resident-freeze-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or_default()
     ));
-    std::fs::create_dir_all(&dir).expect("fixture directory");
+    fs::create_dir_all(&dir).expect("fixture directory");
     let path = dir.join("edges.parquet");
     let schema = write_multi_row_group_string_parquet(&path);
 
-    let file_size_bytes = std::fs::metadata(&path).expect("fixture parquet metadata").len();
-    let source = crate::source::LocalParquetSource::from_files(
+    let file_size_bytes = fs::metadata(&path).expect("fixture parquet metadata").len();
+    let source = source::LocalParquetSource::from_files(
         vec![
-            crate::source::LocalParquetFile::new(path.to_str().expect("utf-8 fixture path"))
+            source::LocalParquetFile::new(path.to_str().expect("utf-8 fixture path"))
                 .with_stable_id(format!("local:{}:{file_size_bytes}", path.display()))
                 .with_file_size_bytes(file_size_bytes)
                 .with_row_group_rows(vec![512; 8]),
         ],
-        std::sync::Arc::clone(&schema),
+        Arc::clone(&schema),
         vec!["src".to_string(), "dst".to_string(), "label".to_string(), "weight".to_string()],
     )
     // A scan limit keeps each planned row group as its own read, so the
     // resident output is a concatenation of several chunks rather than one
     // merged read.
     .with_scan_limit(Some(4_096));
-    let mut builder = crate::plan::QueryPlanBuilder::new();
-    let scan = builder.add_source(crate::source::SourceNode::LocalParquet(source));
+    let mut builder = plan::QueryPlanBuilder::new();
+    let scan = builder.add_source(source::SourceNode::LocalParquet(source));
     let plan = builder.finish_gpu_resident(scan);
 
-    let lifecycle = crate::runtime::BackendLifecycle::new();
-    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
-    let observed = crate::attempt::AttemptOwner::begin(
-        crate::attempt::BeginAttemptRequest {
-            observation: crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
-            ..crate::attempt::BeginAttemptRequest::default()
+    let lifecycle = runtime::BackendLifecycle::new();
+    let counters = Arc::new(attempt::AttemptBackendCounters::default());
+    let observed = attempt::AttemptOwner::begin(
+        attempt::BeginAttemptRequest {
+            observation: observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..attempt::BeginAttemptRequest::default()
         },
         lifecycle.try_begin_observation().expect("observation permit"),
         counters,
@@ -939,9 +958,9 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     let attempt_observation = attempt_owner.handle();
     attempt_observation.record_planning_started().unwrap();
     attempt_observation.record_planning_finished().unwrap();
-    attempt_observation.set_disposition(crate::observability::AttemptDisposition::Native).unwrap();
+    attempt_observation.set_disposition(observability::AttemptDisposition::Native).unwrap();
     attempt_observation.record_admission_requested().unwrap();
-    let evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    let evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     let producer = service
         .admit_query_with_request(
             QueryAdmissionRequest::new()
@@ -950,7 +969,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
         )
         .expect("producer admission");
     attempt_observation
-        .record_admitted(crate::observability::AttemptAdmissionFact {
+        .record_admitted(observability::AttemptAdmissionFact {
             admission_sequence: producer.admission_sequence(),
             admission_wait_ns: producer.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
             device_ordinal: producer.device_ordinal(),
@@ -968,32 +987,32 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     assert_eq!(resident_rows, 4_096);
 
     drop(producer_context);
-    attempt_owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+    attempt_owner.commit_terminal(observability::RuntimeTerminalOutcome::Succeeded).unwrap();
     producer.finish();
     drop(producer);
 
-    let report = completion.wait_timeout(std::time::Duration::from_secs(10)).expect("producer report");
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("producer report");
     assert_eq!(
         report.capacity_disposition,
-        crate::observability::AttemptCapacityDisposition::FrozenResident,
+        observability::AttemptCapacityDisposition::FrozenResident,
         "an executor-produced resident output must freeze, not quarantine the device"
     );
     assert_eq!(report.cleanup_failure_count, 0);
 
     // The B-to-R publish runs after the attempt lane is released, so the
     // frozen charge becomes visible strictly after the sealed report.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(10);
     let snapshot = loop {
         let snapshot = service.device_ledger_reports().unwrap().remove(0);
         if snapshot.active_attempts == 0 && snapshot.frozen_resident_bytes > 0 {
             break snapshot;
         }
-        assert!(std::time::Instant::now() < deadline, "the frozen output publishes a measured resident charge");
-        std::thread::yield_now();
+        assert!(Instant::now() < deadline, "the frozen output publishes a measured resident charge");
+        thread::yield_now();
     };
     assert_eq!(snapshot.live_grants_bytes, 0);
     assert!(snapshot.frozen_resident_bytes < CAPACITY_BYTES);
 
     drop(output);
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&dir);
 }

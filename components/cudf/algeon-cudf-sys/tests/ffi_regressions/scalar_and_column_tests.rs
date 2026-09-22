@@ -3,12 +3,17 @@ use std::{
     ptr,
 };
 
+use cudf_sys::test_support::{
+    cudf_test_column_view_create_synthetic_fixed_width, cudf_test_column_view_create_synthetic_string_without_children,
+    cudf_test_fail_column_handle_release_after,
+};
+
 use crate::{
     helpers::*,
     support::{
-        NO_SYNC_RECORDED, OwnedStream, last_error_message, last_exec_mr_raw, last_exec_stream_value,
-        last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource, owned_string_value,
-        required_exec_options, reset_exec_observation, stream_value,
+        NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, last_error_message, last_exec_mr_raw,
+        last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
+        owned_string_value, required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
@@ -20,11 +25,11 @@ fn create_device_buffer(size: usize, exec: &cudf_sys::cudf_exec_options_t) -> cu
     buffer
 }
 
-fn device_buffer_exec_owners() -> (OwnedStream, crate::support::OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+fn device_buffer_exec_owners() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
     strict_exec_owners()
 }
 
-fn strict_exec_owners() -> (OwnedStream, crate::support::OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+fn strict_exec_owners() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
@@ -79,11 +84,11 @@ fn test_device_buffer_adoption_publish_failure_leaves_buffer_handle_valid() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(0) };
+    unsafe { cudf_test_fail_column_handle_release_after(0) };
     let st = unsafe {
         cudf_sys::cudf_column_adopt_device_buffer(cudf_sys::CUDF_TYPE_INT32, buffer, values.len() as i32, &mut out)
     };
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { cudf_test_fail_column_handle_release_after(-1) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out.is_null());
 
@@ -120,7 +125,7 @@ fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_vali
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(0) };
+    unsafe { cudf_test_fail_column_handle_release_after(0) };
     let st = unsafe {
         cudf_sys::cudf_column_adopt_device_buffer_nullable(
             cudf_sys::CUDF_TYPE_INT32,
@@ -131,7 +136,7 @@ fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_vali
             &mut out,
         )
     };
-    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { cudf_test_fail_column_handle_release_after(-1) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out.is_null());
 
@@ -842,12 +847,7 @@ fn test_column_view_slice_rejects_active_offset_overflow() {
     let _shim_state = lock_shim_state();
     let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::test_support::cudf_test_column_view_create_synthetic_fixed_width(
-            cudf_sys::CUDF_TYPE_INT32,
-            2,
-            i32::MAX - 1,
-            &mut view,
-        )
+        cudf_test_column_view_create_synthetic_fixed_width(cudf_sys::CUDF_TYPE_INT32, 2, i32::MAX - 1, &mut view)
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
@@ -863,15 +863,14 @@ fn test_column_view_slice_rejects_active_offset_overflow() {
 
     assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(slice.is_null());
-    assert!(crate::support::last_error_message().contains("slice range exceeds active column offset range"));
+    assert!(last_error_message().contains("slice range exceeds active column offset range"));
 }
 
 #[test]
 fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child() {
     let _shim_state = lock_shim_state();
     let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
-    let st =
-        unsafe { cudf_sys::test_support::cudf_test_column_view_create_synthetic_string_without_children(1, &mut view) };
+    let st = unsafe { cudf_test_column_view_create_synthetic_string_without_children(1, &mut view) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
 

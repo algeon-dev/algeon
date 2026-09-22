@@ -10,6 +10,10 @@ use cudf::{
     core::{Column, Table},
     testing::prelude::*,
 };
+use tokio::{
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
 
 use crate::common::column_from_slice;
 
@@ -30,7 +34,7 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
         let mut ticks = 0usize;
 
         while start.elapsed() < Duration::from_millis(300) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
             ticks += 1;
         }
 
@@ -44,7 +48,7 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
 
     for _ in 0..workers {
         let shared = Arc::clone(&shared);
-        handles.push(tokio::task::spawn_blocking(move || -> cudf::Result<()> {
+        handles.push(spawn_blocking(move || -> cudf::Result<()> {
             for _ in 0..iterations {
                 // Shared read access from multiple threads.
                 let view = shared.testing_view()?;
@@ -62,7 +66,7 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
     }
 
     for handle in handles {
-        let result = tokio::time::timeout(Duration::from_secs(20), handle)
+        let result = timeout(Duration::from_secs(20), handle)
             .await
             .expect("spawn_blocking task timed out")
             .expect("spawn_blocking task panicked");

@@ -11,7 +11,7 @@ use cudf::{
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime,
 };
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
@@ -561,7 +561,7 @@ fn test_hash_join_supports_parallel_probes_from_cloned_handle() {
 
 #[test]
 fn join_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_inner_join", test_inner_join),
         ("test_left_join", test_left_join),
         ("test_full_join", test_full_join),

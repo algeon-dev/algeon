@@ -39,6 +39,7 @@ use crate::{
         attempt_domain::AttemptAllocationDomain,
         backend_core::GpuResourcePermit,
         gpu::{DeviceLanePermit, DeviceWorkerScope, MemoryGrant},
+        query_service::admission::AdmissionState,
     },
 };
 
@@ -825,7 +826,7 @@ impl AdmissionEnvelope {
     /// provisional admission to rollback cleanup. The caller holds the
     /// service admission mutex while installing the idempotence guard.
     #[doc(hidden)]
-    pub fn preaccount_rollback_cleanup(&mut self, _state: &mut super::super::admission::AdmissionState) {
+    pub fn preaccount_rollback_cleanup(&mut self, _state: &mut AdmissionState) {
         if !self.rollback_cleanup_started {
             if let Some(ticket) = self.teardown.terminal_mut().lifecycle_ticket_mut()
                 && let Err(error) = ticket.transition_to_cleanup()

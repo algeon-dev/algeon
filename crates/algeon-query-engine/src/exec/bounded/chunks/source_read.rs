@@ -11,7 +11,10 @@ use super::{
     source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error,
     split_retryable_chunk,
 };
-use crate::observability::SourceReadFact;
+use crate::{
+    chunk::SourceChunkBatch, exec::retry::backoff_before_retry, observability::SourceReadFact,
+    rapids_backend::rapids_analysis_context,
+};
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -142,7 +145,7 @@ fn record_position_delete_visible_limit_chunk_metrics(chunk: &SourceChunk, execu
 fn read_local_parquet_source_batch_or_split(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
-    batch: crate::chunk::SourceChunkBatch,
+    batch: SourceChunkBatch,
     memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     execution.context().check_cancellation("query_engine.exec.bounded.serial_source_chunk_batch_retry")?;
@@ -173,10 +176,7 @@ fn read_local_parquet_source_batch_or_split(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
-            crate::exec::retry::backoff_before_retry(
-                execution.context(),
-                "query_engine.exec.bounded.source_read_batch_split_retry",
-            )?;
+            backoff_before_retry(execution.context(), "query_engine.exec.bounded.source_read_batch_split_retry")?;
             let mut outputs = read_local_parquet_source_batch_or_split(execution, source, left, memory_boundary)?;
             match read_local_parquet_source_batch_or_split(execution, source, right, memory_boundary) {
                 Ok(mut right_outputs) => {
@@ -228,10 +228,7 @@ fn read_local_parquet_chunk_required_only_or_split(
                 && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
             {
                 execution.record_source_read(SourceReadFact::ChunkRetried);
-                crate::exec::retry::backoff_before_retry(
-                    execution.context(),
-                    "query_engine.exec.bounded.serial_source_chunk_split_retry",
-                )?;
+                backoff_before_retry(execution.context(), "query_engine.exec.bounded.serial_source_chunk_split_retry")?;
                 let mut outputs = read_local_parquet_chunk_required_only_or_split(
                     execution,
                     source,
@@ -362,7 +359,7 @@ fn read_local_parquet_chunk_required_only_attempt(
 pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_commit(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
-    batch: &crate::chunk::SourceChunkBatch,
+    batch: &SourceChunkBatch,
     memory_boundary: &'static str,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     for _chunk in &batch.chunks {
@@ -397,7 +394,7 @@ fn generic_source_chunk_batches(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-) -> Vec<crate::chunk::SourceChunkBatch> {
+) -> Vec<SourceChunkBatch> {
     if !generic_source_chunk_batching_supported(source) {
         return singleton_source_chunk_batches(chunks);
     }
@@ -412,16 +409,17 @@ fn generic_source_chunk_batching_supported(source: &LocalParquetSource) -> bool 
     source.partition_columns.is_empty()
         && !source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && source.scan_limit.is_none()
-        && source.reader_predicate.as_ref().is_none_or(|predicate| {
-            source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
-        })
+        && source
+            .reader_predicate
+            .as_ref()
+            .is_none_or(|predicate| source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
 }
 
-fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<crate::chunk::SourceChunkBatch> {
+fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
     chunks
         .iter()
         .enumerate()
-        .map(|(batch_index, chunk)| crate::chunk::SourceChunkBatch {
+        .map(|(batch_index, chunk)| SourceChunkBatch {
             batch_index,
             chunks: vec![chunk.clone()],
             estimated_source_read_bytes: chunk

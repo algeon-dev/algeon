@@ -1,4 +1,5 @@
 use std::{
+    result::Result as StdResult,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
@@ -6,12 +7,17 @@ use std::{
     time::Instant,
 };
 
+use cudf::io::drain_kvikio_bounce_buffer_pools;
 use query_engine::{
     error::{QueryError, QueryErrorCode},
     runtime::IoLifecycle,
 };
+use tokio::task::spawn_blocking;
 
-use crate::server::error::{Result, ServerError};
+use crate::server::{
+    adapter_error::Error as AdapterError,
+    error::{Result, ServerError},
+};
 
 /// Owns one server generation's native Parquet I/O gate and KvikIO drain.
 ///
@@ -21,7 +27,7 @@ use crate::server::error::{Result, ServerError};
 #[derive(Debug)]
 pub(super) struct ServerIoLifecycle {
     lifecycle: IoLifecycle,
-    drain_result: OnceLock<std::result::Result<u64, Arc<crate::server::adapter_error::Error>>>,
+    drain_result: OnceLock<StdResult<u64, Arc<AdapterError>>>,
     drain_invocations: AtomicUsize,
     #[cfg(test)]
     kvikio_drain_delay: std::sync::Mutex<Option<std::time::Duration>>,
@@ -53,7 +59,7 @@ impl ServerIoLifecycle {
     pub(super) async fn close_wait_and_drain_until(self: &Arc<Self>, deadline: Instant) -> Result<u64> {
         self.close();
         let owner = Arc::clone(self);
-        tokio::task::spawn_blocking(move || owner.close_wait_and_drain_blocking(deadline)).await.map_err(|error| {
+        spawn_blocking(move || owner.close_wait_and_drain_blocking(deadline)).await.map_err(|error| {
             ServerError::shutdown_with_source(
                 "parquet_io_cleanup_task_failed",
                 "server Parquet I/O cleanup task failed",
@@ -77,8 +83,8 @@ impl ServerIoLifecycle {
             if let Some(delay) = *self.kvikio_drain_delay.lock().unwrap() {
                 std::thread::sleep(delay);
             }
-            cudf::io::drain_kvikio_bounce_buffer_pools().map_err(|error| {
-                Arc::new(crate::server::adapter_error::Error::from_cudf(
+            drain_kvikio_bounce_buffer_pools().map_err(|error| {
+                Arc::new(AdapterError::from_cudf(
                     "algeon_datafusion.server.parquet_io.drain",
                     "failed to drain KvikIO bounce buffers after server Parquet I/O quiesced",
                     error,

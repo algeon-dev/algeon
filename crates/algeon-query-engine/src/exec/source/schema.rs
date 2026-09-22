@@ -1,11 +1,16 @@
 use std::time::Instant;
 
+use cudf::interop::arrow_host::all_null_list_series as cudf_all_null_list_series;
+
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
     QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
     cudf_query_error_with_budget_details, timestamp_unit_to_cudf_resolution,
 };
-use crate::datatypes::is_supported_list_carry_type;
+use crate::{
+    datatypes::{arrow_decimal_scale_to_cudf_scale, is_supported_list_carry_type},
+    source::MissingColumn,
+};
 
 pub(super) fn materialize_missing_columns(
     context: &ExecutionContext,
@@ -44,7 +49,7 @@ pub(super) fn materialize_missing_columns(
 
 fn missing_column_series(
     context: &ExecutionContext,
-    missing_column: &crate::source::MissingColumn,
+    missing_column: &MissingColumn,
     rows: usize,
 ) -> Result<cudf::Series> {
     if !missing_column.nullable {
@@ -58,14 +63,13 @@ fn missing_column_series(
     }
 
     if is_supported_list_carry_type(&missing_column.data_type) {
-        return cudf::interop::arrow_host::all_null_list_series(&context.runtime()?, &missing_column.data_type, rows)
-            .map_err(|error| {
-                cudf_query_error(
-                    "query_engine.local_parquet_source.missing_column",
-                    "failed to construct native parquet missing nullable list column",
-                    error,
-                )
-            });
+        return cudf_all_null_list_series(&context.runtime()?, &missing_column.data_type, rows).map_err(|error| {
+            cudf_query_error(
+                "query_engine.local_parquet_source.missing_column",
+                "failed to construct native parquet missing nullable list column",
+                error,
+            )
+        });
     }
 
     let scalar = match &missing_column.data_type {
@@ -84,13 +88,13 @@ fn missing_column_series(
             context.runtime()?.null_string_scalar()
         },
         ArrowDataType::Decimal128(_precision, scale) => {
-            context.runtime()?.null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            context.runtime()?.null_decimal128_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Decimal32(_precision, scale) => {
-            context.runtime()?.null_decimal32_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            context.runtime()?.null_decimal32_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Decimal64(_precision, scale) => {
-            context.runtime()?.null_decimal64_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+            context.runtime()?.null_decimal64_raw_scalar(arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Date32 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
         ArrowDataType::Date64 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),

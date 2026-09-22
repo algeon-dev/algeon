@@ -4,7 +4,7 @@ use parquet::file::metadata::ParquetMetaData;
 
 use crate::{
     parquet_stats::{ColumnByteKind, row_group_column_bytes},
-    source::{LocalParquetFile, LocalParquetSource},
+    source::{LocalParquetFile, LocalParquetSource, SourceColumnRef},
 };
 
 // Per-row-group sizing evidence merged from source facts and optional footer reads.
@@ -100,18 +100,16 @@ pub fn row_group_metadata_from_footer(metadata: &ParquetMetaData, source: &Local
         .projected_output_column_source_refs
         .iter()
         .filter_map(|source_ref| match source_ref {
-            crate::source::SourceColumnRef::File(index) => Some(*index),
-            crate::source::SourceColumnRef::Partition(_) | crate::source::SourceColumnRef::MissingNull(_) => None,
+            SourceColumnRef::File(index) => Some(*index),
+            SourceColumnRef::Partition(_) | SourceColumnRef::MissingNull(_) => None,
         })
         .collect::<BTreeSet<_>>();
     let pure_filter_column_indexes = source
         .pure_filter_column_source_refs
         .iter()
         .filter_map(|source_ref| match source_ref {
-            crate::source::SourceColumnRef::File(index) if !projected_column_indexes.contains(index) => Some(*index),
-            crate::source::SourceColumnRef::File(_)
-            | crate::source::SourceColumnRef::Partition(_)
-            | crate::source::SourceColumnRef::MissingNull(_) => None,
+            SourceColumnRef::File(index) if !projected_column_indexes.contains(index) => Some(*index),
+            SourceColumnRef::File(_) | SourceColumnRef::Partition(_) | SourceColumnRef::MissingNull(_) => None,
         })
         .collect::<BTreeSet<_>>();
 

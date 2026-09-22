@@ -234,16 +234,16 @@ async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
     let pairs = collect_name_and_type(&batches);
     assert_eq!(pairs, vec![("include_schema_probe".to_string(), "TABLE".to_string())]);
 
-    let schemas: Vec<arrow::datatypes::Schema> = batches
+    let schemas: Vec<Schema> = batches
         .iter()
         .filter_map(|batch| {
             let index = batch.schema().index_of("table_schema").ok()?;
             let bytes = batch
                 .column(index)
                 .as_any()
-                .downcast_ref::<arrow::array::BinaryArray>()
+                .downcast_ref::<BinaryArray>()
                 .expect("table_schema column must be Binary");
-            (0..bytes.len()).map(|i| arrow::ipc::convert::try_schema_from_ipc_buffer(bytes.value(i)).unwrap()).next()
+            (0..bytes.len()).map(|i| try_schema_from_ipc_buffer(bytes.value(i)).unwrap()).next()
         })
         .collect();
     assert_eq!(schemas.len(), 1, "expected exactly one table_schema row");
@@ -356,7 +356,7 @@ async fn flight_sql_foreign_keys_rpcs_return_empty_with_shared_schema() {
         let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert_eq!(names, expected_names, "{label} keys schema mismatch");
         let update_rule = schema.field_with_name("update_rule").unwrap();
-        assert_eq!(update_rule.data_type(), &arrow::datatypes::DataType::UInt8, "{label} update_rule must be UInt8");
+        assert_eq!(update_rule.data_type(), &DataType::UInt8, "{label} update_rule must be UInt8");
     }
     // Reference the UInt8Array import to keep it warning-free even when batches are empty.
     let _ = UInt8Array::from(Vec::<u8>::new());
@@ -372,15 +372,15 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
         .native_optimizer_config
         .clone()
         .with_datafusion_cpu_execution_policy(
-            algeon_datafusion::planner::DataFusionCpuExecutionPolicy::Reject,
+            DataFusionCpuExecutionPolicy::Reject,
         );
     let backend = build_injected_test_backend(&mut config);
-    config.native_optimizer_config = algeon_datafusion::planner::AlgeonNativeOptimizerConfig::default();
+    config.native_optimizer_config = AlgeonNativeOptimizerConfig::default();
     assert_eq!(
         backend.optimizer_config().datafusion_cpu_execution_policy(),
-        algeon_datafusion::planner::DataFusionCpuExecutionPolicy::Reject
+        DataFusionCpuExecutionPolicy::Reject
     );
-    let ctx = algeon_datafusion::server::build_session_context_with_backend(&config, &backend).await.unwrap();
+    let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
     assert_eq!(ctx.state().config_options().execution.target_partitions, 1);
     let scan_probe = Arc::new(ScanFailingTableProvider::new(Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -389,7 +389,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     ctx.register_table("metadata_probe", Arc::clone(&scan_probe) as _).unwrap();
     ctx.register_table(
         "user_rows",
-        Arc::new(datafusion::datasource::empty::EmptyTable::new(Arc::new(Schema::new(vec![
+        Arc::new(EmptyTable::new(Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("table_name", DataType::Utf8, true),
         ])))),
@@ -586,7 +586,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
 
     drop(client);
     shutdown.cancel();
-    tokio::time::timeout(Duration::from_secs(10), server)
+    timeout(Duration::from_secs(10), server)
         .await
         .expect("token shutdown should drain promptly")
         .expect("server task should not panic")

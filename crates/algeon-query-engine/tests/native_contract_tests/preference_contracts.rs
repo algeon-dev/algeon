@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use query_engine::plan::{
-    NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
+    NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, QueryPlan, native_plan_cost_decision,
 };
 
 use super::*;
@@ -135,15 +135,11 @@ fn disabled_cost_options_continue_native() {
     assert!(!decision.is_not_selected_by_cost());
 }
 
-fn topk_join_plan(
-    row_groups_per_source: usize,
-    rows_per_source: u64,
-    bytes_per_source: u64,
-) -> query_engine::plan::QueryPlan {
+fn topk_join_plan(row_groups_per_source: usize, rows_per_source: u64, bytes_per_source: u64) -> QueryPlan {
     topk_join_plan_with_residual(row_groups_per_source, rows_per_source, bytes_per_source, false)
 }
 
-fn residual_topk_join_plan(row_groups_per_source: usize) -> query_engine::plan::QueryPlan {
+fn residual_topk_join_plan(row_groups_per_source: usize) -> QueryPlan {
     topk_join_plan_with_residual(row_groups_per_source, 10_000, 1024 * 1024, true)
 }
 
@@ -152,7 +148,7 @@ fn topk_join_plan_with_residual(
     rows_per_source: u64,
     bytes_per_source: u64,
     residual: bool,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = key_value_schema();
     let right_schema = key_label_schema();
@@ -200,7 +196,7 @@ fn topk_join_plan_with_residual(
     builder.finish_with_host_sink(limit)
 }
 
-fn topk_join_without_row_group_metadata() -> query_engine::plan::QueryPlan {
+fn topk_join_without_row_group_metadata() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = key_value_schema();
     let right_schema = key_label_schema();
@@ -243,7 +239,7 @@ fn topk_join_without_row_group_metadata() -> query_engine::plan::QueryPlan {
     builder.finish_with_host_sink(limit)
 }
 
-fn grouped_aggregate_plan(row_groups: usize) -> query_engine::plan::QueryPlan {
+fn grouped_aggregate_plan(row_groups: usize) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source_schema = key_value_schema();
     let aggregate_schema = Arc::new(Schema::new(vec![
@@ -280,7 +276,7 @@ fn full_sort_join_aggregate_plan(
     row_groups_per_source: usize,
     rows_per_source: u64,
     bytes_per_source: u64,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = key_value_schema();
     let right_schema = key_label_schema();

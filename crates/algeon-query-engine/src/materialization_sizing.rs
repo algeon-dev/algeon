@@ -1,4 +1,9 @@
 use arrow::datatypes::DataType as ArrowDataType;
+use cudf::ops::materialization::{
+    MaterializedColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES as CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES,
+    STRING_OFFSET_BYTES_CONSERVATIVE as CUDF_STRING_OFFSET_BYTES_CONSERVATIVE,
+    TABLE_UPPER_BOUND_PREFLIGHT_OPERATION as CUDF_TABLE_UPPER_BOUND_PREFLIGHT_OPERATION, table_upper_bound_preflight,
+};
 
 use crate::{
     datatypes::cudf_dtype_from_arrow_type,
@@ -6,11 +11,9 @@ use crate::{
     native_error::cudf_query_error,
 };
 
-pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = cudf::ops::materialization::STRING_OFFSET_BYTES_CONSERVATIVE as u64;
-pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 =
-    cudf::ops::materialization::PER_COLUMN_ALIGNMENT_PADDING_BYTES as u64;
-pub const MATERIALIZED_TABLE_PREFLIGHT_OPERATION: &str =
-    cudf::ops::materialization::TABLE_UPPER_BOUND_PREFLIGHT_OPERATION;
+pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = CUDF_STRING_OFFSET_BYTES_CONSERVATIVE as u64;
+pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = CUDF_PER_COLUMN_ALIGNMENT_PADDING_BYTES as u64;
+pub const MATERIALIZED_TABLE_PREFLIGHT_OPERATION: &str = CUDF_TABLE_UPPER_BOUND_PREFLIGHT_OPERATION;
 
 #[derive(Debug, Clone)]
 pub struct JoinOutputColumnUpperBoundInput {
@@ -53,7 +56,7 @@ pub fn join_output_upper_bound_bytes(
                 ArrowDataType::Timestamp(_, Some(_)) => return Err(unsupported_dtype(column)),
                 data_type => cudf_dtype_from_arrow_type(data_type).ok_or_else(|| unsupported_dtype(column))?,
             };
-            Ok(cudf::ops::materialization::MaterializedColumnUpperBoundInput {
+            Ok(MaterializedColumnUpperBoundInput {
                 data_type,
                 input_max_string_length_bytes: column
                     .input_max_string_length_bytes
@@ -68,8 +71,7 @@ pub fn join_output_upper_bound_bytes(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let preflight = cudf::ops::materialization::table_upper_bound_preflight(output_rows, &columns)
-        .map_err(materialization_preflight_error)?;
+    let preflight = table_upper_bound_preflight(output_rows, &columns).map_err(materialization_preflight_error)?;
     u64::try_from(preflight.checked_peak_bytes()).map_err(|_| {
         QueryError::new(
             QueryErrorCode::SizeOverflow,

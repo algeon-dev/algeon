@@ -28,7 +28,7 @@ use std::{
 };
 
 use algeon_datafusion::{
-    attempt::QueryAttemptReport,
+    attempt::{AttemptOptions, QueryAttemptReport},
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
@@ -39,10 +39,17 @@ use arrow::{
     array::{Int64Array, RecordBatch},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
-use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
 use futures::StreamExt as _;
 use parquet::arrow::ArrowWriter;
-use query_engine::harness::StableFnv1a64;
+use query_engine::{
+    harness::StableFnv1a64,
+    observability::{AttemptCleanupDisposition, RuntimeTerminalOutcome},
+};
+use tokio::time::{sleep, timeout};
 
 const ENV_ROWS_PER_BRANCH: &str = "ALGEON_SORT_SWEEP_ROWS_PER_BRANCH";
 const ENV_WIDTHS: &str = "ALGEON_SORT_SWEEP_WIDTHS";
@@ -253,7 +260,7 @@ fn new_session(backend: &AlgeonGpuBackend) -> Result<SessionContext, Box<dyn Err
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
-    let builder = datafusion::execution::SessionStateBuilder::new().with_config(session_config).with_default_features();
+    let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
     let builder = backend.install_on(builder)?;
     let builder = builder.try_with_cuvs_sql()?;
     #[cfg(feature = "cugraph")]
@@ -272,10 +279,9 @@ async fn run_query(
     query_timeout: Duration,
 ) -> Result<(SweepSample, Option<Arc<QueryAttemptReport>>), Box<dyn Error>> {
     let started = Instant::now();
-    let attempt = backend
-        .begin_attempt_with_query_cap_bytes(algeon_datafusion::attempt::AttemptOptions::default(), query_cap_bytes)?;
+    let attempt = backend.begin_attempt_with_query_cap_bytes(AttemptOptions::default(), query_cap_bytes)?;
     let completion = attempt.completion();
-    let outcome = tokio::time::timeout(query_timeout, async {
+    let outcome = timeout(query_timeout, async {
         let mut stream = attempt.sql(ctx, sql).await?;
         let mut batches = Vec::new();
         let mut rows = 0_usize;
@@ -524,8 +530,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             }
             if !matches!(
                 report.cleanup_disposition,
-                query_engine::observability::AttemptCleanupDisposition::Completed
-                    | query_engine::observability::AttemptCleanupDisposition::NotRequired
+                AttemptCleanupDisposition::Completed | AttemptCleanupDisposition::NotRequired
             ) {
                 return Err(format!("mixed round {round} {label}: attempt did not clean up").into());
             }
@@ -550,10 +555,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         let cancel_ctx = Arc::new(new_session(&backend)?);
         cancel_ctx.register_parquet("a", branch_a.to_string_lossy().as_ref(), ParquetReadOptions::default()).await?;
         cancel_ctx.register_parquet("b", branch_b.to_string_lossy().as_ref(), ParquetReadOptions::default()).await?;
-        let attempt = backend.begin_attempt_with_query_cap_bytes(
-            algeon_datafusion::attempt::AttemptOptions::default(),
-            query_cap_bytes,
-        )?;
+        let attempt = backend.begin_attempt_with_query_cap_bytes(AttemptOptions::default(), query_cap_bytes)?;
         let cancellation = attempt.cancellation();
         let completion = attempt.completion();
         let drain = tokio::spawn(async move {
@@ -561,14 +563,14 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
             while stream.next().await.is_some() {}
             Ok::<_, String>(())
         });
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
         if drain.is_finished() {
             eprintln!("[sweep] cancel probe skipped: heavy attempt finished before cancel");
             drain.await.map_err(|error| format!("cancel probe join: {error}"))??;
         } else {
             cancellation.cancel();
             let cancel_at = Instant::now();
-            let outcome = tokio::time::timeout(query_timeout, drain).await;
+            let outcome = timeout(query_timeout, drain).await;
             let cancel_latency_ms = cancel_at.elapsed().as_secs_f64() * 1000.0;
             let report = completion.wait_timeout(query_timeout).ok_or("cancel probe sealed no report")?;
             let outcome_label = format!("{:?}", report.outcome);
@@ -580,7 +582,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 "cancel\t2\tcancel\t{cancel_latency_ms:.3}\tNaN\t0\t{outcome_label}\t{:?}\t{:?}\n",
                 report.disposition, report.outcome
             ));
-            if !matches!(report.outcome, query_engine::observability::RuntimeTerminalOutcome::Cancelled) {
+            if !matches!(report.outcome, RuntimeTerminalOutcome::Cancelled) {
                 let _ = outcome;
                 return Err(format!("cancel probe: expected Cancelled, saw {outcome_label}").into());
             }

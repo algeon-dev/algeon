@@ -6,7 +6,7 @@
 //! accounting over the query lifetime; live peak and retained-byte fields
 //! describe instantaneous resident device memory.
 
-use query_engine::contract_report::CapabilityDecisionRow;
+use query_engine::{contract_report::CapabilityDecisionRow, optimizer::NativeOptimizerDiagnostics};
 
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
@@ -52,7 +52,7 @@ pub struct NativeDataFusionPlanningRow {
     /// Compiled graph summaries for capability-supported candidates.
     pub capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     /// Native optimizer diagnostics emitted while preparing the candidate.
-    pub native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics,
+    pub native_optimizer: NativeOptimizerDiagnostics,
     /// Whether the optimized DataFusion plan contains an explicit native edge-list normalization step.
     pub edge_normalize_inserted: bool,
     /// Nested join-shape diagnostics serialized as stable key/value rows.
@@ -446,6 +446,7 @@ mod tests {
         },
         *,
     };
+    use crate::native_report::metrics::NativeLakehouseCacheFillEventMetricRow;
 
     #[test]
     fn native_report_row_contract_headers_match_public_constants() {
@@ -486,7 +487,7 @@ mod tests {
             unsupported_category: Some("operator_sort".to_string()),
             capability_decision_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
-            native_optimizer: query_engine::optimizer::NativeOptimizerDiagnostics::default(),
+            native_optimizer: NativeOptimizerDiagnostics::default(),
             edge_normalize_inserted: false,
             join_diagnostics: Vec::new(),
             source_diagnostics: Vec::new(),
@@ -665,21 +666,19 @@ mod tests {
                 one_shot_join_materialization_bytes: 90,
                 one_shot_join_output_bytes: 91,
                 join_gather_map_bytes: 92,
-                lakehouse_cache_fill_event_snapshot_rows: vec![
-                    super::super::metrics::NativeLakehouseCacheFillEventMetricRow {
-                        outcome: "completed".to_string(),
-                        bytes: Some(4096),
-                        elapsed_ns: 9_000_000,
-                        cache_path_hash: "cache123".to_string(),
-                        stable_id_hash: "stable456".to_string(),
-                        file_index: Some(0),
-                        chunk_index: Some(2),
-                        error_code: "none".to_string(),
-                        error_kind: "none".to_string(),
-                        error_status: "none".to_string(),
-                        error_operation: "none".to_string(),
-                    },
-                ],
+                lakehouse_cache_fill_event_snapshot_rows: vec![NativeLakehouseCacheFillEventMetricRow {
+                    outcome: "completed".to_string(),
+                    bytes: Some(4096),
+                    elapsed_ns: 9_000_000,
+                    cache_path_hash: "cache123".to_string(),
+                    stable_id_hash: "stable456".to_string(),
+                    file_index: Some(0),
+                    chunk_index: Some(2),
+                    error_code: "none".to_string(),
+                    error_kind: "none".to_string(),
+                    error_status: "none".to_string(),
+                    error_operation: "none".to_string(),
+                }],
                 ..NativeDataFusionExecutionMetrics::default()
             },
         };

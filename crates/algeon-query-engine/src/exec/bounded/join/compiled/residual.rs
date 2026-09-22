@@ -10,6 +10,7 @@ use super::{
     datafusion_order_columns, execution_budget_token_for_boundary, execution_overrides, lower_expr,
     observe_device_memory_bytes, probe_side, residual_input_columns, side_metric,
 };
+use crate::expr::CaseWhen;
 
 #[expect(
     clippy::too_many_arguments,
@@ -367,7 +368,7 @@ pub(super) fn rewrite_join_residual_for_candidate(
             branches
                 .iter()
                 .map(|branch| {
-                    Ok(crate::expr::CaseWhen {
+                    Ok(CaseWhen {
                         when: rewrite_join_residual_for_candidate(&branch.when, residual_output_names)?,
                         then: rewrite_join_residual_for_candidate(&branch.then, residual_output_names)?,
                     })

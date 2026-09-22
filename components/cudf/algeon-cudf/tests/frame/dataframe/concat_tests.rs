@@ -2,22 +2,24 @@
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, TypeId,
     frame::dataframe::{ConcatByNameOptions, SchemaAlignment},
-    testing::prelude::*,
+    testing::{dataframe::trigger_concat_by_name_missing_planned_dtype_for_test, prelude::*},
 };
 
 use crate::common::{
-    assert_missing_column_error, column_from_slice, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation, sample_runtime,
+    assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_strs,
+    dataframe_from_columns, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
+    reset_exec_observation, reset_sync_observation, run_named_cases, sample_runtime, series,
 };
 
 fn test_concat_matching_schemas() {
-    let df1 = crate::common::dataframe_from_columns(
+    let df1 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10.0f64, 20.0]).unwrap()],
     )
     .unwrap();
 
-    let df2 = crate::common::dataframe_from_columns(
+    let df2 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30.0f64, 40.0]).unwrap()],
     )
@@ -37,13 +39,13 @@ fn test_concat_matching_schemas() {
 }
 
 fn test_concat_mismatched_column_names_returns_error() {
-    let df1 = crate::common::dataframe_from_columns(
+    let df1 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
-    let df2 = crate::common::dataframe_from_columns(
+    let df2 = dataframe_from_columns(
         vec!["a".to_string(), "c".to_string()],
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30i32, 40]).unwrap()],
     )
@@ -58,11 +60,9 @@ fn test_concat_mismatched_column_names_returns_error() {
 }
 
 fn test_concat_mismatched_column_count_returns_error() {
-    let df1 =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-            .unwrap();
+    let df1 = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let df2 = crate::common::dataframe_from_columns(
+    let df2 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30i32, 40]).unwrap()],
     )
@@ -77,14 +77,14 @@ fn test_concat_mismatched_column_count_returns_error() {
 }
 
 fn test_concat_mismatched_column_types_returns_error() {
-    let df1 = crate::common::dataframe_from_columns(
+    let df1 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
     // Same schema names/order, but "b" has different type (i64 vs i32).
-    let df2 = crate::common::dataframe_from_columns(
+    let df2 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30i64, 40]).unwrap()],
     )
@@ -101,13 +101,13 @@ fn test_concat_mismatched_column_types_returns_error() {
 }
 
 fn test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder() {
-    let df1 = crate::common::dataframe_from_columns(
+    let df1 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
-    let df2 = crate::common::dataframe_from_columns(
+    let df2 = dataframe_from_columns(
         vec!["b".to_string(), "a".to_string()],
         vec![column_from_slice(&[30i32, 40]).unwrap(), column_from_slice(&[3i32, 4]).unwrap()],
     )
@@ -123,11 +123,9 @@ fn test_concat_still_requires_exact_schema_even_when_concat_by_name_can_reorder(
 }
 
 fn test_concat_by_name_null_fill_aligns_one_sided_missing_column() {
-    let left =
-        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-            .unwrap();
+    let left = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let right = crate::common::dataframe_from_columns(
+    let right = dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30.0f64, 40.0]).unwrap()],
     )
@@ -144,16 +142,11 @@ fn test_concat_by_name_null_fill_aligns_one_sided_missing_column() {
 }
 
 fn test_concat_many_by_name_handles_multi_input_union() {
-    let left = crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
-        .unwrap();
-    let middle = crate::common::dataframe_from_columns(
-        vec!["city".to_string()],
-        vec![crate::common::column_from_strs(&["Toronto"]).unwrap()],
-    )
-    .unwrap();
+    let left = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
+    let middle =
+        dataframe_from_columns(vec!["city".to_string()], vec![column_from_strs(&["Toronto"]).unwrap()]).unwrap();
     let right =
-        crate::common::dataframe_from_columns(vec!["score".to_string()], vec![column_from_slice(&[99.0f64]).unwrap()])
-            .unwrap();
+        dataframe_from_columns(vec!["score".to_string()], vec![column_from_slice(&[99.0f64]).unwrap()]).unwrap();
 
     let result = left.concat_many_by_name(&[&middle, &right], ConcatByNameOptions::default()).unwrap();
 
@@ -167,12 +160,12 @@ fn test_concat_many_by_name_handles_multi_input_union() {
 }
 
 fn test_concat_by_name_honors_left_column_order() {
-    let left = crate::common::dataframe_from_columns(
+    let left = dataframe_from_columns(
         vec!["b".to_string(), "a".to_string()],
         vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[2i32]).unwrap()],
     )
     .unwrap();
-    let right = crate::common::dataframe_from_columns(
+    let right = dataframe_from_columns(
         vec!["c".to_string(), "a".to_string()],
         vec![column_from_slice(&[3i32]).unwrap(), column_from_slice(&[4i32]).unwrap()],
     )
@@ -184,17 +177,17 @@ fn test_concat_by_name_honors_left_column_order() {
 }
 
 fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
-    let left = crate::common::dataframe_from_columns(
+    let left = dataframe_from_columns(
         vec!["b".to_string(), "a".to_string()],
         vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[2i32]).unwrap()],
     )
     .unwrap();
-    let middle = crate::common::dataframe_from_columns(
+    let middle = dataframe_from_columns(
         vec!["x".to_string(), "a".to_string()],
         vec![column_from_slice(&[3i32]).unwrap(), column_from_slice(&[4i32]).unwrap()],
     )
     .unwrap();
-    let right = crate::common::dataframe_from_columns(
+    let right = dataframe_from_columns(
         vec!["y".to_string(), "x".to_string()],
         vec![column_from_slice(&[5i32]).unwrap(), column_from_slice(&[6i32]).unwrap()],
     )
@@ -208,7 +201,7 @@ fn test_concat_by_name_appends_union_only_columns_in_first_appearance_order() {
 }
 
 fn test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract() {
-    let err = cudf::testing::dataframe::trigger_concat_by_name_missing_planned_dtype_for_test().unwrap_err();
+    let err = trigger_concat_by_name_missing_planned_dtype_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
     assert_eq!(err.code(), ErrorCode::InvariantViolation);
@@ -223,12 +216,8 @@ fn test_testing_hook_locks_concat_by_name_missing_planned_dtype_contract() {
 }
 
 fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
-    let left =
-        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-            .unwrap();
-    let right =
-        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()])
-            .unwrap();
+    let left = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
+    let right = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()]).unwrap();
 
     let err = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap_err();
 
@@ -240,14 +229,12 @@ fn test_concat_by_name_non_null_dtype_mismatch_still_errors_under_null_fill() {
 }
 
 fn test_concat_by_name_exact_rejects_missing_columns() {
-    let left = crate::common::dataframe_from_columns(
+    let left = dataframe_from_columns(
         vec!["id".to_string(), "score".to_string()],
         vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[10.0f64]).unwrap()],
     )
     .unwrap();
-    let right =
-        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[2i32]).unwrap()])
-            .unwrap();
+    let right = dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[2i32]).unwrap()]).unwrap();
 
     let err = left.concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::Exact)).unwrap_err();
 
@@ -257,14 +244,13 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
 }
 
 fn test_concat_by_name_decimal_null_fill_preserves_scale() {
-    let decimal = crate::common::series("amount", &[12345i64, 67890])
+    let decimal = series("amount", &[12345i64, 67890])
         .unwrap()
         .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
-    let left = DataFrame::from_series([("id", crate::common::series("id", &[1i32, 2]).unwrap())]).unwrap();
-    let right = DataFrame::from_series([("id", crate::common::series("id", &[3i32, 4]).unwrap()), ("amount", decimal)])
-        .unwrap();
+    let left = DataFrame::from_series([("id", series("id", &[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", series("id", &[3i32, 4]).unwrap()), ("amount", decimal)]).unwrap();
 
     let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
     let amount = result.series("amount").unwrap();
@@ -275,14 +261,14 @@ fn test_concat_by_name_decimal_null_fill_preserves_scale() {
 }
 
 fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
-    let _event_observation = crate::common::lock_event_observation();
+    let _event_observation = lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_series([("a", left_rt.series(&[1i32, 2]).unwrap())]).unwrap();
     let right = DataFrame::from_series([("a", right_rt.series(&[3i32, 4]).unwrap())]).unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    crate::common::reset_dependency_observation();
+    reset_dependency_observation();
     reset_exec_observation();
     let result = left.concat(&right).unwrap();
 
@@ -290,7 +276,7 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let host = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
@@ -299,19 +285,19 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
 }
 
 fn test_concat_many_three_dataframes() {
-    let df1 = crate::common::dataframe_from_columns(
+    let df1 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10.0f64, 20.0]).unwrap()],
     )
     .unwrap();
 
-    let df2 = crate::common::dataframe_from_columns(
+    let df2 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[3i32, 4]).unwrap(), column_from_slice(&[30.0f64, 40.0]).unwrap()],
     )
     .unwrap();
 
-    let df3 = crate::common::dataframe_from_columns(
+    let df3 = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[5i32, 6]).unwrap(), column_from_slice(&[50.0f64, 60.0]).unwrap()],
     )
@@ -331,9 +317,7 @@ fn test_concat_many_three_dataframes() {
 }
 
 fn test_concat_many_empty_slice_returns_self() {
-    let df =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
-            .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let result = df.concat_many(&[]).unwrap();
 
@@ -344,13 +328,9 @@ fn test_concat_many_empty_slice_returns_self() {
 }
 
 fn test_concat_many_single_other() {
-    let df1 =
-        crate::common::dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-            .unwrap();
+    let df1 = dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let df2 =
-        crate::common::dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[3i32, 4]).unwrap()])
-            .unwrap();
+    let df2 = dataframe_from_columns(vec!["x".to_string()], vec![column_from_slice(&[3i32, 4]).unwrap()]).unwrap();
 
     let result = df1.concat_many(&[&df2]).unwrap();
 
@@ -360,17 +340,11 @@ fn test_concat_many_single_other() {
 }
 
 fn test_concat_many_mismatched_schema_returns_error() {
-    let df1 =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-            .unwrap();
+    let df1 = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let df2 =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[3i32, 4]).unwrap()])
-            .unwrap();
+    let df2 = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[3i32, 4]).unwrap()]).unwrap();
 
-    let df3 =
-        crate::common::dataframe_from_columns(vec!["b".to_string()], vec![column_from_slice(&[5i32, 6]).unwrap()])
-            .unwrap();
+    let df3 = dataframe_from_columns(vec!["b".to_string()], vec![column_from_slice(&[5i32, 6]).unwrap()]).unwrap();
 
     let err = df1.concat_many(&[&df2, &df3]).expect_err("expected schema mismatch");
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -381,13 +355,9 @@ fn test_concat_many_mismatched_schema_returns_error() {
 }
 
 fn test_concat_many_mismatched_types_returns_error() {
-    let df1 =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-            .unwrap();
+    let df1 = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let df2 =
-        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()])
-            .unwrap();
+    let df2 = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[3i64, 4]).unwrap()]).unwrap();
 
     let err = df1.concat_many(&[&df2]).expect_err("expected type mismatch");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -416,7 +386,7 @@ fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
 }
 
 fn test_copy_preserves_schema_and_data() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["x".to_string(), "y".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap()],
     )
@@ -436,7 +406,7 @@ fn test_copy_preserves_schema_and_data() {
 }
 
 fn test_rename_column() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["old_name".to_string(), "other".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
@@ -458,15 +428,14 @@ fn test_rename_column() {
 }
 
 fn test_rename_nonexistent_column_returns_error() {
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()])
-        .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
 
     let err = df.rename_column("nonexistent", "new").expect_err("expected error");
     assert_missing_column_error(&err, "nonexistent");
 }
 
 fn test_rename_to_existing_name_returns_error() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32]).unwrap(), column_from_slice(&[2i32]).unwrap()],
     )
@@ -480,7 +449,7 @@ fn test_rename_to_existing_name_returns_error() {
 }
 
 fn test_select_subset_of_columns() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
         vec![
             column_from_slice(&[1i32, 2]).unwrap(),
@@ -504,22 +473,21 @@ fn test_select_subset_of_columns() {
 }
 
 fn test_select_nonexistent_column_returns_error() {
-    let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()])
-        .unwrap();
+    let df = dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
     let err = df.select(["nonexistent"]).expect_err("expected error");
     assert_missing_column_error(&err, "nonexistent");
 }
 
 fn test_select_duplicate_column_names_returns_error() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
     let err = df.select(["a", "a"]).expect_err("expected duplicate selection error");
-    crate::common::assert_duplicate_name_error(&err, "a");
+    assert_duplicate_name_error(&err, "a");
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("duplicate_column_name"));
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("ensure column names are unique"));
@@ -527,7 +495,7 @@ fn test_select_duplicate_column_names_returns_error() {
 }
 
 fn test_select_preserves_data() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["x".to_string(), "y".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[4.0f64, 5.0, 6.0]).unwrap()],
     )
@@ -544,7 +512,7 @@ fn test_select_preserves_data() {
 }
 
 fn test_select_accepts_string_vec() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[10i32, 20]).unwrap()],
     )
@@ -557,7 +525,7 @@ fn test_select_accepts_string_vec() {
 }
 
 fn test_rename_preserves_column_order() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
         vec![
             column_from_slice(&[1i32]).unwrap(),
@@ -572,7 +540,7 @@ fn test_rename_preserves_column_order() {
 }
 
 fn test_rename_same_name_is_schema_only_and_preserves_data() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
     )
@@ -589,7 +557,7 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
 }
 
 fn test_select_all_columns_returns_full_copy() {
-    let df = crate::common::dataframe_from_columns(
+    let df = dataframe_from_columns(
         vec!["a".to_string(), "b".to_string()],
         vec![column_from_slice(&[1i32, 2]).unwrap(), column_from_slice(&[3i32, 4]).unwrap()],
     )
@@ -606,7 +574,7 @@ fn test_select_all_columns_returns_full_copy() {
 
 #[test]
 fn concat_tests_cases() {
-    crate::common::run_named_cases(&[
+    run_named_cases(&[
         ("test_concat_matching_schemas", test_concat_matching_schemas),
         ("test_concat_mismatched_column_names_returns_error", test_concat_mismatched_column_names_returns_error),
         ("test_concat_mismatched_column_count_returns_error", test_concat_mismatched_column_count_returns_error),

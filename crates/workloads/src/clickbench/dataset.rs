@@ -12,7 +12,10 @@ use parquet::{
 };
 
 use super::{WorkloadError, WorkloadResult};
-use crate::{ALGEON_PARQUET_DIR_ENV, metadata::DatasetFingerprint};
+use crate::{
+    ALGEON_PARQUET_DIR_ENV,
+    metadata::{DatasetFingerprint, WorkloadDatasetMetadata},
+};
 
 /// The single logical table exposed by the ClickBench fixture. Upstream uses
 /// `hits` as the canonical view name; we register the raw Parquet under
@@ -147,8 +150,8 @@ impl ClickbenchDatasetMetadata {
     }
 
     /// Converts ClickBench metadata into shared report-header metadata.
-    pub fn to_neutral_metadata(&self) -> crate::metadata::WorkloadDatasetMetadata {
-        crate::metadata::WorkloadDatasetMetadata {
+    pub fn to_neutral_metadata(&self) -> WorkloadDatasetMetadata {
+        WorkloadDatasetMetadata {
             workload: "clickbench",
             root: self.root.clone(),
             scale_factor: Some(self.layout_label().to_string()),

@@ -18,32 +18,26 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
     ] {
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
-        assert!(
-            !plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()).admits_root_join(),
-            "{variant:?}"
-        );
+        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join(), "{variant:?}");
         assert!(
             !plan
-                .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+                .capability_analysis(rapids_analysis_context())
                 .admits_keyless_conditional_join_input_subplan_pipeline(),
             "{variant:?}"
         );
         assert!(
             !plan
-                .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+                .capability_analysis(rapids_analysis_context())
                 .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
         assert!(
             !plan
-                .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+                .capability_analysis(rapids_analysis_context())
                 .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
-        assert!(
-            unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(),
-            "{variant:?}"
-        );
+        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
     }
 }
 
@@ -51,10 +45,10 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
 fn bounded_mixed_residual_resident_grouped_aggregate_admission_uses_capability_evidence() {
     let plan =
         residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert_eq!(
-        plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+        plan.capability_analysis(rapids_analysis_context())
             .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
         analysis.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
     );
@@ -69,11 +63,11 @@ fn bounded_mixed_residual_resident_grouped_aggregate_preserves_node_failure_loca
     let plan = residual_resident_grouped_aggregate_input_plan(
         ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         !plan
-            .capability_analysis(query_engine::rapids_backend::rapids_analysis_context())
+            .capability_analysis(rapids_analysis_context())
             .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
     );
     let CapabilityDecision::Rejected { reason, facts } =
@@ -127,7 +121,7 @@ pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
 
 pub(crate) fn residual_resident_grouped_aggregate_input_plan(
     variant: ResidualResidentGroupedAggregateInputVariant,
-) -> query_engine::plan::QueryPlan {
+) -> QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),

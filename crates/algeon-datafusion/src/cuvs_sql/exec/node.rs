@@ -20,7 +20,8 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use query_engine::{
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
+    admission::AttemptCapabilityEvidence,
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput, preflight_query_plan},
     metrics::QueryMetrics,
     plan::QueryPlan,
     runtime::{ExecutionContext, resident::GpuResultHandle},
@@ -38,11 +39,14 @@ use crate::{
     native_exec::{
         AlgeonNativeExecutionConfig, AlgeonNativeMetrics, GpuResidentProducer, NativeExecutionMetricsCapture,
         NativeHostOutputCursor,
+        admission::QueryAdmissionTicket,
         child_inputs::{
-            DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES, NativeChildBinding, NativeChildInputSpec, StagedNativeChildren,
-            stage_native_children,
+            DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES, HostToDeviceUpload, NativeChildBinding, NativeChildInputSpec,
+            StagedNativeChildren, stage_native_children,
         },
-        native_host_output_stream, register_gpu_resident_producer_discovery, run_gpu_execution_task,
+        gpu_function_occurrence_from_task_context, gpu_resident_producer, native_host_output_stream,
+        prepared_gpu_resident_producer_admission_tickets, register_gpu_resident_producer_discovery,
+        run_gpu_execution_task,
     },
 };
 
@@ -135,7 +139,7 @@ impl CuvsAlgoExec {
             cache,
         };
         let plan = exec.native_plan()?;
-        query_engine::exec::preflight_query_plan(&plan).map_err(|error| {
+        preflight_query_plan(&plan).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "algeon_datafusion.cuvs_sql.preflight",
                 "native cuVS query-plan preflight failed",
@@ -170,7 +174,7 @@ impl CuvsAlgoExec {
             .zip(&self.input_projections)
             .zip(self.operation.descriptor().relation_roles.iter())
             .map(|(((input, input_name), projection), role)| {
-                if crate::native_exec::gpu_resident_producer(input.as_ref()).is_some() {
+                if gpu_resident_producer(input.as_ref()).is_some() {
                     return Ok(NativeChildBinding {
                         input_name: input_name.clone(),
                         role: role.as_str(),
@@ -316,24 +320,24 @@ impl GpuResidentProducer for CuvsAlgoExec {
         &self.gpu_result_input_name
     }
 
-    fn gpu_result_capability_evidence(&self) -> Result<query_engine::admission::AttemptCapabilityEvidence> {
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         let plan = self.native_plan_for_sink(CuvsPlanSink::GpuResident)?;
-        Ok(query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan))
+        Ok(AttemptCapabilityEvidence::for_query_plan(&plan))
     }
 
-    fn host_result_capability_evidence(&self) -> Result<query_engine::admission::AttemptCapabilityEvidence> {
+    fn host_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         let plan = self.native_plan_for_sink(CuvsPlanSink::HostArrow)?;
-        Ok(query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan))
+        Ok(AttemptCapabilityEvidence::for_query_plan(&plan))
     }
 
     fn host_result_query_plan(&self) -> Result<Option<QueryPlan>> {
         self.native_plan_for_sink(CuvsPlanSink::HostArrow).map(Some)
     }
 
-    fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
+    fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
         let mut tickets = Vec::new();
         for input in &self.inputs {
-            for ticket in crate::native_exec::prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
+            for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
                 if !tickets.iter().any(|existing| Arc::ptr_eq(existing, &ticket)) {
                     tickets.push(ticket);
                 }
@@ -485,11 +489,9 @@ impl ExecutionPlan for CuvsAlgoExec {
                 .await?;
                 let host_occurrence = match execution_config.query_admission_ticket_for_task_context(&task_context) {
                     Some(ticket) => {
-                        let occurrence_id = crate::native_exec::gpu_function_occurrence_from_task_context(
-                            &task_context,
-                            &exec.gpu_result_input_name,
-                        )?
-                        .unwrap_or_else(|| exec.gpu_result_input_name.clone());
+                        let occurrence_id =
+                            gpu_function_occurrence_from_task_context(&task_context, &exec.gpu_result_input_name)?
+                                .unwrap_or_else(|| exec.gpu_result_input_name.clone());
                         ticket.begin_host_occurrence(
                             &task_context,
                             &occurrence_id,
@@ -582,10 +584,7 @@ impl ExecutionPlan for CuvsAlgoExec {
     }
 }
 
-fn record_cuvs_staging_boundaries(
-    metrics: &mut QueryMetrics,
-    uploads: &[crate::native_exec::child_inputs::HostToDeviceUpload],
-) {
+fn record_cuvs_staging_boundaries(metrics: &mut QueryMetrics, uploads: &[HostToDeviceUpload]) {
     for upload in uploads {
         metrics.boundary.record_host_to_device_upload(upload.rows, upload.bytes);
     }

@@ -1,4 +1,6 @@
 //! Pure fixed execution-attempt lifecycle state.
+use std::{error::Error, fmt};
+
 use crate::observability::{
     AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
     AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
@@ -7,7 +9,7 @@ use crate::observability::{
 #[cfg(test)]
 use crate::observability::{
     AttemptCapacityDisposition, AttemptFailureCode, AttemptFailureStatus, AttemptFinalDomainUsage,
-    AttemptHealthTransition,
+    AttemptHealthTransition, CleanupFailurePhase,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,13 +23,13 @@ pub enum AttemptLifecycleError {
     FinalizationUnavailable,
 }
 
-impl std::fmt::Display for AttemptLifecycleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for AttemptLifecycleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid attempt lifecycle transition: {self:?}")
     }
 }
 
-impl std::error::Error for AttemptLifecycleError {}
+impl Error for AttemptLifecycleError {}
 
 #[derive(Debug)]
 #[doc(hidden)]
@@ -522,7 +524,7 @@ mod tests {
         let mut lifecycle = AttemptLifecycle::new(0);
         lifecycle.cleanup_failures = u64::MAX;
         lifecycle.cleanup_failure(CleanupFailureSummary::from_native_error(
-            crate::observability::CleanupFailurePhase::QueryServiceCleanup,
+            CleanupFailurePhase::QueryServiceCleanup,
             &QueryError::new(QueryErrorCode::Internal, "test.cleanup", "overflow probe"),
         ));
 

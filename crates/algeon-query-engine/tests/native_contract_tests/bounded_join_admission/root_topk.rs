@@ -15,7 +15,7 @@ fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_s
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -25,8 +25,8 @@ fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_s
         let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
-        assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
-        assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "{variant:?}");
+        assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
+        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
     }
 }
 
@@ -37,7 +37,7 @@ fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_
     // all) must never change admission or results.
     let plan =
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -47,13 +47,13 @@ fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("unrelated-branch reduction root TopK pipeline should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
 fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SharedSourceFanout);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -62,7 +62,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("shared-source root TopK join/aggregate pipeline should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         (RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout, "projection"),
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let has_expected_shared_producer = analysis.invariants.iter().any(|invariant| {
@@ -100,7 +100,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
-        assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+        assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
     }
 }
 
@@ -119,7 +119,7 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
         RootTopKJoinAggregateVariant::ProjectedCrossJoin,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -128,17 +128,17 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
         let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
-        assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+        assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
     }
 }
 
 #[test]
 fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals() {
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(false);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
-    assert!(query_engine::admission::bounded_join_modeled_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_some());
+    assert!(bounded_join_modeled_facts(&plan, rapids_analysis_context()).is_some());
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_bran
     // never change admission or results, so a branch scanning its source in full
     // is not a support gap.
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(true);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -158,7 +158,7 @@ fn bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_bran
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("unreduced direct grouped keyless branches should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
         RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -177,7 +177,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
         let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
-        assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+        assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
     }
 }
 
@@ -185,7 +185,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
 fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_residual_predicate() {
     let plan =
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -196,13 +196,13 @@ fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_resid
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("keyed left-semi residual root TopK pipeline should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
 fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
     let plan = root_topk_grouped_aggregate_input_left_join_plan();
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -212,7 +212,7 @@ fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("grouped aggregate TopK left join should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_
     // whenever an ORDER BY expression happens to force a projection into that chain
     // (q47/q57/q89). q53/q63 hit this path because their ORDER BY uses plain columns.
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::AggregateWindowFilterTopK);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -233,7 +233,7 @@ fn bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("whole-partition window filter root TopK pipeline should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_f
     // join and followed by a second cumulative window/filter with no projection
     // before the final sort, is admitted through the same window candidacy path.
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -252,7 +252,7 @@ fn bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_f
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("cumulative window full-outer root TopK pipeline should be admitted");
-    assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn bounded_root_topk_join_aggregate_window_missing_input_sort_keeps_local_diagno
     let plan = root_topk_join_aggregate_variant_plan(
         RootTopKJoinAggregateVariant::AggregateWindowFilterTopKMissingInputSort,
     );
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
     let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -280,7 +280,7 @@ fn bounded_root_topk_join_aggregate_window_missing_input_sort_keeps_local_diagno
     assert_eq!(projection.reason, "root_topk_join_aggregate_requires_ordered_window_input");
     assert_eq!(
         projection.owner,
-        query_engine::capability::CapabilityRejectionOwner::Admission("root_topk_join_aggregate_admission"),
+        CapabilityRejectionOwner::Admission("root_topk_join_aggregate_admission"),
         "the window near-miss must keep its own admission-owned diagnosis, not a generic fallback"
     );
 }
@@ -292,7 +292,7 @@ fn bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_k
         RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
     }
@@ -308,7 +308,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
         RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -318,7 +318,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
         let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
-        assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+        assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
     }
 }
 
@@ -330,11 +330,11 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild,
     ] {
-        let plan = query_engine::optimizer::optimize_query_plan(
+        let plan = optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &query_engine::optimizer::NativeOptimizerOptions::default(), query_engine::rapids_backend::rapids_analysis_context(),query_engine::dimension_pruning::local_dimension_pruning_resolver())
+            &NativeOptimizerOptions::default(), rapids_analysis_context(),local_dimension_pruning_resolver())
         .plan;
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -344,7 +344,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
         let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .expect("null-filtered aggregate fan-in root TopK pipeline should be admitted");
-        assert_eq!(admission.envelope(), query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+        assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
     }
 }
 
@@ -389,7 +389,7 @@ fn bounded_root_topk_join_aggregate_rejects_null_filtered_aggregate_fan_in_contr
         ),
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -415,11 +415,11 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
             "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
         ),
     ] {
-        let plan = query_engine::optimizer::optimize_query_plan(
+        let plan = optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &query_engine::optimizer::NativeOptimizerOptions::default(), query_engine::rapids_backend::rapids_analysis_context(),query_engine::dimension_pruning::local_dimension_pruning_resolver())
+            &NativeOptimizerOptions::default(), rapids_analysis_context(),local_dimension_pruning_resolver())
         .plan;
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -432,7 +432,7 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
 #[test]
 fn bounded_root_topk_join_aggregate_shape_miss_reports_at_admission_level() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::MissingGroupedAggregateFragment);
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
 
     assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
     let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -451,7 +451,7 @@ fn bounded_root_topk_join_aggregate_shape_miss_reports_at_admission_level() {
         .expect("missing-fragment tail stays executable through the composed pipeline");
     assert_ne!(
         admission.envelope(),
-        query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate,
+        CapabilityEnvelope::RootTopKJoinAggregate,
         "generic root TopK shape miss must not select the canonical root TopK envelope"
     );
 }
@@ -474,7 +474,7 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
         RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context());
 
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -618,19 +618,19 @@ fn compositional_inner_join_base(builder: &mut QueryPlanBuilder) -> (NodeId, Arc
 }
 
 fn compositional_join_build_input_form(
-    plan: &query_engine::plan::QueryPlan,
+    plan: &QueryPlan,
 ) -> (
-    query_engine::pipeline::AcceptedInputForm,
-    query_engine::pipeline::ResidentDataForm,
-    query_engine::pipeline::ResourceSharing,
+    AcceptedInputForm,
+    ResidentDataForm,
+    ResourceSharing,
 ) {
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(plan, &analysis)
         .expect("compositional fixture should compile");
     let build = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::JoinBuild)
+        .find(|task| task.kind() == PipelineTaskKind::JoinBuild)
         .expect("one join build task");
     let [input] = build.input_resources() else {
         panic!("join build task should consume exactly one resource");
@@ -659,29 +659,29 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
     );
     let plan = builder.finish_with_host_sink(filter);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit filter should compile");
     let limit_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Limit)
+        .find(|task| task.kind() == PipelineTaskKind::Limit)
         .expect("one limit task");
-    assert_eq!(limit_task.accepted_input_form(), query_engine::pipeline::AcceptedInputForm::Frame);
+    assert_eq!(limit_task.accepted_input_form(), AcceptedInputForm::Frame);
     let sort_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::FinalSort)
+        .find(|task| task.kind() == PipelineTaskKind::FinalSort)
         .expect("one final sort task");
     assert!(
-        matches!(sort_task.sort_strategy(), Some(query_engine::pipeline::SortStrategy::FusedTopK { .. })),
+        matches!(sort_task.sort_strategy(), Some(SortStrategy::FusedTopK { .. })),
         "sort feeding a single limit fuses into top-k, got {:?}",
         sort_task.sort_strategy()
     );
     let filter_task = pipeline
         .tasks()
         .iter()
-        .find(|task| task.kind() == query_engine::pipeline::PipelineTaskKind::Unary)
+        .find(|task| task.kind() == PipelineTaskKind::Unary)
         .expect("one filter task");
     assert!(limit_task.id().index() < filter_task.id().index(), "the limit must stay below the filter");
     let [filter_input] = filter_task.input_resources() else {
@@ -692,13 +692,13 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
         .iter()
         .find(|resource| resource.id() == *filter_input)
         .expect("filter input resource exists");
-    assert_eq!(filter_resource.data_form(), query_engine::pipeline::ResidentDataForm::Frame);
+    assert_eq!(filter_resource.data_form(), ResidentDataForm::Frame);
 
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("join sort limit filter should be admitted");
     let _ = admission;
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "no post-limit rejection may remain");
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "no post-limit rejection may remain");
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn bounded_compositional_admission_accepts_join_limit_filter_without_sort() {
     bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("join limit filter should be admitted");
-    assert!(unsupported_facts(&plan, query_engine::rapids_backend::rapids_analysis_context()).is_none(), "no post-root limit rejection may remain");
+    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "no post-root limit rejection may remain");
 }
 
 #[test]
@@ -798,7 +798,7 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
 
 /// The [`compositional_inner_join_base`] fragment with an alias-only projection
 /// renaming the join output. Same executable pipeline plus one unary stage.
-fn compositional_alias_join_plan() -> query_engine::plan::QueryPlan {
+fn compositional_alias_join_plan() -> QueryPlan {
     let mut aliased_builder = QueryPlanBuilder::new();
     let (join, _) = compositional_inner_join_base(&mut aliased_builder);
     let aliased = aliased_builder.add_projection(
@@ -818,7 +818,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
     let mut plain_builder = QueryPlanBuilder::new();
     let (plain_join, _) = compositional_inner_join_base(&mut plain_builder);
     let plain = plain_builder.finish_with_host_sink(plain_join);
-    let plain_tasks = query_engine::pipeline::compile_pipeline(&plain, &plain.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()))
+    let plain_tasks = compile_pipeline(&plain, &plain.capability_analysis(rapids_analysis_context()))
         .expect("plain join should compile")
         .tasks()
         .len();
@@ -829,7 +829,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
         .expect("bounded admission should not fail")
         .expect("alias projection above join should be admitted");
     let aliased_pipeline =
-        query_engine::pipeline::compile_pipeline(&aliased_plan, &aliased_plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context()))
+        compile_pipeline(&aliased_plan, &aliased_plan.capability_analysis(rapids_analysis_context()))
             .expect("aliased join should compile");
     assert_eq!(aliased_pipeline.tasks().len(), plain_tasks + 1, "aliasing adds exactly one unary task");
     assert_eq!(
@@ -842,7 +842,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
 /// A join whose output flows through edge normalization to the sink. No plan
 /// family admits this shape; the support check names the task instead of
 /// reporting a missing envelope.
-fn compositional_edge_normalize_plan() -> (query_engine::plan::QueryPlan, NodeId) {
+fn compositional_edge_normalize_plan() -> (QueryPlan, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let key_schema = Arc::new(Schema::new(vec![
         Field::new("join_key", DataType::Int32, false),
@@ -881,11 +881,11 @@ fn compositional_edge_normalize_plan() -> (query_engine::plan::QueryPlan, NodeId
     );
     let edge_normalize = builder.add_edge_normalize(
         join,
-        query_engine::plan::EdgeNormalizeSpec {
-            edge_columns: query_engine::plan::GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+        EdgeNormalizeSpec {
+            edge_columns: GraphEdgeColumnBindings::new("src", "dst", None::<String>),
             add_reverse: false,
-            dedup: query_engine::plan::EdgeDedupStrategy::KeepLast,
-            weight_combiner: query_engine::plan::EdgeWeightCombiner::None,
+            dedup: EdgeDedupStrategy::KeepLast,
+            weight_combiner: EdgeWeightCombiner::None,
         },
         join_schema,
     );
@@ -897,22 +897,22 @@ fn compositional_edge_normalize_plan() -> (query_engine::plan::QueryPlan, NodeId
 fn bounded_compositional_support_rejects_graph_task_on_sink_path() {
     let (plan, edge_normalize) = compositional_edge_normalize_plan();
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
-    let pipeline = query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join edge-normalize plan should compile");
-    let support = query_engine::admission::compiled_bounded_pipeline_support(&pipeline)
+    let support = compiled_bounded_pipeline_support(&pipeline)
         .expect("support check should not fail");
-    let query_engine::admission::CompiledBoundedPipelineSupport::Unsupported(projection) = support else {
+    let CompiledBoundedPipelineSupport::Unsupported(projection) = support else {
         panic!("edge normalization on the sink path must not be reported supported");
     };
     assert_eq!(projection.reason, "compiled_graph_task_composition_not_migrated");
-    assert_eq!(projection.owner, query_engine::capability::CapabilityRejectionOwner::Node(edge_normalize));
+    assert_eq!(projection.owner, CapabilityRejectionOwner::Node(edge_normalize));
     assert_rejection_reason_is_family_free(projection.reason, "graph composition rejection");
 
-    let decision = query_engine::admission::bounded_pipeline_decision(
+    let decision = bounded_pipeline_decision(
         &plan,
-        query_engine::mode::StatisticalAggregateExecutionMode::default(),
-    query_engine::rapids_backend::rapids_analysis_context())
+        StatisticalAggregateExecutionMode::default(),
+    rapids_analysis_context())
     .expect("bounded decision should not fail");
     assert!(decision.admission().is_none(), "join plus edge normalization must not be admitted");
 }
@@ -966,11 +966,11 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
     );
     let edge_normalize = builder.add_edge_normalize(
         shared,
-        query_engine::plan::EdgeNormalizeSpec {
-            edge_columns: query_engine::plan::GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+        EdgeNormalizeSpec {
+            edge_columns: GraphEdgeColumnBindings::new("src", "dst", None::<String>),
             add_reverse: false,
-            dedup: query_engine::plan::EdgeDedupStrategy::KeepLast,
-            weight_combiner: query_engine::plan::EdgeWeightCombiner::None,
+            dedup: EdgeDedupStrategy::KeepLast,
+            weight_combiner: EdgeWeightCombiner::None,
         },
         Arc::clone(&triple_schema),
     );
@@ -982,17 +982,17 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
     let union = builder.add_union(vec![edge_normalize, passthrough], triple_schema);
     let plan = builder.finish_with_host_sink(union);
 
-    let analysis = plan.capability_analysis(query_engine::rapids_backend::rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context());
     let error =
-        query_engine::pipeline::compile_pipeline(&plan, &analysis).expect_err("shared exclusive input must not compile");
+        compile_pipeline(&plan, &analysis).expect_err("shared exclusive input must not compile");
     let reason = error.fact_value("capability_reason").expect("compile rejection names its contract");
     assert_eq!(reason, "consumer_requires_exclusive_input");
     assert_rejection_reason_is_family_free(reason, "exclusive consumer rejection");
 
-    let decision = query_engine::admission::bounded_pipeline_decision(
+    let decision = bounded_pipeline_decision(
         &plan,
-        query_engine::mode::StatisticalAggregateExecutionMode::default(),
-    query_engine::rapids_backend::rapids_analysis_context())
+        StatisticalAggregateExecutionMode::default(),
+    rapids_analysis_context())
     .expect("bounded decision should not fail");
     assert!(decision.admission().is_none(), "shared edge-normalize input must not be admitted");
 }
