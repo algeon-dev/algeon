@@ -69,7 +69,6 @@ impl OwnedSourceAdjacentAggregate {
             aggregate: (&self.aggregate, &self.output_schema),
             post_aggregate_stages: Vec::new(),
             sort: None,
-            post_sort_projections: Vec::new(),
             limit: None,
         }
     }
@@ -1804,7 +1803,6 @@ mod tests {
                 aggregate: (aggregate, schema),
                 post_aggregate_stages: Vec::new(),
                 sort: None,
-                post_sort_projections: Vec::new(),
                 limit: None,
             }
         }

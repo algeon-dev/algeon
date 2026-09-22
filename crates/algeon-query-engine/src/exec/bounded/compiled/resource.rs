@@ -33,13 +33,6 @@ impl CompiledGpuResource {
         Self { payload: CompiledGpuResourcePayload::ResidentFrame { frame: Box::new(frame), applied_limit: None } }
     }
 
-    pub(in crate::exec::bounded) fn into_resident_frame(self) -> Result<ResidentGpuFrame> {
-        match self.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: None } => Ok(*frame),
-            _ => Err(invalid("aggregate finalization must produce a resident frame without a fused limit")),
-        }
-    }
-
     pub(in crate::exec::bounded) fn frame_with_applied_limit(frame: ResidentGpuFrame, limit: NodeId) -> Self {
         Self {
             payload: CompiledGpuResourcePayload::ResidentFrame { frame: Box::new(frame), applied_limit: Some(limit) },

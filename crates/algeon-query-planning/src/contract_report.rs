@@ -3,10 +3,10 @@
 use std::{collections::BTreeMap, fmt};
 
 use crate::{
-    admission::BoundedPipelineAdmission,
+    admission::AdmittedPlan,
     capability::{
-        CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, InvariantId, NodeOperator, ResultSinkKind,
+        CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
+        EdgeConsumer, InvariantId, ResultSinkKind,
     },
     correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
@@ -38,24 +38,8 @@ impl CapabilityContractReport {
     /// status directly instead of re-deriving an envelope verdict. A pipeline
     /// admitted through the composed contracts selects no named envelope, so
     /// re-deriving would misreport its admission as a rejection.
-    pub fn from_admission(_admission: &BoundedPipelineAdmission) -> Result<Self> {
+    pub fn from_admission(_admission: &AdmittedPlan) -> Result<Self> {
         Self::new(CapabilityEnvelopeStatus::Admitted, Vec::new())
-    }
-
-    /// Builds a report from capability analysis.
-    pub fn from_capability_analysis(analysis: &CapabilityAnalysis) -> Result<Self> {
-        let execution_mode = capability_envelope_status_for_analysis(analysis);
-        let decision_rows = if execution_mode == CapabilityEnvelopeStatus::Rejected {
-            analysis
-                .first_rejection_projection()
-                .map(|projection| CapabilityDecisionRow::from_rejection_projection(0, &projection))
-                .transpose()?
-                .into_iter()
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Self::new(execution_mode, decision_rows)
     }
 
     /// Returns the selected capability-envelope status.
@@ -102,20 +86,7 @@ impl CapabilityContractReport {
     }
 }
 
-fn capability_envelope_status_for_analysis(analysis: &CapabilityAnalysis) -> CapabilityEnvelopeStatus {
-    match analysis.capability_envelope_admission() {
-        CapabilityEnvelopeAdmission::Admitted { .. } => CapabilityEnvelopeStatus::Admitted,
-        CapabilityEnvelopeAdmission::Rejected { .. }
-            if !analysis.nodes.iter().any(|node| matches!(node.operator, NodeOperator::Join { .. }))
-                && !analysis.has_rejections() =>
-        {
-            CapabilityEnvelopeStatus::Admitted
-        },
-        CapabilityEnvelopeAdmission::Rejected { .. } => CapabilityEnvelopeStatus::Rejected,
-    }
-}
-
-/// One deferred or rejected capability decision.
+/// One rejected capability decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityDecisionRow {
     pub execution_mode: CapabilityEnvelopeStatus,
@@ -142,24 +113,6 @@ impl CapabilityDecisionRow {
             reason: projection.reason,
             status: CapabilityDecisionStatus::Rejected,
             facts: projection.facts.clone(),
-        };
-        validate_decision_row(&row)?;
-        Ok(row)
-    }
-
-    /// Builds the deferred decision for a composed consumer waiting for its
-    /// admitted producer occurrence.
-    pub fn deferred_composed_producer_binding(index: usize) -> Result<Self> {
-        let row = Self {
-            execution_mode: CapabilityEnvelopeStatus::Deferred,
-            scope: CapabilityScope::Subgraph,
-            decision_id: CapabilityDecisionId { scope: CapabilityScope::Subgraph, index },
-            owner: CapabilityDecisionOwner::Admission("composed_producer_binding"),
-            category: None,
-            boundary: "composed_consumer",
-            reason: "producer_occurrence_output_evidence",
-            status: CapabilityDecisionStatus::Deferred,
-            facts: BTreeMap::new(),
         };
         validate_decision_row(&row)?;
         Ok(row)
@@ -200,14 +153,12 @@ impl fmt::Display for CapabilityDecisionId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityDecisionStatus {
-    Deferred,
     Rejected,
 }
 
 impl CapabilityDecisionStatus {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::Deferred => "deferred",
             Self::Rejected => "rejected",
         }
     }
@@ -276,8 +227,8 @@ fn validate_decision_row(row: &CapabilityDecisionRow) -> Result<()> {
             .with_fact("scope", row.scope.as_str()));
     }
     match (row.status, row.category) {
-        (CapabilityDecisionStatus::Deferred, None) | (CapabilityDecisionStatus::Rejected, Some(_)) => Ok(()),
-        (CapabilityDecisionStatus::Deferred, Some(_)) | (CapabilityDecisionStatus::Rejected, None) => {
+        (CapabilityDecisionStatus::Rejected, Some(_)) => Ok(()),
+        (CapabilityDecisionStatus::Rejected, None) => {
             Err(capability_report_error("capability decision category does not match its status")
                 .with_fact("decision_id", row.decision_id.to_string()))
         },
@@ -290,10 +241,6 @@ fn validate_report_status(
 ) -> Result<()> {
     let valid = match execution_mode {
         CapabilityEnvelopeStatus::Admitted => decision_rows.is_empty(),
-        CapabilityEnvelopeStatus::Deferred => {
-            !decision_rows.is_empty()
-                && decision_rows.iter().all(|row| row.status == CapabilityDecisionStatus::Deferred)
-        },
         CapabilityEnvelopeStatus::Rejected => {
             !decision_rows.is_empty()
                 && decision_rows.iter().all(|row| row.status == CapabilityDecisionStatus::Rejected)

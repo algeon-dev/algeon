@@ -26,6 +26,7 @@ mod ml_algorithm;
 mod ml_forest;
 mod nodes;
 mod preference;
+mod refinement;
 mod remap;
 pub mod row_bounds;
 mod sink;
@@ -96,7 +97,6 @@ pub use preference::{
 pub(crate) use remap::remap_plan_node_inputs;
 pub(crate) use remap::{NodeRemap, clone_plan_node_with_inputs, compact_reachable_nodes};
 pub use sink::ResultSink;
-pub(crate) use uniqueness::plan_node_is_unique_on;
 pub use vector_algorithm::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
     CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,

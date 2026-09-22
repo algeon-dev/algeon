@@ -265,7 +265,7 @@ mod topology_tests {
         let producer = PipelineTaskId::new(0);
         let consumer = PipelineTaskId::new(1);
         let resource = ResidentResourceId::new(0);
-        CompiledPipeline::new(
+        CompiledPipeline::from_parts_unvalidated(
             vec![
                 PipelineTask::new(producer, PipelineTaskKind::SourceRead).with_output_resources(vec![resource]),
                 PipelineTask::new(consumer, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![resource]),

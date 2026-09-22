@@ -108,6 +108,17 @@ impl WindowSpec {
     pub fn new(partition_by: Vec<Expr>, order_by: Vec<SortExpr>, functions: Vec<WindowFunction>) -> Self {
         Self { partition_by, order_by, functions }
     }
+
+    /// Whether a function numbers rows in the order its input holds them:
+    /// rank and row-number under an ORDER BY. Cumulative aggregates and
+    /// LAG/LEAD sort by the window keys themselves.
+    pub(crate) fn counts_rows_in_input_order(&self) -> bool {
+        !self.order_by.is_empty()
+            && self
+                .functions
+                .iter()
+                .any(|function| matches!(function, WindowFunction::Rank { .. } | WindowFunction::RowNumber { .. }))
+    }
 }
 
 /// Supported native window functions.

@@ -289,9 +289,12 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
         min_retry_chunk_row_groups: 1,
     });
     let admitted = streamed_context.admit_plan(&streamed_plan).unwrap();
+    let admitted_plan =
+        admit_query_plan(&streamed_plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+            .unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&streamed_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (output, metrics, _) = outcome.into_parts();
     let output = output.unwrap();
@@ -319,9 +322,12 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
     drop(admitted);
 
     let admitted = streamed_context.admit_plan(&eager_plan).unwrap();
+    let admitted_plan =
+        admit_query_plan(&eager_plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+            .unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&eager_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (output, _, _) = outcome.into_parts();
     let error = output.err().expect("full final-output concatenation exceeds the same cap");

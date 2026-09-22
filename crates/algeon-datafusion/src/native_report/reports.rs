@@ -18,7 +18,7 @@ use super::{
 ///
 /// Rows describe native candidate acceptance or rejection before execution.
 /// This collector runs candidate-only lowering without cost selection, so it
-/// observes the producer subset (`Selected`, `Deferred`, `NotSupported`);
+/// observes the producer subset (`Selected`, `NotSupported`);
 /// the shared [`CandidateOutcomeKind`] projection still covers cost outcomes
 /// without a narrowed enum.
 /// TSV serialization writes optional workload metadata, then
@@ -68,10 +68,7 @@ impl NativeFallbackPressureReport {
 
     /// Number of accepted candidate rows, not distinct query ids.
     pub fn selected_count(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred)))
-            .count()
+        self.rows.iter().filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected))).count()
     }
 
     /// Number of rejected candidate rows, not distinct query ids.
@@ -132,21 +129,14 @@ impl NativeDataFusionPlanningReport {
 
     /// Number of planning rows where native planning replaced at least one fragment.
     pub fn selected_count(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred)))
-            .count()
+        self.rows.iter().filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected))).count()
     }
 
     /// Number of planning rows rejected before native execution.
     pub fn not_selected_count(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| {
-                row.outcome.is_some_and(|outcome| {
-                    !matches!(outcome, CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred)
-                })
-            })
+            .filter(|row| row.outcome.is_some_and(|outcome| outcome != CandidateOutcomeKind::Selected))
             .count()
     }
 

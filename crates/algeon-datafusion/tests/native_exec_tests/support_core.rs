@@ -68,50 +68,6 @@ pub(super) fn write_parquet_file(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-pub(super) fn write_join_left_parquet_file(path: &std::path::Path) {
-    let schema = join_left_schema();
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 2, 1])),
-            Arc::new(Int32Array::from(vec![5, 20, 30])),
-            Arc::new(Int64Array::from(vec![100, 200, 300])),
-        ],
-    )
-    .unwrap();
-    write_batch(path, schema, batch);
-}
-
-pub(super) fn join_left_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("l_payload", DataType::Int32, false),
-        Field::new("l_m00", DataType::Int64, false),
-    ]))
-}
-
-pub(super) fn write_join_right_parquet_file(path: &std::path::Path) {
-    let schema = join_right_schema();
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(Int32Array::from(vec![10, 10, 10])),
-            Arc::new(Int64Array::from(vec![1, 2, 3])),
-        ],
-    )
-    .unwrap();
-    write_batch(path, schema, batch);
-}
-
-pub(super) fn join_right_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("r_payload", DataType::Int32, false),
-        Field::new("r_m01", DataType::Int64, false),
-    ]))
-}
-
 pub(super) fn write_batch(path: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();

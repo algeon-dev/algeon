@@ -10,6 +10,7 @@ use datafusion::{
         },
     },
     physical_plan::{
+        ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
         projection::ProjectionExec,
@@ -92,7 +93,11 @@ fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> b
         .aggr_expr()
         .iter()
         .any(|expr| matches!(native_aggregate_function_kind(expr.fun()), Some(NativeAggregateFunction::Median)));
-    let has_floating_statistical = aggregate.aggr_expr().iter().any(|expr| {
+    has_median && aggregate_has_floating_statistical(aggregate)
+}
+
+fn aggregate_has_floating_statistical(aggregate: &AggregateExec) -> bool {
+    aggregate.aggr_expr().iter().any(|expr| {
         matches!(
             native_aggregate_function_kind(expr.fun()),
             Some(
@@ -102,8 +107,26 @@ fn aggregate_has_median_and_floating_statistical(aggregate: &AggregateExec) -> b
                     | NativeAggregateFunction::VarPop
             )
         )
-    });
-    has_median && has_floating_statistical
+    })
+}
+
+/// Whether DataFusion reads the input of a floating statistical aggregate in
+/// `plan` through more than one partition. DataFusion's own result then
+/// depends on the order partitions deliver rows, which no native evaluation
+/// order reproduces.
+pub(crate) fn floating_statistical_aggregate_input_is_partitioned(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
+        && aggregate_has_floating_statistical(aggregate)
+        && subtree_has_multiple_partitions(aggregate.input().as_ref())
+    {
+        return true;
+    }
+    plan.children().into_iter().any(|child| floating_statistical_aggregate_input_is_partitioned(child.as_ref()))
+}
+
+fn subtree_has_multiple_partitions(plan: &dyn ExecutionPlan) -> bool {
+    plan.properties().output_partitioning().partition_count() > 1
+        || plan.children().into_iter().any(|child| subtree_has_multiple_partitions(child.as_ref()))
 }
 
 pub(super) fn validate_aggregate_for_native_lowering(

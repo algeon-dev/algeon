@@ -1,4 +1,3 @@
-use query_engine::optimizer::SemijoinReductionAdmissionDecision;
 #[test]
 fn semijoin_reduction_pushes_left_semi_into_left_inner_join_child() {
     let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Left);
@@ -171,41 +170,6 @@ fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive
 }
 
 #[test]
-fn semijoin_reduction_bounded_gate_allows_later_passes_to_route_dimension_keyset_filter() {
-    let plan = root_semijoin_over_fact_date_dimension_plan();
-    let options = NativeOptimizerOptions {
-        semijoin_reduction: SemijoinReductionOptions::default()
-            .with_admission_mode(SemijoinReductionAdmissionMode::Bounded),
-        ..NativeOptimizerOptions::default()
-    };
-
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
-
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
-    assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
-    assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
-    let candidate = &result.diagnostics.semijoin_reduction.candidates[0];
-    assert!(candidate.applied);
-    assert_eq!(candidate.rejected_reason, None);
-    assert_eq!(
-        candidate.admission_decision,
-        Some(SemijoinReductionAdmissionDecision::BoundedKept)
-    );
-    assert_eq!(candidate.original_admitted, Some(true));
-    assert_eq!(candidate.rewritten_admitted, Some(true));
-    assert!(
-        result.plan.dynamic_filter_routes().iter().any(|route| {
-            matches!(&route.producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. })
-                && route.producer_columns == vec!["d_date_sk".to_string()]
-                && route.consumer_columns == vec!["ss_sold_date_sk".to_string()]
-                && matches!(&route.consumer, DynamicFilterConsumer::LocalParquetSource { .. })
-                && route.consumer_lowering == DynamicFilterConsumerLowering::ReaderPredicate
-        }),
-        "admission-gated semijoin rewrite should remain available to downstream dynamic-filter routing"
-    );
-}
-
-#[test]
 fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
     let plan = root_semijoin_over_inner_join_plan_with_raw_keyset(SemijoinTarget::Right);
 
@@ -218,32 +182,6 @@ fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
     assert!(!candidate.applied);
     assert_eq!(candidate.rejected_reason, Some(SemijoinReductionRejectedReason::CostGateRejected));
     assert_eq!(candidate.cost_gate.as_ref().map(|gate| &gate.signal), Some(&SemijoinReductionCostSignal::Unavailable));
-}
-
-#[test]
-fn semijoin_reduction_bounded_admission_gate_keeps_rewrite_when_original_is_not_yet_admitted() {
-    let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Right);
-    let options = semijoin_reduction_only_options(
-        SemijoinReductionOptions::default().with_admission_mode(SemijoinReductionAdmissionMode::Bounded),
-    );
-
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
-
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
-    assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
-    assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
-    let candidate = &result.diagnostics.semijoin_reduction.candidates[0];
-    assert!(candidate.applied);
-    assert_eq!(candidate.rejected_reason, None);
-    assert_eq!(
-        candidate.admission_decision,
-        Some(SemijoinReductionAdmissionDecision::BoundedKept)
-    );
-    // S3 admits multi-join aggregate pipelines through the compiled task
-    // contracts, so both the original and the rewritten semijoin-over-join
-    // plans are executable now; the gate still keeps the rewrite.
-    assert_eq!(candidate.original_admitted, Some(true));
-    assert_eq!(candidate.rewritten_admitted, Some(true));
 }
 
 #[test]

@@ -40,10 +40,6 @@ impl BoundedFinalMergePolicy {
         Some(merge_fan_in.div_ceil(self.final_merge_retry_fan_in_divisor).max(self.final_merge_min_fan_in))
     }
 
-    pub(in crate::exec::bounded) fn merge_fan_in_is_at_retry_floor(self, merge_fan_in: usize) -> bool {
-        merge_fan_in <= self.final_merge_min_fan_in
-    }
-
     pub(in crate::exec::bounded) fn should_stop_compiled_final_merge_fan_in_selection(
         self,
         fan_in: usize,
@@ -106,8 +102,6 @@ mod tests {
         assert_eq!(policy.reduce_merge_fan_in(3), Some(2));
         assert_eq!(policy.reduce_merge_fan_in(4), Some(2));
         assert_eq!(policy.reduce_merge_fan_in(5), Some(3));
-        assert!(policy.merge_fan_in_is_at_retry_floor(2));
-        assert!(!policy.merge_fan_in_is_at_retry_floor(3));
     }
 
     #[test]

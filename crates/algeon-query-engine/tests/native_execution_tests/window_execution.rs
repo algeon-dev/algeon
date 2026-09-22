@@ -388,6 +388,9 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
     );
 
     let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    // The sort establishes the window's partition and order keys, so the
+    // window runs in the compiled pipeline.
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };

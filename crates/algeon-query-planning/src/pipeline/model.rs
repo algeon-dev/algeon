@@ -5,7 +5,12 @@
 //! cross-references; call [`CompiledPipeline::validate`] before execution.
 
 pub use crate::capability::AggregateExecutionStage;
-use crate::{capability::CompiledJoinExecutionStrategy, error::Result, expr::SortExpr, plan::NodeId};
+use crate::{
+    capability::CompiledJoinExecutionStrategy,
+    error::Result,
+    expr::SortExpr,
+    plan::{NodeId, WindowSpec},
+};
 
 /// Mode-agnostic compiled graph for a native query DAG.
 ///
@@ -23,8 +28,9 @@ pub struct CompiledPipeline {
 }
 
 impl CompiledPipeline {
-    /// Create a compiled graph from already assigned local id spaces.
-    pub fn new(
+    /// Create a compiled graph from already assigned local id spaces. Only
+    /// compilation calls this, and it validates the schedule it builds.
+    pub(crate) fn new(
         tasks: Vec<PipelineTask>,
         edges: Vec<PipelineEdge>,
         barriers: Vec<PipelineBarrier>,
@@ -32,6 +38,20 @@ impl CompiledPipeline {
         sink: SinkBoundary,
     ) -> Self {
         Self { tasks, edges, barriers, resources, sink }
+    }
+
+    /// Assembles a graph without compiling a plan, for tests that need a
+    /// pipeline compilation never produces. Nothing validates it.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn from_parts_unvalidated(
+        tasks: Vec<PipelineTask>,
+        edges: Vec<PipelineEdge>,
+        barriers: Vec<PipelineBarrier>,
+        resources: Vec<ResidentResource>,
+        sink: SinkBoundary,
+    ) -> Self {
+        Self::new(tasks, edges, barriers, resources, sink)
     }
 
     /// Symbolic tasks in local id order.
@@ -619,6 +639,17 @@ impl ResourceOrdering {
     /// Ordering that holds over every row of the producer.
     pub(crate) fn global(keys: Vec<SortExpr>) -> Self {
         Self { keys, scope: OrderingScope::Global }
+    }
+
+    /// Whether rows carrying this ordering appear, within every partition of
+    /// `window`, in the window's order: the ordering is global and, after any
+    /// prefix of partition keys, starts with the window's order keys.
+    pub(crate) fn covers_window(&self, window: &WindowSpec) -> bool {
+        if self.scope != OrderingScope::Global {
+            return false;
+        }
+        let partition_prefix = self.keys.iter().take_while(|key| window.partition_by.contains(&key.expr)).count();
+        self.keys[partition_prefix..].starts_with(&window.order_by)
     }
 }
 

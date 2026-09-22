@@ -406,9 +406,11 @@ fn bounded_native_query_reports_typed_failure_when_a_skewed_build_partition_cann
     let context = backend_context_with_grant(26 * 1024 * 1024);
     let admitted = context.admit_plan(&plan).unwrap();
 
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let error = result.err().expect("an indivisible build partition must fail with the cap cause");
@@ -498,9 +500,11 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
         )
         .unwrap();
     let admitted = handle.acquire_context_with_cancellation(cancellation).unwrap();
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.context().statistical_aggregate_execution_mode(), admitted.context().planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let error = result.err().expect("the deadline elapses before the build recovery completes");

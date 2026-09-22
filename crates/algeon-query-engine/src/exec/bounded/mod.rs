@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use super::{source::record_bounded_parquet_source_metrics, *};
 use crate::{
     admission::{
-        BoundedPipelineAdmission, bounded_join_unsupported_shape_facts_with_projection, bounded_pipeline_decision,
+        AdmissionDecision, AdmittedPlan, admit, bounded_join_unsupported_shape_facts_with_projection,
         insert_bounded_join_rejection_projection_error_facts,
     },
     mode::StatisticalAggregateExecutionMode,
@@ -24,7 +22,6 @@ pub(in crate::exec) mod chunks;
 mod compiled;
 mod facts;
 mod final_sort;
-mod generic;
 pub(in crate::exec) mod join;
 mod operator;
 mod partition_row_policy;
@@ -42,7 +39,6 @@ use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 use final_sort::*;
-use generic::execute_bounded_generic_query_plan;
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
@@ -70,140 +66,66 @@ use operator::{
 };
 pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
 pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;
-use pipeline::try_execute_bounded_pipeline;
+use pipeline::execute_bounded_pipeline;
 pub(in crate::exec) use resident::{CommittedPartial, ResidentGpuFrame};
 pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPolicy;
 
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
-    plan: &QueryPlan,
-    admission: Option<&BoundedPipelineAdmission>,
+    admitted: &AdmittedPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("query_engine.exec.bounded.execute_query_plan")?;
-    if let Some(output) =
-        try_execute_bounded_pipeline(context, plan, admission, gpu_inputs, metrics, observation_scope)?
-    {
-        return Ok(output);
-    }
-    let unreachable = plan.unreachable_node_ids();
-    if plan
-        .nodes()
-        .iter()
-        .any(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::VectorAlgorithm(_)))
-    {
-        return Err(unsupported_bounded_shape(
-            "vector execution requires an admitted compiled pipeline",
-            "compiled_vector_pipeline_required",
-        ));
-    }
-
-    if plan.nodes().iter().any(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::MlAlgorithm(_)))
-    {
-        return Err(unsupported_bounded_shape(
-            "ML execution requires an admitted compiled pipeline",
-            "compiled_ml_pipeline_required",
-        ));
-    }
-
-    if plan.contains_join() {
-        reject_bounded_join_plan(context, plan)?;
-    }
-
-    if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
-        return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
-    }
-
-    let bounded = match BoundedPlan::analyze(plan) {
-        Ok(bounded) => bounded,
-        Err(_error) => {
-            return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
-        },
-    };
-    let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
-        unreachable!("execute_bounded_query_plan is called only for bounded policies");
-    };
-    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics)?;
-    let frame = execute_bounded_aggregate_to_frame(&mut execution, &bounded)?;
-    let frame = execute_post_aggregate_stages(&mut execution, &bounded, frame)?;
-    let frame = execute_final_sort_limit_with_retry(&mut execution, &bounded, frame)?;
-    let frame = execute_post_sort_projections(&mut execution, &bounded, frame)?;
-    let frame = execute_standalone_limit(&mut execution, &bounded, frame)?;
-
-    record_device_memory_observation(&frame.frame, execution.metrics())?;
-    match plan.sink() {
-        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => {
-            let output_bytes = frame.frame.device_allocated_size_bytes()?;
-            let resident_owner = execution.context().retain_resident_output_owner(output_bytes)?;
-            let output_frame = frame.frame.with_producer_execution_scope(plan.execution_fingerprint());
-            let handle = match GpuResultHandle::new_with_resident_owner(
-                execution.context(),
-                output_frame,
-                Arc::clone(plan.output_schema()),
-                resident_owner,
-            ) {
-                Ok(handle) => handle.with_producer_execution_plan(plan.clone()),
-                Err(error) => {
-                    return Err(error);
-                },
-            };
-            Ok(QueryOutput::GpuResident(handle))
-        },
-        ResultSink::HostArrow { schema, .. } => {
-            let output = materialize_bounded_to_host(
-                &mut execution,
-                frame,
-                plan.sink().input(),
-                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
-                schema,
-            )?;
-            Ok(QueryOutput::HostArrow(output))
-        },
-    }
+    execute_bounded_pipeline(context, admitted, gpu_inputs, metrics, observation_scope)
 }
 
-/// Decides the executable plan once and hands the admitted artifact to the
-/// caller. Execution runs this same artifact instead of re-deriving it.
+/// Decides once whether `plan` runs as a compiled pipeline and returns the
+/// admitted artifact execution runs.
 ///
-/// The decision runs on the plan as given. When it rejects, the
-/// caller-visible sink is attached as a diagnostic fact only; it never
-/// selects a second decision.
-pub(super) fn preflight_bounded_join_plan(
+/// A rejection becomes a typed error built from the same decision; the
+/// caller-visible sink is attached as a diagnostic fact only and never selects
+/// a second decision.
+pub(super) fn admit_or_execution_error(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     policy: PlanningPolicy,
-) -> Result<Option<BoundedPipelineAdmission>> {
-    if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
-        let mut error = unsupported_bounded_shape(
-            "bounded native join execution requires an executable compiled pipeline",
-            "bounded_join_plan_shape_unsupported",
-        );
-        let ctx = rapids_analysis_context().with_policy(policy);
-        let decision = match bounded_pipeline_decision(plan, statistical_aggregate_execution_mode, ctx) {
-            Ok(decision) => decision,
-            Err(projection_error) => {
-                let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None, ctx);
-                insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
-                for (key, value) in facts {
-                    error = error.with_fact(key, value);
-                }
-                return Err(error.with_source(projection_error));
-            },
-        };
-        let Some(rejection_projection) = decision.rejection_projection() else {
-            return Ok(decision.admission().cloned());
-        };
-        let facts = bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection_projection), ctx);
+) -> Result<Arc<AdmittedPlan>> {
+    let ctx = rapids_analysis_context().with_policy(policy);
+    validate_query_plan(plan, ctx)?;
+    let rejection = match admit(plan, statistical_aggregate_execution_mode, ctx) {
+        Ok(AdmissionDecision::Admitted(admission)) => return Ok(admission),
+        Ok(AdmissionDecision::Rejected(rejection)) => rejection,
+        Err(projection_error) if plan.contains_join() => {
+            let mut error = bounded_join_plan_unsupported();
+            let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None, ctx);
+            insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
+            for (key, value) in facts {
+                error = error.with_fact(key, value);
+            }
+            return Err(error.with_source(projection_error));
+        },
+        Err(error) => return Err(error),
+    };
+    let error = if plan.contains_join() {
+        let mut error = bounded_join_plan_unsupported();
+        let facts = bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection.projection()), ctx);
         for (key, value) in facts {
             error = error.with_fact(key, value);
         }
-        error = error.with_fact("caller_visible_sink", caller_visible_sink_kind(plan.sink()));
-        return Err(error);
-    }
+        error
+    } else {
+        rejection.execution_error(plan)
+    };
+    Err(error.with_fact("caller_visible_sink", caller_visible_sink_kind(plan.sink())))
+}
 
-    Ok(None)
+fn bounded_join_plan_unsupported() -> QueryError {
+    unsupported_bounded_shape(
+        "bounded native join execution requires an executable compiled pipeline",
+        "bounded_join_plan_shape_unsupported",
+    )
 }
 
 fn caller_visible_sink_kind(sink: &ResultSink) -> &'static str {
@@ -211,9 +133,4 @@ fn caller_visible_sink_kind(sink: &ResultSink) -> &'static str {
         ResultSink::HostArrow { .. } | ResultSink::DeferredHostArrow { .. } => "host_arrow",
         ResultSink::GpuResident { .. } => "gpu_resident",
     }
-}
-
-fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
-    preflight_bounded_join_plan(plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
-        .map(|_| ())
 }

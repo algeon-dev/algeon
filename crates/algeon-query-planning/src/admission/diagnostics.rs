@@ -1,50 +1,37 @@
 use std::collections::BTreeMap;
 
+use super::AdmissionDecision;
 use crate::{
     backend::AnalysisContext,
     capability::{CapabilityRejectionOwner, CapabilityRejectionProjection, keyed_hash_join_strategy_decision_for_plan},
     error::QueryError,
-    mode::StatisticalAggregateExecutionMode,
     plan::{PlanNode, QueryPlan},
 };
 
-/// Returns diagnostic facts for join plans rejected by bounded admission.
+/// Returns diagnostic facts for a join plan `decision` rejected.
 ///
 /// These facts are explanatory planning/execution diagnostics. They do not
 /// toggle executor behavior and should not be treated as optimizer hints.
 pub fn bounded_join_unsupported_shape_facts(
     plan: &QueryPlan,
+    decision: &AdmissionDecision,
     ctx: AnalysisContext<'_>,
 ) -> Option<BTreeMap<&'static str, String>> {
     if !plan.contains_join() {
         return None;
     }
-
-    match super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx) {
-        Ok(decision) => decision
-            .rejection_projection()
-            .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, Some(projection), ctx)),
-        Err(error) => {
-            let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None, ctx);
-            insert_bounded_join_rejection_projection_error_facts(&mut facts, &error);
-            Some(facts)
-        },
-    }
+    decision
+        .rejection_projection()
+        .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, Some(projection), ctx))
 }
 
-/// Returns modeled bounded-join facts for plans accepted by bounded admission.
+/// Returns modeled bounded-join facts for a join plan `decision` admitted.
 pub fn bounded_join_modeled_facts(
     plan: &QueryPlan,
+    decision: &AdmissionDecision,
     ctx: AnalysisContext<'_>,
 ) -> Option<BTreeMap<&'static str, String>> {
-    if !plan.contains_join() {
-        return None;
-    }
-    matches!(
-        super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx),
-        Ok(decision) if decision.admission().is_some()
-    )
-    .then(|| bounded_join_modeled_facts_unchecked(plan, ctx))
+    (plan.contains_join() && decision.admission().is_some()).then(|| bounded_join_modeled_facts_unchecked(plan, ctx))
 }
 
 #[doc(hidden)]
@@ -168,15 +155,7 @@ fn insert_local_rejection_facts(
         facts.insert("bounded_join_rejection_category", rejection.category.as_str().to_string());
         facts.insert("bounded_join_rejection_reason", rejection.reason.to_string());
         facts.insert("bounded_join_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
-        return;
     }
-
-    facts.insert("bounded_join_rejection_scope", "subgraph".to_string());
-    facts.insert("bounded_join_rejection_owner", "capability_envelope_admission".to_string());
-    facts.insert("bounded_join_rejection_boundary", "capability_envelope_admission".to_string());
-    facts.insert("bounded_join_rejection_category", "missing_subgraph_invariant".to_string());
-    facts.insert("bounded_join_rejection_reason", "capability_envelope_not_satisfied".to_string());
-    facts.insert("bounded_join_rejection_facts", "capability_envelope_admission=false".to_string());
 }
 
 fn rejection_owner_fact(owner: &CapabilityRejectionOwner) -> String {

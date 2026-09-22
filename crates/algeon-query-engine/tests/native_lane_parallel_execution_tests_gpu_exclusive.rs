@@ -27,12 +27,12 @@ use cudf_sys::test_support::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
-    admission::{AttemptCapabilityEvidence, bounded_pipeline_decision},
+    admission::{AttemptCapabilityEvidence, admit},
     error::{QueryErrorCode, Result},
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
-        QueryExecutionRequest, execute_query_plan, is_lane_family_pipeline, output::QueryOutput,
-        preflight_bounded_query_plan, run_lane_dispatched,
+        QueryExecutionRequest, admit_query_plan, execute_query_plan, is_lane_family_pipeline, output::QueryOutput,
+        run_lane_dispatched,
     },
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec},
     mode::StatisticalAggregateExecutionMode,
@@ -96,7 +96,7 @@ impl LaneBackendGuard {
     }
 
     fn admit(&self, plan: &QueryPlan, cap_bytes: Option<u64>) -> Result<LaneTestContext> {
-        preflight_bounded_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
+        admit_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
         let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
         let mut backend = self.backend.borrow_mut();
         ensure_lane_backend(&mut backend)?;
@@ -261,9 +261,8 @@ fn parquet_union_plan(left_path: &Path, right_path: &Path, schema: &Arc<Schema>)
 }
 
 fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
-    let decision =
-        bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+    let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should not error");
     let admission = decision.admission().expect("lane union uses the compiled admission");
     admission.pipeline().clone()
 }
@@ -354,7 +353,13 @@ fn lane_width_2_executes_parquet_union_on_production_path() {
     assert!(is_lane_family_pipeline(&pipeline));
 
     let test_context = backend.admit(&plan, None).expect("lane union admits");
-    let outcome = execute_query_plan(test_context.context.context(), QueryExecutionRequest::new(&plan));
+    let admitted_plan = admit_query_plan(
+        &plan,
+        test_context.context.context().statistical_aggregate_execution_mode(),
+        test_context.context.context().planning_policy(),
+    )
+    .expect("lane union admits");
+    let outcome = execute_query_plan(test_context.context.context(), QueryExecutionRequest::admitted(&admitted_plan));
     let (result, _metrics, _observation) = outcome.into_parts();
     let output = result.expect("width-2 lane union should execute");
     let QueryOutput::HostArrow(batch) = output else {
@@ -396,7 +401,10 @@ fn lane_width_2_parquet_overlap_workload() {
     let context: &ExecutionContext = test_context.context.context();
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     assert_eq!(route.lane_capacity(), 2, "overlap run engages two lanes");
-    let outcome = execute_query_plan(context, QueryExecutionRequest::new(&plan));
+    let admitted_plan =
+        admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+            .expect("lane union admits");
+    let outcome = execute_query_plan(context, QueryExecutionRequest::admitted(&admitted_plan));
     let (result, _metrics, _observation) = outcome.into_parts();
     let output = result.expect("width-2 overlap union should execute");
     let QueryOutput::HostArrow(batch) = output else {
@@ -464,7 +472,16 @@ fn lane_small_cap_typed_failure_isolates_the_next_query() {
     // handle, so the next admission proves the failure left nothing held.
     let error = {
         let capped = backend.admit(&plan, Some(65_536)).expect("tiny cap still admits");
-        match execute_query_plan(capped.context.context(), QueryExecutionRequest::new(&plan)).into_parts().0 {
+        let admitted_plan = admit_query_plan(
+            &plan,
+            capped.context.context().statistical_aggregate_execution_mode(),
+            capped.context.context().planning_policy(),
+        )
+        .expect("lane union admits");
+        match execute_query_plan(capped.context.context(), QueryExecutionRequest::admitted(&admitted_plan))
+            .into_parts()
+            .0
+        {
             Ok(_) => panic!("tiny cap must fail lane execution"),
             Err(error) => error,
         }
@@ -481,7 +498,13 @@ fn lane_small_cap_typed_failure_isolates_the_next_query() {
     );
 
     let healthy = backend.admit(&plan, None).expect("next query still admits after a lane failure");
-    let output = execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
+    let admitted_plan = admit_query_plan(
+        &plan,
+        healthy.context.context().statistical_aggregate_execution_mode(),
+        healthy.context.context().planning_policy(),
+    )
+    .expect("next query plan admits");
+    let output = execute_query_plan(healthy.context.context(), QueryExecutionRequest::admitted(&admitted_plan))
         .into_parts()
         .0
         .expect("next query executes after a lane failure");
@@ -629,6 +652,9 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
         .with_runtime_execution_scope(lifecycle.execution_scope())
         .expect("observation scope applies");
 
+    let admitted_plan =
+        admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+            .expect("lane root chain plan admits");
     let executor = context.gpu_executor().expect("admitted context exposes its device executor");
     let observation = context.runtime_observation().clone();
     let runtime = TokioRuntimeBuilder::new_current_thread().enable_all().build().expect("test runtime");
@@ -640,7 +666,7 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
             observation,
             move |scope| async move {
                 let context = context.with_runtime_gpu_stream_scope(scope);
-                execute_query_plan(&context, QueryExecutionRequest::new(&plan)).into_parts().0
+                execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts().0
             },
         ))
         .expect("the root query job runs")
@@ -745,8 +771,10 @@ fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
 
     let executor = context.gpu_executor().expect("admitted context exposes its device executor");
     let observation = context.runtime_observation().clone();
+    let admitted_plan =
+        admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+            .expect("lane dispatch plan admits");
     let dispatch_context = context;
-    let dispatch_plan = plan;
     let runtime = TokioRuntimeBuilder::new_current_thread().enable_all().build().expect("test runtime");
     let output = runtime
         .block_on(executor.run_observed_scoped(
@@ -754,7 +782,7 @@ fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
             observation,
             move |scope| async move {
                 let context = dispatch_context.with_runtime_gpu_stream_scope(scope);
-                execute_query_plan(&context, QueryExecutionRequest::new(&dispatch_plan)).into_parts().0
+                execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts().0
             },
         ))
         .expect("the root query job runs")
@@ -1124,7 +1152,10 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     let lane_context = lane_lease.context().clone();
     assert!(lane_context.is_attempt_work_lease_context(), "a lane context is a work-lease context");
 
-    let outcome = execute_query_plan(&lane_context, QueryExecutionRequest::new(&plan));
+    let admitted_plan =
+        admit_query_plan(&plan, lane_context.statistical_aggregate_execution_mode(), lane_context.planning_policy())
+            .expect("lane source read plan admits");
+    let outcome = execute_query_plan(&lane_context, QueryExecutionRequest::admitted(&admitted_plan));
     let (result, metrics, _observation) = outcome.into_parts();
     let output = result.expect("a source read from a work lease completes inline instead of deadlocking");
     let QueryOutput::HostArrow(batch) = output else {
@@ -1588,7 +1619,13 @@ fn chunk_readiness_sync_failure_attributes_head_ordinal_and_commits_nothing() {
 
     // The failure neither commits partials nor poisons the backend: the next admission runs.
     let healthy = backend.admit(&plan, None).expect("next query still admits after a readiness failure");
-    let output = execute_query_plan(healthy.context.context(), QueryExecutionRequest::new(&plan))
+    let admitted_plan = admit_query_plan(
+        &plan,
+        healthy.context.context().statistical_aggregate_execution_mode(),
+        healthy.context.context().planning_policy(),
+    )
+    .expect("next query plan admits");
+    let output = execute_query_plan(healthy.context.context(), QueryExecutionRequest::admitted(&admitted_plan))
         .into_parts()
         .0
         .expect("next query executes after a readiness failure");

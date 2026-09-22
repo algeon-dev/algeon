@@ -1,22 +1,17 @@
 //! Uniqueness keys derived from plan structure and source facts.
 //!
 //! A key is a set of output columns on which a node's rows are distinct.
-//! [`partial_plan_node_is_unique_on`] answers for a plan still being built;
-//! [`plan_node_is_unique_on`] answers for a finished [`QueryPlan`].
+//! [`partial_plan_node_is_unique_on`] answers for a plan still being built.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::SchemaRef;
 
-use super::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan, WindowFunction};
+use super::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, WindowFunction};
 use crate::{
     expr::{BinaryOp, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
     source::SourceNode,
 };
-
-pub(crate) fn plan_node_is_unique_on(plan: &QueryPlan, node_id: NodeId, columns: &BTreeSet<String>) -> bool {
-    partial_plan_node_is_unique_on(plan.nodes(), node_id, columns)
-}
 
 pub(crate) fn partial_plan_node_is_unique_on(nodes: &[QueryNode], node_id: NodeId, columns: &BTreeSet<String>) -> bool {
     unique_keys_by_node(nodes).get(node_id.index()).is_some_and(|keys| keys.iter().any(|key| key.is_subset(columns)))

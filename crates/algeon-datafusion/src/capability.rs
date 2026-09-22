@@ -30,8 +30,16 @@ pub enum CapabilityReason {
     /// DataFusion produced a partition-preserving sort shape that the native
     /// planner does not currently lower.
     NativePartitionPreservingSortUnsupported,
+    /// The exact statistical aggregate mode needs DataFusion to read the
+    /// aggregate input as one partition; an exchange that merges partitions
+    /// interleaves rows in arrival order, so DataFusion's floating-point result
+    /// varies between runs.
+    NativeExactStatisticalInputPartitioned,
     /// Bounded native join capability admission rejected the shape.
     NativeBoundedJoinUnsupported,
+    /// No compiled pipeline contract covers a native plan without a join; the
+    /// candidate's capability decision row names the missing contract.
+    NativeCompiledPipelineUnsupported,
     /// The replaced subtree declares an output ordering the lowered native plan
     /// cannot reproduce.
     NativeOrderedOutputUnsupported,
@@ -67,14 +75,16 @@ impl CapabilityReason {
     /// Internal diagnostics projections use this list to assert that a new
     /// reason cannot accidentally ship without actionable guidance.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 21] = [
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
         Self::NativeSortPreservingMergeUnsupported,
         Self::NativeDistributedAggregateUnsupported,
         Self::NativePartitionPreservingSortUnsupported,
+        Self::NativeExactStatisticalInputPartitioned,
         Self::NativeBoundedJoinUnsupported,
+        Self::NativeCompiledPipelineUnsupported,
         Self::NativeOrderedOutputUnsupported,
         Self::NativeSourceNonLocalObjectStore,
         Self::NativeSourceExprAdapter,
@@ -98,7 +108,9 @@ impl CapabilityReason {
             Self::NativeSortPreservingMergeUnsupported => "native_sort_preserving_merge_unsupported",
             Self::NativeDistributedAggregateUnsupported => "native_distributed_aggregate_unsupported",
             Self::NativePartitionPreservingSortUnsupported => "native_partition_preserving_sort_unsupported",
+            Self::NativeExactStatisticalInputPartitioned => "native_exact_statistical_input_partitioned",
             Self::NativeBoundedJoinUnsupported => "native_bounded_join_unsupported",
+            Self::NativeCompiledPipelineUnsupported => "native_compiled_pipeline_unsupported",
             Self::NativeOrderedOutputUnsupported => "native_ordered_output_unsupported",
             Self::NativeSourceNonLocalObjectStore => "native_source_non_local_object_store",
             Self::NativeSourceExprAdapter => "native_source_expr_adapter",
@@ -120,7 +132,9 @@ impl CapabilityReason {
             Self::UnsupportedOperator => TriageCode::UnsupportedOperator,
             Self::UnsupportedExpression => TriageCode::UnsupportedExpression,
             Self::UnsupportedType => TriageCode::UnsupportedType,
-            Self::NativeBoundedJoinUnsupported => TriageCode::CapabilityEnvelopeRejected,
+            Self::NativeBoundedJoinUnsupported | Self::NativeCompiledPipelineUnsupported => {
+                TriageCode::CapabilityEnvelopeRejected
+            },
             Self::NativeSourceNonLocalObjectStore
             | Self::NativeSourceExprAdapter
             | Self::NativeSourceParquetFileReaderFactory
@@ -135,6 +149,7 @@ impl CapabilityReason {
             Self::NativeSortPreservingMergeUnsupported
             | Self::NativeDistributedAggregateUnsupported
             | Self::NativePartitionPreservingSortUnsupported
+            | Self::NativeExactStatisticalInputPartitioned
             | Self::NativeOrderedOutputUnsupported => TriageCode::UnsupportedPlanShape,
         }
     }

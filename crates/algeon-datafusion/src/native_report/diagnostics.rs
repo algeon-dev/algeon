@@ -154,6 +154,7 @@ pub(super) fn unsupported_category(
         CapabilityReason::NativeDistributedAggregateUnsupported => {
             first_aggregate_category(plan).or_else(|| Some("aggregate_distributed".to_string()))
         },
+        CapabilityReason::NativeExactStatisticalInputPartitioned => Some("aggregate_partitioned_input".to_string()),
         CapabilityReason::NativeSourceNonLocalObjectStore
         | CapabilityReason::NativeSourceExprAdapter
         | CapabilityReason::NativeSourceParquetFileReaderFactory
@@ -171,6 +172,7 @@ pub(super) fn unsupported_category(
         CapabilityReason::NativeBoundedJoinUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
+        CapabilityReason::NativeCompiledPipelineUnsupported => Some("compiled_pipeline_contract".to_string()),
     }
 }
 

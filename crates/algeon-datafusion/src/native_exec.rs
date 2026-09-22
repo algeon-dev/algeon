@@ -12,6 +12,8 @@ use datafusion::{
     execution::context::TaskContext,
     physical_plan::{ExecutionPlan, metrics::ExecutionPlanMetricsSet},
 };
+#[cfg(test)]
+use query_engine::{admission::AdmittedPlan, exec::admit_query_plan, plan::QueryPlan};
 pub use query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
@@ -25,7 +27,21 @@ pub use query_engine::{
     },
 };
 
+#[cfg(test)]
+use crate::error::Result;
 use crate::error::{Error, ErrorCode};
+
+/// Admits a plan a test builds for a native node, as planning would.
+#[cfg(test)]
+pub(crate) fn admit_for_test(
+    plan: &QueryPlan,
+    execution_config: &AlgeonNativeExecutionConfig,
+) -> Result<Arc<AdmittedPlan>> {
+    admit_query_plan(plan, execution_config.statistical_aggregate_execution_mode(), execution_config.planning_policy())
+        .map_err(|error| {
+            Error::from_native("algeon_datafusion.native_exec.test_admission", "test plan is not admissible", error)
+        })
+}
 
 #[cfg(test)]
 mod adapter_tests;

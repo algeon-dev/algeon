@@ -20,7 +20,7 @@ use algeon_datafusion::{
     },
     native_report::{NativeDataFusionExecutionMetrics, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow},
     planner::{NativePlanningDiagnostics, plan_with_native_diagnostics},
-    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE},
+    report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::record_batch::RecordBatch;
@@ -434,7 +434,6 @@ fn planning_summary(diagnostics: Option<&NativePlanningDiagnostics>) -> Planning
                 .filter_map(|outcome| match outcome {
                     CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code()),
                     CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code()),
-                    CandidateOutcome::Deferred { .. } => Some(DEFERRED_PRODUCER_BINDING_REASON_CODE),
                     CandidateOutcome::Selected { .. } => None,
                 })
                 .collect::<Vec<_>>();

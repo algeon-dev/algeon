@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use query_engine::{expr::ColumnRef, mode::StatisticalAggregateExecutionMode, rapids_backend::rapids_analysis_context};
+use query_engine::{expr::ColumnRef, mode::StatisticalAggregateExecutionMode};
 
 use super::*;
 
@@ -235,7 +235,6 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         final_schema,
     );
     let plan = builder.finish_with_host_sink(sort);
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -377,12 +376,7 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     );
     let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
     let plan = builder.finish_with_host_sink(limit);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-    assert!(
-        analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
-        "rollup/rank/top-k optimized shape should select the bounded capability envelope; first_rejection={:?}",
-        analysis.first_rejection_projection()
-    );
+    assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

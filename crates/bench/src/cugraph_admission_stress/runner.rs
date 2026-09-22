@@ -34,7 +34,7 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::plan_with_native_diagnostics,
-    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE},
+    report::CandidateOutcome,
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -355,12 +355,6 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
             match outcome {
                 CandidateOutcome::Selected { candidate } => {
                     eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
-                },
-                CandidateOutcome::Deferred { candidate, planning_stage } => {
-                    eprintln!(
-                        "[planning] {} DEFERRED shape={} stage={} reason={}",
-                        request.spec.label, candidate.shape, planning_stage, DEFERRED_PRODUCER_BINDING_REASON_CODE
-                    );
                 },
                 CandidateOutcome::NotSupported { candidate, capability_reason } => {
                     eprintln!(

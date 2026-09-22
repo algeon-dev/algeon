@@ -65,12 +65,11 @@ pub fn query_engine::exec::output::QueryExecutionResult::new(query_engine::exec:
 pub fn query_engine::exec::output::QueryExecutionResult::output(&self) -> &query_engine::exec::output::QueryOutput
 pub struct query_engine::exec::QueryExecutionRequest<'a>
 impl<'a> query_engine::exec::QueryExecutionRequest<'a>
-pub const fn query_engine::exec::QueryExecutionRequest<'a>::new(&'a query_planning::plan::core::QueryPlan) -> Self
-pub const fn query_engine::exec::QueryExecutionRequest<'a>::with_bounded_admission(self, &'a query_planning::admission::bounded::BoundedPipelineAdmission) -> Self
+pub const fn query_engine::exec::QueryExecutionRequest<'a>::admitted(&'a query_planning::admission::bounded::AdmittedPlan) -> Self
 pub const fn query_engine::exec::QueryExecutionRequest<'a>::with_gpu_inputs(self, &'a query_runtime::runtime::resident::GpuResidentInputMap) -> Self
+pub fn query_engine::exec::admit_query_plan(&query_planning::plan::core::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::policy::PlanningPolicy) -> query_planning::error::Result<alloc::sync::Arc<query_planning::admission::bounded::AdmittedPlan>>
 pub fn query_engine::exec::execute_query_plan(&query_runtime::runtime::context::ExecutionContext, query_engine::exec::QueryExecutionRequest<'_>) -> query_engine::exec::output::QueryExecutionOutcome
 pub fn query_engine::exec::materialize_gpu_result_to_host(query_runtime::runtime::resident::GpuResultHandle, &mut query_runtime::metrics::QueryMetrics) -> query_planning::error::Result<arrow_array::record_batch::RecordBatch>
-pub fn query_engine::exec::preflight_bounded_query_plan(&query_planning::plan::core::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::policy::PlanningPolicy) -> query_planning::error::Result<core::option::Option<query_planning::admission::bounded::BoundedPipelineAdmission>>
 pub fn query_engine::exec::preflight_query_plan(&query_planning::plan::core::QueryPlan) -> query_planning::error::Result<()>
 pub mod query_engine::harness
 pub use query_engine::harness::StableFnv1a64

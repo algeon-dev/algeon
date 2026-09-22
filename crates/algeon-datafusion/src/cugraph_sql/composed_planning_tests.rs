@@ -14,7 +14,7 @@ use datafusion::{
 use parquet::arrow::ArrowWriter;
 use query_engine::{
     expr::Expr,
-    plan::{JoinType, PlanNode, QueryPlan, QueryPlanBuilder},
+    plan::{JoinType, PlanNode, QueryPlan, QueryPlanBuilder, ResultSink},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 
@@ -315,7 +315,7 @@ async fn pagerank_forceatlas2_join_lowers_to_one_composed_consumer() {
     assert_eq!(graph_edge_inputs[0], graph_edge_inputs[1], "both graph producers must use the same edge-source plan");
 
     let native_consumer = composed.native_plan();
-    assert!(native_consumer.sink().materializes_host_boundary());
+    assert!(matches!(native_consumer.sink(), ResultSink::DeferredHostArrow { .. }));
     assert_eq!(
         native_consumer
             .nodes()

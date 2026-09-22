@@ -1,70 +1,64 @@
-//! Capability-envelope admission boundary for compiled bounded pipelines.
+//! Admission boundary for compiled bounded pipelines.
 //!
 //! Capability-first bounded-pipeline admission evidence and rejection
 //! projection. This is the single bounded admission contract; "capability"
 //! appears only in preserved wire names. Runtime execution remains in
 //! `exec::bounded`.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType as ArrowDataType, Schema};
 
-use super::{
-    scope::AttemptExecutionScope,
-    shared::{
-        CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
-    },
+use super::shared::{
+    CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
 };
 use crate::{
     backend::AnalysisContext,
     capability::{
-        CapabilityEnvelope, CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection,
-        CapabilityScope,
+        CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
     },
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateFunction, AggregateSpec, Expr},
     mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
-    pipeline::{CompiledPipeline, PipelineEdgeKind, SinkBoundaryKind},
-    plan::{NodeId, PlanNode, QueryPlan, ResultSink},
+    pipeline::CompiledPipeline,
+    plan::{NodeId, PlanFingerprint, PlanNode, QueryPlan, ResultSink},
     policy::PlanningPolicy,
     prepared::{
-        aggregate_spec_has_floating_statistical_aggregate, datafusion_exact_host_accumulator,
-        datafusion_exact_host_group_key_supported,
+        DataFusionExactHostAccumulator, aggregate_spec_has_floating_statistical_aggregate,
+        datafusion_exact_host_accumulator, datafusion_exact_host_group_key_supported,
     },
 };
 
-/// Capability-envelope admission evidence for a compiled bounded pipeline.
+/// A plan that passed capability analysis, compilation and the compiled
+/// contracts exactly once; the frontends validate a plan before admitting it.
 ///
-/// Presence means capability analysis admitted the plan and compilation
-/// produced the exact pipeline selected by the bounded controller. The
-/// artifact binds one plan, execution mode, and sink to one compiled
-/// pipeline: execution and reporting read this same artifact instead of
-/// re-deriving a decision, and any change to the plan, mode, or sink needs a
-/// rebuilt artifact. A mismatch is never a fallback.
-#[derive(Debug, Clone)]
-pub struct BoundedPipelineAdmission {
-    envelope: CapabilityEnvelope,
+/// Only [`admit`] and [`AdmittedPlan::with_pruned_sources`] construct it.
+/// Execution and reporting read this artifact instead of deciding again; it
+/// owns the plan it admitted, so no other plan, sink or mode can reach the
+/// pipeline it carries.
+#[derive(Debug)]
+pub struct AdmittedPlan {
+    plan: QueryPlan,
     pipeline: CompiledPipeline,
-    sink_kind: SinkBoundaryKind,
+    fingerprint: PlanFingerprint,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     policy: PlanningPolicy,
-    scope: AttemptExecutionScope,
 }
 
-impl BoundedPipelineAdmission {
+impl AdmittedPlan {
+    /// The admitted plan, in the sink form execution runs.
+    pub fn plan(&self) -> &QueryPlan {
+        &self.plan
+    }
+
     /// Compiled pipeline admitted for bounded execution.
     pub fn pipeline(&self) -> &CompiledPipeline {
         &self.pipeline
     }
 
-    /// Capability envelope selected by admission.
-    pub const fn envelope(&self) -> CapabilityEnvelope {
-        self.envelope
-    }
-
-    /// Sink boundary the admitted pipeline was compiled for.
-    pub const fn sink_kind(&self) -> SinkBoundaryKind {
-        self.sink_kind
+    /// Execution identity of the admitted plan.
+    pub const fn fingerprint(&self) -> PlanFingerprint {
+        self.fingerprint
     }
 
     /// Execution mode the admission decision was made under.
@@ -78,206 +72,120 @@ impl BoundedPipelineAdmission {
         self.policy
     }
 
-    /// Plan-scope identity the admitted pipeline was compiled for.
-    pub fn scope(&self) -> &AttemptExecutionScope {
-        &self.scope
-    }
-
-    /// Returns whether this artifact binds to `plan` under `mode`.
+    /// Admits the plan footer pruning resolved from this one.
     ///
-    /// A mismatch is never a fallback: the caller must rebuild the artifact
-    /// for the plan it actually executes.
-    pub fn matches(&self, plan: &QueryPlan, mode: StatisticalAggregateExecutionMode) -> bool {
-        self.binding_rejection(plan, mode).is_none()
-    }
-
-    /// Names the first binding clause `plan` under `mode` violates, if any.
-    #[doc(hidden)]
-    pub fn binding_rejection(
-        &self,
-        plan: &QueryPlan,
-        mode: StatisticalAggregateExecutionMode,
-    ) -> Option<CapabilityRejectionProjection> {
-        if self.statistical_aggregate_execution_mode != mode {
-            return Some(binding_rejection(
-                "compiled_pipeline_artifact_mode_mismatch",
-                [
-                    (
-                        "admitted_statistical_aggregate_execution_mode",
-                        self.statistical_aggregate_execution_mode.as_str().to_string(),
-                    ),
-                    ("requested_statistical_aggregate_execution_mode", mode.as_str().to_string()),
-                ],
-            ));
+    /// Resolution may narrow Parquet row-group selections and append
+    /// reader-predicate conjuncts; any other difference is an internal
+    /// invariant violation. The resolved plan is admitted again under this
+    /// artifact's mode and policy, and a rejection is the typed execution
+    /// error, never a fallback.
+    pub fn with_pruned_sources(&self, pruned: QueryPlan, ctx: AnalysisContext<'_>) -> Result<Arc<Self>> {
+        if let Some(changed) = self.plan.first_change_beyond_source_refinement(&pruned) {
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "query_engine.admission.pruned_sources",
+                "footer pruning changed more than source row-group selections and reader predicates",
+            )
+            .with_fact("changed", changed)
+            .with_fact("admitted_plan_fingerprint", self.fingerprint.to_string()));
         }
-        let sink_kind = sink_boundary_kind_for_plan(plan);
-        if sink_kind != self.sink_kind || self.pipeline.sink().kind() != self.sink_kind {
-            return Some(binding_rejection(
-                "compiled_pipeline_sink_binding_mismatch",
-                [
-                    ("plan_sink_kind", sink_kind.as_str().to_string()),
-                    ("admitted_sink_kind", self.sink_kind.as_str().to_string()),
-                    ("pipeline_sink_kind", self.pipeline.sink().kind().as_str().to_string()),
-                ],
-            ));
+        match admit(&pruned, self.statistical_aggregate_execution_mode, ctx.with_policy(self.policy))? {
+            AdmissionDecision::Admitted(admitted) => Ok(admitted),
+            AdmissionDecision::Rejected(rejection) => Err(rejection.execution_error(&pruned)),
         }
-        match pipeline_sink_output_plan_node(&self.pipeline) {
-            Some(final_plan_node) if final_plan_node == plan.sink().input() => {},
-            Some(final_plan_node) => {
-                return Some(binding_rejection(
-                    "compiled_pipeline_sink_output_plan_node_mismatch",
-                    [
-                        ("plan_sink_input_node_id", plan.sink().input().to_string()),
-                        ("pipeline_sink_output_node_id", final_plan_node.to_string()),
-                    ],
-                ));
-            },
-            None => {
-                return Some(binding_rejection(
-                    "compiled_pipeline_sink_output_plan_node_missing",
-                    [("sink_boundary_task_id", self.pipeline.sink().input().to_string())],
-                ));
-            },
-        }
-        if !self.scope.matches(plan) {
-            return Some(binding_rejection(
-                "compiled_pipeline_artifact_scope_mismatch",
-                [("admitted_execution_scope_fingerprint", self.scope.execution_scope_fingerprint().to_string())],
-            ));
-        }
-        None
     }
 }
 
-fn binding_rejection(
-    reason: &'static str,
-    facts: impl IntoIterator<Item = (&'static str, String)>,
-) -> CapabilityRejectionProjection {
-    CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Admission("compiled_pipeline_artifact_binding"),
-        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-        contract_scope: CapabilityScope::Subgraph,
-        boundary: "compiled_pipeline",
-        reason,
-        facts: BTreeMap::from_iter(facts),
-    }
-}
-
-fn sink_boundary_kind_for_plan(plan: &QueryPlan) -> SinkBoundaryKind {
-    match plan.sink() {
-        ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
-        ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => SinkBoundaryKind::GpuResidentOutput,
-    }
-}
-
-fn pipeline_sink_output_plan_node(pipeline: &CompiledPipeline) -> Option<NodeId> {
-    match pipeline.sink().kind() {
-        SinkBoundaryKind::HostArrowMaterialization => {
-            let edge = pipeline
-                .edges()
-                .iter()
-                .find(|edge| edge.to() == pipeline.sink().input() && edge.kind() == PipelineEdgeKind::SinkInput)?;
-            pipeline.tasks().iter().find(|task| task.id() == edge.from()).and_then(|task| task.plan_node())
-        },
-        SinkBoundaryKind::GpuResidentOutput => {
-            pipeline.tasks().iter().find(|task| task.id() == pipeline.sink().input()).and_then(|task| task.plan_node())
-        },
-    }
-}
-
-/// One capability-first decision for bounded execution and report projection.
-///
-/// Consumers inspect the admitted pipeline or rejection evidence from this
-/// value. Execution consumes it through [`Self::into_execution_admission`] so
-/// unsupported compiled-pipeline classifications retain their structured error
-/// behavior without re-running capability analysis.
+/// The one admission decision for a native plan: it runs as a compiled
+/// pipeline, or it is rejected with the first contract it misses.
 #[derive(Debug)]
-pub struct BoundedPipelineDecision {
-    admission: Option<BoundedPipelineAdmission>,
-    rejection_projection: Option<CapabilityRejectionProjection>,
-    execution_error: Option<QueryError>,
+pub enum AdmissionDecision {
+    /// The compiled pipeline the plan executes as.
+    Admitted(Arc<AdmittedPlan>),
+    /// No compiled contract covers the plan.
+    Rejected(AdmissionRejection),
 }
 
-impl BoundedPipelineDecision {
-    /// Admitted envelope and compiled pipeline, when applicable.
-    pub fn admission(&self) -> Option<&BoundedPipelineAdmission> {
-        self.admission.as_ref()
-    }
-
-    /// Rejection evidence produced by the same capability decision.
-    pub fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
-        self.rejection_projection.as_ref()
-    }
-
-    /// Converts the decision into the execution-facing admission result.
-    pub fn into_execution_admission(self) -> Result<Option<BoundedPipelineAdmission>> {
-        if let Some(error) = self.execution_error {
-            return Err(error);
+impl AdmissionDecision {
+    /// Admitted plan, when admitted.
+    pub fn admission(&self) -> Option<&Arc<AdmittedPlan>> {
+        match self {
+            Self::Admitted(admission) => Some(admission),
+            Self::Rejected(_) => None,
         }
-        Ok(self.admission)
+    }
+
+    /// Rejection evidence, when rejected.
+    pub fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
+        match self {
+            Self::Admitted(_) => None,
+            Self::Rejected(rejection) => Some(rejection.projection()),
+        }
     }
 }
 
-/// Produces the canonical bounded-pipeline decision for a plan and execution mode.
-pub fn bounded_pipeline_decision(
+/// Why a plan has no compiled execution.
+#[derive(Debug, Clone)]
+pub struct AdmissionRejection {
+    projection: CapabilityRejectionProjection,
+    pipeline: Option<CompiledPipeline>,
+    execution_mode_refusal: bool,
+}
+
+impl AdmissionRejection {
+    /// The first operator, edge, or pipeline contract the plan misses.
+    pub fn projection(&self) -> &CapabilityRejectionProjection {
+        &self.projection
+    }
+
+    /// Whether the requested statistical aggregate execution mode, rather than
+    /// a compiled contract, refuses the plan.
+    pub fn is_execution_mode_refusal(&self) -> bool {
+        self.execution_mode_refusal
+    }
+
+    /// The typed error a caller that must execute `plan` reports.
+    pub fn execution_error(&self, plan: &QueryPlan) -> QueryError {
+        compiled_bounded_pipeline_required_error(plan, self.pipeline.as_ref(), &self.projection)
+    }
+}
+
+/// Decides once whether `plan` runs as a compiled pipeline under the given
+/// execution mode and the policy `ctx` carries.
+pub fn admit(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     ctx: AnalysisContext<'_>,
-) -> Result<BoundedPipelineDecision> {
-    let Some(admission) = capability_first_bounded_pipeline_admission(plan, ctx)? else {
-        return Ok(BoundedPipelineDecision { admission: None, rejection_projection: None, execution_error: None });
-    };
-    if let Some(rejection_projection) =
-        statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
+) -> Result<AdmissionDecision> {
+    let admission = capability_first_bounded_pipeline_admission(plan, ctx)?;
+    if let Some(projection) = statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
     {
-        return Ok(BoundedPipelineDecision {
-            admission: None,
-            rejection_projection: Some(rejection_projection),
-            execution_error: None,
-        });
+        return Ok(AdmissionDecision::Rejected(AdmissionRejection {
+            projection,
+            pipeline: None,
+            execution_mode_refusal: true,
+        }));
     }
     match admission.candidate_status() {
         CapabilityFirstCandidateStatus::Admitted => {
-            let mut admission = capability_admission_from_capability_first(
+            let admitted = admitted_plan_from_capability_first(
                 admission,
                 plan,
                 statistical_aggregate_execution_mode,
                 ctx.policy(),
             )?;
-            // The exact and tolerant statistical envelopes admit the same
-            // compiled pipeline; only the diagnostic label differs with the
-            // execution mode.
-            if admission.envelope() == CapabilityEnvelope::ExactStatisticalJoinFinalFullSort
-                && !statistical_aggregate_execution_mode.is_datafusion_exact()
-            {
-                admission.envelope = CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort;
-            }
-            Ok(BoundedPipelineDecision {
-                admission: Some(admission),
-                rejection_projection: None,
-                execution_error: None,
-            })
+            Ok(AdmissionDecision::Admitted(Arc::new(admitted)))
         },
         CapabilityFirstCandidateStatus::Rejected => {
-            let rejection_projection = admission
+            let projection = admission
                 .rejection_projection()
                 .expect("rejected capability-first admission should carry a projection")
                 .clone();
-            // A compiled-pipeline or sink-boundary rejection means the plan
-            // reached the compiled runtime and that runtime refused it, so the
-            // caller gets a structured error instead of a silent fallback.
-            let execution_error = (plan.contains_graph_algorithm()
-                || matches!(
-                    rejection_projection.category,
-                    CapabilityRejectionCategory::UnsupportedSinkBoundary
-                        | CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
-                ))
-            .then(|| compiled_bounded_pipeline_required_error(plan, admission.pipeline(), &rejection_projection));
-            Ok(BoundedPipelineDecision {
-                admission: None,
-                rejection_projection: Some(rejection_projection),
-                execution_error,
-            })
+            Ok(AdmissionDecision::Rejected(AdmissionRejection {
+                projection,
+                pipeline: admission.into_pipeline(),
+                execution_mode_refusal: false,
+            }))
         },
     }
 }
@@ -290,8 +198,7 @@ pub fn bounded_pipeline_decision(
 /// fixed set of group-key and aggregate types. Frontends call this before
 /// replacing a DataFusion plan so the other types stay on DataFusion instead
 /// of failing during execution.
-#[doc(hidden)]
-pub fn statistical_aggregate_execution_mode_rejection(
+fn statistical_aggregate_execution_mode_rejection(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
 ) -> Option<CapabilityRejectionProjection> {
@@ -340,8 +247,26 @@ fn datafusion_exact_host_aggregate_rejection(
     for expr in &spec.aggr_exprs {
         let input_type = column_input_type(&expr.expr, input_schema);
         let output_type = output_types.next();
-        if output_type.is_some_and(|output| datafusion_exact_host_accumulator(expr, input_type, output).is_some()) {
-            continue;
+        match output_type.and_then(|output| datafusion_exact_host_accumulator(expr, input_type, output)) {
+            // DataFusion's ungrouped SUM and AVG add each input batch with
+            // Arrow's lane-wise sum kernel, so their floating-point result
+            // depends on batch boundaries; its grouped accumulators, like the
+            // host kernel, add one row at a time.
+            Some(DataFusionExactHostAccumulator::FloatSum | DataFusionExactHostAccumulator::Avg)
+                if spec.group_exprs.is_empty() =>
+            {
+                return Some(datafusion_exact_host_rejection(
+                    node_id,
+                    CapabilityRejectionCategory::UnsupportedNodeOperator,
+                    "datafusion_exact_ungrouped_float_sum_unsupported",
+                    [
+                        ("aggregate_function", expr.function.as_str().to_string()),
+                        ("aggregate_alias", expr.alias.clone()),
+                    ],
+                ));
+            },
+            Some(_) => continue,
+            None => {},
         }
         let category =
             if expr.distinct || matches!(expr.function, AggregateFunction::NUnique | AggregateFunction::Median) {
@@ -398,21 +323,12 @@ fn data_type_label(data_type: Option<&ArrowDataType>) -> String {
     data_type.map_or_else(|| "none".to_string(), |data_type| format!("{data_type:?}"))
 }
 
-fn capability_admission_from_capability_first(
+fn admitted_plan_from_capability_first(
     admission: CapabilityFirstPipelineAdmission,
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     policy: PlanningPolicy,
-) -> Result<BoundedPipelineAdmission> {
-    let envelope = admission.envelope().ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.bounded.capability_admission",
-            "admitted capability candidate must include a selected envelope",
-        )
-        .with_fact("execution_mode", CapabilityEnvelopeStatus::Admitted.as_str())
-        .with_fact("candidate_status", "admitted")
-    })?;
+) -> Result<AdmittedPlan> {
     let pipeline = admission.into_pipeline().ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -422,27 +338,13 @@ fn capability_admission_from_capability_first(
         .with_fact("execution_mode", CapabilityEnvelopeStatus::Admitted.as_str())
         .with_fact("candidate_status", "admitted")
     })?;
-    Ok(BoundedPipelineAdmission {
-        sink_kind: sink_boundary_kind_for_plan(plan),
-        scope: AttemptExecutionScope::for_query_plan(plan),
+    Ok(AdmittedPlan {
+        fingerprint: plan.execution_fingerprint(),
+        plan: plan.clone(),
+        pipeline,
         statistical_aggregate_execution_mode,
         policy,
-        envelope,
-        pipeline,
     })
-}
-
-/// Converts an artifact binding rejection into the execution-facing error.
-///
-/// A mismatched artifact is never re-decided: the caller must rebuild the
-/// artifact for the plan it actually executes.
-#[doc(hidden)]
-pub fn artifact_binding_error(
-    plan: &QueryPlan,
-    pipeline: Option<&CompiledPipeline>,
-    projection: &CapabilityRejectionProjection,
-) -> QueryError {
-    compiled_bounded_pipeline_required_error(plan, pipeline, projection)
 }
 
 fn compiled_bounded_pipeline_required_error(
@@ -457,7 +359,7 @@ fn compiled_bounded_pipeline_required_error(
     let mut error = QueryError::new(
         QueryErrorCode::UnsupportedPlanShape,
         "query_engine.bounded.compiled_pipeline_required",
-        "capability-admitted bounded join execution requires the compiled bounded pipeline runtime",
+        "bounded execution requires an admitted compiled pipeline",
     )
     .with_fact("compiled_pipeline_required", "true")
     .with_fact("compiled_pipeline_rejection_reason", projection.reason)
@@ -528,6 +430,50 @@ mod tests {
             output_schema,
         );
         builder.finish_with_host_sink(aggregate)
+    }
+
+    #[test]
+    fn exact_statistical_mode_rejects_ungrouped_float_sums_that_datafusion_adds_by_batch() {
+        let exact = StatisticalAggregateExecutionMode::DataFusionExactHostWelford;
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("quantity", DataType::Int32, true),
+            Field::new("amount", DataType::Int64, true),
+        ]));
+        let ungrouped = |extra: AggregateExpr, extra_output: Field| {
+            let mut builder = QueryPlanBuilder::new();
+            let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+                "/tmp/sales.parquet",
+                Arc::clone(&input_schema),
+                vec!["quantity".to_string(), "amount".to_string()],
+            )));
+            let aggregate = builder.add_aggregate(
+                source,
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![
+                        AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("quantity"), "quantity_stddev"),
+                        extra,
+                    ],
+                ),
+                Arc::new(Schema::new(vec![Field::new("quantity_stddev", DataType::Float64, true), extra_output])),
+            );
+            builder.finish_with_host_sink(aggregate)
+        };
+
+        let avg = ungrouped(
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity"), "quantity_avg"),
+            Field::new("quantity_avg", DataType::Float64, true),
+        );
+        let rejection = statistical_aggregate_execution_mode_rejection(&avg, exact)
+            .expect("an ungrouped AVG sums by batch in DataFusion");
+        assert_eq!(rejection.reason, "datafusion_exact_ungrouped_float_sum_unsupported");
+        assert_eq!(rejection.facts.get("aggregate_alias").map(String::as_str), Some("quantity_avg"));
+
+        let integer_sum = ungrouped(
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum"),
+            Field::new("amount_sum", DataType::Int64, true),
+        );
+        assert!(statistical_aggregate_execution_mode_rejection(&integer_sum, exact).is_none());
     }
 
     #[test]

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use query_engine::{
-    capability::CapabilityEnvelope,
     dimension_pruning::local_dimension_pruning_resolver,
-    optimizer::{NativeOptimizerOptions, ProjectionSimplificationRejectedReason, optimize_query_plan},
+    optimizer::{NativeOptimizerOptions, optimize_query_plan},
     plan::{NodeId, QueryPlan},
     rapids_backend::rapids_analysis_context,
 };
@@ -16,22 +15,19 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
 
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     assert!(
-        !plan.capability_analysis(rapids_analysis_context()).admits_keyless_conditional_join_input_subplan_pipeline()
+        unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
     );
-    assert!(
-        plan.capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none());
     let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
     );
     assert!(
-        preaggregate_leaf_plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+        unsupported_facts(
+            &preaggregate_leaf_plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context()
+        )
+        .is_none()
     );
 
     for variant in [
@@ -50,83 +46,34 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum,
     ] {
         // S3 admits these variants through the compiled task contracts once
-        // they compile; what stays narrow is the aggregate-over-join envelope
-        // itself.
+        // they compile.
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
-        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join(), "{variant:?}");
         assert!(
-            !plan
-                .capability_analysis(rapids_analysis_context())
-                .admits_keyless_conditional_join_input_subplan_pipeline(),
+            unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
             "{variant:?}"
         );
-        assert!(
-            !plan
-                .capability_analysis(rapids_analysis_context())
-                .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-            "{variant:?}"
-        );
-        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
     }
 
-    // A fetch limit after the root turns the tail into sort+fetch, which is the
-    // root TopK join/aggregate composition over the same keyless conditional and
-    // grouped-aggregate fragments. It stays outside this envelope's post-root
-    // stage contract but is executable and admitted by the root TopK envelope;
-    // capacity is the allocator's, enforced as a typed cap failure at runtime,
-    // not an admission gate.
+    // A fetch limit after the root turns the tail into sort+fetch over the same
+    // keyless conditional and grouped-aggregate fragments. It is executable and
+    // admitted; capacity is the allocator's, enforced as a typed cap failure at
+    // runtime, not an admission gate.
     let limit_after_root_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
     );
-    assert!(!limit_after_root_plan.capability_analysis(rapids_analysis_context()).admits_root_join());
     assert!(
-        !limit_after_root_plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_input_subplan_pipeline()
+        bounded_pipeline_admission(&limit_after_root_plan).expect("bounded admission should not fail").is_some(),
+        "LimitAfterRoot should be admitted"
     );
     assert!(
-        !limit_after_root_plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    let admission = bounded_pipeline_admission(&limit_after_root_plan)
-        .expect("bounded admission should not fail")
-        .expect("LimitAfterRoot should be admitted through the root TopK join/aggregate envelope");
-    assert_eq!(admission.envelope(), CapabilityEnvelope::RootTopKJoinAggregate);
-    assert!(
-        unsupported_facts(&limit_after_root_plan, rapids_analysis_context()).is_none(),
+        unsupported_facts(
+            &limit_after_root_plan,
+            StatisticalAggregateExecutionMode::default(),
+            rapids_analysis_context()
+        )
+        .is_none(),
         "LimitAfterRoot is admitted, not a support gap"
-    );
-}
-
-#[test]
-fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_uses_capability_evidence() {
-    let plan =
-        keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-
-    assert_eq!(
-        plan.capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-        analysis.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    assert_eq!(
-        analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
-        CapabilityDecision::Satisfied
-    );
-    assert!(analysis.invariants.iter().any(|invariant| {
-        matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. })
-            && invariant.decision == CapabilityDecision::Satisfied
-    }));
-    // Sort acyclicity is no longer a plan invariant: the compiled schedule's
-    // barrier dominance check owns it, so no FinalBarrierOrder evidence is
-    // produced here.
-    assert!(
-        !analysis
-            .invariants
-            .iter()
-            .any(|invariant| { matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder) })
     );
 }
 
@@ -142,39 +89,10 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
     );
 
     assert!(
-        optimized
-            .plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+        unsupported_facts(&optimized.plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .is_none(),
         "projection simplification must preserve bounded aggregate-over-join input wrappers"
     );
-    assert!(
-        optimized.diagnostics.projection_simplification.candidates.iter().any(|candidate| {
-            candidate.rejected_reason == Some(ProjectionSimplificationRejectedReason::ShapeContract)
-        }),
-        "protected projection wrappers should be reported as shape-contract rejections"
-    );
-}
-
-#[test]
-fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_rejects_bad_subplan_locally() {
-    let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
-        AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,
-    );
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-
-    assert!(
-        !plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    let CapabilityDecision::Rejected { reason, facts } =
-        &analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
-    else {
-        panic!("sort below aggregate input should reject aggregate-over-join subplan inputs admission");
-    };
-    assert_eq!(*reason, "aggregate_over_join_topk_input_requires_join_subplan");
-    assert!(facts.contains_key("node_id"));
 }
 
 #[derive(Debug, Clone, Copy)]

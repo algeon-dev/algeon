@@ -25,6 +25,7 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
         CapabilityReason::NativeSortPreservingMergeUnsupported
         | CapabilityReason::NativeDistributedAggregateUnsupported
         | CapabilityReason::NativePartitionPreservingSortUnsupported
+        | CapabilityReason::NativeExactStatisticalInputPartitioned
         | CapabilityReason::NativeOrderedOutputUnsupported => QueryGpuRemedy::new(
             "use_native_friendly_session_profile",
             QueryGpuRemedyKind::ConfigAction,
@@ -34,6 +35,11 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
             "capability_contract_gap",
             QueryGpuRemedyKind::CudfRsGap,
             "Bounded capability admission lacks a required lower-level reservation contract for this join shape.",
+        ),
+        CapabilityReason::NativeCompiledPipelineUnsupported => QueryGpuRemedy::new(
+            "compiled_contract_gap",
+            QueryGpuRemedyKind::EngineGap,
+            "No compiled pipeline contract covers this plan yet; the capability decision row names the missing contract.",
         ),
         CapabilityReason::NativeSourceNonLocalObjectStore => QueryGpuRemedy::new(
             "stage_local_parquet",
@@ -96,11 +102,15 @@ mod tests {
                 CapabilityReason::NativeSortPreservingMergeUnsupported
                 | CapabilityReason::NativeDistributedAggregateUnsupported
                 | CapabilityReason::NativePartitionPreservingSortUnsupported
+                | CapabilityReason::NativeExactStatisticalInputPartitioned
                 | CapabilityReason::NativeOrderedOutputUnsupported => {
                     ("use_native_friendly_session_profile", QueryGpuRemedyKind::ConfigAction)
                 },
                 CapabilityReason::NativeBoundedJoinUnsupported => {
                     ("capability_contract_gap", QueryGpuRemedyKind::CudfRsGap)
+                },
+                CapabilityReason::NativeCompiledPipelineUnsupported => {
+                    ("compiled_contract_gap", QueryGpuRemedyKind::EngineGap)
                 },
                 CapabilityReason::NativeSourceNonLocalObjectStore => {
                     ("stage_local_parquet", QueryGpuRemedyKind::UserAction)

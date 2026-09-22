@@ -237,11 +237,14 @@ pub struct AttemptExecutionScope {
 }
 
 impl AttemptExecutionScope {
+    /// Scope of `plan`, keyed like its fingerprint by the caller-visible
+    /// output: a host sink and a deferred host sink of the same schema share
+    /// one scope.
     #[doc(hidden)]
     pub fn for_query_plan(plan: &QueryPlan) -> Self {
         Self {
             execution_scope_fingerprint: plan.execution_fingerprint(),
-            output_schema_fingerprint: SchemaFingerprint::of(plan.output_schema()),
+            output_schema_fingerprint: SchemaFingerprint::of(plan.caller_visible_output_schema()),
             producer_occurrences: Vec::new(),
         }
     }

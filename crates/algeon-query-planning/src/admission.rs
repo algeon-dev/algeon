@@ -10,9 +10,7 @@ mod scope;
 mod shared;
 mod support;
 
-pub use bounded::{BoundedPipelineAdmission, BoundedPipelineDecision, bounded_pipeline_decision};
-#[doc(hidden)]
-pub use bounded::{artifact_binding_error, statistical_aggregate_execution_mode_rejection};
+pub use bounded::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit};
 pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
 #[doc(hidden)]
 pub use diagnostics::{

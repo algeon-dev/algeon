@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use query_engine::{admission::bounded_join_unsupported_shape_facts, rapids_backend::rapids_analysis_context};
+use query_engine::{
+    admission::{admit, bounded_join_unsupported_shape_facts},
+    rapids_backend::rapids_analysis_context,
+};
 
 use super::*;
 
@@ -36,15 +39,8 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
         &scalar_fact_schema,
         &supplier_schema,
     );
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
-    assert!(
-        !plan.capability_analysis(rapids_analysis_context()).admits_keyless_conditional_join_input_subplan_pipeline()
-    );
-    assert!(
-        plan.capability_analysis(rapids_analysis_context())
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-    );
-    assert!(bounded_join_unsupported_shape_facts(&plan, rapids_analysis_context()).is_none());
+    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

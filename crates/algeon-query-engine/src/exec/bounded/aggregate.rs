@@ -8,13 +8,12 @@ use arrow::{
 
 use super::{compiled::ResidentFrameStreamPayload, *};
 use crate::{
-    exec::{operators::final_global_aggregate_spec, source::record_bounded_parquet_source_metrics},
+    exec::operators::final_global_aggregate_spec,
     observability::{
         RuntimeObservationRecordClass, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity,
-        RuntimeOperatorStageKind, RuntimePlanNodeId, RuntimeTaskId, RuntimeTopologyRecord, SourceReadFact,
-        TaskDefinitionRow, stage_context_from_execution,
+        RuntimeOperatorStageKind, RuntimePlanNodeId, RuntimeTaskId, RuntimeTopologyRecord, TaskDefinitionRow,
+        stage_context_from_execution,
     },
-    rapids_backend::rapids_analysis_context,
 };
 
 mod final_merge;
@@ -30,44 +29,21 @@ use final_merge::{
     CompiledIncrementalPartitionedMerge, execute_incremental_source_adjacent_final_aggregate_merge,
     should_execute_incremental_partitioned_final_aggregate_merge,
 };
-pub(super) use final_merge::{
-    execute_compiled_bounded_final_aggregate_merge, execute_final_aggregate_merge, reduce_merge_fan_in,
-};
+pub(super) use final_merge::{execute_compiled_bounded_final_aggregate_merge, reduce_merge_fan_in};
 use partitioned::{
     execute_compiled_bounded_partitioned_aggregate_from_frame, partitioned_aggregate_partition_count,
     should_partition_compiled_grouped_aggregate,
 };
 pub(super) use plan::{BoundedPlan, BoundedUnaryStage, SourceAggregateTopK};
-use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection};
-pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
+use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate_projection};
 use sizing::partial_aggregate_work_reservation_upper_bound_bytes;
 pub(in crate::exec::bounded) use source_adjacent::execute_source_aggregate_with_dispatch;
 pub(in crate::exec::bounded) use stream::{
-    execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_source_stream,
-    execute_compiled_bounded_aggregate_from_stream, execute_compiled_source_aggregate_chunk,
+    execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
+    execute_compiled_source_aggregate_chunk,
 };
 
 use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
-
-fn aggregate_source_chunk_planning_policy(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-) -> SourceChunkPlanningPolicy {
-    apply_source_adjacent_aggregate_chunk_caps(
-        SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
-            bounded.source,
-            context.memory_control_policy(),
-            SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
-            context.source_chunk_planning_mode(),
-            context.source_chunk_planning_options(),
-        ),
-        SourceAdjacentAggregateChunkCapHints {
-            has_source_adjacent_stages: bounded.has_source_adjacent_stages(),
-            grouped_string_key: is_source_adjacent_grouped_aggregate(bounded)
-                && source_adjacent_grouped_aggregate_has_string_key(bounded),
-        },
-    )
-}
 
 /// Downstream-expression hints that force smaller local-parquet source chunks.
 ///
@@ -109,39 +85,6 @@ pub(in crate::exec::bounded) fn is_source_adjacent_grouped_aggregate(bounded: &B
     bounded.has_source_adjacent_stages()
         && !bounded.aggregate.0.spec.group_exprs.is_empty()
         && bounded.aggregate.0.spec.grouping_sets.is_none()
-}
-
-pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-) -> Result<CommittedPartial> {
-    execution.context().check_cancellation("query_engine.exec.bounded.aggregate")?;
-    validate_local_parquet_source(bounded.source, rapids_analysis_context())?;
-    bounded.validate_capabilities()?;
-
-    let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
-        bounded.source_id,
-        bounded.source,
-        aggregate_source_chunk_planning_policy(execution.context(), bounded),
-        execution.context(),
-    )?;
-    for chunk in &chunk_plan.chunks {
-        execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
-    }
-    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, execution.metrics());
-    if chunk_plan.chunks.is_empty() {
-        return execute_final_aggregate_merge(execution, bounded, Vec::new());
-    }
-
-    if aggregate_spec_requires_whole_input(&bounded.aggregate.0.spec) {
-        return execute_bounded_whole_input_aggregate_from_raw_chunks(execution, bounded, &chunk_plan.chunks);
-    }
-    let partitioned =
-        should_execute_partitioned_source_adjacent_grouped_aggregate(execution.context(), bounded, &chunk_plan.chunks);
-    compiled::lanes::AggregateLaneDispatch::with_available_lanes(execution, |dispatch, execution| {
-        execute_source_aggregate_with_dispatch(execution, bounded, &chunk_plan.chunks, Some(dispatch), partitioned)?
-            .into_resident_frame()
-    })
 }
 
 pub(in crate::exec::bounded) fn should_execute_partitioned_source_adjacent_grouped_aggregate(

@@ -10,57 +10,27 @@ pub use super::compiled::{
     CompiledTaskExecutor, LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched,
 };
 use crate::{
-    admission::{BoundedPipelineAdmission, artifact_binding_error, bounded_pipeline_decision},
+    admission::AdmittedPlan,
     error::Result,
     exec::{ExecutionMetrics, output::QueryOutput},
     observability::RuntimeExecutionObservationScope,
-    plan::QueryPlan,
-    rapids_backend::rapids_analysis_context,
     runtime::{ExecutionContext, resident::GpuResidentInputMap},
 };
 
-pub(in crate::exec) fn try_execute_bounded_pipeline(
+pub(in crate::exec) fn execute_bounded_pipeline(
     context: &ExecutionContext,
-    plan: &QueryPlan,
-    admission: Option<&BoundedPipelineAdmission>,
+    admitted: &AdmittedPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
-) -> Result<Option<QueryOutput>> {
-    if let Some(admission) = admission {
-        // A supplied artifact is checked, never re-decided: a plan, mode, or
-        // sink the artifact does not bind to is a caller error, not a fallback.
-        if let Some(projection) = admission.binding_rejection(plan, context.statistical_aggregate_execution_mode()) {
-            return Err(artifact_binding_error(plan, Some(admission.pipeline()), &projection));
-        }
-        return execute_compiled_pipeline(
-            context,
-            plan,
-            admission.policy(),
-            admission.pipeline(),
-            gpu_inputs,
-            metrics,
-            observation_scope,
-        )
-        .map(Some);
-    }
-    let admission = bounded_pipeline_decision(
-        plan,
-        context.statistical_aggregate_execution_mode(),
-        rapids_analysis_context().with_policy(context.planning_policy()),
-    )?
-    .into_execution_admission()?;
-    let Some(admission) = admission else {
-        return Ok(None);
-    };
+) -> Result<QueryOutput> {
     execute_compiled_pipeline(
         context,
-        plan,
-        admission.policy(),
-        admission.pipeline(),
+        admitted.plan(),
+        admitted.policy(),
+        admitted.pipeline(),
         gpu_inputs,
         metrics,
         observation_scope,
     )
-    .map(Some)
 }

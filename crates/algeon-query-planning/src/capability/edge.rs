@@ -2,21 +2,20 @@
 //!
 //! Each producer→consumer edge in the plan carries a set of contract kinds
 //! (column carriage, key carriage, partition compatibility, etc.). Rejections
-//! here are local to the edge; whole-plan admission lives in [`super::admission`].
+//! here are local to the edge; whole-plan admission lives in [`crate::admission`].
 
 use std::collections::BTreeSet;
 
 use super::{
     JoinExecutionCapability, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
     aggregate::{AggregateStateContract, aggregate_state_contract},
-    graph::{collect_reachable_node_ids, consumer_nodes_for_reachable},
+    graph::{collect_reachable_node_ids, consumer_nodes_for_reachable, join_side_index, opposite_join_side},
     join_node_execution_capability,
     model::{
         CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty, ResultSinkKind,
         VectorInputRole,
     },
     node::{produced_properties, source_format_capability},
-    shape::{join_side_index, opposite_join_side},
 };
 
 pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -> Vec<EdgeContract> {

@@ -138,7 +138,6 @@ fn composed_pipeline_admits_projection_over_join_limit() {
     assert_eq!(plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Limit(_))).count(), 1);
     let admission =
         bounded_pipeline_admission(&plan).unwrap().expect("single-join limit projection should be admitted");
-    assert_eq!(admission.envelope(), CapabilityEnvelope::ComposedPipeline);
     // The retired single-join post-root envelope no longer decides this shape;
     // the compiled `Limit` task takes one complete resident frame.
     let limit_task = admission
@@ -155,8 +154,8 @@ fn composed_pipeline_admits_a_filtered_source_scan_shared_by_several_joins() {
     // A bare shared scan was always admitted; the same scan with a filter above
     // it must be too, because the filter only re-stages the scan's stream.
     let plan = shared_filtered_dimension_fan_out_plan();
-    let admission = bounded_pipeline_admission(&plan)
-        .unwrap()
-        .expect("a filtered dimension scan shared by several joins should be admitted");
-    assert_eq!(admission.envelope(), CapabilityEnvelope::ComposedPipeline);
+    assert!(
+        bounded_pipeline_admission(&plan).unwrap().is_some(),
+        "a filtered dimension scan shared by several joins should be admitted"
+    );
 }

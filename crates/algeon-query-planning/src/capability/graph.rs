@@ -167,3 +167,55 @@ pub(super) fn peel_projection_chain_for_capability(plan: &QueryPlan, node_id: No
         current = projection.input;
     }
 }
+
+pub(super) fn peel_resident_unary_chain_for_capability(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Option<(NodeId, Vec<NodeId>)> {
+    let mut current = node_id;
+    let mut chain = Vec::new();
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let node = plan.node(current)?;
+        match &node.kind {
+            PlanNode::Projection(projection) => {
+                chain.push(current);
+                current = projection.input;
+            },
+            PlanNode::Filter(filter) => {
+                chain.push(current);
+                current = filter.input;
+            },
+            PlanNode::Source(_)
+            | PlanNode::Join(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
+                return Some((current, chain));
+            },
+        }
+    }
+}
+
+pub(super) const fn join_side_index(side: JoinSide) -> usize {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
+    }
+}
+
+pub(super) const fn opposite_join_side(side: JoinSide) -> JoinSide {
+    match side {
+        JoinSide::Left => JoinSide::Right,
+        JoinSide::Right => JoinSide::Left,
+    }
+}

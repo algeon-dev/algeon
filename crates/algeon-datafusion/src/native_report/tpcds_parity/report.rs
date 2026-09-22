@@ -9,7 +9,7 @@ use super::{
     sql_top_level_order_by_covers_output_columns, stable_tsv_field, unsupported_category,
     write_workload_dataset_metadata,
 };
-use crate::report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE};
+use crate::report::CandidateOutcome;
 
 /// Stable top-level parity outcome for one query row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -705,25 +705,11 @@ fn planning_outcome_diagnostics(
     accepted: bool,
 ) -> (Option<CandidateOutcomeKind>, Option<String>, Option<String>) {
     if accepted {
-        if diagnostics.report.outcomes().iter().any(|outcome| matches!(outcome, CandidateOutcome::Deferred { .. })) {
-            return (
-                Some(CandidateOutcomeKind::Deferred),
-                Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
-                None,
-            );
-        }
         return (Some(CandidateOutcomeKind::Selected), None, None);
     }
     for (outcome_index, outcome) in diagnostics.report.outcomes().iter().enumerate() {
         match outcome {
             CandidateOutcome::Selected { .. } => {},
-            CandidateOutcome::Deferred { .. } => {
-                return (
-                    Some(CandidateOutcomeKind::Deferred),
-                    Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
-                    None,
-                );
-            },
             CandidateOutcome::NotSupported { candidate, capability_reason } => {
                 return (
                     Some(CandidateOutcomeKind::NotSupported),
@@ -775,7 +761,7 @@ fn derive_parity_outcome(
         Some(CandidateOutcomeKind::NotSupported | CandidateOutcomeKind::NotSelectedByCost) | None => {
             return (ParityStatus::NativeRejected, ParityComparisonMode::NotApplicable, None, None, None);
         },
-        Some(CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred) => {},
+        Some(CandidateOutcomeKind::Selected) => {},
     }
     if !inputs.native_runtime_started {
         return (ParityStatus::NativeRejected, ParityComparisonMode::NotApplicable, None, None, None);

@@ -94,6 +94,7 @@ pub(crate) use source::{
     graph_residency_descriptor_for_datafusion_local_parquet_scan,
     graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
 };
+pub(crate) use validate::floating_statistical_aggregate_input_is_partitioned;
 use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 
 use crate::{

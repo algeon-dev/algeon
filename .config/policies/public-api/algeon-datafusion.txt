@@ -131,7 +131,9 @@ pub mod algeon_datafusion::capability
 pub use algeon_datafusion::capability::TriageCode
 pub enum algeon_datafusion::capability::CapabilityReason
 pub algeon_datafusion::capability::CapabilityReason::NativeBoundedJoinUnsupported
+pub algeon_datafusion::capability::CapabilityReason::NativeCompiledPipelineUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeDistributedAggregateUnsupported
+pub algeon_datafusion::capability::CapabilityReason::NativeExactStatisticalInputPartitioned
 pub algeon_datafusion::capability::CapabilityReason::NativeOrderedOutputUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativePartitionPreservingSortUnsupported
 pub algeon_datafusion::capability::CapabilityReason::NativeSortPreservingMergeUnsupported
@@ -773,7 +775,6 @@ pub const fn algeon_datafusion::error::status_for_code(algeon_datafusion::error:
 pub type algeon_datafusion::error::Result<T> = core::result::Result<T, algeon_datafusion::error::Error>
 pub mod algeon_datafusion::gpu_coverage
 pub enum algeon_datafusion::gpu_coverage::CandidateOutcomeKind
-pub algeon_datafusion::gpu_coverage::CandidateOutcomeKind::Deferred
 pub algeon_datafusion::gpu_coverage::CandidateOutcomeKind::NotSelectedByCost
 pub algeon_datafusion::gpu_coverage::CandidateOutcomeKind::NotSupported
 pub algeon_datafusion::gpu_coverage::CandidateOutcomeKind::Selected
@@ -1032,7 +1033,6 @@ pub use algeon_datafusion::native_report::MetricUnit
 pub use algeon_datafusion::native_report::NativeOptimizerDiagnostics
 pub use algeon_datafusion::native_report::StatisticalAggregateExecutionMode
 pub enum algeon_datafusion::native_report::CandidateOutcomeKind
-pub algeon_datafusion::native_report::CandidateOutcomeKind::Deferred
 pub algeon_datafusion::native_report::CandidateOutcomeKind::NotSelectedByCost
 pub algeon_datafusion::native_report::CandidateOutcomeKind::NotSupported
 pub algeon_datafusion::native_report::CandidateOutcomeKind::Selected
@@ -1681,6 +1681,7 @@ pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_P
 pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str
+pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA: &str
 pub const algeon_datafusion::native_report::NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str
 pub fn algeon_datafusion::native_report::format_native_aggregate_strategy_metric_rows(&[algeon_datafusion::native_report::NativeAggregateStrategyMetricRow]) -> alloc::string::String
 pub fn algeon_datafusion::native_report::format_native_dynamic_filter_runtime_metric_rows(&[algeon_datafusion::native_report::NativeDynamicFilterRuntimeMetricRow]) -> alloc::string::String
@@ -1826,17 +1827,10 @@ pub algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics::sink_k
 pub algeon_datafusion::planner::NativeCapabilityCompiledGraphDiagnostics::task_count: usize
 pub struct algeon_datafusion::planner::NativeCapabilityContractDiagnostics
 pub algeon_datafusion::planner::NativeCapabilityContractDiagnostics::accepted_candidates: alloc::vec::Vec<algeon_datafusion::planner::NativeCapabilityAcceptedCandidateDiagnostics>
-pub algeon_datafusion::planner::NativeCapabilityContractDiagnostics::deferred_candidates: alloc::vec::Vec<algeon_datafusion::planner::NativeCapabilityDeferredCandidateDiagnostics>
-pub algeon_datafusion::planner::NativeCapabilityContractDiagnostics::non_join_bounded_plan_count: usize
-pub algeon_datafusion::planner::NativeCapabilityContractDiagnostics::non_join_bounded_plan_reason: core::option::Option<alloc::string::String>
 pub algeon_datafusion::planner::NativeCapabilityContractDiagnostics::rejected_candidates: alloc::vec::Vec<algeon_datafusion::planner::NativeCapabilityRejectedCandidateDiagnostics>
 impl algeon_datafusion::planner::NativeCapabilityContractDiagnostics
 pub fn algeon_datafusion::planner::NativeCapabilityContractDiagnostics::is_empty(&self) -> bool
 pub fn algeon_datafusion::planner::NativeCapabilityContractDiagnostics::merge(&mut self, Self)
-pub struct algeon_datafusion::planner::NativeCapabilityDeferredCandidateDiagnostics
-pub algeon_datafusion::planner::NativeCapabilityDeferredCandidateDiagnostics::candidate: algeon_datafusion::report::GpuCandidate
-pub algeon_datafusion::planner::NativeCapabilityDeferredCandidateDiagnostics::planning_stage: alloc::string::String
-pub algeon_datafusion::planner::NativeCapabilityDeferredCandidateDiagnostics::report: query_planning::contract_report::CapabilityContractReport
 pub struct algeon_datafusion::planner::NativeCapabilityRejectedCandidateDiagnostics
 pub algeon_datafusion::planner::NativeCapabilityRejectedCandidateDiagnostics::blocking_contract: query_planning::contract_report::CapabilityDecisionRow
 pub algeon_datafusion::planner::NativeCapabilityRejectedCandidateDiagnostics::candidate: algeon_datafusion::report::GpuCandidate
@@ -1848,7 +1842,6 @@ pub algeon_datafusion::planner::NativePlanningDiagnostics::input_plan_shape: all
 pub algeon_datafusion::planner::NativePlanningDiagnostics::native_optimizer: query_planning::optimizer::NativeOptimizerDiagnostics
 pub algeon_datafusion::planner::NativePlanningDiagnostics::report: algeon_datafusion::report::PlanningReport
 pub algeon_datafusion::planner::NativePlanningDiagnostics::source_diagnostics: alloc::vec::Vec<query_planning::source::diagnostics::SourceDiagnostics>
-pub const algeon_datafusion::planner::CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str
 pub fn algeon_datafusion::planner::classify_final_plan(&dyn datafusion_physical_plan::execution_plan::ExecutionPlan) -> algeon_datafusion::planner::FinalPlanDisposition
 pub async fn algeon_datafusion::planner::plan_with_native_diagnostics(&datafusion::execution::session_state::SessionState, &datafusion_expr::logical_plan::plan::LogicalPlan) -> datafusion_common::error::Result<(alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, algeon_datafusion::planner::NativePlanningDiagnostics)>
 pub mod algeon_datafusion::report
@@ -1860,9 +1853,6 @@ pub use algeon_datafusion::report::TriageCode
 pub use algeon_datafusion::report::TriageSummary
 pub use algeon_datafusion::report::TriageVerdict
 pub enum algeon_datafusion::report::CandidateOutcome
-pub algeon_datafusion::report::CandidateOutcome::Deferred
-pub algeon_datafusion::report::CandidateOutcome::Deferred::candidate: algeon_datafusion::report::GpuCandidate
-pub algeon_datafusion::report::CandidateOutcome::Deferred::planning_stage: alloc::string::String
 pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost
 pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost::candidate: algeon_datafusion::report::GpuCandidate
 pub algeon_datafusion::report::CandidateOutcome::NotSelectedByCost::cost_reason: query_planning::plan::preference::NativePlanCostReason
@@ -1877,7 +1867,6 @@ pub const fn algeon_datafusion::report::CandidateOutcome::kind(&self) -> algeon_
 impl algeon_datafusion::report::CandidateOutcome
 pub fn algeon_datafusion::report::CandidateOutcome::to_json(&self) -> serde_json::value::Value
 pub enum algeon_datafusion::report::CandidateOutcomeKind
-pub algeon_datafusion::report::CandidateOutcomeKind::Deferred
 pub algeon_datafusion::report::CandidateOutcomeKind::NotSelectedByCost
 pub algeon_datafusion::report::CandidateOutcomeKind::NotSupported
 pub algeon_datafusion::report::CandidateOutcomeKind::Selected
@@ -1920,7 +1909,6 @@ pub algeon_datafusion::report::NativeCandidateCostEvidence::source_count: usize
 pub struct algeon_datafusion::report::PlanningReport
 impl algeon_datafusion::report::PlanningReport
 pub fn algeon_datafusion::report::PlanningReport::data_layout_fixable_not_supported(&self) -> core::option::Option<algeon_datafusion::report::DataLayoutFixableNotSupported<'_>>
-pub fn algeon_datafusion::report::PlanningReport::deferred_count(&self) -> usize
 pub fn algeon_datafusion::report::PlanningReport::from_outcomes(impl core::iter::traits::collect::IntoIterator<Item = algeon_datafusion::report::CandidateOutcome>) -> Self
 pub fn algeon_datafusion::report::PlanningReport::new() -> Self
 pub fn algeon_datafusion::report::PlanningReport::not_selected_by_cost_count(&self) -> usize
@@ -1941,7 +1929,6 @@ pub fn algeon_datafusion::report::PlanningReport::triage_summary(&self) -> query
 pub fn algeon_datafusion::report::PlanningReport::with_correlation_from(self, &algeon_datafusion::report::PlanningReport) -> Self
 pub fn algeon_datafusion::report::PlanningReport::with_query_id(self, impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
 pub fn algeon_datafusion::report::PlanningReport::with_trace_id(self, impl core::convert::Into<query_planning::correlation::TraceId>) -> Self
-pub const algeon_datafusion::report::DEFERRED_PRODUCER_BINDING_REASON_CODE: &str
 pub mod algeon_datafusion::server
 pub enum algeon_datafusion::server::AuthMode
 pub algeon_datafusion::server::AuthMode::BasicBearer

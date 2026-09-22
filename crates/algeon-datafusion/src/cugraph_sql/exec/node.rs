@@ -6,7 +6,7 @@ use std::{
 
 use futures::stream::once;
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AdmittedPlan, AttemptCapabilityEvidence},
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
     runtime::cache_observation_fingerprint,
 };
@@ -331,7 +331,7 @@ impl CugraphAlgoExec {
         let (prepared, admission_graph_plan) = prepared.issue_graph_aware_ticket_after_staging(
             input_row_bounds,
             task_context.as_ref(),
-            exact_edge_source_gpu_plan.as_ref(),
+            exact_edge_source_gpu_plan.as_deref().map(AdmittedPlan::plan),
         )?;
         staged_inputs.admitted_graph_plan = Some(admission_graph_plan);
         staged_inputs.admitted_edge_source_gpu_plan = exact_edge_source_gpu_plan;

@@ -1363,7 +1363,7 @@ mod lane_width_tests {
         array::{ArrayRef, Int32Array, RecordBatch},
         datatypes::{DataType, Field, Schema},
     };
-    use query_planning::admission::bounded_pipeline_decision;
+    use query_planning::admission::admit;
 
     use super::lane_family_concurrent_task_count;
     use crate::{
@@ -1376,9 +1376,8 @@ mod lane_width_tests {
     };
 
     fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
-        let decision =
-            bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-                .expect("bounded admission should not error");
+        let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+            .expect("bounded admission should not error");
         decision.admission().expect("these plans use the compiled admission").pipeline().clone()
     }
 

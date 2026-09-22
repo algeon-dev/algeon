@@ -3,7 +3,9 @@ use std::{fmt::Write as _, sync::Arc};
 use algeon_datafusion::native_exec::{AlgeonNativeComposedExec, AlgeonNativeExec};
 use datafusion::physical_plan::ExecutionPlan;
 use query_engine::{
-    admission::bounded_pipeline_decision, mode::StatisticalAggregateExecutionMode, plan::QueryPlan,
+    admission::{AdmissionDecision, admit},
+    mode::StatisticalAggregateExecutionMode,
+    plan::QueryPlan,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -42,17 +44,13 @@ fn append_compiled_pipelines(output: &mut String, plan: &Arc<dyn ExecutionPlan>,
 
 fn append_compiled_pipeline(output: &mut String, index: usize, plan: &QueryPlan) {
     let _ = writeln!(output, "wrapper={index}");
-    let decision =
-        bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context());
+    let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context());
     match decision {
-        Ok(decision) => {
-            if let Some(admission) = decision.admission() {
-                let _ = writeln!(output, "{}", admission.pipeline().debug_render());
-            } else if let Some(rejection) = decision.rejection_projection() {
-                let _ = writeln!(output, "not_admitted={rejection:?}");
-            } else {
-                output.push_str("no_compiled_pipeline\n");
-            }
+        Ok(AdmissionDecision::Admitted(admission)) => {
+            let _ = writeln!(output, "{}", admission.pipeline().debug_render());
+        },
+        Ok(AdmissionDecision::Rejected(rejection)) => {
+            let _ = writeln!(output, "not_admitted={:?}", rejection.projection());
         },
         Err(error) => {
             let _ = writeln!(output, "diagnostic_compile_error={error}");

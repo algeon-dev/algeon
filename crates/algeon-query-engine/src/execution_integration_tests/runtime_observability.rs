@@ -11,7 +11,7 @@ use arrow::{
 };
 use query_engine::{
     error::{QueryError, QueryErrorCode},
-    exec::{QueryExecutionRequest, execute_query_plan},
+    exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan},
     metrics::{QueryId, TraceId},
     observability::{
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload,
@@ -64,7 +64,14 @@ fn observed_execution_cancellation_preserves_error_metrics_and_partial_events() 
     )
     .expect("context builds before execution");
 
-    let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
+    let admitted = admit_query_plan(
+        &plan,
+        observed.context().statistical_aggregate_execution_mode(),
+        observed.context().planning_policy(),
+    )
+    .expect("literal plan admits");
+
+    let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::admitted(&admitted));
     assert!(matches!(outcome.result(), Err(error) if error.code() == QueryErrorCode::Cancelled));
     assert_eq!(outcome.metrics().query_id().as_str(), "observed-cancel");
     let snapshot = outcome.observation().expect("enabled execution returns sealed evidence");

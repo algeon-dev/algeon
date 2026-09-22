@@ -96,10 +96,8 @@ use self::{
 };
 #[cfg(feature = "cuvs")]
 use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
-#[cfg(feature = "cugraph")]
-use crate::plan::GraphAlgorithmNode;
 use crate::{
-    admission::BoundedPipelineAdmission,
+    admission::AdmittedPlan,
     chunk::{
         SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
         annotate_source_chunk_batching_reasons, plan_local_parquet_source_chunks_with_execution_context,
@@ -147,21 +145,18 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     validate_query_plan(plan, rapids_analysis_context())
 }
 
-/// Decides the executable plan once and hands the admitted artifact to the
-/// caller.
+/// Admits the executable plan once and hands the artifact to the caller.
 ///
-/// This boundary is used after frontend-owned plan resolution, before bounded
-/// execution selects a compiled pipeline. Execution runs this same artifact
-/// instead of re-deriving it; a missing artifact means the plan has no join
-/// to decide. Unbounded plans continue to use [`preflight_query_plan`] alone.
-/// A rejection carries the caller-visible sink as a diagnostic fact only.
-pub fn preflight_bounded_query_plan(
+/// Callers that build a plan where it executes (graph, vector and ML relation
+/// plans, tools, tests) admit it here; execution takes only the artifact. A
+/// plan no compiled contract covers is a typed error carrying the first
+/// contract it misses and the caller-visible sink as a diagnostic fact.
+pub fn admit_query_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     policy: PlanningPolicy,
-) -> Result<Option<BoundedPipelineAdmission>> {
-    preflight_query_plan(plan)?;
-    bounded::preflight_bounded_join_plan(plan, statistical_aggregate_execution_mode, policy)
+) -> Result<Arc<AdmittedPlan>> {
+    bounded::admit_or_execution_error(plan, statistical_aggregate_execution_mode, policy)
 }
 
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
@@ -207,32 +202,24 @@ impl HashJoinCacheKey {
 }
 
 /// Borrowed inputs for one native plan execution.
+///
+/// Execution takes only an admitted plan, so it never decides again; callers
+/// obtain one from planning or from [`admit_query_plan`].
 pub struct QueryExecutionRequest<'a> {
-    plan: &'a QueryPlan,
+    admitted: &'a AdmittedPlan,
     gpu_inputs: Option<&'a GpuResidentInputMap>,
-    bounded_admission: Option<&'a BoundedPipelineAdmission>,
 }
 
 impl<'a> QueryExecutionRequest<'a> {
-    /// Creates an execution request without external GPU-resident inputs.
-    pub const fn new(plan: &'a QueryPlan) -> Self {
-        Self { plan, gpu_inputs: None, bounded_admission: None }
+    /// Creates a request that executes an admitted plan without external
+    /// GPU-resident inputs.
+    pub const fn admitted(admitted: &'a AdmittedPlan) -> Self {
+        Self { admitted, gpu_inputs: None }
     }
 
     /// Supplies GPU-resident inputs keyed by the source names in the plan.
     pub const fn with_gpu_inputs(mut self, gpu_inputs: &'a GpuResidentInputMap) -> Self {
         self.gpu_inputs = Some(gpu_inputs);
-        self
-    }
-
-    /// Supplies the admission artifact the preflight decided for this plan.
-    ///
-    /// Execution checks the artifact against the plan instead of re-deriving
-    /// it; a plan, mode, or sink the artifact does not bind to is a caller
-    /// error. Callers without a preflight artifact omit this and keep the
-    /// engine-local decision.
-    pub const fn with_bounded_admission(mut self, admission: &'a BoundedPipelineAdmission) -> Self {
-        self.bounded_admission = Some(admission);
         self
     }
 }
@@ -246,15 +233,15 @@ impl<'a> QueryExecutionRequest<'a> {
 pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionRequest<'_>) -> QueryExecutionOutcome {
     let empty_inputs = GpuResidentInputMap::new();
     let gpu_inputs = request.gpu_inputs.unwrap_or(&empty_inputs);
-    execute_query_plan_with_observation(context, request.plan, request.bounded_admission, gpu_inputs)
+    execute_query_plan_with_observation(context, request.admitted, gpu_inputs)
 }
 
 fn execute_query_plan_with_observation(
     context: &ExecutionContext,
-    plan: &QueryPlan,
-    bounded_admission: Option<&BoundedPipelineAdmission>,
+    admitted: &AdmittedPlan,
     gpu_inputs: &GpuResidentInputMap,
 ) -> QueryExecutionOutcome {
+    let plan = admitted.plan();
     let observation_handle = context.runtime_observation().clone();
     let manifest_query_id = observation_handle.query_id().map(|id| QueryId::new(id.as_str()));
     let manifest_trace_id = observation_handle.trace_id().map(|id| TraceId::new(id.as_str()));
@@ -289,8 +276,7 @@ fn execute_query_plan_with_observation(
         .and_then(|observed_context| {
             execute_query_plan_output(
                 &observed_context,
-                plan,
-                bounded_admission,
+                admitted,
                 gpu_inputs,
                 &execution_metrics,
                 Some(&execution_scope),
@@ -344,14 +330,30 @@ fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> Quer
 
 fn execute_query_plan_output(
     context: &ExecutionContext,
-    plan: &QueryPlan,
-    bounded_admission: Option<&BoundedPipelineAdmission>,
+    admitted: &AdmittedPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Output> {
     context.check_cancellation("query_engine.exec.execute_query_plan")?;
-    validate_query_plan(plan, rapids_analysis_context())?;
+    let plan = admitted.plan();
+    // Operators read the mode from the context; the artifact was admitted
+    // under its own copy, and the two must agree.
+    if context.statistical_aggregate_execution_mode() != admitted.statistical_aggregate_execution_mode() {
+        return Err(QueryError::new(
+            QueryErrorCode::InternalInvariantViolation,
+            "query_engine.exec.execute_query_plan",
+            "the plan was admitted under a different statistical aggregate execution mode than the executing context",
+        )
+        .with_fact(
+            "admitted_statistical_aggregate_execution_mode",
+            admitted.statistical_aggregate_execution_mode().as_str(),
+        )
+        .with_fact(
+            "context_statistical_aggregate_execution_mode",
+            context.statistical_aggregate_execution_mode().as_str(),
+        ));
+    }
     if plan.contains_ml_algorithm() {
         let unreachable = plan.unreachable_node_ids();
         if let Some(node) = plan
@@ -411,7 +413,7 @@ fn execute_query_plan_output(
     context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, gpu_inputs)?;
     let _attempt_execution_range = attempt_execution_range(context);
     let output = if context.memory_control_policy().is_bounded() {
-        execute_bounded_query_plan(context, plan, bounded_admission, gpu_inputs, metrics, observation_scope)?
+        execute_bounded_query_plan(context, admitted, gpu_inputs, metrics, observation_scope)?
     } else {
         let mut scratch = ExecutionScratch::new();
         let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
@@ -567,20 +569,6 @@ fn execute_node(
     Ok(frame)
 }
 
-#[cfg(feature = "cugraph")]
-fn graph_preparation_bypass_input(plan: &QueryPlan, graph: &GraphAlgorithmNode) -> Option<NodeId> {
-    if !graph.spec.edge_normalize_inserted {
-        return None;
-    }
-    let PlanNode::EdgeNormalize(normalize) = &plan.node(graph.input)?.kind else {
-        return None;
-    };
-    let raw_input = plan.node(normalize.input)?;
-    let source = raw_input.output_schema().field_with_name(&graph.spec.edge_columns.source).ok()?;
-    let destination = raw_input.output_schema().field_with_name(&graph.spec.edge_columns.destination).ok()?;
-    (!source.is_nullable() && !destination.is_nullable()).then_some(normalize.input)
-}
-
 #[cfg(test)]
 mod tests {
     use arrow::{array::Int32Array, datatypes::DataType};
@@ -649,7 +637,14 @@ mod tests {
         )
         .expect("observed execution context builds");
 
-        let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
+        let admitted = admit_query_plan(
+            &plan,
+            observed.context().statistical_aggregate_execution_mode(),
+            observed.context().planning_policy(),
+        )
+        .expect("literal plan admits");
+
+        let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::admitted(&admitted));
 
         let output = outcome.result().expect("source-location key failure must not fail the query");
         assert_eq!(output.as_host_arrow().expect("host sink returns Arrow").num_rows(), 1);
@@ -670,7 +665,13 @@ mod tests {
             unavailable_key_session("key-unavailable-cancelled"),
         )
         .expect("cancelled observed execution context builds");
-        let cancelled = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
+        let admitted = admit_query_plan(
+            &plan,
+            observed.context().statistical_aggregate_execution_mode(),
+            observed.context().planning_policy(),
+        )
+        .expect("literal plan admits");
+        let cancelled = execute_query_plan(observed.context(), QueryExecutionRequest::admitted(&admitted));
         assert!(matches!(cancelled.result(), Err(error) if error.code() == QueryErrorCode::Cancelled));
         assert_key_unavailable_evidence(&cancelled, RuntimeTerminalOutcome::Cancelled);
     }

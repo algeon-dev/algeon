@@ -1,6 +1,5 @@
 use query_engine::{
-    admission::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts, bounded_pipeline_decision},
-    capability::{CapabilityDecision, CapabilityEnvelope, CapabilityEnvelopeAdmission},
+    admission::{admit, bounded_join_modeled_facts, bounded_join_unsupported_shape_facts},
     dimension_pruning::local_dimension_pruning_resolver,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerLowering},
     optimizer::{
@@ -29,18 +28,6 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    let analysis = native_plan.capability_analysis(rapids_analysis_context());
-    assert!(
-        native_plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-        "q02 should lower to the executable aggregate-over-join subplan TopK pipeline: {:?}\n{native_plan}",
-        analysis.multi_join_aggregate_over_join_subplan_topk_admission,
-    );
-    assert!(
-        analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-        "q02 should be admitted by the capability contract:\n{native_plan}"
-    );
     let optimized_q2 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
@@ -55,14 +42,16 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_q02_reassociated_supplier_filter_precedes_partsupp_join(&optimized_q2.plan);
     assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(&optimized_q2.plan);
     assert!(
-        optimized_q2
-            .plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        admit(&optimized_q2.plan, Default::default(), rapids_analysis_context())
+            .expect("optimized q02 bounded admission should not fail")
+            .admission()
+            .is_some(),
         "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
         optimized_q2.plan
     );
-    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+    let decision = admit(native_plan, Default::default(), rapids_analysis_context())
+        .expect("q02 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
         .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -73,35 +62,23 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    assert_eq!(
-        native_plan.capability_analysis(rapids_analysis_context()).root_full_sort_join_aggregate_admission,
-        CapabilityDecision::Satisfied,
-        "q15 root full-sort admission should be satisfied",
-    );
-    assert!(
-        native_plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(),
-        "q15 should lower to the executable root full-sort shared aggregate fanout pipeline:\n{native_plan}"
-    );
     let optimized_q15 = optimize_query_plan(
         native_plan.clone(),
         &Default::default(),
         rapids_analysis_context(),
         local_dimension_pruning_resolver(),
     );
-    assert_eq!(
-        optimized_q15.plan.capability_analysis(rapids_analysis_context()).root_full_sort_join_aggregate_admission,
-        CapabilityDecision::Satisfied,
-        "optimized q15 root full-sort admission should remain satisfied",
-    );
     assert!(
-        optimized_q15
-            .plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_root_full_sort_join_aggregate_pipeline(),
-        "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",
+        admit(&optimized_q15.plan, Default::default(), rapids_analysis_context())
+            .expect("optimized q15 bounded admission should not fail")
+            .admission()
+            .is_some(),
+        "optimized q15 should be admitted as a shared aggregate fanout pipeline:\n{}",
         optimized_q15.plan
     );
-    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+    let decision = admit(native_plan, Default::default(), rapids_analysis_context())
+        .expect("q15 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
         .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -112,13 +89,9 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    assert!(
-        native_plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
-        "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
-    );
-    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+    let decision = admit(native_plan, Default::default(), rapids_analysis_context())
+        .expect("q18 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
         .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -129,13 +102,9 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
-    assert!(
-        native_plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
-        "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
-    );
-    let facts = bounded_join_modeled_facts(native_plan, rapids_analysis_context())
+    let decision = admit(native_plan, Default::default(), rapids_analysis_context())
+        .expect("q20 bounded admission should not fail");
+    let facts = bounded_join_modeled_facts(native_plan, &decision, rapids_analysis_context())
         .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -334,31 +303,13 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
             }
         }
         let plan = optimized.plan.with_nodes_for_test(nodes);
-        let analysis = plan.capability_analysis(rapids_analysis_context());
-        if matches!(build_side, NativeJoinSide::Right) {
-            assert!(
-                analysis.admits_bounded_join(),
-                "the complete optimized q21 pipeline must admit right-build residual semi/anti joins: {analysis:?}\n{plan}"
-            );
-        } else {
-            // S3 retired the build-side-agnostic closed-multi-join envelope, so
-            // no named envelope covers a left-build residual semi/anti tail.
-            // The sharing contract its computed-shared unary chain was waiting
-            // on now exists, so the composed pipeline admits it on the compiled
-            // task and resource contracts alone.
-            assert!(
-                !analysis.admits_bounded_join(),
-                "no named envelope should cover left-build q21: {analysis:?}\n{plan}"
-            );
-            let decision = bounded_pipeline_decision(&plan, Default::default(), rapids_analysis_context())
-                .expect("left-build q21 bounded admission should not fail");
-            assert!(
-                decision.admission().is_some(),
-                "left-build q21 should admit through the composed pipeline: {:?}\n{plan}",
-                decision.rejection_projection()
-            );
-            assert_eq!(analysis.capability_envelope_label(), CapabilityEnvelope::ComposedPipeline);
-        }
+        let decision =
+            admit(&plan, Default::default(), rapids_analysis_context()).expect("q21 bounded admission should not fail");
+        assert!(
+            decision.admission().is_some(),
+            "the complete optimized q21 pipeline must admit residual semi/anti joins with {build_side:?} build side: {:?}\n{plan}",
+            decision.rejection_projection()
+        );
     }
 
     fs::remove_dir_all(dir).unwrap();
@@ -490,8 +441,10 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
+    let decision =
+        admit(native_plan, Default::default(), rapids_analysis_context()).expect("bounded admission should not fail");
     assert!(
-        bounded_join_unsupported_shape_facts(native_plan, rapids_analysis_context()).is_none(),
+        bounded_join_unsupported_shape_facts(native_plan, &decision, rapids_analysis_context()).is_none(),
         "q07 should use the bounded multi-join native path:\n{native_plan}"
     );
     let nation_projection = native_plan
@@ -593,7 +546,9 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
     let plan = &result.plans[0];
     assert_q11_keyless_proof_admitted(plan, "lowered q11");
-    assert!(bounded_join_unsupported_shape_facts(plan, rapids_analysis_context()).is_none());
+    let decision =
+        admit(plan, Default::default(), rapids_analysis_context()).expect("bounded admission should not fail");
+    assert!(bounded_join_unsupported_shape_facts(plan, &decision, rapids_analysis_context()).is_none());
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
     assert!(
@@ -738,14 +693,13 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
 fn assert_q11_keyless_proof_admitted(plan: &QueryPlan, context: &str) {
     let analysis = plan.capability_analysis(rapids_analysis_context());
-    assert_eq!(
-        analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
-        CapabilityDecision::Satisfied,
-        "{context} should retain the keyless aggregate-over-join proof:\n{plan}"
+    let decision =
+        admit(plan, Default::default(), rapids_analysis_context()).expect("bounded admission should not fail");
+    assert!(
+        decision.admission().is_some(),
+        "{context} should be bounded executable: {:?}\n{plan}",
+        decision.rejection_projection()
     );
-    let CapabilityEnvelopeAdmission::Admitted { .. } = analysis.capability_envelope_admission() else {
-        panic!("{context} should be bounded executable: {:?}\n{plan}", analysis.capability_envelope_admission());
-    };
     // The keyless scalar-fanout cardinality proof survives as a node fact, not
     // a plan-family reason: q11's scalar threshold aggregate emits at most one
     // row by its operator alone.
@@ -924,8 +878,11 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
 
     let plan = &result.plans[0];
     assert!(
-        plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(),
-        "q16 should be admitted as one root full-sort grouped aggregate pipeline:\n{plan}"
+        admit(plan, Default::default(), rapids_analysis_context())
+            .expect("q16 bounded admission should not fail")
+            .admission()
+            .is_some(),
+        "q16 should be admitted as one grouped aggregate pipeline:\n{plan}"
     );
     let optimized = optimize_query_plan(
         plan.clone(),
@@ -934,8 +891,11 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         local_dimension_pruning_resolver(),
     );
     assert!(
-        optimized.plan.capability_analysis(rapids_analysis_context()).admits_root_full_sort_join_aggregate_pipeline(),
-        "optimized q16 should remain admitted as one root full-sort grouped aggregate pipeline:\n{}",
+        admit(&optimized.plan, Default::default(), rapids_analysis_context())
+            .expect("optimized q16 bounded admission should not fail")
+            .admission()
+            .is_some(),
+        "optimized q16 should remain admitted as one grouped aggregate pipeline:\n{}",
         optimized.plan
     );
     let PlanNode::Projection(projection) = &plan.root_node().kind else {

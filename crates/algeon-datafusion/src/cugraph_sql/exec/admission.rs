@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use datafusion::datasource::source::DataSourceExec;
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AdmittedPlan, AttemptCapabilityEvidence},
+    exec::admit_query_plan,
     plan::{QueryPlan, row_bounds::query_plan_hard_row_upper_bound},
 };
 
@@ -43,7 +44,7 @@ pub(super) fn edge_execution_config(
 pub(super) async fn exact_native_edge_source_gpu_plan(
     edge_source: &dyn ExecutionPlan,
     task_context: &TaskContext,
-) -> Result<Option<QueryPlan>> {
+) -> Result<Option<Arc<AdmittedPlan>>> {
     let (execution_config, native_plan) = if let Some(native) = as_algeon_native_exec(edge_source) {
         (native.execution_config(), native.native_plan())
     } else if let Some(composed) = as_algeon_native_composed_exec(edge_source) {
@@ -51,8 +52,26 @@ pub(super) async fn exact_native_edge_source_gpu_plan(
     } else {
         return Ok(None);
     };
-    let plan = resolve_query_plan(execution_config, native_plan.clone(), task_context).await;
-    Ok(Some(plan.clone_with_gpu_resident_sink()))
+    admit_native_edge_source_gpu_plan(execution_config, native_plan, task_context).await.map(Some)
+}
+
+/// Resolves a native edge source into the GPU-resident form cuGraph reads and
+/// admits that form once; its node was admitted in host form.
+pub(super) async fn admit_native_edge_source_gpu_plan(
+    execution_config: &AlgeonNativeExecutionConfig,
+    native_plan: &QueryPlan,
+    task_context: &TaskContext,
+) -> Result<Arc<AdmittedPlan>> {
+    let plan =
+        resolve_query_plan(execution_config, native_plan.clone(), task_context).await.clone_with_gpu_resident_sink();
+    admit_query_plan(&plan, execution_config.statistical_aggregate_execution_mode(), execution_config.planning_policy())
+        .map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "algeon_datafusion.cugraph_sql.edge_source",
+                "the GPU-resident cuGraph edge source is not admitted",
+                error,
+            ))
+        })
 }
 
 #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]

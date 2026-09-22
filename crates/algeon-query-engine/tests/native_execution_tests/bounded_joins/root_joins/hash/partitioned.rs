@@ -736,7 +736,7 @@ fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filt
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();

@@ -1,6 +1,6 @@
 use arrow::datatypes::SchemaRef;
 use query_engine::{
-    admission::{BoundedPipelineDecision, bounded_pipeline_decision},
+    admission::{AdmissionDecision, admit},
     backend::AnalysisContext,
     capability::AggregateStrategyExecutionOptions,
     error::Result,
@@ -41,6 +41,6 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
         &QueryPlan,
         StatisticalAggregateExecutionMode,
         AnalysisContext<'_>,
-    ) -> Result<BoundedPipelineDecision> = bounded_pipeline_decision;
+    ) -> Result<AdmissionDecision> = admit;
     let _source_validation: fn(&LocalParquetSource, AnalysisContext<'_>) -> Result<()> = validate_local_parquet_source;
 }

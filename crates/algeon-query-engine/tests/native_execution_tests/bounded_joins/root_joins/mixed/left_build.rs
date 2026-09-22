@@ -113,9 +113,15 @@ fn bounded_native_mixed_left_build_preserves_identity_and_finalizes_after_all_pr
                 let plan = left_match_plan(left, right, join_type, null_equality);
                 let context = backend_context_with_grant(CAP);
                 let admitted = context.admit_plan(&plan).unwrap();
+                let admitted_plan = admit_query_plan(
+                    &plan,
+                    admitted.statistical_aggregate_execution_mode(),
+                    admitted.planning_policy(),
+                )
+                .unwrap();
                 let outcome = execute_query_plan_direct(
                     admitted.context.context(),
-                    QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+                    QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
                 );
                 let (result, metrics, _) = outcome.into_parts();
                 let output = result.unwrap_or_else(|error| panic!("{join_type:?}/{null_equality:?}: {error:?}"));
@@ -179,9 +185,11 @@ fn bounded_native_mixed_left_build_releases_state_after_late_probe_cap_failure()
     let plan = left_match_plan(&left_path, &right_path, JoinType::LeftAnti, JoinNullEquality::NullsDoNotMatch);
     let context = backend_context_with_grant(8 * 1024 * 1024);
     let admitted = context.admit_plan(&plan).unwrap();
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(&plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _) = outcome.into_parts();
     let error = result.err().expect("the indivisible final probe row must exceed the cap");

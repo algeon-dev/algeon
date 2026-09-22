@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::{expr::ColumnRef, rapids_backend::rapids_analysis_context};
+use query_engine::expr::ColumnRef;
 
 use super::*;
 
@@ -81,7 +81,6 @@ fn bounded_native_query_executes_mixed_inner_multi_join_pipeline_with_ordered_re
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(sort);
-    assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

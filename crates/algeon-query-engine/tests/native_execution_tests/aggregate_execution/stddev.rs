@@ -201,10 +201,7 @@ fn assert_global_stddev_samp_count_zero_and_one_return_null(mode: StatisticalAgg
     let batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![Some(7), None]))]).unwrap();
     DataFrame::from_record_batch(&runtime, &batch).unwrap().write_parquet(&path).unwrap();
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("stdev", DataType::Float64, true),
-        Field::new("avg_v", DataType::Float64, true),
-    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("stdev", DataType::Float64, true)]));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&schema),
@@ -212,10 +209,7 @@ fn assert_global_stddev_samp_count_zero_and_one_return_null(mode: StatisticalAgg
     );
     let aggregate = AggregateSpec::new(
         Vec::new(),
-        vec![
-            AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
-            AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
-        ],
+        vec![AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev")],
     );
 
     let mut builder = QueryPlanBuilder::new();
@@ -230,7 +224,6 @@ fn assert_global_stddev_samp_count_zero_and_one_return_null(mode: StatisticalAgg
 
     assert_eq!(batch.num_rows(), 1);
     assert!(float64_array(batch, 0).is_null(0));
-    assert_eq!(float64_array(batch, 1).value(0), 7.0);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -4,11 +4,8 @@ use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
 use super::{rewrite, simple_projection_column_single_alias, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
-    admission::bounded_pipeline_decision,
-    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode, Result},
     expr::{ColumnQualifier, ColumnRef, Expr},
-    mode::StatisticalAggregateExecutionMode,
     plan::{
         FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
         PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior,
@@ -30,15 +27,6 @@ pub struct SemijoinReductionOptions {
     pub enabled: bool,
     /// Maximum accepted `semi_side / target_side` cost multiplier.
     pub cost_threshold_multiplier: u64,
-    /// Optional post-rewrite admission gate used to protect execution modes.
-    ///
-    /// The gate rejects a rewrite only when the original plan is already
-    /// admitted by the selected mode and the rewritten plan is not. If neither
-    /// shape is admitted yet, the rewrite is kept so later native optimizer
-    /// passes can still turn the semantically-reduced plan into an admitted
-    /// execution shape. Unknown admission errors remain conservative and reject
-    /// the tentative rewrite.
-    pub admission_mode: SemijoinReductionAdmissionMode,
 }
 
 impl SemijoinReductionOptions {
@@ -47,17 +35,7 @@ impl SemijoinReductionOptions {
 
     /// Returns options with the pass disabled and default thresholds preserved.
     pub fn disabled() -> Self {
-        Self {
-            enabled: false,
-            cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER,
-            admission_mode: SemijoinReductionAdmissionMode::NotEvaluated,
-        }
-    }
-
-    /// Sets the mode-specific admission gate used after tentative rewrites.
-    pub fn with_admission_mode(mut self, admission_mode: SemijoinReductionAdmissionMode) -> Self {
-        self.admission_mode = admission_mode;
-        self
+        Self { enabled: false, cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER }
     }
 
     /// Validates internal consistency for semijoin-reduction cost gates.
@@ -78,21 +56,8 @@ impl SemijoinReductionOptions {
 
 impl Default for SemijoinReductionOptions {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER,
-            admission_mode: SemijoinReductionAdmissionMode::NotEvaluated,
-        }
+        Self { enabled: true, cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER }
     }
-}
-
-/// Mode-specific admission gate to use after a tentative semijoin rewrite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SemijoinReductionAdmissionMode {
-    /// The admission gate was not evaluated for this pass.
-    NotEvaluated,
-    /// The single capability-first bounded admission gate.
-    Bounded,
 }
 
 /// Result for one semijoin-reduction optimizer pass invocation.
@@ -152,14 +117,6 @@ pub struct SemijoinReductionCandidateDiagnostics {
     pub cost_gate: Option<SemijoinReductionCostGateDiagnostics>,
     /// Configured cost multiplier used by the semijoin cost gate.
     pub(crate) cost_threshold_multiplier: u64,
-    /// Configured post-rewrite admission gate mode.
-    pub(crate) admission_mode: SemijoinReductionAdmissionMode,
-    /// Admission decision used after tentative rewrite, if evaluated.
-    pub admission_decision: Option<SemijoinReductionAdmissionDecision>,
-    /// Whether the original plan was admitted by the selected admission mode.
-    pub original_admitted: Option<bool>,
-    /// Whether the rewritten plan was admitted by the selected admission mode.
-    pub rewritten_admitted: Option<bool>,
     /// True when this candidate's rewrite was applied to the returned plan.
     pub applied: bool,
     /// Rejection reason when the candidate was not applied.
@@ -229,17 +186,6 @@ pub enum SemijoinReductionCostSignal {
     Unavailable,
 }
 
-/// Mode-specific admission decision that caused a rewrite to be kept or rejected.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SemijoinReductionAdmissionDecision {
-    /// No admission gate was evaluated.
-    NotEvaluated,
-    /// Bounded admission gate kept the rewritten plan.
-    BoundedKept,
-    /// Bounded admission rejected the rewritten plan.
-    BoundedRejectedRewrite,
-}
-
 /// Generic semijoin-reduction rejection reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemijoinReductionRejectedReason {
@@ -269,16 +215,10 @@ pub enum SemijoinReductionRejectedReason {
     RootSchemaMismatch,
     /// Rewritten root output projection did not match the original.
     RootOutputProjectionMismatch,
-    /// Mode-specific admission rejected the rewritten plan.
-    AdmissionRejectedRewrite,
 }
 
 /// Runs the semijoin-reduction pass.
-pub fn optimize_semijoin_reduction(
-    plan: QueryPlan,
-    options: &SemijoinReductionOptions,
-    ctx: AnalysisContext<'_>,
-) -> SemijoinReductionResult {
+pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionOptions) -> SemijoinReductionResult {
     if !options.enabled {
         return SemijoinReductionResult {
             plan,
@@ -297,26 +237,11 @@ pub fn optimize_semijoin_reduction(
 
     let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
-        reject_applied_candidates(&mut diagnostics, reason, None, None, None);
+        reject_applied_candidates(&mut diagnostics, reason);
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    match evaluate_admission_gate(&plan, &rewritten_plan, options.admission_mode, ctx) {
-        AdmissionGateDecision::Keep { decision, original_admitted, rewritten_admitted } => {
-            record_admission_for_applied_candidates(&mut diagnostics, decision, original_admitted, rewritten_admitted);
-            SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics }
-        },
-        AdmissionGateDecision::Reject { decision, original_admitted, rewritten_admitted } => {
-            reject_applied_candidates(
-                &mut diagnostics,
-                SemijoinReductionRejectedReason::AdmissionRejectedRewrite,
-                Some(decision),
-                original_admitted,
-                rewritten_admitted,
-            );
-            SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics }
-        },
-    }
+    SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,19 +290,6 @@ impl SemijoinRewriteRejection {
     ) -> Box<Self> {
         Box::new(Self { reason, analysis: Some(analysis), cost_gate: Some(cost_gate) })
     }
-}
-
-enum AdmissionGateDecision {
-    Keep {
-        decision: SemijoinReductionAdmissionDecision,
-        original_admitted: Option<bool>,
-        rewritten_admitted: Option<bool>,
-    },
-    Reject {
-        decision: SemijoinReductionAdmissionDecision,
-        original_admitted: Option<bool>,
-        rewritten_admitted: Option<bool>,
-    },
 }
 
 struct SemijoinLineageAnalyzer<'a> {
@@ -574,10 +486,6 @@ impl<'a> SemijoinReductionRewriter<'a> {
             key_mappings: Vec::new(),
             cost_gate: None,
             cost_threshold_multiplier: self.options.cost_threshold_multiplier,
-            admission_mode: self.options.admission_mode,
-            admission_decision: Some(SemijoinReductionAdmissionDecision::NotEvaluated),
-            original_admitted: None,
-            rewritten_admitted: None,
             applied: false,
             rejected_reason: None,
         };
@@ -1123,76 +1031,10 @@ fn validate_rewritten_root_semantics(
     Ok(())
 }
 
-fn evaluate_admission_gate(
-    original: &QueryPlan,
-    rewritten: &QueryPlan,
-    mode: SemijoinReductionAdmissionMode,
-    ctx: AnalysisContext<'_>,
-) -> AdmissionGateDecision {
-    match mode {
-        SemijoinReductionAdmissionMode::NotEvaluated => AdmissionGateDecision::Keep {
-            decision: SemijoinReductionAdmissionDecision::NotEvaluated,
-            original_admitted: None,
-            rewritten_admitted: None,
-        },
-        SemijoinReductionAdmissionMode::Bounded => mode_admission_gate_decision(
-            bounded_admitted(original, ctx),
-            bounded_admitted(rewritten, ctx),
-            SemijoinReductionAdmissionDecision::BoundedKept,
-            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
-        ),
-    }
-}
-
-fn mode_admission_gate_decision(
-    original_admitted: Option<bool>,
-    rewritten_admitted: Option<bool>,
-    kept: SemijoinReductionAdmissionDecision,
-    rejected: SemijoinReductionAdmissionDecision,
-) -> AdmissionGateDecision {
-    let keep = matches!((original_admitted, rewritten_admitted), (Some(_), Some(true)) | (Some(false), Some(false)));
-    if keep {
-        AdmissionGateDecision::Keep { decision: kept, original_admitted, rewritten_admitted }
-    } else {
-        AdmissionGateDecision::Reject { decision: rejected, original_admitted, rewritten_admitted }
-    }
-}
-
-fn bounded_admitted(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Option<bool> {
-    match bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default(), ctx) {
-        Ok(decision) => Some(decision.admission().is_some()),
-        Err(_) => None,
-    }
-}
-
-fn record_admission_for_applied_candidates(
-    diagnostics: &mut SemijoinReductionDiagnostics,
-    decision: SemijoinReductionAdmissionDecision,
-    original_admitted: Option<bool>,
-    rewritten_admitted: Option<bool>,
-) {
-    for candidate in diagnostics.candidates.iter_mut().filter(|candidate| candidate.applied) {
-        candidate.admission_decision = Some(decision.clone());
-        candidate.original_admitted = original_admitted;
-        candidate.rewritten_admitted = rewritten_admitted;
-    }
-}
-
-fn reject_applied_candidates(
-    diagnostics: &mut SemijoinReductionDiagnostics,
-    reason: SemijoinReductionRejectedReason,
-    decision: Option<SemijoinReductionAdmissionDecision>,
-    original_admitted: Option<bool>,
-    rewritten_admitted: Option<bool>,
-) {
+fn reject_applied_candidates(diagnostics: &mut SemijoinReductionDiagnostics, reason: SemijoinReductionRejectedReason) {
     for candidate in diagnostics.candidates.iter_mut().filter(|candidate| candidate.applied) {
         candidate.applied = false;
         candidate.rejected_reason = Some(reason);
-        if let Some(decision) = decision.clone() {
-            candidate.admission_decision = Some(decision);
-        }
-        candidate.original_admitted = original_admitted;
-        candidate.rewritten_admitted = rewritten_admitted;
     }
     diagnostics.applied_count = diagnostics.candidates.iter().filter(|candidate| candidate.applied).count();
 }

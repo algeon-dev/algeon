@@ -19,7 +19,7 @@ mod enabled {
     use query_engine::{
         error::{QueryError, QueryErrorCode},
         exec::{
-            QueryExecutionRequest, output::QueryOutput, set_forest_after_import_hook_for_tests,
+            QueryExecutionRequest, admit_query_plan, output::QueryOutput, set_forest_after_import_hook_for_tests,
             set_forest_batch_element_limit_for_tests,
         },
         metrics::QueryMetrics,
@@ -182,9 +182,12 @@ mod enabled {
             )
             .unwrap(),
         );
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+                .unwrap();
         let outcome = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(&plan).with_gpu_inputs(&inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         );
         let (result, metrics, _) = outcome.into_parts();
         let observation = owner.live_snapshot();
@@ -310,9 +313,12 @@ mod enabled {
                 .unwrap(),
             );
         }
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+                .unwrap();
         let (result, _, _) = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(&plan).with_gpu_inputs(&inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
         let observation = owner.live_snapshot().unwrap();
@@ -806,9 +812,12 @@ mod enabled {
                 .unwrap(),
             );
         }
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+                .unwrap();
         let (result, metrics, _) = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(&plan).with_gpu_inputs(&inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
         let error = result.err().expect("RF training must exceed tiny grant");
@@ -841,9 +850,12 @@ mod enabled {
             )
             .unwrap(),
         );
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+                .unwrap();
         let (result, metrics, _) = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(&plan).with_gpu_inputs(&inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
         let error = result.err().expect("device grant too small for ML fit");
@@ -882,7 +894,10 @@ mod enabled {
             ..StandaloneConfig::default()
         })
         .unwrap();
-        let (result, metrics, _) = execute_query_plan_direct(&context, QueryExecutionRequest::new(&plan)).into_parts();
+        let admitted_plan =
+            admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy()).unwrap();
+        let (result, metrics, _) =
+            execute_query_plan_direct(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts();
         let error = result.err().expect("unbounded ML request");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("compiled_ml_pipeline_required"));
@@ -978,9 +993,12 @@ mod enabled {
             )
             .unwrap(),
         );
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy())
+                .unwrap();
         let (result, _, _) = execute_query_plan_direct(
             admitted.context.context(),
-            QueryExecutionRequest::new(&plan).with_gpu_inputs(&inputs),
+            QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
         let observation = owner.live_snapshot().unwrap();
@@ -1248,8 +1266,11 @@ fn cuml_disabled_rejects_before_local_source_staging() {
     let plan = builder.finish_with_host_sink(root);
     let context = backend_context();
     let admitted = context.admit_plan(&plan).expect("admission without cuML");
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let (result, metrics, _) =
-        execute_query_plan_direct(admitted.context.context(), QueryExecutionRequest::new(&plan)).into_parts();
+        execute_query_plan_direct(admitted.context.context(), QueryExecutionRequest::admitted(&admitted_plan))
+            .into_parts();
     let error = result.err().expect("disabled cuML must reject before source staging");
     assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("required_feature_disabled"));

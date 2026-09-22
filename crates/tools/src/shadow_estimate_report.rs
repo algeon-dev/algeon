@@ -40,7 +40,7 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use query_engine::{
-    admission::bounded_pipeline_decision,
+    admission::{AdmissionDecision, admit},
     observability::AttemptFinalDomainUsage,
     pipeline::{ShadowBytes, ShadowPipelineEstimate, ShadowTaskEnvelope},
     plan::QueryPlan,
@@ -234,11 +234,9 @@ async fn process_query(
     let frontend_outputs = frontend_output_records(&gpu_plan);
     let frontend_coverage = frontend_output_coverage(&gpu_plan);
 
-    let decision = bounded_pipeline_decision(&gpu_plan, mode, rapids_analysis_context())?;
-    let rejection_reason = decision.rejection_projection().map(|projection| projection.reason.to_string());
-    let admission = decision.into_execution_admission()?;
-    let pipeline = match &admission {
-        Some(admission) => {
+    let decision = admit(&gpu_plan, mode, rapids_analysis_context())?;
+    let pipeline = match &decision {
+        AdmissionDecision::Admitted(admission) => {
             let estimate = estimate_compiled_pipeline(&gpu_plan, admission.pipeline())?;
             PipelineGroup::Present {
                 task_workspace_coverage: shadow_bytes_coverage(estimate.pipeline.task_workspace.iter()),
@@ -252,8 +250,9 @@ async fn process_query(
                 estimate: estimate.pipeline,
             }
         },
-        None => {
-            PipelineGroup::Absent { reason: pipeline_absence_reason(rejection_reason.as_deref()), rejection_reason }
+        AdmissionDecision::Rejected(rejection) => PipelineGroup::Absent {
+            reason: "compiled_pipeline_rejected",
+            rejection_reason: Some(rejection.projection().reason.to_string()),
         },
     };
 
@@ -494,11 +493,9 @@ enum PipelineGroup {
         envelope_coverage: Coverage,
         collection_elapsed_ns: u64,
     },
-    /// No compiled bounded-pipeline schedule exists for this plan shape.
-    /// `reason` is `"compiled_pipeline_not_admitted"` when the plan has
-    /// neither a join nor a vector algorithm (the common scan/aggregate
-    /// case), `"compiled_pipeline_rejected"` when capability analysis
-    /// rejected an otherwise pipeline-eligible plan, or
+    /// No compiled bounded-pipeline schedule exists for this plan.
+    /// `reason` is `"compiled_pipeline_rejected"` when admission rejected the
+    /// plan, with the contract in `rejection_reason`, or
     /// `"query_processing_error"` for an unrelated planning failure.
     Absent { reason: &'static str, rejection_reason: Option<String> },
 }
@@ -509,18 +506,6 @@ impl PipelineGroup {
             Self::Present { .. } => "present",
             Self::Absent { .. } => "absent",
         }
-    }
-}
-
-/// Distinguishes "this plan shape never reaches compiled-pipeline admission"
-/// from "capability analysis rejected an admitted candidate" per the
-/// documented behavior of `bounded_pipeline_decision`
-/// (`crates/algeon-query-planning/src/admission/shared.rs`): a plan without a
-/// join or vector algorithm returns `Ok(None)` with no rejection projection.
-const fn pipeline_absence_reason(rejection_reason: Option<&str>) -> &'static str {
-    match rejection_reason {
-        Some(_) => "compiled_pipeline_rejected",
-        None => "compiled_pipeline_not_admitted",
     }
 }
 
@@ -972,12 +957,6 @@ mod tests {
         assert_eq!(classify_delta(Some(100), Some(100)), (Some(0), DeltaClassification::Exact));
         assert_eq!(classify_delta(None, Some(100)), (None, DeltaClassification::Unknown));
         assert_eq!(classify_delta(Some(100), None), (None, DeltaClassification::Unknown));
-    }
-
-    #[test]
-    fn pipeline_absence_reason_distinguishes_rejection_from_no_compiled_schedule() {
-        assert_eq!(pipeline_absence_reason(None), "compiled_pipeline_not_admitted");
-        assert_eq!(pipeline_absence_reason(Some("unsupported_sink_boundary")), "compiled_pipeline_rejected");
     }
 
     fn envelope(task: usize, bytes: ShadowBytes) -> ShadowTaskEnvelope {

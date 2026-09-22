@@ -1,7 +1,4 @@
-use super::{
-    final_merge::concatenate_partitioned_final_merge_outputs,
-    stream::execute_compiled_bounded_partial_aggregate_from_frame, *,
-};
+use super::{stream::execute_compiled_bounded_partial_aggregate_from_frame, *};
 
 /// Group-key hash partitioning of one aggregate input.
 ///
@@ -126,107 +123,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     execute_compiled_bounded_final_aggregate_merge(execution, node_id, aggregate, input_schema, output_schema, partials)
 }
 
-/// Runs a whole-input grouped aggregate without holding every raw chunk at once.
-///
-/// STDDEV, MEDIAN, and exact DISTINCT cannot merge chunk-local partial states,
-/// so they need each group's rows together. A group's rows all hash to the same
-/// partition, so concatenating one partition across chunks rebuilds a complete
-/// input for those kernels without rebuilding the whole query input, and the
-/// per-partition outputs are disjoint by group.
-pub(super) fn execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    bounded: &BoundedPlan<'_>,
-    raw_frames: Vec<CommittedPartial>,
-    partition_count: usize,
-) -> Result<CommittedPartial> {
-    let node_id = bounded.aggregate_id;
-    let aggregate = bounded.aggregate.0;
-    let mut partition_inputs: Vec<Vec<CommittedPartial>> = (0..partition_count).map(|_| Vec::new()).collect();
-
-    for raw in raw_frames {
-        let partitioned =
-            match hash_partition_aggregate_input(execution, node_id, aggregate, raw.frame, partition_count) {
-                Ok(partitioned) => partitioned,
-                Err(error) => {
-                    return Err(error);
-                },
-            };
-        let PartitionedAggregateInput { frame: partitioned_frame, offsets, .. } = partitioned;
-        for (partition, inputs) in partition_inputs.iter_mut().enumerate() {
-            let slice =
-                match slice_compiled_aggregate_partition(execution, node_id, &partitioned_frame, &offsets, partition) {
-                    Ok(slice) => slice,
-                    Err(error) => {
-                        return Err(error);
-                    },
-                };
-            if slice.frame.num_rows() == 0 {
-                continue;
-            }
-            inputs.push(CommittedPartial { frame: slice.frame, device_bytes: slice.device_bytes });
-        }
-    }
-
-    let mut outputs: Vec<CommittedPartial> = Vec::with_capacity(partition_count);
-    for inputs in partition_inputs {
-        if inputs.is_empty() {
-            continue;
-        }
-        let partition_input = match concatenate_partitioned_final_merge_outputs(execution, node_id, inputs) {
-            Ok(input) => input,
-            Err(error) => {
-                return Err(error);
-            },
-        };
-        let input_bytes = partition_input.device_bytes();
-        match execute_compiled_bounded_aggregate_from_frame(
-            execution,
-            node_id,
-            aggregate,
-            bounded.aggregate_input_schema,
-            bounded.aggregate.1,
-            partition_input.frame,
-            input_bytes,
-        ) {
-            Ok(output) => {
-                outputs.push(CommittedPartial { frame: output.frame, device_bytes: output.device_bytes });
-            },
-            Err(error) => {
-                return Err(error);
-            },
-        }
-    }
-
-    if outputs.is_empty() {
-        let frame = execute_compiled_bounded_aggregate_from_empty_input(
-            execution,
-            node_id,
-            aggregate,
-            bounded.aggregate_input_schema,
-            bounded.aggregate.1,
-        )?;
-        return Ok(CommittedPartial { frame: frame.frame, device_bytes: frame.device_bytes });
-    }
-    concatenate_partitioned_final_merge_outputs(execution, node_id, outputs)
-}
-
-/// Whether a whole-input aggregate can run per group-key partition instead of
-/// over one concatenated frame.
-///
-/// Requires real group keys: a global aggregate has a single implicit group
-/// whose rows cannot be split across partitions. Grouping sets are excluded
-/// because their keys are lowered to a superset that does not partition the
-/// rows each set actually groups by.
-pub(super) fn should_partition_whole_input_grouped_aggregate(
-    context: &ExecutionContext,
-    aggregate: &AggregateNode,
-    input_device_bytes: u64,
-) -> bool {
-    !aggregate.spec.group_exprs.is_empty()
-        && aggregate.spec.grouping_sets.is_none()
-        && partitioned_aggregate_partition_count(context, input_device_bytes) > 1
-}
-
 fn slice_compiled_aggregate_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -282,51 +178,4 @@ pub(super) fn partitioned_aggregate_partition_count(context: &ExecutionContext, 
     let target = BoundedPartitionTargetPolicy::default().aggregate_partition_target_bytes(device_budget_bytes);
     let partitions = input_bytes.max(1).saturating_add(target.saturating_sub(1)) / target.max(1);
     partitions.clamp(1, 1024) as usize
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{expr::GroupingSetsSpec, runtime::StandaloneConfig};
-
-    #[test]
-    fn should_partition_whole_input_grouped_aggregate_requires_real_group_keys() {
-        // Above the 128 MiB default partition target at this budget, so only the
-        // group/grouping-set shape can decide the outcome.
-        const INPUT_BYTES: u64 = 1024 * 1024 * 1024;
-
-        let context = ExecutionContext::standalone(StandaloneConfig {
-            memory_control_policy: MemoryControlPolicy::Bounded {
-                device_budget_bytes: 4 * 1024 * 1024 * 1024,
-                max_source_chunk_bytes: 32 * 1024 * 1024,
-                max_row_groups_per_chunk: 1,
-                max_retry_attempts: 1,
-                min_retry_chunk_row_groups: 1,
-            },
-            ..StandaloneConfig::default()
-        })
-        .expect("execution context builds");
-        assert!(partitioned_aggregate_partition_count(&context, INPUT_BYTES) > 1);
-
-        let grouped = AggregateNode {
-            input: NodeId::from_index_for_internal_use(1),
-            spec: AggregateSpec::new(vec![Expr::Literal(LiteralValue::Utf8("k".to_string()))], Vec::new()),
-        };
-        assert!(should_partition_whole_input_grouped_aggregate(&context, &grouped, INPUT_BYTES));
-
-        // One implicit group: splitting its rows would aggregate each partition
-        // independently and give wrong STDDEV/MEDIAN/exact-DISTINCT results.
-        let global = AggregateNode {
-            input: NodeId::from_index_for_internal_use(1),
-            spec: AggregateSpec::new(Vec::new(), Vec::new()),
-        };
-        assert!(!should_partition_whole_input_grouped_aggregate(&context, &global, INPUT_BYTES));
-
-        let grouping_sets = AggregateNode {
-            input: NodeId::from_index_for_internal_use(1),
-            spec: AggregateSpec::new(vec![Expr::Literal(LiteralValue::Utf8("k".to_string()))], Vec::new())
-                .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false]], "grouping_id")),
-        };
-        assert!(!should_partition_whole_input_grouped_aggregate(&context, &grouping_sets, INPUT_BYTES));
-    }
 }

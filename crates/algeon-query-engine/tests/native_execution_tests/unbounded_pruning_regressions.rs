@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path, sync::Arc};
 
-use query_engine::{capability::CapabilityDecision, expr::ColumnRef, rapids_backend::rapids_analysis_context};
+use query_engine::expr::ColumnRef;
 
 use super::*;
 
@@ -477,11 +477,7 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
     );
 
     let plan = builder.finish_with_host_sink(sorted);
-    assert_eq!(
-        plan.capability_analysis(rapids_analysis_context()).root_full_sort_join_aggregate_admission,
-        CapabilityDecision::Satisfied,
-        "Q15 shared grouped-aggregate keyless root must satisfy root full-sort admission",
-    );
+    assert_bounded_pipeline_admitted(&plan);
     let result = execute_query_plan(&admitted_execution_context(), &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q15 must materialize to Arrow") };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2]);

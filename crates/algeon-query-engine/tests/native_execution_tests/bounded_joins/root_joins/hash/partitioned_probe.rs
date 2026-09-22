@@ -73,7 +73,9 @@ fn bounded_native_partitioned_probe_recovers_hash_partition_cap_rejections() {
     for (cap_mb, should_retry) in [(128, false), (28, true)] {
         let context = partitioned_probe_context(cap_mb * 1024 * 1024, 1);
         let admitted = context.admit_plan(&plan).unwrap();
-        let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::new(&plan));
+        let admitted_plan =
+            admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
+        let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::admitted(&admitted_plan));
         let (result, metrics, _) = outcome.into_parts();
         let output = result.unwrap();
         let batch = output.as_host_arrow().unwrap();
@@ -111,7 +113,9 @@ fn bounded_native_partitioned_probe_reports_indivisible_cap_failure_and_cleans_u
     let context = partitioned_probe_context(28 * 1024 * 1024, 2048);
     let plan = partitioned_probe_retry_plan(&context.runtime().unwrap(), &dir, 1 << 20);
     let admitted = context.admit_plan(&plan).unwrap();
-    let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::new(&plan));
+    let admitted_plan =
+        admit_query_plan(&plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
+    let outcome = execute_query_plan_direct(&admitted, QueryExecutionRequest::admitted(&admitted_plan));
     let (result, metrics, _) = outcome.into_parts();
     let error = result.err().expect("the configured probe row floor prevents subdivision");
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");

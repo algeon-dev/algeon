@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use arrow::datatypes::SchemaRef;
 
 use super::rewrite;
 use crate::{
-    capability::capability_shape_contract_projection_ids,
     expr::{ColumnRef, Expr},
     plan::{NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes},
 };
@@ -81,8 +80,6 @@ pub enum ProjectionSimplificationRejectedReason {
     SchemaMismatch,
     /// Projection contains a non-column expression or changes column mapping.
     NonIdentityExpression,
-    /// Projection is part of a bounded shape contract.
-    ShapeContract,
 }
 
 pub(crate) struct ProjectionSimplificationResult {
@@ -121,7 +118,6 @@ struct ProjectionSimplificationRewriter<'a> {
     original: &'a QueryPlan,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
-    protected_projection_ids: BTreeSet<NodeId>,
     diagnostics: ProjectionSimplificationDiagnostics,
     changed: bool,
 }
@@ -132,7 +128,6 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
             original,
             nodes: Vec::new(),
             memo: BTreeMap::new(),
-            protected_projection_ids: capability_shape_contract_projection_ids(original),
             diagnostics: ProjectionSimplificationDiagnostics::default(),
             changed: false,
         }
@@ -167,12 +162,6 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
         };
         self.diagnostics.considered_count += 1;
 
-        if self.protected_projection_ids.contains(&old_id) {
-            candidate.rejected_reason = Some(ProjectionSimplificationRejectedReason::ShapeContract);
-            self.diagnostics.candidates.push(candidate);
-            return None;
-        }
-
         let input_node = self.original.node(projection.input).expect("projection input must exist");
         if schemas_equal(input_node.output_schema(), projection.output_schema())
             && projection_is_identity(input_node.output_schema(), projection)
@@ -186,9 +175,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
             return Some(replacement);
         }
 
-        if !self.protected_projection_ids.contains(&input_node.id)
-            && let Some(fused_outputs) = compose_direct_projection_chain(input_node, projection)
-        {
+        if let Some(fused_outputs) = compose_direct_projection_chain(input_node, projection) {
             let PlanNode::Projection(input_projection) = &input_node.kind else {
                 unreachable!("compose_direct_projection_chain requires a projection input");
             };

@@ -3,10 +3,9 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability_evidence_stays_narrow() {
+fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_variants_are_admitted() {
     // S3 admits multi-join aggregate pipelines through the compiled task
-    // contracts, so these variants are executable now; what stays narrow is
-    // the mixed keyed/residual envelope itself; none of them matches it.
+    // contracts, so these variants are executable.
     for variant in [
         ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
         ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,
@@ -18,72 +17,11 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
     ] {
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
-        assert!(!plan.capability_analysis(rapids_analysis_context()).admits_root_join(), "{variant:?}");
         assert!(
-            !plan
-                .capability_analysis(rapids_analysis_context())
-                .admits_keyless_conditional_join_input_subplan_pipeline(),
+            unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none(),
             "{variant:?}"
         );
-        assert!(
-            !plan
-                .capability_analysis(rapids_analysis_context())
-                .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-            "{variant:?}"
-        );
-        assert!(
-            !plan
-                .capability_analysis(rapids_analysis_context())
-                .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
-            "{variant:?}"
-        );
-        assert!(unsupported_facts(&plan, rapids_analysis_context()).is_none(), "{variant:?}");
     }
-}
-
-#[test]
-fn bounded_mixed_residual_resident_grouped_aggregate_admission_uses_capability_evidence() {
-    let plan =
-        residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-
-    assert_eq!(
-        plan.capability_analysis(rapids_analysis_context())
-            .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
-        analysis.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-    );
-    assert_eq!(
-        analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
-        CapabilityDecision::Satisfied
-    );
-}
-
-#[test]
-fn bounded_mixed_residual_resident_grouped_aggregate_preserves_node_failure_locality() {
-    let plan = residual_resident_grouped_aggregate_input_plan(
-        ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression,
-    );
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-
-    assert!(
-        !plan
-            .capability_analysis(rapids_analysis_context())
-            .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-    );
-    let CapabilityDecision::Rejected { reason, facts } =
-        &analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission
-    else {
-        panic!("unsupported residual expression should reject mixed residual admission");
-    };
-    assert_eq!(*reason, "unsupported_join_residual_expression_capability");
-    assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
-    assert!(
-        analysis.invariants.iter().any(|invariant| {
-            matches!(invariant.kind, SubgraphInvariantKind::ResidualUsesBothInputs { .. })
-                && invariant.decision == CapabilityDecision::Satisfied
-        }),
-        "residual input coverage is satisfied, so admission must report the node-local expression failure first"
-    );
 }
 
 /// Mutates a residual join shape used to prove the mixed keyed

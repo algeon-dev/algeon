@@ -15,7 +15,7 @@ use crate::{
     capability::CapabilityReason,
     native_report::candidate_shape_family,
     planner::FinalPlanCoverage,
-    report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE, PlanningReport},
+    report::{CandidateOutcome, PlanningReport},
 };
 
 pub(super) fn cugraph_calls(plan: &dyn ExecutionPlan) -> Vec<QueryGpuCugraphCall> {
@@ -56,16 +56,6 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 reason_kind: None,
                 detail: candidate.shape.clone(),
                 category: None,
-                remedy: None,
-                cost_evidence: None,
-            },
-            CandidateOutcome::Deferred { candidate, .. } => QueryGpuCandidateOutcome {
-                selection: outcome.kind(),
-                candidate_family: candidate_shape_family(candidate),
-                reason_code: Some(DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
-                reason_kind: Some(QueryGpuCandidateReasonKind::PlanShape),
-                detail: candidate.shape.clone(),
-                category: Some("producer_binding".to_string()),
                 remedy: None,
                 cost_evidence: None,
             },
@@ -111,7 +101,9 @@ fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKi
         CapabilityReason::NativeSortPreservingMergeUnsupported
         | CapabilityReason::NativeDistributedAggregateUnsupported
         | CapabilityReason::NativePartitionPreservingSortUnsupported
+        | CapabilityReason::NativeExactStatisticalInputPartitioned
         | CapabilityReason::NativeBoundedJoinUnsupported
+        | CapabilityReason::NativeCompiledPipelineUnsupported
         | CapabilityReason::NativeOrderedOutputUnsupported => QueryGpuCandidateReasonKind::PlanShape,
         CapabilityReason::UnsupportedOperator => QueryGpuCandidateReasonKind::Operator,
     }

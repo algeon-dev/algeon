@@ -2375,6 +2375,12 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let string_plan = string_df.create_physical_plan().await.unwrap();
     assert_eq!(classify_final_plan(string_plan.as_ref()), FinalPlanDisposition::Native);
     let string_batches = collect(Arc::clone(&string_plan), ctx.task_ctx()).await.unwrap();
+    let algo = find_cugraph_algo_exec(string_plan.as_ref()).expect("string PageRank runs a cuGraph producer");
+    assert_eq!(
+        metric_usize(&algo.metrics().expect("cuGraph producer metrics"), "compiled_pipeline_attempts"),
+        2,
+        "the edge source and the logical-mapping graph plan must each run as one compiled pipeline",
+    );
 
     let numeric_batches = ctx
         .sql("SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM numeric_edges))")

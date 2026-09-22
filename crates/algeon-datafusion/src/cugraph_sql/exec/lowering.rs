@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use query_engine::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AdmittedPlan, AttemptCapabilityEvidence},
     error::QueryErrorKind,
-    exec::preflight_query_plan,
+    exec::{admit_query_plan, preflight_query_plan},
     expr::Expr,
     plan::{
         GraphBfsPathOutput, GraphSimilarityParams, GraphVertexPairInput, NodeId, QueryPlan,
@@ -99,8 +99,10 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
     }
-    let outcome =
-        execute_query_plan(&graph_context, QueryExecutionRequest::new(&plan.plan).with_gpu_inputs(&plan.inputs));
+    let outcome = execute_query_plan(
+        &graph_context,
+        QueryExecutionRequest::admitted(&plan.admitted).with_gpu_inputs(&plan.inputs),
+    );
     let output = finalize_graph_query_outcome(
         metrics,
         outcome,
@@ -124,7 +126,7 @@ pub(super) fn graph_algorithm_execution_context(context: &ExecutionContext) -> R
 }
 
 pub(super) struct CugraphQueryPlan {
-    plan: QueryPlan,
+    admitted: Arc<AdmittedPlan>,
     inputs: GpuResidentInputMap,
 }
 
@@ -151,7 +153,17 @@ pub(super) fn cugraph_query_plan(
     inputs.insert(CUGRAPH_EDGE_INPUT_NAME.to_string(), handle);
     bind_predicate_gpu_inputs(context, &mut inputs, predicate_frames)?;
     let plan = cugraph_schema_query_plan(definition)?;
-    Ok(CugraphQueryPlan { plan, inputs })
+    // The graph plan is built here, after its inputs are bound, so it is
+    // admitted here, once; a refusal is a typed error, never a CPU rerun.
+    let admitted = admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
+        .map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "algeon_datafusion.cugraph_sql.execute_gpu",
+            "native cuGraph SQL GPU-resident query execution failed",
+            error,
+        ))
+    })?;
+    Ok(CugraphQueryPlan { admitted, inputs })
 }
 
 pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> Result<QueryPlan> {

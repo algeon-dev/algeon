@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use query_engine::{
-    error::QueryError, exec::output::QueryExecutionResult, expr::ColumnRef, plan::QueryPlan,
+    admission::admit, error::QueryError, exec::output::QueryExecutionResult, expr::ColumnRef, plan::QueryPlan,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -11,6 +11,12 @@ use super::*;
 mod mixed_aggregate;
 
 pub(super) use mixed_aggregate::*;
+
+pub(super) fn assert_bounded_pipeline_admitted(plan: &QueryPlan) {
+    let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        .expect("bounded admission should decide the plan");
+    assert!(decision.admission().is_some(), "plan should be admitted as a compiled pipeline: {decision:?}");
+}
 
 pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
     fixture_local_parquet_source::from_files(
@@ -77,7 +83,7 @@ pub(super) fn execute_bounded_keyless_left_only_conditional_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -106,7 +112,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
@@ -398,7 +404,7 @@ pub(super) fn execute_bounded_left_only_residual_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis(rapids_analysis_context()).admits_root_join());
+    assert_bounded_pipeline_admitted(&plan);
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }

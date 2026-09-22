@@ -60,9 +60,15 @@ impl JoinBehindStreamLease {
         )
         .expect("standalone observed context");
         let owner = observed.observation().clone();
+        let admitted = admit_query_plan(
+            &plan,
+            observed.context().statistical_aggregate_execution_mode(),
+            observed.context().planning_policy(),
+        )
+        .expect("join plan admits");
         let execution = thread::spawn(move || {
             let (result, _metrics, snapshot) =
-                execute_engine_query_plan(observed.context(), QueryExecutionRequest::new(&plan)).into_parts();
+                execute_engine_query_plan(observed.context(), QueryExecutionRequest::admitted(&admitted)).into_parts();
             (result, snapshot.expect("a standalone observation owner seals its snapshot into the outcome"))
         });
         pool.wait_until_acquire_queued_for_test(Instant::now() + Duration::from_secs(30));

@@ -9,43 +9,15 @@ use super::{
     edge::{edge_consumer_fact, node_operator_fact},
     graph::{
         GraphScheduleProof, collect_reachable_node_ids, collect_reachable_node_ids_from, consumer_nodes_for_reachable,
-        peel_projection_chain_for_capability, reachable_join_count_from_sink,
+        peel_projection_chain_for_capability, peel_resident_unary_chain_for_capability, reachable_join_count_from_sink,
     },
+    lineage::{OutputLineage, expression_lineage_for_input, output_lineage},
     model::{
         CapabilityDecision, EdgeConsumer, EdgeContract, InvariantId, ProducedProperty, ResidentResource,
         ScheduleConstraint, SubgraphInvariant, SubgraphInvariantKind,
     },
     node::produced_properties,
-    shape::{
-        OutputLineage, expression_lineage_for_input,
-        hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
-        keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision,
-        mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision,
-        multi_join_aggregate_over_join_subplan_topk_shape_decision, output_lineage,
-        peel_resident_unary_chain_for_capability, rollup_rank_topk_after_aggregate_join_pushdown_shape_decision,
-        root_full_sort_join_aggregate_shape_decision, root_topk_join_aggregate_shape_decision,
-    },
 };
-
-/// Builds a shape recognizer's invariant as unconditionally `Satisfied`: these
-/// invariants are recognizer-derived and carry no independent proof, and are
-/// retained only until compositional validation replaces them.
-fn shape_derived_invariant(
-    invariant_id: InvariantId,
-    kind: SubgraphInvariantKind,
-    nodes: Vec<NodeId>,
-    required_schedule: ScheduleConstraint,
-    required_resources: Vec<ResidentResource>,
-) -> SubgraphInvariant {
-    SubgraphInvariant {
-        invariant_id,
-        kind,
-        nodes,
-        required_schedule,
-        required_resources,
-        decision: CapabilityDecision::Satisfied,
-    }
-}
 
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
     let mut invariants = Vec::new();
@@ -85,14 +57,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_aggregate_derivation_invariants(plan, &mut invariants);
     append_projection_transparent_residency_invariants(plan, &mut invariants);
     append_resident_unary_chain_preserves_residency_invariants(plan, &mut invariants);
-    append_mixed_residual_post_root_stage_order_invariant(plan, &mut invariants);
-    append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(plan, &mut invariants);
-    append_rollup_rank_topk_after_aggregate_join_pushdown_post_root_stage_order_invariant(plan, &mut invariants);
-    append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(plan, &mut invariants);
-    append_root_topk_join_aggregate_post_root_stage_order_invariant(plan, &mut invariants);
-    append_root_full_sort_join_aggregate_post_root_stage_order_invariant(plan, &mut invariants);
-    append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(plan, &mut invariants);
-    append_statistical_join_final_sort_exactness_invariant(plan, &mut invariants);
 
     if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
         let invariant_id = InvariantId(invariants.len());
@@ -120,66 +84,6 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     }
 
     invariants
-}
-
-#[derive(Debug, Clone)]
-struct StatisticalJoinFinalSortExactnessShape {
-    aggregate_ids: Vec<NodeId>,
-    join_ids: Vec<NodeId>,
-    final_sort_id: NodeId,
-}
-
-fn append_statistical_join_final_sort_exactness_invariant(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
-    let Some(shape) = statistical_join_final_sort_exactness_shape(plan) else {
-        return;
-    };
-    let mut nodes = shape.aggregate_ids.clone();
-    nodes.extend(shape.join_ids.iter().copied());
-    nodes.push(shape.final_sort_id);
-    nodes.sort_unstable();
-    nodes.dedup();
-
-    let invariant_id = InvariantId(invariants.len());
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::StatisticalJoinFinalSortExactness,
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.final_sort_id)],
-    ));
-}
-
-fn statistical_join_final_sort_exactness_shape(plan: &QueryPlan) -> Option<StatisticalJoinFinalSortExactnessShape> {
-    let final_sort_id = plan.sink().input();
-    match plan.node(final_sort_id).map(|node| &node.kind)? {
-        PlanNode::Sort(_) => {},
-        _ => return None,
-    };
-    let reachable = collect_reachable_node_ids(plan).ok()?;
-    let mut aggregate_ids = Vec::new();
-    let mut join_ids = Vec::new();
-
-    for node_id in &reachable {
-        let node = plan.node(*node_id)?;
-        match &node.kind {
-            PlanNode::Aggregate(aggregate)
-                if aggregate.spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
-                    && collect_reachable_node_ids_from(plan, aggregate.input).ok()?.iter().any(|input_id| {
-                        matches!(plan.node(*input_id).map(|input| &input.kind), Some(PlanNode::Join(_)))
-                    }) =>
-            {
-                aggregate_ids.push(*node_id);
-            },
-            PlanNode::Join(_) => join_ids.push(*node_id),
-            _ => {},
-        }
-    }
-
-    if aggregate_ids.is_empty() || join_ids.is_empty() {
-        return None;
-    }
-
-    Some(StatisticalJoinFinalSortExactnessShape { aggregate_ids, join_ids, final_sort_id })
 }
 
 pub(super) fn append_shared_resident_subplan_invariants(
@@ -293,192 +197,6 @@ pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
             decision: solve_resident_unary_chain_preserves_residency_invariant(plan, peeled_producer, &chain_ids),
         });
     }
-}
-
-pub(super) fn append_mixed_residual_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        vec![
-            shape.root_join_id,
-            shape.post_root_projection_id,
-            shape.post_root_aggregate_id,
-            shape.final_projection_id,
-        ],
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
-}
-
-pub(super) fn append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    let mut nodes = vec![shape.root_join_id];
-    if shape.post_root_projection_id != shape.root_join_id {
-        nodes.push(shape.post_root_projection_id);
-    }
-    nodes.extend([shape.post_root_aggregate_id, shape.final_projection_id, shape.final_sort_id, shape.final_limit_id]);
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
-}
-
-pub(super) fn append_rollup_rank_topk_after_aggregate_join_pushdown_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = rollup_rank_topk_after_aggregate_join_pushdown_shape_decision(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    let mut nodes = vec![
-        shape.detail_pre_aggregate_id,
-        shape.root_join_id,
-        shape.final_grouping_aggregate_id,
-        shape.rank_sort_id,
-        shape.rank_window_id,
-    ];
-    if let Some(rank_filter_id) = shape.rank_filter_id {
-        nodes.push(rank_filter_id);
-    }
-    if let Some(consumer_id) = shape.rank_output_residency_consumer_id
-        && !nodes.contains(&consumer_id)
-    {
-        nodes.push(consumer_id);
-    }
-    if let Some(final_sort_id) = shape.final_sort_id {
-        nodes.push(final_sort_id);
-    }
-    if let Some(final_limit_id) = shape.final_limit_id {
-        nodes.push(final_limit_id);
-    }
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
-}
-
-pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = multi_join_aggregate_over_join_subplan_topk_shape_decision(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    let nodes = {
-        let mut nodes = vec![shape.root_join_id];
-        nodes.extend(shape.post_root_join_ids);
-        if shape.post_root_projection_id != shape.root_join_id {
-            nodes.push(shape.post_root_projection_id);
-        }
-        nodes.extend([shape.final_sort_id, shape.final_limit_id]);
-        nodes
-    };
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
-}
-
-pub(super) fn append_root_topk_join_aggregate_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = root_topk_join_aggregate_shape_decision(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    let nodes = {
-        let mut nodes = vec![shape.root_join_id];
-        nodes.extend(shape.window_input_sort_ids.iter().copied());
-        nodes.extend(shape.window_ids.iter().copied());
-        if shape.sort_fetch_hash_join_aggregate_subcontract {
-            nodes.push(shape.aggregate_id);
-        }
-        nodes.extend(shape.post_root_projection_ids.iter().rev().copied());
-        nodes.push(shape.final_sort_id);
-        nodes.extend(shape.final_topk_projection_ids.iter().rev().copied());
-        nodes.push(shape.final_limit_id);
-        nodes
-    };
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
-}
-
-pub(super) fn append_root_full_sort_join_aggregate_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = root_full_sort_join_aggregate_shape_decision(plan) else {
-        return;
-    };
-    let invariant_id = InvariantId(invariants.len());
-    let nodes = {
-        let mut nodes = vec![shape.root_join_id];
-        nodes.extend(shape.post_root_projection_ids.iter().rev().copied());
-        nodes.push(shape.final_sort_id);
-        nodes
-    };
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
-}
-
-pub(super) fn append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(
-    plan: &QueryPlan,
-    invariants: &mut Vec<SubgraphInvariant>,
-) {
-    let Ok(shape) = keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan) else {
-        return;
-    };
-    let mut nodes = Vec::new();
-    nodes.push(shape.root_join_id);
-    if let Some(projection_id) = shape.post_root_projection_id {
-        nodes.push(projection_id);
-    }
-    if let Some(sort_id) = shape.final_sort_id {
-        nodes.push(sort_id);
-    }
-    let invariant_id = InvariantId(invariants.len());
-    invariants.push(shape_derived_invariant(
-        invariant_id,
-        SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes,
-        ScheduleConstraint::Barrier,
-        vec![ResidentResource::NodeOutput(shape.root_join_id)],
-    ));
 }
 
 pub(super) fn solve_build_before_probe_invariant(

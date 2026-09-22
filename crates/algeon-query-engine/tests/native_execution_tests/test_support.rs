@@ -188,9 +188,11 @@ pub(super) fn execute_admitted_with_peak(
     plan: &QueryPlan,
 ) -> (QueryEngineResult<QueryOutput>, QueryMetrics, u64) {
     let admitted = context.admit_plan(plan).unwrap();
+    let admitted_plan =
+        admit_query_plan(plan, admitted.statistical_aggregate_execution_mode(), admitted.planning_policy()).unwrap();
     let outcome = execute_query_plan_direct(
         admitted.context.context(),
-        QueryExecutionRequest::new(plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+        QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
     let usage = admitted

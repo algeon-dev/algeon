@@ -106,12 +106,6 @@ pub(crate) fn aggregate_over_join_subplan_topk_plan_inner(
     }
 }
 
-pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-    variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
-) -> QueryPlan {
-    resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(variant, false)
-}
-
 pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
     with_source_metadata: bool,
