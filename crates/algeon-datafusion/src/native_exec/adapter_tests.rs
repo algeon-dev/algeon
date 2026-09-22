@@ -95,12 +95,10 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     assert!(display.contains("AlgeonNativeExec"));
     assert!(display.contains("sink=host_arrow"));
     assert!(display.contains("memory_control_policy=bounded"));
-    assert!(display.contains("boundary_policy=source_read=direct_device_local_parquet"));
     assert!(display.contains("edge_normalize_inserted=false"));
 
     let tree = displayable(&exec).indent(false).to_string();
     assert!(tree.contains("native_nodes=1"));
-    assert!(tree.contains("boundary_policy=source_read=direct_device_local_parquet"));
     assert!(tree.contains("output_boundary=device_to_host"));
     assert!(tree.contains("edge_normalize_inserted=false"));
 

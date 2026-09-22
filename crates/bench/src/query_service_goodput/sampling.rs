@@ -34,15 +34,10 @@ pub(super) struct DeviceSample {
     pub(super) host_rss_peak_bytes: u64,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct SampleCollection {
-    pub(super) samples: Vec<DeviceSample>,
-}
-
 pub(super) struct Sampler {
     stop: Arc<AtomicBool>,
     handle: std::thread::JoinHandle<()>,
-    samples: Arc<Mutex<SampleCollection>>,
+    samples: Arc<Mutex<Vec<DeviceSample>>>,
 }
 
 impl Sampler {
@@ -53,7 +48,7 @@ impl Sampler {
         origin: Instant,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let samples = Arc::new(Mutex::new(SampleCollection::default()));
+        let samples = Arc::new(Mutex::new(Vec::new()));
         let backend = backend.clone();
         let device_ordinals = device_ordinals.to_vec();
         let thread_stop = Arc::clone(&stop);
@@ -83,7 +78,7 @@ impl Sampler {
                 .collect::<BTreeMap<_, _>>();
             while !thread_stop.load(Ordering::SeqCst) {
                 let collected = collect(&backend, &device_ordinals, &managers, origin);
-                thread_samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner).samples.extend(collected);
+                thread_samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(collected);
                 std::thread::sleep(interval);
             }
         });
@@ -94,7 +89,7 @@ impl Sampler {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.handle.join();
         let mut guard = self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::mem::take(&mut guard.samples)
+        std::mem::take(&mut guard)
     }
 }
 

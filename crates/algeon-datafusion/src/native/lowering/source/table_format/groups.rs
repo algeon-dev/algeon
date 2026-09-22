@@ -6,9 +6,8 @@ use std::{
 use super::{
     CapabilityReason, DataType, Field, NativeMissingColumn, NativeParquetColumnRequirements, NativePartitionColumn,
     NativeSourceColumnRef, Schema, SchemaRef, TableFormatColumnMapping, TableFormatColumnSource,
-    TableFormatFieldIdReadBinding, TableFormatFileReadBindings, TableFormatScanPlan,
-    table_format_column_mapping_by_name, table_format_data_file_footer_arrow_schema,
-    table_format_file_field_id_read_bindings, table_format_file_schema,
+    TableFormatFieldIdReadBinding, TableFormatScanPlan, table_format_column_mapping_by_name,
+    table_format_data_file_footer_arrow_schema, table_format_file_field_id_read_bindings, table_format_file_schema,
     table_format_footer_data_type_needs_logical_source_contract, table_format_requires_iceberg_field_id_bindings,
     table_format_scalar_value_to_native_literal,
 };
@@ -71,7 +70,7 @@ pub(super) fn table_format_source_read_groups(
         let key = table_format_source_group_key(&file_requirements);
         if let Some(group_index) = group_by_key.get(&key).copied() {
             groups[group_index].file_indices.push(file_index);
-            groups[group_index].field_id_bindings.push(file_bindings.bindings);
+            groups[group_index].field_id_bindings.push(file_bindings);
         } else {
             group_by_key.insert(key, groups.len());
             groups.push(TableFormatSourceReadGroup {
@@ -79,7 +78,7 @@ pub(super) fn table_format_source_read_groups(
                 requirements: file_requirements,
                 source_schema,
                 output_schema: Arc::clone(&output_schema),
-                field_id_bindings: vec![file_bindings.bindings],
+                field_id_bindings: vec![file_bindings],
             });
         }
     }
@@ -90,7 +89,7 @@ pub(super) fn table_format_source_read_groups(
 pub(super) fn table_format_requirements_for_file(
     base: &NativeParquetColumnRequirements,
     mappings: &BTreeMap<&str, &TableFormatColumnMapping>,
-    file_bindings: &TableFormatFileReadBindings,
+    file_bindings: &[TableFormatFieldIdReadBinding],
     footer_schema: &Schema,
 ) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let mut read_columns = Vec::new();
@@ -108,7 +107,7 @@ pub(super) fn table_format_requirements_for_file(
             continue;
         }
         let field_id = mapping.field_id.ok_or(CapabilityReason::IcebergFieldIdMappingUnsupported)?;
-        if let Some(binding) = file_bindings.bindings.iter().find(|binding| binding.logical_field_id == field_id) {
+        if let Some(binding) = file_bindings.iter().find(|binding| binding.logical_field_id == field_id) {
             if read_seen.insert(binding.physical_name.clone()) {
                 read_columns.push(binding.physical_name.clone());
                 read_column_file_indices.push(binding.physical_root_index);
@@ -184,7 +183,7 @@ fn table_format_mapping_is_predicate_required(
 
 pub(super) fn table_format_file_column_source_refs(
     mappings: &BTreeMap<&str, &TableFormatColumnMapping>,
-    file_bindings: &TableFormatFileReadBindings,
+    file_bindings: &[TableFormatFieldIdReadBinding],
     footer_schema: &Schema,
     partition_columns: &[NativePartitionColumn],
     missing_columns: &[NativeMissingColumn],
@@ -197,9 +196,7 @@ pub(super) fn table_format_file_column_source_refs(
             match mapping.source {
                 TableFormatColumnSource::DirectTopLevelFileColumn => {
                     let field_id = mapping.field_id.ok_or(CapabilityReason::IcebergFieldIdMappingUnsupported)?;
-                    if let Some(binding) =
-                        file_bindings.bindings.iter().find(|binding| binding.logical_field_id == field_id)
-                    {
+                    if let Some(binding) = file_bindings.iter().find(|binding| binding.logical_field_id == field_id) {
                         Ok(NativeSourceColumnRef::File(binding.physical_root_index))
                     } else if mapping.missing_default_value.is_some() {
                         partition_columns

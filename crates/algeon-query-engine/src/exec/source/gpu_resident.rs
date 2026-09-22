@@ -49,8 +49,7 @@ pub(in crate::exec) fn read_gpu_resident_source(
         .with_fact("context_device", context_runtime.device().ordinal()));
     }
 
-    if handle.device_placement() != context.device_placement() || handle.placement().device != context_runtime.device()
-    {
+    if handle.placement().device != context_runtime.device() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.gpu_resident_source.read",
@@ -58,7 +57,7 @@ pub(in crate::exec) fn read_gpu_resident_source(
         )
         .with_fact("input_name", source.input_name.as_str())
         .with_fact("source_device", handle.placement().device.ordinal())
-        .with_fact("context_device", context.runtime()?.device().ordinal()));
+        .with_fact("context_device", context_runtime.device().ordinal()));
     }
 
     metrics.record_input_batch(handle.num_rows() as u64);

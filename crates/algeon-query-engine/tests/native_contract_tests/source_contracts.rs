@@ -2,9 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use query_engine::{
     rapids_backend::rapids_analysis_context,
-    source::{
-        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    },
+    source::{ByteRangeDisposition, LocalParquetFile, LocalParquetSource, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
 
 use super::*;
@@ -20,7 +18,6 @@ fn source_module_facade_preserves_public_model_and_diagnostic_paths() {
     let node = SourceNode::LocalParquet(source.clone());
 
     assert!(matches!(node, SourceNode::LocalParquet(_)));
-    assert_eq!(source.diagnostics.format, SourceFormat::Parquet);
     assert_eq!(source.diagnostics.byte_range_disposition, ByteRangeDisposition::FullFiles);
     assert_eq!(ZERO_COLUMN_COUNT_COLUMN, ZERO_COLUMN_COUNT_COLUMN);
 }

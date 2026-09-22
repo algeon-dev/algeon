@@ -13,9 +13,9 @@ use cudf::{
             ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence, PartitionColumn,
             PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
             SchemaMappingDisposition, SourceChunk, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef,
-            SourceColumnRole, SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema,
-            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
-            source_row_count_to_i64, source_row_group_index_to_i32,
+            SourceColumnRole, SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+            ZeroColumnCountDisposition, plan_local_parquet_source_chunks, source_row_count_to_i64,
+            source_row_group_index_to_i32,
         },
     },
     ops::ast::AstExpression,
@@ -67,7 +67,6 @@ fn data_source_derives_diagnostics_and_read_column_refs_are_decoded_ordinals() {
     assert_eq!(source.read_columns()[1], "payload");
 
     let diagnostics = source.diagnostics();
-    assert_eq!(diagnostics.format(), SourceFormat::Parquet);
     assert!(diagnostics.direct_device_read());
     assert_eq!(diagnostics.file_count(), 1);
     assert_eq!(diagnostics.ranged_file_count(), 0);

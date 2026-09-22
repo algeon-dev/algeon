@@ -34,7 +34,7 @@ impl DataFrame {
         let build_key_indices = resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
         let build_key_table = build_borrowed_table_view_from_columns(self.columns_map(), &build_key_indices)?;
         join::FilteredJoin::pre_build_reservation_size_bytes_for_view(
-            build_key_table.table(),
+            &build_key_table,
             options.to_filtered_join_options(),
             ctx,
             operation,
@@ -106,8 +106,8 @@ impl DataFrame {
         let left_indices = left_indices.indices().as_column().view().map_err(|e| e.reanchor(operation))?;
         let right_indices = right_indices.indices().as_column().view().map_err(|e| e.reanchor(operation))?;
         let raw = join::filter_join_indices_in(
-            left_table.table(),
-            right_table.table(),
+            &left_table,
+            &right_table,
             &left_indices,
             &right_indices,
             predicate,
@@ -385,17 +385,17 @@ impl DataFrameFilteredJoin {
         let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let raw_indices = match (semi_join, output_size) {
             (true, Some(output_size)) => {
-                self.join.left_semi_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                self.join.left_semi_join_indices_with_output_size_in(&probe_key_table, output_size, ctx)?
             },
             (false, Some(output_size)) => {
-                self.join.left_anti_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                self.join.left_anti_join_indices_with_output_size_in(&probe_key_table, output_size, ctx)?
             },
             (true, None) => {
-                let state = self.join.begin_left_semi_probe_in(probe_key_table.table(), ctx)?;
+                let state = self.join.begin_left_semi_probe_in(&probe_key_table, ctx)?;
                 state.materialize_indices_in(ctx)?
             },
             (false, None) => {
-                let state = self.join.begin_left_anti_probe_in(probe_key_table.table(), ctx)?;
+                let state = self.join.begin_left_anti_probe_in(&probe_key_table, ctx)?;
                 state.materialize_indices_in(ctx)?
             },
         };
@@ -416,9 +416,9 @@ impl DataFrameFilteredJoin {
     {
         let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let state = if semi_join {
-            self.join.begin_left_semi_probe_in(probe_key_table.table(), ctx)?
+            self.join.begin_left_semi_probe_in(&probe_key_table, ctx)?
         } else {
-            self.join.begin_left_anti_probe_in(probe_key_table.table(), ctx)?
+            self.join.begin_left_anti_probe_in(&probe_key_table, ctx)?
         };
         Ok(DataFrameFilteredJoinProbeState { state })
     }
@@ -437,9 +437,9 @@ impl DataFrameFilteredJoin {
     {
         let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         if semi_join {
-            self.join.left_semi_join_size_in(probe_key_table.table(), ctx)
+            self.join.left_semi_join_size_in(&probe_key_table, ctx)
         } else {
-            self.join.left_anti_join_size_in(probe_key_table.table(), ctx)
+            self.join.left_anti_join_size_in(&probe_key_table, ctx)
         }
     }
 }

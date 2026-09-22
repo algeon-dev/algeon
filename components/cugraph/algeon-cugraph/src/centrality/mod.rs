@@ -13,8 +13,5 @@ pub use hits::{HitsInitialHubs, HitsParams};
 pub use pagerank::{
     InitialGuess, PageRankParams, PersonalizationVector, PersonalizedPageRankParams, PrecomputedWeights,
 };
-pub use result::{
-    BetweennessCentralityResult, EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult,
-    KatzCentralityResult, PageRankResult,
-};
+pub use result::{BetweennessCentralityResult, CentralityResult, EdgeBetweennessCentralityResult, HitsResult};
 pub use vertex::{EigenvectorCentralityParams, KatzCentralityParams};

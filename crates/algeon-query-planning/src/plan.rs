@@ -31,10 +31,7 @@ mod vector_algorithm;
 
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
-pub use advisory::{
-    AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance,
-    AdvisoryStatisticsScope, AdvisoryUnknownReason,
-};
+pub use advisory::{AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason};
 pub use builder::QueryPlanBuilder;
 #[doc(hidden)]
 pub use estimates::{
@@ -78,9 +75,9 @@ pub use sink::ResultSink;
 pub use vector_algorithm::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
     CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,
-    CuvsOptionValidationError, CuvsOutputContract, CuvsOutputFieldDefinition, CuvsRelationArgumentSyntax,
-    CuvsRelationRole, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec,
-    VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-    VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding, canonicalize_cuvs_options,
-    vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
+    CuvsOptionValidationError, CuvsOutputContract, CuvsOutputFieldDefinition, CuvsRelationRole, VectorAlgorithm,
+    VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
+    VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+    VectorRowIdBinding, canonicalize_cuvs_options, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
+    vector_pca_output_schema,
 };

@@ -78,17 +78,14 @@ pub struct BackendDurationHistogramProjection {
 /// A duration descriptor cannot project the backend's nanosecond storage into
 /// its declared unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendDurationProjectionError {
-    UnsupportedUnit { metric_name: &'static str, unit: BackendMetricUnit },
+pub struct BackendDurationProjectionError {
+    pub metric_name: &'static str,
+    pub unit: BackendMetricUnit,
 }
 
 impl std::fmt::Display for BackendDurationProjectionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedUnit { metric_name, unit } => {
-                write!(formatter, "{metric_name} cannot project a duration with UCUM unit {}", unit.as_ucum())
-            },
-        }
+        write!(formatter, "{} cannot project a duration with UCUM unit {}", self.metric_name, self.unit.as_ucum())
     }
 }
 
@@ -109,7 +106,7 @@ pub fn project_backend_duration_histogram(
             bucket_bounds: descriptor.buckets.iter().map(|bound_ns| *bound_ns as f64 / 1_000_000_000.0).collect(),
             sum: sum_ns as f64 / 1_000_000_000.0,
         }),
-        unit => Err(BackendDurationProjectionError::UnsupportedUnit { metric_name: descriptor.name, unit }),
+        unit => Err(BackendDurationProjectionError { metric_name: descriptor.name, unit }),
     }
 }
 

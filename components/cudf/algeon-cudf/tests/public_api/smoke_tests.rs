@@ -19,8 +19,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
         AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity,
         AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo,
         DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource,
-        ExecutionBudgetEnforcement, ExecutionBudgetStatus, QueryMemoryDomainIdentity, ReservationUsage, Runtime,
-        StreamReservationLease,
+        ExecutionBudgetEnforcement, QueryMemoryDomainIdentity, ReservationUsage, Runtime, StreamReservationLease,
     };
 
     let _ = cudf::ExecutionBudgetToken::resize;
@@ -50,7 +49,6 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _ =
         (Runtime::device_memory_manager, Runtime::stream_reservation, cudf::RuntimeBuilder::with_device_memory_manager);
     let _ = ExecutionBudgetEnforcement::StreamBoundReservation;
-    let _ = ExecutionBudgetStatus::ReservationEnforced;
 }
 
 #[test]
@@ -291,8 +289,8 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
             ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetSourceLocation,
             PartitionColumn, PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
             SchemaMappingDisposition, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceColumn,
-            SourceColumnRef, SourceColumnRole, SourceFormat, SourceOutputColumn, SourceReadMode, SourceRequiredColumn,
-            SourceSchema, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
+            SourceColumnRef, SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceRequiredColumn, SourceSchema,
+            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
             source_row_count_to_i64, source_row_group_index_to_i32,
         },
     };
@@ -345,7 +343,6 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     let diagnostics = source.diagnostics();
     assert_eq!(source.kind(), LocalParquetSourceKind::Data);
     assert_location(source.files()[0].location());
-    assert_eq!(diagnostics.format(), SourceFormat::Parquet);
     assert_eq!(diagnostics.predicate_disposition(), PredicateDisposition::Absent);
     assert_eq!(diagnostics.byte_range_disposition(), ByteRangeDisposition::FullFiles);
     assert_eq!(diagnostics.partition_column_disposition(), PartitionColumnDisposition::Represented);

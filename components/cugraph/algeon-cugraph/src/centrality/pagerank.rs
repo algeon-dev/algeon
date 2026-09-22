@@ -7,7 +7,7 @@ use cugraph_sys::{
     cugraph_personalized_pagerank_allow_nonconvergence,
 };
 
-use super::PageRankResult;
+use super::CentralityResult;
 use crate::{
     array::DeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
@@ -155,7 +155,7 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
     params: &PageRankParams,
     precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
     initial_guess: Option<&InitialGuess<'_, V, W>>,
-) -> Result<PageRankResult> {
+) -> Result<CentralityResult> {
     pagerank_impl(
         handle,
         graph,
@@ -178,7 +178,7 @@ pub(crate) fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
     personalization: &PersonalizationVector<'_, V, W>,
     precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
     initial_guess: Option<&InitialGuess<'_, V, W>>,
-) -> Result<PageRankResult> {
+) -> Result<CentralityResult> {
     pagerank_impl(
         handle,
         graph,
@@ -207,7 +207,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
     personalization: Option<&PersonalizationVector<'_, V, W>>,
     call: PageRankCall,
     operation: &'static str,
-) -> Result<PageRankResult> {
+) -> Result<CentralityResult> {
     if let Some(pw) = precomputed_weights {
         if pw.vertices.len() != pw.sums.len() {
             return Err(Error::new(ErrorKind::InvalidInput, operation)
@@ -310,7 +310,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
     let result = require_non_null(result, operation, "centrality_result")?;
 
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { PageRankResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    unsafe { CentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 fn validate_vertex_dtype<V: CugraphElement>(

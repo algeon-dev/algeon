@@ -46,9 +46,9 @@ pub use query_planning::{contract_report, error};
 pub mod exec;
 /// DataFusion-free expression IR used by native query plans.
 pub use query_planning::expr;
+pub(crate) use query_planning::expression_lowering_policy;
 /// Measured graph-execution observation rows.
 pub use query_planning::graph_observation;
-pub(crate) use query_planning::{execution_contracts, expression_lowering_policy};
 /// Stable helper primitives shared by report and benchmark harnesses.
 pub mod harness;
 /// Stable name-generation helpers shared across native planning code.

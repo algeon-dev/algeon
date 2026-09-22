@@ -10,9 +10,9 @@ use crate::{
     core::{
         column::Column,
         error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
+        table::TableView,
     },
     hash::{FastHashSet, FastIndexMap, fast_hash_set_with_capacity},
-    internal::temp_table::TempTableView,
 };
 
 pub(crate) fn missing_column_error(operation: &'static str, name: impl Into<String>) -> Error {
@@ -87,7 +87,7 @@ pub(crate) fn resolve_column_names(
     names.iter().map(|&name| columns.get_index_of(name).ok_or_else(|| missing_column_error(operation, name))).collect()
 }
 
-/// Build a borrowed `TempTableView` containing only the columns at the given
+/// Build a borrowed `TableView` containing only the columns at the given
 /// positional indices from the `IndexMap`.
 ///
 /// This is zero-copy with respect to device data: it allocates only temporary
@@ -95,7 +95,7 @@ pub(crate) fn resolve_column_names(
 pub(crate) fn build_borrowed_table_view_from_columns<'a>(
     columns: &'a FastIndexMap<String, Arc<Column>>,
     indices: &[usize],
-) -> Result<TempTableView<'a>> {
+) -> Result<TableView<'a>> {
     let views = indices
         .iter()
         .map(|&idx| {
@@ -119,14 +119,14 @@ pub(crate) fn build_borrowed_table_view_from_columns<'a>(
                     "building an empty borrowed table view requires an authoritative source column",
                 )
             })?;
-        return TempTableView::from_column_views_in_domain(
+        return TableView::from_borrowed_column_views_in_domain(
             views,
-            authoritative_domain,
+            Some(authoritative_domain),
             "internal::build_borrowed_table_view_from_columns",
         );
     }
 
-    TempTableView::from_column_views(views)
+    TableView::from_borrowed_column_views_in_domain(views, None, "internal::build_borrowed_table_view_from_columns")
 }
 
 /// Compute payload column indices: all positions NOT in `key_indices`,

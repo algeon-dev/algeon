@@ -140,7 +140,6 @@ pub query_planning::capability::EdgeContractKind::ResidentFrameFlow
 pub query_planning::capability::EdgeContractKind::ResidentSourceInput
 pub query_planning::capability::EdgeContractKind::ResidentSourceInput::format: query_planning::capability::SourceFormatCapability
 pub query_planning::capability::EdgeContractKind::SharedProducer
-pub query_planning::capability::EdgeContractKind::SharedProducer::identity: query_planning::capability::SharedProducerIdentity
 pub query_planning::capability::EdgeContractKind::SortInput
 pub query_planning::capability::EdgeContractKind::UnionInput
 pub query_planning::capability::EdgeContractKind::UnionInput::input_index: usize
@@ -199,8 +198,6 @@ pub query_planning::capability::ProducedProperty::GroupedFrame
 pub query_planning::capability::ProducedProperty::OrderedFrame
 pub query_planning::capability::ProducedProperty::ResidentFrame
 pub query_planning::capability::ProducedProperty::ScalarFrame
-pub enum query_planning::capability::RequiredProperty
-pub query_planning::capability::RequiredProperty::ResidentFrame
 pub enum query_planning::capability::ResidentResource
 pub query_planning::capability::ResidentResource::JoinBuildInput
 pub query_planning::capability::ResidentResource::JoinBuildInput::input: query_planning::plan::NodeId
@@ -220,8 +217,6 @@ pub query_planning::capability::ScheduleConstraint::Barrier
 pub query_planning::capability::ScheduleConstraint::BuildBeforeProbe
 pub query_planning::capability::ScheduleConstraint::None
 pub query_planning::capability::ScheduleConstraint::Topological
-pub enum query_planning::capability::SharedProducerIdentity
-pub query_planning::capability::SharedProducerIdentity::SameNodeIdAfterCse
 pub enum query_planning::capability::SourceFormatCapability
 pub query_planning::capability::SourceFormatCapability::GpuResident
 pub query_planning::capability::SourceFormatCapability::LiteralBatch
@@ -363,7 +358,6 @@ pub query_planning::capability::EdgeContract::contract_kinds: alloc::vec::Vec<qu
 pub query_planning::capability::EdgeContract::decision: query_planning::capability::CapabilityDecision
 pub query_planning::capability::EdgeContract::input_role: query_planning::capability::InputRole
 pub query_planning::capability::EdgeContract::producer: query_planning::plan::NodeId
-pub query_planning::capability::EdgeContract::required_properties: alloc::vec::Vec<query_planning::capability::RequiredProperty>
 pub struct query_planning::capability::InvariantId(pub usize)
 impl query_planning::capability::InvariantId
 pub const fn query_planning::capability::InvariantId::index(self) -> usize
@@ -666,12 +660,6 @@ pub query_planning::dynamic_filter::DynamicFilterProducer::HashJoinBuild::join_n
 impl query_planning::dynamic_filter::DynamicFilterProducer
 pub const fn query_planning::dynamic_filter::DynamicFilterProducer::kind(&self) -> &'static str
 pub const fn query_planning::dynamic_filter::DynamicFilterProducer::node_id(&self) -> query_planning::plan::NodeId
-pub enum query_planning::dynamic_filter::DynamicFilterReadiness
-pub query_planning::dynamic_filter::DynamicFilterReadiness::ProducerCompleteBeforeConsumer
-impl query_planning::dynamic_filter::DynamicFilterReadiness
-pub const fn query_planning::dynamic_filter::DynamicFilterReadiness::as_str(self) -> &'static str
-impl core::fmt::Display for query_planning::dynamic_filter::DynamicFilterReadiness
-pub fn query_planning::dynamic_filter::DynamicFilterReadiness::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct query_planning::dynamic_filter::DynamicFilterExecutionOptions
 impl query_planning::dynamic_filter::DynamicFilterExecutionOptions
 pub const query_planning::dynamic_filter::DynamicFilterExecutionOptions::DEFAULT_DIMENSION_SIZED_CONSUMER_BYTES: u64
@@ -718,7 +706,6 @@ pub query_planning::dynamic_filter::DynamicFilterRoute::filter_kinds: alloc::vec
 pub query_planning::dynamic_filter::DynamicFilterRoute::id: query_planning::dynamic_filter::DynamicFilterId
 pub query_planning::dynamic_filter::DynamicFilterRoute::producer: query_planning::dynamic_filter::DynamicFilterProducer
 pub query_planning::dynamic_filter::DynamicFilterRoute::producer_columns: alloc::vec::Vec<alloc::string::String>
-pub query_planning::dynamic_filter::DynamicFilterRoute::readiness: query_planning::dynamic_filter::DynamicFilterReadiness
 impl query_planning::dynamic_filter::DynamicFilterRoute
 pub const fn query_planning::dynamic_filter::DynamicFilterRoute::consumer_reduction_stage(&self) -> query_planning::dynamic_filter::DynamicFilterConsumerReductionStage
 pub fn query_planning::dynamic_filter::DynamicFilterRoute::new(query_planning::dynamic_filter::DynamicFilterId, query_planning::dynamic_filter::DynamicFilterProducer, query_planning::dynamic_filter::DynamicFilterConsumer, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<query_planning::dynamic_filter::DynamicFilterKind>, query_planning::dynamic_filter::DynamicFilterConsumerLowering) -> Self
@@ -1343,8 +1330,6 @@ pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::NotRe
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape
-pub enum query_planning::optimizer::StreamFanoutReplayRejectedReason
-pub query_planning::optimizer::StreamFanoutReplayRejectedReason::NotReachableFromSink
 pub struct query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::aggregate_node_id: query_planning::plan::NodeId
 pub query_planning::optimizer::AggregateJoinPushdownCandidateDiagnostics::applied: bool
@@ -1756,7 +1741,6 @@ pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::applied: 
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::consumer_count: usize
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::fanout_node_id: query_planning::plan::NodeId
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::join_probe_consumer_node_ids: alloc::vec::Vec<query_planning::plan::NodeId>
-pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::rejected_reason: core::option::Option<query_planning::optimizer::StreamFanoutReplayRejectedReason>
 pub query_planning::optimizer::StreamFanoutReplayCandidateDiagnostics::rule_name: &'static str
 pub struct query_planning::optimizer::StreamFanoutReplayDiagnostics
 pub query_planning::optimizer::StreamFanoutReplayDiagnostics::applied_count: usize
@@ -2083,10 +2067,6 @@ pub query_planning::plan::AdvisoryStatistic::Exact(u64)
 pub query_planning::plan::AdvisoryStatistic::Inexact(u64)
 impl query_planning::plan::AdvisoryStatistic
 pub const fn query_planning::plan::AdvisoryStatistic::value(self) -> core::option::Option<u64>
-pub enum query_planning::plan::AdvisoryStatisticsProvenance
-pub query_planning::plan::AdvisoryStatisticsProvenance::FrontendPlannerEstimate
-pub enum query_planning::plan::AdvisoryStatisticsScope
-pub query_planning::plan::AdvisoryStatisticsScope::WholeOutput
 pub enum query_planning::plan::AdvisoryUnknownReason
 pub query_planning::plan::AdvisoryUnknownReason::CartesianFallback
 pub query_planning::plan::AdvisoryUnknownReason::ConflictingOccurrences
@@ -2140,8 +2120,6 @@ pub enum query_planning::plan::CuvsOutputContract
 pub query_planning::plan::CuvsOutputContract::BruteForceKnn
 pub query_planning::plan::CuvsOutputContract::KMeansAssignments
 pub query_planning::plan::CuvsOutputContract::PcaComponents
-pub enum query_planning::plan::CuvsRelationArgumentSyntax
-pub query_planning::plan::CuvsRelationArgumentSyntax::ParenthesizedSubquery
 pub enum query_planning::plan::CuvsRelationRole
 pub query_planning::plan::CuvsRelationRole::Dataset
 pub query_planning::plan::CuvsRelationRole::Input
@@ -2511,12 +2489,10 @@ pub query_planning::plan::AdvisoryOutputBinding::frontend: alloc::string::String
 pub query_planning::plan::AdvisoryOutputBinding::frontend_version: alloc::string::String
 pub query_planning::plan::AdvisoryOutputBinding::node: query_planning::plan::NodeId
 pub query_planning::plan::AdvisoryOutputBinding::schema: arrow_schema::schema::SchemaRef
-pub query_planning::plan::AdvisoryOutputBinding::scope: query_planning::plan::AdvisoryStatisticsScope
 pub query_planning::plan::AdvisoryOutputBinding::statistics: query_planning::plan::AdvisoryOutputStatistics
 pub query_planning::plan::AdvisoryOutputBinding::unknown_reason: core::option::Option<query_planning::plan::AdvisoryUnknownReason>
 pub struct query_planning::plan::AdvisoryOutputStatistics
 pub query_planning::plan::AdvisoryOutputStatistics::bytes: query_planning::plan::AdvisoryStatistic
-pub query_planning::plan::AdvisoryOutputStatistics::provenance: query_planning::plan::AdvisoryStatisticsProvenance
 pub query_planning::plan::AdvisoryOutputStatistics::rows: query_planning::plan::AdvisoryStatistic
 impl query_planning::plan::AdvisoryOutputStatistics
 pub const fn query_planning::plan::AdvisoryOutputStatistics::is_absent(self) -> bool
@@ -2531,7 +2507,6 @@ pub query_planning::plan::CuvsOperationDescriptor::options: &'static [query_plan
 pub query_planning::plan::CuvsOperationDescriptor::output_contract: query_planning::plan::CuvsOutputContract
 pub query_planning::plan::CuvsOperationDescriptor::output_fields: &'static [query_planning::plan::CuvsOutputFieldDefinition]
 pub query_planning::plan::CuvsOperationDescriptor::quickstart_sql: &'static str
-pub query_planning::plan::CuvsOperationDescriptor::relation_argument_syntax: query_planning::plan::CuvsRelationArgumentSyntax
 pub query_planning::plan::CuvsOperationDescriptor::relation_roles: &'static [query_planning::plan::CuvsRelationRole]
 pub query_planning::plan::CuvsOperationDescriptor::sql_function_name: &'static str
 pub query_planning::plan::CuvsOperationDescriptor::summary: &'static str
@@ -3218,8 +3193,6 @@ pub enum query_planning::source::SourceColumnRef
 pub query_planning::source::SourceColumnRef::File(usize)
 pub query_planning::source::SourceColumnRef::MissingNull(usize)
 pub query_planning::source::SourceColumnRef::Partition(usize)
-pub enum query_planning::source::SourceFormat
-pub query_planning::source::SourceFormat::Parquet
 pub enum query_planning::source::SourceNode
 pub query_planning::source::SourceNode::GpuResident(query_planning::source::GpuResidentSource)
 pub query_planning::source::SourceNode::LiteralBatch(query_planning::source::LiteralBatchSource)
@@ -3481,7 +3454,6 @@ pub query_planning::source::SourceDiagnostics::byte_range_disposition: query_pla
 pub query_planning::source::SourceDiagnostics::credential_mode: alloc::string::String
 pub query_planning::source::SourceDiagnostics::direct_device_read: bool
 pub query_planning::source::SourceDiagnostics::file_count: usize
-pub query_planning::source::SourceDiagnostics::format: query_planning::source::SourceFormat
 pub query_planning::source::SourceDiagnostics::known_bytes: core::option::Option<u64>
 pub query_planning::source::SourceDiagnostics::lakehouse_cache_fill_mode: alloc::string::String
 pub query_planning::source::SourceDiagnostics::lakehouse_cache_read_mode: alloc::string::String

@@ -15,10 +15,7 @@ use query_planning::{
     source::{LocalParquetFile, LocalParquetSource, parquet_source_path_fact},
 };
 
-use super::{
-    SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache,
-    metadata::{SourceMetadataLoadContext, read_parquet_metadata},
-};
+use super::{SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, metadata::read_parquet_metadata};
 use crate::{rapids_backend::rapids_analysis_context, runtime::ExecutionContext};
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
@@ -52,7 +49,7 @@ pub fn plan_local_parquet_source_chunks_with_execution_context(
         source,
         policy,
         &mut metadata_cache,
-        Some(SourceMetadataLoadContext { execution_context: context }),
+        Some(context),
     )
 }
 
@@ -95,7 +92,7 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     source: &LocalParquetSource,
     policy: SourceChunkPlanningPolicy,
     metadata_cache: &mut SourceMetadataCache,
-    metadata_load_context: Option<SourceMetadataLoadContext<'_>>,
+    metadata_load_context: Option<&ExecutionContext>,
 ) -> Result<SourceChunkPlan> {
     validate_chunk_planning_source(source)?;
     validate_chunk_planning_policy(policy)?;
@@ -107,13 +104,12 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     let mut metadata_unavailable_files = 0;
     let mut metadata_load_time = Duration::ZERO;
     let mut metadata_load_count = 0u64;
-    let metadata_prefetch =
-        metadata_cache.prefetch_footer_metadata_for_source(source, metadata_load_context.as_ref())?;
+    let metadata_prefetch = metadata_cache.prefetch_footer_metadata_for_source(source, metadata_load_context)?;
     metadata_load_time += metadata_prefetch.load_time;
     metadata_load_count = metadata_load_count.saturating_add(metadata_prefetch.load_count);
 
     for (file_index, file) in source.files.iter().enumerate() {
-        let metadata_load = read_parquet_metadata(source, file, metadata_cache, metadata_load_context.as_ref())?;
+        let metadata_load = read_parquet_metadata(source, file, metadata_cache, metadata_load_context)?;
         metadata_load_time += metadata_load.load_time;
         metadata_load_count = metadata_load_count.saturating_add(metadata_load.load_count);
         let reader_decimal_types = metadata_load.reader_decimal_types;

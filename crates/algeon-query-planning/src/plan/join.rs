@@ -77,13 +77,14 @@ pub struct JoinSpec {
     /// Must be `Some` when `join_type == LeftMark` and `None` otherwise.
     /// The mark column appears as the last field in the output schema.
     pub mark_column_name: Option<String>,
-    /// A proven lookup relationship that bounds output rows by one input.
+    /// Side whose every row produces at most one output row, a proven lookup
+    /// relationship that bounds output rows by that input.
     ///
-    /// The contract is only set by a lowering path that established at most one
-    /// match per bounded row for the join keys. Generic joins leave this absent
-    /// and retain the conservative Cartesian upper bound.
+    /// Only a lowering path that established at most one match per bounded
+    /// row for the join keys sets this. Generic joins leave it absent and
+    /// retain the conservative Cartesian upper bound.
     #[doc(hidden)]
-    pub cardinality_contract: Option<JoinCardinalityContract>,
+    pub at_most_one_match_side: Option<JoinSide>,
     /// Output columns whose operator semantics prove that lookup gathers do not
     /// exceed the selected input column's total string payload bound.
     #[doc(hidden)]
@@ -95,14 +96,6 @@ pub struct JoinSpec {
     /// an admission requirement. Absent when the frontend had no estimate.
     #[doc(hidden)]
     pub advisory_output_statistics: Option<AdvisoryOutputStatistics>,
-}
-
-/// Cardinality contract for a join whose lookup side has at most one match.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub enum JoinCardinalityContract {
-    /// Every row on `bounded_side` produces at most one output row.
-    AtMostOneMatchPerBoundedRow { bounded_side: JoinSide },
 }
 
 impl JoinSpec {
@@ -125,7 +118,7 @@ impl JoinSpec {
             datafusion_order_preserved_side: JoinSide::Right,
             build_artifact_id: None,
             mark_column_name: None,
-            cardinality_contract: None,
+            at_most_one_match_side: None,
             total_payload_bound_preserving_outputs: Vec::new(),
             advisory_output_statistics: None,
         }
@@ -184,7 +177,7 @@ impl JoinSpec {
 
     /// Marks this join as having at most one match per row on `bounded_side`.
     pub fn with_at_most_one_match_per_bounded_row(mut self, bounded_side: JoinSide) -> Self {
-        self.cardinality_contract = Some(JoinCardinalityContract::AtMostOneMatchPerBoundedRow { bounded_side });
+        self.at_most_one_match_side = Some(bounded_side);
         self
     }
 
@@ -207,11 +200,7 @@ impl JoinSpec {
 
     #[doc(hidden)]
     pub fn has_at_most_one_match_per_bounded_row(&self, bounded_side: JoinSide) -> bool {
-        matches!(
-            self.cardinality_contract,
-            Some(JoinCardinalityContract::AtMostOneMatchPerBoundedRow { bounded_side: contract_side })
-                if contract_side == bounded_side
-        )
+        self.at_most_one_match_side == Some(bounded_side)
     }
 
     #[doc(hidden)]

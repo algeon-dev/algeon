@@ -8,6 +8,11 @@
 
 /// One advisory quantity with the frontend's own precision claim.
 ///
+/// The embedding frontend's planner combined its source statistics with its
+/// own operator estimation rules. The value was never checked against native
+/// execution and can be wrong by orders of magnitude under key skew or
+/// correlated predicates.
+///
 /// `Absent` is a distinct state from zero so consumers can tell "no evidence"
 /// from "estimated empty".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,16 +35,6 @@ impl AdvisoryStatistic {
     }
 }
 
-/// Who produced an advisory statistic and how far it can be trusted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AdvisoryStatisticsProvenance {
-    /// The embedding frontend's planner combined its source statistics with
-    /// its own operator estimation rules. The value was never checked against
-    /// native execution and can be wrong by orders of magnitude under key
-    /// skew or correlated predicates.
-    FrontendPlannerEstimate,
-}
-
 /// Advisory row and byte estimates for one node's whole output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AdvisoryOutputStatistics {
@@ -48,8 +43,6 @@ pub struct AdvisoryOutputStatistics {
     /// Estimated output bytes in the frontend's own byte model, which is not
     /// device residency.
     pub bytes: AdvisoryStatistic,
-    /// Origin of both estimates.
-    pub provenance: AdvisoryStatisticsProvenance,
 }
 
 impl AdvisoryOutputStatistics {
@@ -57,13 +50,6 @@ impl AdvisoryOutputStatistics {
     pub const fn is_absent(self) -> bool {
         matches!((self.rows, self.bytes), (AdvisoryStatistic::Absent, AdvisoryStatistic::Absent))
     }
-}
-
-/// Scope of a frontend volume estimate; never a device allocation scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AdvisoryStatisticsScope {
-    /// One native node occurrence's complete output across all partitions.
-    WholeOutput,
 }
 
 /// Why a shadow volume has no usable estimate.
@@ -80,6 +66,9 @@ pub enum AdvisoryUnknownReason {
 
 /// Frontend statistics bound to one native output occurrence and schema.
 ///
+/// The statistics cover the occurrence's complete output across all
+/// partitions; they never describe a device allocation scope.
+///
 /// These records are diagnostic input only. They do not participate in build
 /// side selection, execution identity, proof, capability, or admission. Rewrites
 /// invalidate a record if its node or any dependency changed.
@@ -87,7 +76,6 @@ pub enum AdvisoryUnknownReason {
 pub struct AdvisoryOutputBinding {
     pub node: super::NodeId,
     pub schema: super::SchemaRef,
-    pub scope: AdvisoryStatisticsScope,
     pub frontend: String,
     pub frontend_version: String,
     pub statistics: AdvisoryOutputStatistics,
@@ -127,13 +115,11 @@ mod tests {
         builder.set_advisory_output(AdvisoryOutputBinding {
             node: root,
             schema: Arc::clone(&schema),
-            scope: AdvisoryStatisticsScope::WholeOutput,
             frontend: "test frontend".to_owned(),
             frontend_version: "1".to_owned(),
             statistics: AdvisoryOutputStatistics {
                 rows: AdvisoryStatistic::Inexact(100),
                 bytes: AdvisoryStatistic::Inexact(800),
-                provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
             },
             unknown_reason: None,
         });

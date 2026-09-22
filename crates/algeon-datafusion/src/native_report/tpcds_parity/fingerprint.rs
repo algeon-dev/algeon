@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use query_engine::harness::StableFnv1a64;
 
-use super::{CanonicalField, CanonicalRow, DataType, RecordBatch, Schema, collect_canonical_rows};
+use super::{CanonicalField, DataType, RecordBatch, Schema, collect_canonical_rows};
 
 pub(super) fn fingerprint_schema_only(schema: &Schema) -> String {
     let mut hasher = StableFnv1a64::new();
@@ -19,13 +19,13 @@ pub(super) fn fingerprint_batches(schema: &Schema, batches: &[RecordBatch]) -> S
     }
 }
 
-pub(super) fn fingerprint_rows(schema: &Schema, rows: &[CanonicalRow]) -> String {
+pub(super) fn fingerprint_rows(schema: &Schema, rows: &[Vec<CanonicalField>]) -> String {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("native-tpcds-parity-v1");
     hash_comparison_schema(&mut hasher, schema);
     hasher.update_field(&format!("rows={}", rows.len()));
     for row in rows {
-        for field in &row.fields {
+        for field in row {
             hash_field(&mut hasher, field);
         }
     }

@@ -2,6 +2,21 @@ use std::{collections::HashMap, hash::Hasher};
 
 use fnv::FnvHasher;
 
+/// Incremental 64-bit FNV-1a hasher whose output depends only on the bytes
+/// fed to it, so fingerprints stay equal across processes, hosts, and Rust
+/// releases; `std`'s `DefaultHasher` leaves its algorithm unspecified. Report
+/// fingerprints, schedule projections, and benchmark result checksums compare
+/// values produced by different runs, which is why they use this type.
+///
+/// [`update_field`](Self::update_field) terminates each field with
+/// [`FIELD_SEPARATOR`](Self::FIELD_SEPARATOR) (`0xff`). That byte never occurs
+/// in UTF-8, so `("ab", "c")` and `("a", "bc")` hash differently.
+/// [`update_metadata`](Self::update_metadata) hashes the entry count and then
+/// the entries in key order, which makes the result independent of `HashMap`
+/// iteration order.
+///
+/// Not collision resistant; use [`log_safe_fingerprint`] where a value must
+/// not be recoverable or forgeable.
 #[derive(Debug, Clone)]
 pub struct StableFnv1a64 {
     state: u64,

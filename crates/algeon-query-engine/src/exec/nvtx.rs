@@ -4,7 +4,7 @@
 use std::ffi::CStr;
 use std::ffi::{CString, c_char, c_int};
 
-use crate::{execution_contracts::DevicePlacement, observability::AttemptId, runtime::ExecutionContext};
+use crate::{observability::AttemptId, runtime::ExecutionContext};
 
 unsafe extern "C" {
     fn nvtxRangePushA(message: *const c_char) -> c_int;
@@ -46,10 +46,7 @@ impl Drop for NvtxRange {
 /// admitted through the public attempt API.
 pub(in crate::exec) fn attempt_execution_range(context: &ExecutionContext) -> Option<NvtxRange> {
     let attempt_id = context.attempt_id()?;
-    let DevicePlacement::SingleDevice { device_ordinal } = context.device_placement() else {
-        return None;
-    };
-    Some(NvtxRange::new(attempt_execution_label(attempt_id, device_ordinal)))
+    Some(NvtxRange::new(attempt_execution_label(attempt_id, context.device().ordinal())))
 }
 
 fn attempt_execution_label(attempt_id: AttemptId, device_ordinal: usize) -> CString {

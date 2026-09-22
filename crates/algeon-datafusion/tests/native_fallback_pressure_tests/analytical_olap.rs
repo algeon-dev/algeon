@@ -40,11 +40,6 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
     let report = NativeDataFusionPlanningReport::collect(items);
 
     assert_eq!(planning_query_count(&report), ANALYTICAL_OLAP_QUERY_COUNT);
-    assert_eq!(
-        ANALYTICAL_OLAP_ADMISSION_EXPECTATIONS.len(),
-        ANALYTICAL_OLAP_QUERY_COUNT,
-        "every analytical OLAP query must declare its admission expectation"
-    );
     assert!(
         ANALYTICAL_OLAP_QUERIES.iter().any(
             |query| query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
@@ -57,12 +52,6 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
         assert!(row.native_candidate_shape.as_deref().is_some_and(|shape| shape.contains("JoinExec")));
         assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
 
-        assert_eq!(
-            analytical_olap_admission(query.id),
-            Some(AnalyticalOlapCurrentAdmission::Accepted),
-            "{} must have an explicit admission expectation",
-            query.id
-        );
         assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "{}", query.id);
         assert_eq!(row.reason_code, None, "{}", query.id);
         assert!(!row.rejected_before_execution, "{}", query.id);

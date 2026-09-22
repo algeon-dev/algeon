@@ -17,7 +17,7 @@ fn duration_projection_uses_the_descriptor_unit_and_exact_seconds_ladder() {
     let unsupported_descriptor = BackendMetricDescriptor { unit: BackendMetricUnit::Bytes, ..*descriptor };
     assert_eq!(
         project_backend_duration_histogram(&unsupported_descriptor, 1_000_000_123),
-        Err(BackendDurationProjectionError::UnsupportedUnit {
+        Err(BackendDurationProjectionError {
             metric_name: "algeon.gpu.attempts.duration",
             unit: BackendMetricUnit::Bytes,
         }),

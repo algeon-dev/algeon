@@ -274,19 +274,8 @@ impl NativeMetricRecording<recording_marker::native_graph_claim_calibration_rows
     }
 }
 
-impl NativeMetricRecording<recording_marker::source_read_boundary_direct_device> for AlgeonNativeMetrics {
-    recording_kind!(Query);
-
-    fn record_query(&self, metrics: &QueryMetrics) {
-        self.record_boundary_policy(metrics.execution_boundary_policy);
-    }
-}
-
 impl_noop_recording! {
     Query;
-    build_materialization_boundary_query_scoped,
-    probe_execution_boundary_reusable,
-    result_materialization_boundary_explicit,
     max_task_observed_peak_bytes_observed,
     max_task_retained_bytes_observed,
     resident_dataframe_peak_bytes_observed,

@@ -72,15 +72,15 @@ impl DataFrameMixedLeftJoinState {
             resolve_column_names(left.columns_map(), &string_refs(options.left_predicate_column_names()), operation)?;
         let keys = build_borrowed_table_view_from_columns(left.columns_map(), &keys)?;
         let conditional = build_borrowed_table_view_from_columns(left.columns_map(), &conditional)?;
-        let mut domains = vec![conditional.table().execution_domain()];
+        let mut domains = vec![conditional.execution_domain()];
         predicate.literal_domains(&mut domains);
-        let execution = ResolvedExecution::many(keys.table().execution_domain(), domains, ctx, operation)?;
+        let execution = ResolvedExecution::many(keys.execution_domain(), domains, ctx, operation)?;
         let mut handle = ptr::null_mut();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_mixed_left_join_state_create_ex(
-                    keys.table().raw_handle(),
-                    conditional.table().raw_handle(),
+                    keys.raw_handle(),
+                    conditional.raw_handle(),
                     predicate.raw_handle(),
                     options.null_eq().to_join_raw(),
                     &mut handle,
@@ -103,10 +103,10 @@ impl DataFrameMixedLeftJoinState {
         let operation = "dataframe::mixed_left_join_state::consume_in";
         let tables = mixed_join_tables(&self.left, right, &self.options, operation)?;
         let mut domains = vec![
-            tables.left_equality.table().execution_domain(),
-            tables.left_conditional.table().execution_domain(),
-            tables.right_equality.table().execution_domain(),
-            tables.right_conditional.table().execution_domain(),
+            tables.left_equality.execution_domain(),
+            tables.left_conditional.execution_domain(),
+            tables.right_equality.execution_domain(),
+            tables.right_conditional.execution_domain(),
         ];
         self.predicate.literal_domains(&mut domains);
         // ResolvedExecution orders input producers and fences their release after
@@ -116,8 +116,8 @@ impl DataFrameMixedLeftJoinState {
             unsafe {
                 cudf_sys::cudf_mixed_left_join_state_consume_ex(
                     self.handle.as_ptr(),
-                    tables.right_equality.table().raw_handle(),
-                    tables.right_conditional.table().raw_handle(),
+                    tables.right_equality.raw_handle(),
+                    tables.right_conditional.raw_handle(),
                     execution.exec_options(),
                 )
             },

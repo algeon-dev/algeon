@@ -19,9 +19,8 @@ use query_planning::{
 
 use super::{
     super::{
-        CacheFillByteBudget, DeploymentIoCapability, ExecutionBoundaryPolicy, GpuExecutionPool,
-        LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy, ServiceStreamPool,
-        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy,
+        MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
         cache_events::LakehouseCacheFillEventSink,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
@@ -69,8 +68,6 @@ pub struct ExecutionContextBuilder {
     memory_policy: MemoryResourcePolicy,
     /// Engine-level bounded/unbounded memory contract.
     memory_control_policy: MemoryControlPolicy,
-    /// Source/build/probe/result boundary contract.
-    boundary_policy: ExecutionBoundaryPolicy,
     /// Source read scheduling contract.
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -469,7 +466,6 @@ impl ExecutionContextBuilder {
                 attempt_member_lease: None,
                 attempt_stream_provider_route: None,
                 attempt_stream_provider_alias: None,
-                boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
                 resident_source_cache: None,
@@ -555,7 +551,6 @@ impl ExecutionContextBuilder {
             attempt_member_lease: None,
             attempt_stream_provider_route: None,
             attempt_stream_provider_alias: None,
-            boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
             resident_source_cache: None,

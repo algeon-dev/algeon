@@ -40,9 +40,8 @@ use super::{
     executor::CompiledGpuTaskExecutor,
     resource::CompiledGpuResource,
     scheduler::{
-        CompiledFlightBoard, CompiledPipelineScheduler, CompiledTaskExecutor, CompiledTaskOutput,
-        cleanup_preserving_primary, fail_task_lifecycle, record_cleanup_failure, release_completed_resources,
-        release_live_resources_on_error,
+        CompiledFlightBoard, CompiledPipelineScheduler, CompiledTaskExecutor, cleanup_preserving_primary,
+        fail_task_lifecycle, record_cleanup_failure, release_completed_resources, release_live_resources_on_error,
     },
     state::CompiledPipelineState,
 };
@@ -52,7 +51,10 @@ use crate::{
     observability::{
         CleanupFailurePhase, RuntimeExecutionObservationScope, RuntimeSpanId, RuntimeTaskLifecycle, task_attempt_id,
     },
-    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, SinkBoundaryKind, SortStrategy},
+    pipeline::{
+        CompiledPipeline, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind,
+        SortStrategy,
+    },
     plan::QueryPlan,
     runtime::{
         AttemptStreamProviderRoute, AttemptWorkLease, ExecutionContext, GpuExecutionJobKind, PoolBlockingWork,
@@ -332,7 +334,7 @@ enum LaneJobError {
 
 struct LaneJobCompletion {
     task_id: PipelineTaskId,
-    outcome: std::result::Result<CompiledTaskOutput<CompiledGpuResource>, LaneJobError>,
+    outcome: std::result::Result<Vec<(ResidentResourceId, CompiledGpuResource)>, LaneJobError>,
     secondary_cleanup_errors: Vec<QueryError>,
     /// Dynamic-filter set owned by the lane executor after its task.
     ///
@@ -984,12 +986,7 @@ fn commit_lane_completions(
                     );
                     return Err(error);
                 }
-                let released = match scheduler.commit_claimed_task(
-                    &claim.task,
-                    output.into_produced_resources(),
-                    state,
-                    flights,
-                ) {
+                let released = match scheduler.commit_claimed_task(&claim.task, output, state, flights) {
                     Ok(released) => released,
                     Err(error) => {
                         fail_task_lifecycle(&mut lifecycle, &error);
@@ -1125,7 +1122,7 @@ fn fail_lane_round(
             record_cleanup_failure(observation_scope, phase, secondary);
         }
         if let Ok(output) = completion.outcome {
-            for (id, payload) in output.into_produced_resources() {
+            for (id, payload) in output {
                 if let Err(error) = executor.cleanup_resource(id, payload) {
                     record_cleanup_failure(observation_scope, phase, &error);
                 }
@@ -1164,7 +1161,7 @@ fn cleanup_lane_completion_outputs(
         record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskExecution, secondary);
     }
     if let Ok(output) = completion.outcome {
-        for (id, payload) in output.into_produced_resources() {
+        for (id, payload) in output {
             if let Err(error) = executor.cleanup_resource(id, payload) {
                 record_cleanup_failure(observation_scope, CleanupFailurePhase::TaskExecution, &error);
             }
@@ -1220,7 +1217,7 @@ fn run_coordinator_sink(
         cleanup_preserving_primary(executor, state, observation_scope, CleanupFailurePhase::TaskCompletion, &error);
         return Err(error);
     }
-    let released = match scheduler.commit_claimed_task(task, output.into_produced_resources(), state, flights) {
+    let released = match scheduler.commit_claimed_task(task, output, state, flights) {
         Ok(released) => released,
         Err(error) => {
             fail_task_lifecycle(&mut lifecycle, &error);
@@ -1301,7 +1298,7 @@ fn run_coordinator_tasks(
             cleanup_preserving_primary(executor, state, observation_scope, CleanupFailurePhase::TaskCompletion, &error);
             return Err(error);
         }
-        let released = match scheduler.commit_claimed_task(&task, output.into_produced_resources(), state, flights) {
+        let released = match scheduler.commit_claimed_task(&task, output, state, flights) {
             Ok(released) => released,
             Err(error) => {
                 fail_task_lifecycle(&mut lifecycle, &error);

@@ -251,10 +251,6 @@ pub(super) struct FatalPatternEvidence {
     pub(super) matches: Vec<Value>,
 }
 
-pub(super) struct FatalScanResult {
-    pub(super) evidence: FatalPatternEvidence,
-}
-
 impl ProcessEvidence {
     pub(super) fn clone_for_restart(&self) -> Self {
         Self {
@@ -764,7 +760,7 @@ pub(super) fn admission_activity(payload: &str) -> E2eResult<(u64, u64, u64)> {
     ))
 }
 
-pub(super) fn scan_fatal_patterns(paths: &[PathBuf]) -> FatalScanResult {
+pub(super) fn scan_fatal_patterns(paths: &[PathBuf]) -> FatalPatternEvidence {
     let mut evidence = FatalPatternEvidence::default();
     for path in paths {
         let Ok(contents) = fs::read_to_string(path) else { continue };
@@ -786,7 +782,7 @@ pub(super) fn scan_fatal_patterns(paths: &[PathBuf]) -> FatalScanResult {
             }
         }
     }
-    FatalScanResult { evidence }
+    evidence
 }
 
 pub(super) fn hardware_evidence() -> Value {

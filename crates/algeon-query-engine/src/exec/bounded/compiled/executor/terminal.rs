@@ -1,4 +1,4 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 use crate::{
     error::Result,
     exec::{
@@ -24,7 +24,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
@@ -36,7 +36,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     .with_fact("compiled_task_id", task.id())
                     .with_fact("plan_node_id", node_id));
             };
-            return Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(*frame))]));
+            return Ok(vec![(output, CompiledGpuResource::new(*frame))]);
         }
 
         let input_payload = state.resource_payload(input)?;
@@ -49,14 +49,14 @@ impl CompiledGpuTaskExecutor<'_> {
             |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 
     pub(super) fn execute_union_task(
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let output = single_output_resource(task)?;
         let Some(node) = self.plan.node(node_id) else {
@@ -82,11 +82,11 @@ impl CompiledGpuTaskExecutor<'_> {
             && self.resource_data_form(output) == ResidentDataForm::FrameStream
             && self.resource_sharing(output) == ResourceSharing::SingleConsume
         {
-            return Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::frame_stream(inputs))]));
+            return Ok(vec![(output, CompiledGpuResource::frame_stream(inputs))]);
         }
         let frame = execute_bounded_generic_union(&mut self.execution, node_id, inputs)
             .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 
     pub(super) fn union_task_inputs(
@@ -182,7 +182,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         if self.pipeline.sink().kind() != SinkBoundaryKind::HostArrowMaterialization
             || self.pipeline.sink().input() != task.id()
         {
@@ -230,6 +230,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact_if_absent("sink_boundary_kind", self.pipeline.sink().kind().as_str())
         })?;
         self.host_output = Some(output);
-        Ok(CompiledTaskOutput::empty())
+        Ok(Vec::new())
     }
 }

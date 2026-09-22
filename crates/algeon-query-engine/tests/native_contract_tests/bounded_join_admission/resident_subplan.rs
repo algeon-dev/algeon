@@ -9,10 +9,7 @@ fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_evidence()
         analysis.admits_keyed_hash_join_resident_subplan_pipeline()
     );
     assert_eq!(analysis.keyed_hash_join_resident_subplan_admission, CapabilityDecision::Satisfied);
-    assert!(analysis.edges.iter().any(|edge| {
-        edge.contract_kinds
-            .contains(&EdgeContractKind::SharedProducer { identity: SharedProducerIdentity::SameNodeIdAfterCse })
-    }));
+    assert!(analysis.edges.iter().any(|edge| edge.contract_kinds.contains(&EdgeContractKind::SharedProducer)));
     assert!(analysis.invariants.iter().any(|invariant| {
         matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
             && invariant.decision == CapabilityDecision::Satisfied

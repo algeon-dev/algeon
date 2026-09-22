@@ -10,7 +10,7 @@ pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Resul
         .with_fact("budget_boundary", report.request().boundary())
         .with_fact("budget_bytes", report.request().budget_bytes())
         .with_fact("budget_enforcement", report.enforcement().as_str())
-        .with_fact("budget_status", report.status().as_str())
+        .with_fact("budget_status", "reservation_enforced")
     })?;
     Ok(bytes as u64)
 }

@@ -4,7 +4,7 @@ use query_engine::{
     error::Result as QueryEngineResult,
     exec::{
         CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-        CompiledTaskExecutor, CompiledTaskOutput, ExecutionMetrics,
+        CompiledTaskExecutor, ExecutionMetrics,
     },
     expr::ColumnRef,
     pipeline::{PipelineTask, PipelineTaskKind, ResidentResourceId, compile_pipeline},
@@ -470,7 +470,7 @@ impl CompiledTaskExecutor for CancelAfterFinalAggregateConsumer<'_, '_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
-    ) -> QueryEngineResult<CompiledTaskOutput<Self::Resource>> {
+    ) -> QueryEngineResult<Vec<(ResidentResourceId, Self::Resource)>> {
         let output = self.executor.execute_task(task, state)?;
         if task.kind() == PipelineTaskKind::FinalSort && self.retained_at_cancel.is_none() {
             self.retained_at_cancel = Some(self.context.attempt_allocation_domain_usage()?.unwrap().current_bytes);

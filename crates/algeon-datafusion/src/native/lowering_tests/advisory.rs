@@ -4,7 +4,7 @@ use query_engine::{
     mode::StatisticalAggregateExecutionMode,
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::ShadowBytes,
-    plan::{AdvisoryStatistic, AdvisoryStatisticsScope},
+    plan::AdvisoryStatistic,
     rapids_backend::rapids_analysis_context,
     shadow::estimate_compiled_pipeline,
 };
@@ -32,7 +32,6 @@ async fn shadow_advisory_binds_projection_and_final_aggregate_outputs() {
         .find(|binding| binding.node == aggregate.id)
         .expect("final aggregate output has frontend statistics even when unknown");
     assert_eq!(&binding.schema, aggregate.output_schema());
-    assert_eq!(binding.scope, AdvisoryStatisticsScope::WholeOutput);
     assert_eq!(binding.frontend_version, datafusion::DATAFUSION_VERSION);
 
     let projected =

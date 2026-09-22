@@ -73,28 +73,14 @@ impl ExecutionBudgetEnforcement {
     }
 }
 
-/// Outcome status for a budgeted execution attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ExecutionBudgetStatus {
-    /// The operation completed while the stream reservation was active.
-    ReservationEnforced,
-}
-
-impl ExecutionBudgetStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ReservationEnforced => "reservation_enforced",
-        }
-    }
-}
-
 /// Structured facts recorded for a budgeted execution attempt.
+///
+/// A report exists only for an operation that completed while its stream
+/// reservation was active.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionBudgetReport {
     request: ExecutionBudgetRequest,
     enforcement: ExecutionBudgetEnforcement,
-    status: ExecutionBudgetStatus,
     allocator_high_water_bytes: Option<usize>,
     allocator_current_bytes: Option<usize>,
     allocator_peak_aligned_bytes: Option<usize>,
@@ -112,7 +98,6 @@ impl ExecutionBudgetReport {
         Self {
             request,
             enforcement,
-            status: ExecutionBudgetStatus::ReservationEnforced,
             allocator_high_water_bytes: None,
             allocator_current_bytes: None,
             allocator_peak_aligned_bytes: None,
@@ -161,10 +146,6 @@ impl ExecutionBudgetReport {
 
     pub fn enforcement(&self) -> ExecutionBudgetEnforcement {
         self.enforcement
-    }
-
-    pub fn status(&self) -> ExecutionBudgetStatus {
-        self.status
     }
 
     pub fn allocator_high_water_bytes(&self) -> Option<usize> {

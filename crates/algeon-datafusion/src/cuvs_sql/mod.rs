@@ -21,7 +21,7 @@ pub use query_planner::{AlgeonQueryPlanner, CuvsExtensionPlanner};
 pub use registry::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
     CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,
-    CuvsOptionValidationError, CuvsOutputContract, CuvsRelationArgumentSyntax, CuvsRelationRole,
-    canonicalize_cuvs_options, cuvs_options_json_schema,
+    CuvsOptionValidationError, CuvsOutputContract, CuvsRelationRole, canonicalize_cuvs_options,
+    cuvs_options_json_schema,
 };
 pub use relation_planner::{CuvsRelationPlanner, cuvs_relation_planner};

@@ -12,7 +12,7 @@ use cudf::{
     CudfErrorFailureSource, DataFrame, DataType, DeviceId, DeviceMemoryFailureAllocationDomain,
     DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
     DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, QueryMemoryDomainOptions, Result, Runtime, SortOptions, StreamReservationLease, TypeId,
+    QueryMemoryDomainOptions, Result, Runtime, SortOptions, StreamReservationLease, TypeId,
     core::DeviceBuffer,
     ops::expr::col,
     runtime::CudaStream,
@@ -555,7 +555,6 @@ fn execution_budget_token_can_attach_as_arena_member() {
 
     assert_eq!(token.enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
     assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
-    assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
     assert!(arena.usage().unwrap().current_bytes >= outcome.value().device_allocated_size_bytes().unwrap() as u64);
 }
 
@@ -591,8 +590,6 @@ fn execution_budget_token_can_attach_as_query_domain_member() {
     assert_eq!(right_token.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(left_outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(right_outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
-    assert_eq!(left_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
-    assert_eq!(right_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
 
     let left_output_bytes = left_outcome.value().device_allocated_size_bytes().unwrap() as u64;
     let right_output_bytes = right_outcome.value().device_allocated_size_bytes().unwrap() as u64;
@@ -1748,7 +1745,6 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
         let outcome = left.series_from_value_with_budget(11i32, 1024, &token).unwrap();
         let usage = token.reservation_usage().unwrap();
         assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 11);
-        assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
         (
             outcome.value().device_allocated_size_bytes().unwrap(),
             usage.peak_bytes as usize,
@@ -1764,7 +1760,6 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
         let outcome = right.series_from_value_with_budget(29i32, 2048, &token).unwrap();
         let usage = token.reservation_usage().unwrap();
         assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 29);
-        assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
         (
             outcome.value().device_allocated_size_bytes().unwrap(),
             usage.peak_bytes as usize,
@@ -2237,8 +2232,6 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
     let first_outcome = runtime.series_from_value_with_budget(3i32, 1_000_000, &first).unwrap();
     let second_outcome = runtime.series_from_value_with_budget(5i32, 1_000_000, &second).unwrap();
 
-    assert_eq!(first_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
-    assert_eq!(second_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
     drop(first);
     drop(second);
     let usage = lease.usage().unwrap();

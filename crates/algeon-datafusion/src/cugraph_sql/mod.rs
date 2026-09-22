@@ -52,14 +52,14 @@ pub use registry::{
 };
 pub(crate) use relation_planner::cugraph_relation_planner;
 pub(crate) use types::{
-    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CugraphVertexIdDomain,
-    PredicateSourceColumnRole, PredicateSourceSpec, result_schema_for_vertex_domain,
+    CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
+    CugraphVertexIdDomain, PredicateSourceColumnRole, result_schema_for_vertex_domain,
     validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
 pub(crate) use types::{
-    CUGRAPH_EDGE_WEIGHT_COLUMN, CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN,
-    CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN, CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN,
+    CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN, CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN,
+    CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN,
 };
 pub use types::{
     CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessCentralityParams, CugraphBetweennessSeeds,

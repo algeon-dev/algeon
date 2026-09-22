@@ -71,7 +71,8 @@ pub struct BudgetedExecutionEvent {
     pub budget_bytes: u64,
     /// Lower-level budget enforcement label.
     pub enforcement: String,
-    /// Lower-level budget status label.
+    /// Lower-level budget status label; always `reservation_enforced`,
+    /// because a budget report exists only for a completed operation.
     pub status: String,
     /// Allocator high-water bytes reported by lower layers.
     pub allocator_high_water_bytes: Option<u64>,
@@ -93,7 +94,7 @@ impl BudgetedExecutionEvent {
             boundary: report.request().boundary().to_string(),
             budget_bytes: report.request().budget_bytes() as u64,
             enforcement: report.enforcement().as_str().to_string(),
-            status: report.status().as_str().to_string(),
+            status: "reservation_enforced".to_string(),
             allocator_high_water_bytes: report.allocator_high_water_bytes().map(|bytes| bytes as u64),
             retained_bytes: report.retained_bytes().map(|bytes| bytes as u64),
             output_bytes: report.output_bytes().map(|bytes| bytes as u64),

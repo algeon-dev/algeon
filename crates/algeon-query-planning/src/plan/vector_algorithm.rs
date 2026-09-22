@@ -82,12 +82,6 @@ impl CuvsRelationRole {
     }
 }
 
-/// Only relation-valued subqueries are admitted by the SQL surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CuvsRelationArgumentSyntax {
-    ParenthesizedSubquery,
-}
-
 /// Stable relational output contract selected by an operation descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsOutputContract {
@@ -196,8 +190,9 @@ pub struct CuvsOperationDescriptor {
     pub summary: &'static str,
     /// Concrete selection guidance for the generated reference page.
     pub use_this_when: &'static str,
+    /// Relation arguments, each passed as a parenthesized subquery; the SQL
+    /// surface admits no other relation syntax.
     pub relation_roles: &'static [CuvsRelationRole],
-    pub relation_argument_syntax: CuvsRelationArgumentSyntax,
     pub output_contract: CuvsOutputContract,
     pub options: &'static [CuvsOptionDefinition],
     pub output_fields: &'static [CuvsOutputFieldDefinition],
@@ -498,7 +493,6 @@ pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
         summary: "Exact brute-force nearest-neighbor search over dense vectors.",
         use_this_when: "Use this when SQL can first filter a candidate relation and you need exact batch reranking, not a persistent ANN index.",
         relation_roles: KNN_RELATIONS,
-        relation_argument_syntax: CuvsRelationArgumentSyntax::ParenthesizedSubquery,
         output_contract: CuvsOutputContract::BruteForceKnn,
         options: KNN_OPTIONS,
         output_fields: KNN_OUTPUT_FIELDS,
@@ -522,7 +516,6 @@ FROM cuvs_brute_force_knn(
         summary: "K-means clustering assignments for dense vector rows.",
         use_this_when: "Use this when one statement should fit clusters over its evaluated relation and immediately join or aggregate the assignments.",
         relation_roles: INPUT_RELATION,
-        relation_argument_syntax: CuvsRelationArgumentSyntax::ParenthesizedSubquery,
         output_contract: CuvsOutputContract::KMeansAssignments,
         options: KMEANS_OPTIONS,
         output_fields: KMEANS_OUTPUT_FIELDS,
@@ -545,7 +538,6 @@ ORDER BY row_ordinal;"#,
         summary: "Principal-component analysis transform for dense vector rows.",
         use_this_when: "Use this when one statement should fit and transform its evaluated input relation for relational export or downstream visualization.",
         relation_roles: INPUT_RELATION,
-        relation_argument_syntax: CuvsRelationArgumentSyntax::ParenthesizedSubquery,
         output_contract: CuvsOutputContract::PcaComponents,
         options: PCA_OPTIONS,
         output_fields: PCA_OUTPUT_FIELDS,

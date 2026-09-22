@@ -139,8 +139,8 @@ impl DataFrameProjectedCrossJoinPlan {
         };
 
         join::projected_cross_join_device_allocated_size_impl(
-            left_table.as_ref().map(|table| table.table()),
-            right_table.as_ref().map(|table| table.table()),
+            left_table.as_ref(),
+            right_table.as_ref(),
             self.left.num_rows(),
             self.right.num_rows(),
             execution.exec_options(),
@@ -168,8 +168,8 @@ impl DataFrameProjectedCrossJoinPlan {
         };
 
         let table = join::projected_cross_join_impl(
-            left_table.as_ref().map(|table| table.table()),
-            right_table.as_ref().map(|table| table.table()),
+            left_table.as_ref(),
+            right_table.as_ref(),
             self.left.num_rows(),
             self.right.num_rows(),
             execution.output_domain(),

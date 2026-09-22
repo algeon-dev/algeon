@@ -12,7 +12,7 @@ use arrow::{
 };
 use cudf::{
     BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, TimestampResolution, TypeId,
+    TimestampResolution, TypeId,
     core::{Column, Table},
     frame::dataframe::{GpuRecordBatch, InfoDetail, ParquetSourceChunkReadOutput},
     io::{
@@ -1135,7 +1135,6 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     assert_eq!(evidence.fallback_reason, "not_applicable");
     assert_eq!(outcome.value().frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 30, 40],);
     assert_eq!(outcome.report().request().boundary(), "source_batch_read");
-    assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(outcome.report().output_rows(), Some(4));
     assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("2"));
     assert_eq!(outcome.report().context_facts().get("known_row_count").map(String::as_str), Some("4"));
@@ -1407,7 +1406,6 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert_eq!(report.request().boundary(), "source_read");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(4));
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
@@ -1490,7 +1488,6 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
     assert_eq!(df.testing_execution_domain_mr_value(), manager_mr);
     assert_eq!(last_exec_mr_value(), manager_mr);
     assert_eq!(report.request().boundary(), "host_buffer_source_read");
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(4));
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));

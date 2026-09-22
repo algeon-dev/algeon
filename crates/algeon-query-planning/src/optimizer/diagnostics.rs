@@ -293,8 +293,7 @@ fn format_stream_fanout_replay_candidate(candidate: &StreamFanoutReplayCandidate
     } else {
         candidate.join_probe_consumer_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
     };
-    let rejected_reason =
-        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    let rejected_reason = if candidate.applied { "none" } else { "NotReachableFromSink" };
     format!(
         "rule={},fanout_node_id={},consumer_count={},join_probe_consumer_node_ids={},applied={},rejected_reason={}",
         candidate.rule_name,

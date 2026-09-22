@@ -20,7 +20,6 @@ async fn native_pipeline_analytical_olap_workload_lowers_into_native_query_plans
     );
 
     for query in ANALYTICAL_OLAP_QUERIES {
-        assert_eq!(query.expected_lowering, AnalyticalOlapLoweringExpectation::NativeQueryPlan);
         let item = items.iter().find(|item| item.query_id == query.id).expect("analytical OLAP item should exist");
         let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &item.input else {
             panic!("{} should produce a physical plan", query.id);

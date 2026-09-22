@@ -36,7 +36,7 @@ pub(in crate::exec::bounded) use resource::CompiledGpuResource;
 #[cfg(not(feature = "test-hooks"))]
 use scheduler::CompiledPipelineScheduler;
 #[cfg(feature = "test-hooks")]
-pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor, CompiledTaskOutput};
+pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor};
 #[cfg(feature = "test-hooks")]
 pub use state::CompiledPipelineState;
 

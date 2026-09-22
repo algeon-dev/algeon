@@ -33,9 +33,9 @@ use futures::future::BoxFuture;
 pub use self::{
     explain_gpu::{ExplainGpuOutputMode, ExplainGpuStatement, parse_explain_gpu},
     model::{
-        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCoverage, QueryGpuCoverageConfidence,
-        QueryGpuCugraphCall, QueryGpuPlanningOutcome, QueryGpuPlanningRejection, QueryGpuRejectionPhase,
-        QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCoverage, QueryGpuCugraphCall,
+        QueryGpuPlanningOutcome, QueryGpuPlanningRejection, QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind,
+        QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
     },
 };
 use self::{

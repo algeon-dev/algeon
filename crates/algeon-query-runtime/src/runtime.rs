@@ -85,7 +85,7 @@ pub use context::{
 pub use gpu::{
     AlgeonGpuInventory, AlgeonNvmlTelemetry, DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedger,
     DeviceLedgerGrantRow, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceResourceEnvelope, DeviceResourceProfile,
-    DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant, Placement,
+    DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant,
     device_budget_bytes_from_facts,
 };
 pub(crate) use gpu::{DeviceContext, DeviceRegistry};
@@ -107,9 +107,7 @@ pub use process_exit::{
     ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
 };
 pub use query_planning::execution_contracts::{
-    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryResourcePolicy,
-    MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceChunkPlanningMode,
-    SourceReadBoundary, SourceSchedulerPolicy,
+    MemoryControlPolicy, MemoryResourcePolicy, ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy,
 };
 #[cfg(feature = "qualification")]
 pub use query_service::DeviceQuarantineInjection;

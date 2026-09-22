@@ -1,8 +1,7 @@
 //! Tests for DataFrame groupby aggregation.
 
 use cudf::{
-    AggSpec, DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, GroupByAgg,
+    AggSpec, DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, GroupByAgg,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     testing::{
@@ -120,7 +119,6 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     assert_eq!(report.request().boundary(), "grouped_sum");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(result.num_rows()));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.retained_bytes(), Some(output_bytes));
@@ -163,7 +161,6 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     assert_eq!(facts.max_group_size, 2);
     assert_eq!(report.request().boundary(), "prepared_sort_groupby");
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(facts.num_groups));
     assert_eq!(report.output_bytes(), None);
     assert_eq!(report.retained_bytes(), None);
@@ -196,7 +193,6 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     assert_eq!(groupby_sum_pairs(result), groupby_sum_pairs(&expected));
     assert_eq!(agg_report.request().boundary(), "prepared_sort_groupby");
     assert_eq!(agg_report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(agg_report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(agg_report.output_rows(), Some(result.num_rows()));
     assert_eq!(agg_report.output_bytes(), Some(output_bytes));
     assert_eq!(agg_report.retained_bytes(), Some(output_bytes));
@@ -238,7 +234,6 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
 
     assert_eq!(pairs, vec![(10, 6.0), (20, 20.0), (30, 5.0)]);
     assert_eq!(report.request().boundary(), "q17_grouped_avg");
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(result.num_rows()));
     let output_bytes = report.output_bytes().expect("groupby report should observe post-execution output bytes");
     let retained_bytes = report.retained_bytes().expect("groupby report should observe post-execution retained bytes");

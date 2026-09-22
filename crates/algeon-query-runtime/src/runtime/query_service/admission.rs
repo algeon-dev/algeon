@@ -425,22 +425,13 @@ pub(super) struct AdmissionRequest {
 }
 
 /// One immutable capability/executability requirement resolved for one
-/// installed device. Placement must never derive a second requirement after
-/// submission.
-#[derive(Debug, Clone)]
-pub(super) struct DeviceAdmissionEntry {
-    pub(super) requirement: AttemptRequirement,
-}
-
-pub(super) type DeviceAdmissionEntries = BTreeMap<usize, DeviceAdmissionEntry>;
+/// installed device, keyed by device ordinal. Placement must never derive a
+/// second requirement after submission.
+pub(super) type DeviceAdmissionEntries = BTreeMap<usize, AttemptRequirement>;
 
 impl AdmissionRequest {
-    pub(super) fn entry_for_device(&self, device_ordinal: usize) -> Result<&DeviceAdmissionEntry> {
-        self.device_entries.get(&device_ordinal).ok_or_else(|| missing_device_admission_entry_error(device_ordinal))
-    }
-
     pub(super) fn requirement_for_device(&self, device_ordinal: usize) -> Result<&AttemptRequirement> {
-        Ok(&self.entry_for_device(device_ordinal)?.requirement)
+        self.device_entries.get(&device_ordinal).ok_or_else(|| missing_device_admission_entry_error(device_ordinal))
     }
 
     /// Captures FIFO queue identity when the waiter is selected.
@@ -1069,7 +1060,7 @@ impl QueryAdmissionWaiter {
                     admitted_device_requirements: admitted
                         .device_entries
                         .iter()
-                        .map(|(&ordinal, entry)| (ordinal, entry.requirement.clone()))
+                        .map(|(&ordinal, requirement)| (ordinal, requirement.clone()))
                         .collect(),
                     submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
                     admitted_compatible_devices: admitted.compatible_devices.clone(),

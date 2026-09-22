@@ -1,4 +1,4 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledTaskOutput};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor};
 use crate::{
     error::Result,
     exec::bounded::{
@@ -10,7 +10,7 @@ use crate::{
         plan_bounded_shared_join_aggregate_local_parquet_source_stream,
         try_start_bounded_join_leaf_local_parquet_source_prefetch,
     },
-    pipeline::{PipelineTask, ResourceSharing},
+    pipeline::{PipelineTask, ResidentResourceId, ResourceSharing},
     plan::PlanNode,
     source::SourceNode,
 };
@@ -19,7 +19,7 @@ impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn execute_source_task(
         &mut self,
         task: &PipelineTask,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let output = single_output_resource(task)?;
         let node = self.plan.node(node_id).ok_or_else(|| {
@@ -91,10 +91,10 @@ impl CompiledGpuTaskExecutor<'_> {
                             && let Some(prefetch) =
                                 try_start_bounded_join_leaf_local_parquet_source_prefetch(&mut self.execution, &stream)?
                         {
-                            return Ok(CompiledTaskOutput::new(vec![(
+                            return Ok(vec![(
                                 output,
                                 CompiledGpuResource::pending_join_leaf_local_parquet_source(prefetch),
-                            )]));
+                            )]);
                         }
                         if feeds_aggregate
                             || has_multiple_consumers
@@ -132,6 +132,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str())),
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, resource)]))
+        Ok(vec![(output, resource)])
     }
 }

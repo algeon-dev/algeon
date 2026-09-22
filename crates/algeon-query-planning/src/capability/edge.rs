@@ -12,8 +12,8 @@ use super::{
     graph::{collect_reachable_node_ids, consumer_nodes_for_reachable},
     join_node_execution_capability,
     model::{
-        CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty,
-        RequiredProperty, ResultSinkKind, SharedProducerIdentity, VectorInputRole,
+        CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty, ResultSinkKind,
+        VectorInputRole,
     },
     node::{produced_properties, source_format_capability},
     shape::{join_side_index, opposite_join_side},
@@ -27,15 +27,14 @@ pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &
             let consumer = EdgeConsumer::Node(consumer_id);
             let input_role = input_role(kind, input_index);
             let contract_kinds = edge_contract_kinds(plan, *producer, consumer, kind, input_role);
-            let required_properties = vec![RequiredProperty::ResidentFrame];
-            let decision = edge_decision(plan, *producer, consumer, &required_properties);
+            let decision = edge_decision(plan, *producer, consumer);
             let decision = match (&decision, kind) {
                 (CapabilityDecision::Satisfied, PlanNode::Join(join)) if join.spec.join_type == JoinType::LeftAnti => {
                     left_anti_dedup_edge_decision(plan, *producer, input_role, join)
                 },
                 _ => decision,
             };
-            EdgeContract { producer: *producer, consumer, contract_kinds, input_role, required_properties, decision }
+            EdgeContract { producer: *producer, consumer, contract_kinds, input_role, decision }
         })
         .collect()
 }
@@ -178,28 +177,20 @@ pub(super) fn edge_contract_kinds(
     kinds
 }
 
-pub(super) fn edge_decision(
-    plan: &QueryPlan,
-    producer: NodeId,
-    consumer: EdgeConsumer,
-    required_properties: &[RequiredProperty],
-) -> CapabilityDecision {
+pub(super) fn edge_decision(plan: &QueryPlan, producer: NodeId, consumer: EdgeConsumer) -> CapabilityDecision {
     let Some(producer_node) = plan.node(producer) else {
         return CapabilityDecision::rejected(
             "missing_edge_producer",
             [("producer", producer.to_string()), ("consumer", edge_consumer_fact(consumer))],
         );
     };
-    let produced = produced_properties(producer_node);
-    if let Some(required) =
-        required_properties.iter().find(|required| !edge_property_is_satisfied(&produced, **required))
-    {
+    if !produced_properties(producer_node).contains(&ProducedProperty::ResidentFrame) {
         return CapabilityDecision::rejected(
             "missing_edge_required_property",
             [
                 ("producer", producer.to_string()),
                 ("consumer", edge_consumer_fact(consumer)),
-                ("required_property", required_property_fact(*required).to_string()),
+                ("required_property", "resident_frame".to_string()),
                 ("producer_placement", producer_node.facts.placement.to_string()),
                 ("producer_operator", node_operator_fact(&producer_node.kind).to_string()),
             ],
@@ -208,23 +199,11 @@ pub(super) fn edge_decision(
     CapabilityDecision::Satisfied
 }
 
-pub(super) fn edge_property_is_satisfied(produced: &[ProducedProperty], required: RequiredProperty) -> bool {
-    match required {
-        RequiredProperty::ResidentFrame => produced.contains(&ProducedProperty::ResidentFrame),
-    }
-}
-
 pub(super) fn edge_consumer_fact(consumer: EdgeConsumer) -> String {
     match consumer {
         EdgeConsumer::Node(node) => node.to_string(),
         EdgeConsumer::Sink(ResultSinkKind::HostArrow) => "sink:host_arrow".to_string(),
         EdgeConsumer::Sink(ResultSinkKind::GpuResident) => "sink:gpu_resident".to_string(),
-    }
-}
-
-pub(super) fn required_property_fact(property: RequiredProperty) -> &'static str {
-    match property {
-        RequiredProperty::ResidentFrame => "resident_frame",
     }
 }
 
@@ -287,9 +266,8 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     if matches!(plan.sink(), ResultSink::HostArrow { .. }) {
         contract_kinds.push(EdgeContractKind::ExplicitSinkMaterialization);
     }
-    let required_properties = vec![RequiredProperty::ResidentFrame];
-    let decision = edge_decision(plan, producer, consumer, &required_properties);
-    EdgeContract { producer, consumer, contract_kinds, input_role: InputRole::SinkInput, required_properties, decision }
+    let decision = edge_decision(plan, producer, consumer);
+    EdgeContract { producer, consumer, contract_kinds, input_role: InputRole::SinkInput, decision }
 }
 
 pub(super) fn mark_shared_producer_edge_contracts(plan: &QueryPlan, edges: &mut [EdgeContract]) {
@@ -305,14 +283,8 @@ pub(super) fn mark_shared_producer_edge_contracts(plan: &QueryPlan, edges: &mut 
             edge.producer == producer
                 && matches!(edge.consumer, EdgeConsumer::Node(consumer) if producer_consumers.contains(&consumer))
         }) {
-            if !edge.contract_kinds.iter().any(|kind| {
-                matches!(
-                    kind,
-                    EdgeContractKind::SharedProducer { identity: SharedProducerIdentity::SameNodeIdAfterCse }
-                )
-            }) {
-                edge.contract_kinds
-                    .push(EdgeContractKind::SharedProducer { identity: SharedProducerIdentity::SameNodeIdAfterCse });
+            if !edge.contract_kinds.contains(&EdgeContractKind::SharedProducer) {
+                edge.contract_kinds.push(EdgeContractKind::SharedProducer);
             }
         }
     }

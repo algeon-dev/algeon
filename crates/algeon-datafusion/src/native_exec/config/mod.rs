@@ -19,9 +19,8 @@ use query_engine::{
     mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
-        AdmittedQueryContext, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, IoLifecycle,
-        LakehouseCacheFillConfig, MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
-        SourceStorageProfile,
+        AdmittedQueryContext, ExecutionCancellation, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig,
+        MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
     },
 };
 
@@ -44,7 +43,6 @@ use crate::native_exec::graph::GraphExecutionServices;
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeExecutionConfig {
     pub(super) memory_control_policy: MemoryControlPolicy,
-    pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
     pub(super) lakehouse_cache_fill_config: LakehouseCacheFillConfig,
@@ -138,7 +136,6 @@ impl AlgeonNativeExecutionConfig {
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
             },
-            boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
@@ -171,12 +168,6 @@ impl AlgeonNativeExecutionConfig {
     /// this template's budget with the selected immutable grant.
     pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
-        self
-    }
-
-    /// Set source, build, probe, and result boundary choices for native execution.
-    pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
-        self.boundary_policy = boundary_policy;
         self
     }
 
@@ -394,11 +385,6 @@ impl AlgeonNativeExecutionConfig {
     /// Memory-control policy copied into the lazily built native context.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
-    }
-
-    /// Boundary policy controlling source/build/probe/result residency.
-    pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
-        self.boundary_policy
     }
 
     /// Maximum source bytes planned into one native bounded source chunk.

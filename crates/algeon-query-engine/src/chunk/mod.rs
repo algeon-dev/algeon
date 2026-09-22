@@ -23,7 +23,6 @@ pub use crate::source_chunk::{
     plan_local_parquet_source_chunks_with_metadata_cache,
 };
 pub(crate) use crate::source_chunk::{
-    SourceMetadataLoadContext,
     metadata::{
         footer_verified_object_store_reader_decimal_types,
         footer_verified_object_store_reader_decimal_types_with_supplied_cache,

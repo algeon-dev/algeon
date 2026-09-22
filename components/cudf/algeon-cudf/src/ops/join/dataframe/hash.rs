@@ -42,7 +42,7 @@ impl DataFrame {
         let build_key_indices = resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
         let build_key_table = build_borrowed_table_view_from_columns(self.columns_map(), &build_key_indices)?;
         match join::HashJoin::pre_build_reservation_size_bytes_for_view(
-            build_key_table.table(),
+            &build_key_table,
             options.to_hash_join_options(),
             ctx,
             operation,
@@ -50,7 +50,7 @@ impl DataFrame {
             Ok(bytes) => Ok(bytes),
             Err(error)
                 if join::is_hash_join_retained_preprocessing_reservation_gap(&error)
-                    && join::hash_join_retained_preprocessing_fallback_supported(build_key_table.table())? =>
+                    && join::hash_join_retained_preprocessing_fallback_supported(&build_key_table)? =>
             {
                 let build_key_frame = self.select(build_keys.clone()).map_err(|error| error.reanchor(operation))?;
                 let build_key_table = build_key_frame.to_table_copy().map_err(|error| error.reanchor(operation))?;
@@ -516,23 +516,17 @@ impl DataFrame {
 
         let raw_indices = match (join_type, ctx) {
             (join::JoinType::Inner, Some(ctx)) => {
-                join::inner_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+                join::inner_join_indices_in(&lk_table, &rk_table, options.null_eq(), ctx)?
             },
             (join::JoinType::Left, Some(ctx)) => {
-                join::left_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+                join::left_join_indices_in(&lk_table, &rk_table, options.null_eq(), ctx)?
             },
             (join::JoinType::Full, Some(ctx)) => {
-                join::full_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+                join::full_join_indices_in(&lk_table, &rk_table, options.null_eq(), ctx)?
             },
-            (join::JoinType::Inner, None) => {
-                join::inner_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?
-            },
-            (join::JoinType::Left, None) => {
-                join::left_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?
-            },
-            (join::JoinType::Full, None) => {
-                join::full_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?
-            },
+            (join::JoinType::Inner, None) => join::inner_join_indices(&lk_table, &rk_table, options.null_eq())?,
+            (join::JoinType::Left, None) => join::left_join_indices(&lk_table, &rk_table, options.null_eq())?,
+            (join::JoinType::Full, None) => join::full_join_indices(&lk_table, &rk_table, options.null_eq())?,
         };
 
         let left = Series::from_column(raw_indices.left)
@@ -561,14 +555,10 @@ impl DataFrame {
         let rk_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_key_indices)?;
 
         let raw_indices = match (semi_join, ctx) {
-            (true, Some(ctx)) => {
-                join::left_semi_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
-            },
-            (false, Some(ctx)) => {
-                join::left_anti_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
-            },
-            (true, None) => join::left_semi_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?,
-            (false, None) => join::left_anti_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?,
+            (true, Some(ctx)) => join::left_semi_join_indices_in(&lk_table, &rk_table, options.null_eq(), ctx)?,
+            (false, Some(ctx)) => join::left_anti_join_indices_in(&lk_table, &rk_table, options.null_eq(), ctx)?,
+            (true, None) => join::left_semi_join_indices(&lk_table, &rk_table, options.null_eq())?,
+            (false, None) => join::left_anti_join_indices(&lk_table, &rk_table, options.null_eq())?,
         };
 
         let indices = Series::from_column(raw_indices.indices)
@@ -687,10 +677,10 @@ impl DataFrame {
 
         let result = join::join_impl(
             join::SplitJoinTables {
-                left_keys: lk_table.table(),
-                right_keys: rk_table.table(),
-                left_payload: lp_table.table(),
-                right_payload: rp_table.table(),
+                left_keys: &lk_table,
+                right_keys: &rk_table,
+                left_payload: &lp_table,
+                right_payload: &rp_table,
             },
             null_equality,
             join_type,
@@ -1072,17 +1062,17 @@ impl DataFrameHashJoin {
     {
         let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let raw_indices = match (join_type, output_size) {
-            (join::JoinType::Inner, None) => self.join.inner_join_indices_in(probe_key_table.table(), ctx)?,
-            (join::JoinType::Left, None) => self.join.left_join_indices_in(probe_key_table.table(), ctx)?,
-            (join::JoinType::Full, None) => self.join.full_join_indices_in(probe_key_table.table(), ctx)?,
+            (join::JoinType::Inner, None) => self.join.inner_join_indices_in(&probe_key_table, ctx)?,
+            (join::JoinType::Left, None) => self.join.left_join_indices_in(&probe_key_table, ctx)?,
+            (join::JoinType::Full, None) => self.join.full_join_indices_in(&probe_key_table, ctx)?,
             (join::JoinType::Inner, Some(output_size)) => {
-                self.join.inner_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                self.join.inner_join_indices_with_output_size_in(&probe_key_table, output_size, ctx)?
             },
             (join::JoinType::Left, Some(output_size)) => {
-                self.join.left_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                self.join.left_join_indices_with_output_size_in(&probe_key_table, output_size, ctx)?
             },
             (join::JoinType::Full, Some(output_size)) => {
-                self.join.full_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
+                self.join.full_join_indices_with_output_size_in(&probe_key_table, output_size, ctx)?
             },
         };
         let probe = Series::from_column(raw_indices.left)
@@ -1106,9 +1096,9 @@ impl DataFrameHashJoin {
     {
         let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let size = match join_type {
-            join::JoinType::Inner => self.join.inner_join_size_in(probe_key_table.table(), ctx)?,
-            join::JoinType::Left => self.join.left_join_size_in(probe_key_table.table(), ctx)?,
-            join::JoinType::Full => self.join.full_join_size_in(probe_key_table.table(), ctx)?,
+            join::JoinType::Inner => self.join.inner_join_size_in(&probe_key_table, ctx)?,
+            join::JoinType::Left => self.join.left_join_size_in(&probe_key_table, ctx)?,
+            join::JoinType::Full => self.join.full_join_size_in(&probe_key_table, ctx)?,
         };
         Ok(size)
     }

@@ -31,7 +31,7 @@ mod validation;
 pub use deletes::{ParquetEqualityDeleteFile, ParquetPositionDeleteFile};
 pub use diagnostics::{
     ByteRangeDisposition, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceDiagnostics, SourceFormat,
+    ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceDiagnostics,
     ZeroColumnCountDisposition,
 };
 #[doc(hidden)]

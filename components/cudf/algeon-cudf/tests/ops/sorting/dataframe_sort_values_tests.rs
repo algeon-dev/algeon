@@ -1,8 +1,7 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus,
-    SortOptions,
+    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, SortOptions,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     ops::sorting,
@@ -430,7 +429,6 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     assert_eq!(report.request().boundary(), "final_sort");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
     assert_eq!(report.output_bytes(), None);
     assert_budget_report_high_water(report, expected_order_bytes);

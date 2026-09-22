@@ -20,8 +20,8 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     capability::{
         AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, EdgeContractKind,
-        KeyedHashJoinStrategyOptions, NodeOperator, SharedProducerIdentity, SourceFormatCapability,
-        SubgraphInvariantKind, aggregate_strategy_capability_decision,
+        KeyedHashJoinStrategyOptions, NodeOperator, SourceFormatCapability, SubgraphInvariantKind,
+        aggregate_strategy_capability_decision,
     },
     chunk::{
         SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel, plan_local_parquet_source_chunks,
@@ -41,11 +41,7 @@ use query_engine::{
         DataPlacement, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode,
         ProjectionOutput, QueryPlanBuilder, ResultSink, SchemaBehavior, WindowFunction, WindowSpec,
     },
-    runtime::{
-        BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionCancellation, MemoryControlPolicy,
-        MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceReadBoundary,
-        SourceSchedulerPolicy,
-    },
+    runtime::{ExecutionCancellation, MemoryControlPolicy, ReservationKind, SourceSchedulerPolicy},
     source::{
         CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus,
         LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetEqualityDeleteFile,
@@ -233,15 +229,6 @@ fn source_storage_error_codes_have_stable_policy() {
 }
 
 #[test]
-fn memory_space_id_display_is_stable() {
-    let device_zero = MemorySpaceId::Device { device_ordinal: 0 };
-    let device_one = MemorySpaceId::Device { device_ordinal: 1 };
-
-    assert_eq!(device_zero.to_string(), "GPU:0");
-    assert_eq!(device_one.to_string(), "GPU:1");
-}
-
-#[test]
 fn memory_control_policy_names_bounded_and_unbounded_modes() {
     let unbounded = MemoryControlPolicy::Unbounded;
     let bounded = MemoryControlPolicy::Bounded {
@@ -273,32 +260,6 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     let chunk_policy = SourceChunkPlanningPolicy::from(bounded);
     assert_eq!(chunk_policy.max_source_chunk_bytes, Some(512 * 1024 * 1024));
     assert_eq!(chunk_policy.max_row_groups_per_chunk, 2);
-}
-
-#[test]
-fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
-    let policy = ExecutionBoundaryPolicy::default();
-
-    assert_eq!(policy.source_read(), SourceReadBoundary::DirectDeviceLocalParquet);
-    assert_eq!(policy.source_read().as_str(), "direct_device_local_parquet");
-    assert_eq!(policy.build_materialization(), BuildMaterializationBoundary::QueryScopedGpuHashJoin);
-    assert_eq!(policy.build_materialization().as_str(), "query_scoped_gpu_hash_join");
-    assert_eq!(policy.probe_execution(), ProbeExecutionBoundary::ReusableGpuHashJoin);
-    assert_eq!(policy.probe_execution().as_str(), "reusable_gpu_hash_join");
-    assert_eq!(policy.result_materialization(), ResultMaterializationBoundary::ExplicitSink);
-    assert_eq!(policy.result_materialization().as_str(), "explicit_sink");
-    assert_eq!(
-        policy.to_string(),
-        "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
-    );
-
-    let explicit = ExecutionBoundaryPolicy::new(
-        SourceReadBoundary::DirectDeviceLocalParquet,
-        BuildMaterializationBoundary::QueryScopedGpuHashJoin,
-        ProbeExecutionBoundary::ReusableGpuHashJoin,
-        ResultMaterializationBoundary::ExplicitSink,
-    );
-    assert_eq!(explicit, policy);
 }
 
 #[test]

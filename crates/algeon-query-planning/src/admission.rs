@@ -25,8 +25,7 @@ pub use evidence::{
 };
 #[doc(hidden)]
 pub use scope::{
-    AttemptExecutionBoundary, AttemptExecutionManifest, AttemptExecutionOccurrence, AttemptExecutionScope,
-    AttemptProducerOccurrence,
+    AttemptExecutionManifest, AttemptExecutionOccurrence, AttemptExecutionScope, AttemptProducerOccurrence,
 };
 #[doc(hidden)]
 pub use support::{

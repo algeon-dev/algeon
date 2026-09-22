@@ -63,7 +63,7 @@ pub(in crate::native::lowering) use count_star::{
     table_format_zero_column_count_metadata_is_available,
 };
 use field_id::{
-    TableFormatFieldIdReadBinding, TableFormatFileReadBindings, table_format_file_field_id_read_bindings,
+    TableFormatFieldIdReadBinding, table_format_file_field_id_read_bindings,
     table_format_requires_iceberg_field_id_bindings, validate_table_format_direct_file_column_field_ids,
 };
 use files::{

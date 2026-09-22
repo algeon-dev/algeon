@@ -101,7 +101,7 @@ pub use shared_subplan_materialization::{
 };
 pub use stream_fanout_replay::{
     STREAM_FANOUT_REPLAY_RULE_NAME, StreamFanoutReplayCandidateDiagnostics, StreamFanoutReplayDiagnostics,
-    StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason,
+    StreamFanoutReplayOptions,
 };
 
 use crate::{backend::AnalysisContext, capability::KeyedHashJoinStrategyOptions, error::Result, plan::QueryPlan};

@@ -5,9 +5,7 @@ use query_planning::{
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
-    execution_contracts::{
-        ExecutionBoundaryPolicy, MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
-    },
+    execution_contracts::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
     mode::StatisticalAggregateExecutionMode,
 };
 
@@ -51,8 +49,6 @@ pub struct QueryExecutionConfig {
     pub lakehouse_cache_fill: LakehouseCacheFillConfig,
     /// Source object-store profiles available to service-owned execution contexts.
     pub source_storage_profiles: Vec<SourceStorageProfile>,
-    /// Source/build/probe/result boundary policy copied into admitted contexts.
-    pub boundary_policy: ExecutionBoundaryPolicy,
     /// Bounded source scheduling policy copied into admitted contexts.
     pub source_scheduler_policy: SourceSchedulerPolicy,
     /// Source chunk planning mode copied into admitted contexts.
@@ -109,7 +105,6 @@ impl Default for QueryExecutionConfig {
         Self {
             lakehouse_cache_fill: LakehouseCacheFillConfig::default(),
             source_storage_profiles: Vec::new(),
-            boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),

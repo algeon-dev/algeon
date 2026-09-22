@@ -1,7 +1,7 @@
 #[cfg(feature = "cugraph")]
 use std::collections::BTreeMap;
 
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 #[cfg(feature = "cugraph")]
 use crate::exec::bounded::compiled::{
     helpers::{attach_task_facts, plan_node, single_output_resource},
@@ -9,7 +9,11 @@ use crate::exec::bounded::compiled::{
 };
 #[cfg(feature = "cugraph")]
 use crate::exec::bounded::execute_bounded_graph_algorithm_from_inputs;
-use crate::{error::Result, exec::bounded::compiled::helpers::invalid, pipeline::PipelineTask};
+use crate::{
+    error::Result,
+    exec::bounded::compiled::helpers::invalid,
+    pipeline::{PipelineTask, ResidentResourceId},
+};
 #[cfg(feature = "cugraph")]
 use crate::{
     exec::bounded::ResidentGpuFrame,
@@ -22,7 +26,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let output = single_output_resource(task)?;
         let Some(node) = self.plan.node(node_id) else {
@@ -78,7 +82,7 @@ impl CompiledGpuTaskExecutor<'_> {
         };
         let frame = execute_bounded_graph_algorithm_from_inputs(&mut self.execution, node_id, graph, edge, inputs)
             .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 
     #[cfg(not(feature = "cugraph"))]
@@ -86,7 +90,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         _state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         Err(invalid("compiled graph task requires the cugraph feature")
             .with_fact("compiled_task_id", task.id())
             .with_fact("operator", "graph_algorithm"))

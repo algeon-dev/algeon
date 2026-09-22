@@ -7,7 +7,7 @@ use cugraph_sys::{
     cugraph_katz_centrality,
 };
 
-use super::{EigenvectorCentralityResult, KatzCentralityResult};
+use super::CentralityResult;
 use crate::{
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
@@ -71,7 +71,7 @@ pub(crate) fn eigenvector_centrality(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
     params: &EigenvectorCentralityParams,
-) -> Result<EigenvectorCentralityResult> {
+) -> Result<CentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let graph_ptr = graph.as_ptr(handle, "eigenvector_centrality")?;
@@ -93,8 +93,7 @@ pub(crate) fn eigenvector_centrality(
 
     let result = require_non_null(result, "eigenvector_centrality", "centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    let result =
-        unsafe { EigenvectorCentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease())? };
+    let result = unsafe { CentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease())? };
     if !result.converged()? {
         return Err(Error::new(ErrorKind::NonConvergence, "eigenvector_centrality")
             .with_message(format!(
@@ -113,7 +112,7 @@ pub(crate) fn katz_centrality(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
     params: &KatzCentralityParams,
-) -> Result<KatzCentralityResult> {
+) -> Result<CentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let graph_ptr = graph.as_ptr(handle, "katz_centrality")?;
@@ -139,5 +138,5 @@ pub(crate) fn katz_centrality(
 
     let result = require_non_null(result, "katz_centrality", "centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { KatzCentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    unsafe { CentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

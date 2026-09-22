@@ -92,11 +92,6 @@ impl QueryHandle {
         self.config.memory_policy_for_admitted_query(self.device_budget_bytes)
     }
 
-    /// Boundary policy copied into the admitted execution context.
-    pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
-        self.config.boundary_policy
-    }
-
     /// Source scheduler policy copied into the admitted execution context.
     pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
         self.config.source_scheduler_policy
@@ -431,7 +426,6 @@ impl QueryHandle {
             attempt_member_lease: Some(attempt_member_lease),
             attempt_stream_provider_route: Some(Arc::clone(&attempt_stream_provider_route)),
             attempt_stream_provider_alias: None,
-            boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,
             source_chunk_planning_mode: service.config.source_chunk_planning_mode,
             resident_source_cache: resources.resident_caches.source_for_device(self.device_ordinal),

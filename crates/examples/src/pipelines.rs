@@ -50,24 +50,24 @@ impl Pipeline {
     }
 
     pub fn render_request(&self, body: &Value) -> Result<RenderedPipeline, PipelineValidationError> {
-        let values = RequestValues::from_body(body)?;
+        let values = request_values_from_body(body)?;
         self.render(values, MissingPolicy::Require)
     }
 
     pub fn render_defaults(&self) -> Result<RenderedPipeline, PipelineValidationError> {
-        self.render(RequestValues::default(), MissingPolicy::UseDefault)
+        self.render(None, MissingPolicy::UseDefault)
     }
 
     fn render(
         &self,
-        values: RequestValues<'_>,
+        values: Option<&serde_json::Map<String, Value>>,
         missing_policy: MissingPolicy,
     ) -> Result<RenderedPipeline, PipelineValidationError> {
-        validate_no_unknown_params(values.object, self.params)?;
+        validate_no_unknown_params(values, self.params)?;
         match self.kind {
             PipelineKind::SqlAggregateTopk => {
-                let year_from = int_param(self, values.object, "year_from", missing_policy)?;
-                let year_to = int_param(self, values.object, "year_to", missing_policy)?;
+                let year_from = int_param(self, values, "year_from", missing_policy)?;
+                let year_to = int_param(self, values, "year_to", missing_policy)?;
                 if year_from > year_to {
                     return Err(PipelineValidationError::new(
                         "invalid_param_range",
@@ -75,7 +75,7 @@ impl Pipeline {
                     )
                     .with_param("year_from"));
                 }
-                let limit = int_param(self, values.object, "limit", missing_policy)?;
+                let limit = int_param(self, values, "limit", missing_policy)?;
                 Ok(RenderedPipeline {
                     sql: format!(
                         "SELECT paper_id, title, year, n_citation \
@@ -91,7 +91,7 @@ impl Pipeline {
                 })
             },
             PipelineKind::SqlJoinFacets => {
-                let fos_name = string_param(self, values.object, "fos_name", missing_policy)?;
+                let fos_name = string_param(self, values, "fos_name", missing_policy)?;
                 Ok(RenderedPipeline {
                     sql: "SELECT p.year, COUNT(*) AS papers, AVG(p.n_citation) AS avg_citation \
                           FROM paper_fos f \
@@ -104,7 +104,7 @@ impl Pipeline {
                 })
             },
             PipelineKind::GraphPagerankTopk => {
-                let limit = int_param(self, values.object, "limit", missing_policy)?;
+                let limit = int_param(self, values, "limit", missing_policy)?;
                 Ok(RenderedPipeline {
                     sql: format!(
                         "WITH pr AS ( \
@@ -121,8 +121,8 @@ impl Pipeline {
                 })
             },
             PipelineKind::GraphBfsHops => {
-                let seed = int_param(self, values.object, "seed_paper_id", missing_policy)?;
-                let max_depth = int_param(self, values.object, "max_depth", missing_policy)?;
+                let seed = int_param(self, values, "seed_paper_id", missing_policy)?;
+                let max_depth = int_param(self, values, "max_depth", missing_policy)?;
                 Ok(RenderedPipeline {
                     sql: format!(
                         "WITH bfs AS ( \
@@ -266,18 +266,11 @@ impl ParamSpec {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct RequestValues<'a> {
-    object: Option<&'a serde_json::Map<String, Value>>,
-}
-
-impl<'a> RequestValues<'a> {
-    fn from_body(body: &'a Value) -> Result<Self, PipelineValidationError> {
-        let object = body.as_object().ok_or_else(|| {
-            PipelineValidationError::new("invalid_request_body", "pipeline parameters must be a JSON object")
-        })?;
-        Ok(Self { object: Some(object) })
-    }
+fn request_values_from_body(body: &Value) -> Result<Option<&serde_json::Map<String, Value>>, PipelineValidationError> {
+    let object = body.as_object().ok_or_else(|| {
+        PipelineValidationError::new("invalid_request_body", "pipeline parameters must be a JSON object")
+    })?;
+    Ok(Some(object))
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -95,6 +95,17 @@ impl cugraph::centrality::BetweennessCentralityResult
 pub fn cugraph::centrality::BetweennessCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
 impl core::fmt::Debug for cugraph::centrality::BetweennessCentralityResult
 pub fn cugraph::centrality::BetweennessCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::centrality::CentralityResult
+impl cugraph::centrality::CentralityResult
+pub fn cugraph::centrality::CentralityResult::converged(&self) -> cugraph::error::Result<bool>
+pub fn cugraph::centrality::CentralityResult::num_iterations(&self) -> usize
+pub fn cugraph::centrality::CentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::CentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::centrality::CentralityResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::centrality::CentralityResult
+pub fn cugraph::centrality::CentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::centrality::CentralityResult
+pub fn cugraph::centrality::CentralityResult::drop(&mut self)
 pub struct cugraph::centrality::EdgeBetweennessCentralityParams
 pub cugraph::centrality::EdgeBetweennessCentralityParams::do_expensive_check: bool
 pub cugraph::centrality::EdgeBetweennessCentralityParams::normalized: bool
@@ -115,15 +126,6 @@ pub cugraph::centrality::EigenvectorCentralityParams::epsilon: cugraph::params::
 pub cugraph::centrality::EigenvectorCentralityParams::max_iterations: cugraph::params::IterationCount
 impl core::default::Default for cugraph::centrality::vertex::EigenvectorCentralityParams
 pub fn cugraph::centrality::vertex::EigenvectorCentralityParams::default() -> Self
-pub struct cugraph::centrality::EigenvectorCentralityResult(_)
-impl cugraph::centrality::EigenvectorCentralityResult
-pub fn cugraph::centrality::EigenvectorCentralityResult::converged(&self) -> cugraph::error::Result<bool>
-pub fn cugraph::centrality::EigenvectorCentralityResult::num_iterations(&self) -> usize
-pub fn cugraph::centrality::EigenvectorCentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
-pub fn cugraph::centrality::EigenvectorCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
-pub fn cugraph::centrality::EigenvectorCentralityResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
-impl core::fmt::Debug for cugraph::centrality::EigenvectorCentralityResult
-pub fn cugraph::centrality::EigenvectorCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::centrality::HitsInitialHubs<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
 pub cugraph::centrality::HitsInitialHubs::values: &'a cugraph::array::DeviceArrayView<'a, W>
 pub cugraph::centrality::HitsInitialHubs::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
@@ -157,15 +159,6 @@ pub cugraph::centrality::KatzCentralityParams::epsilon: cugraph::params::NonNega
 pub cugraph::centrality::KatzCentralityParams::max_iterations: cugraph::params::IterationCount
 impl core::default::Default for cugraph::centrality::vertex::KatzCentralityParams
 pub fn cugraph::centrality::vertex::KatzCentralityParams::default() -> Self
-pub struct cugraph::centrality::KatzCentralityResult(_)
-impl cugraph::centrality::KatzCentralityResult
-pub fn cugraph::centrality::KatzCentralityResult::converged(&self) -> cugraph::error::Result<bool>
-pub fn cugraph::centrality::KatzCentralityResult::num_iterations(&self) -> usize
-pub fn cugraph::centrality::KatzCentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
-pub fn cugraph::centrality::KatzCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
-pub fn cugraph::centrality::KatzCentralityResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
-impl core::fmt::Debug for cugraph::centrality::KatzCentralityResult
-pub fn cugraph::centrality::KatzCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::centrality::PageRankParams
 pub cugraph::centrality::PageRankParams::alpha: cugraph::params::ClosedUnitF64
 pub cugraph::centrality::PageRankParams::do_expensive_check: bool
@@ -173,16 +166,6 @@ pub cugraph::centrality::PageRankParams::epsilon: cugraph::params::NonNegativeF6
 pub cugraph::centrality::PageRankParams::max_iterations: cugraph::params::IterationCount
 impl core::default::Default for cugraph::centrality::pagerank::PageRankParams
 pub fn cugraph::centrality::pagerank::PageRankParams::default() -> Self
-pub struct cugraph::centrality::PageRankResult(_)
-impl cugraph::centrality::PageRankResult
-pub fn cugraph::centrality::PageRankResult::converged(&self) -> cugraph::error::Result<bool>
-pub fn cugraph::centrality::PageRankResult::num_iterations(&self) -> usize
-pub fn cugraph::centrality::PageRankResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
-pub fn cugraph::centrality::PageRankResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
-impl cugraph::centrality::PageRankResult
-pub fn cugraph::centrality::PageRankResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
-impl core::fmt::Debug for cugraph::centrality::PageRankResult
-pub fn cugraph::centrality::PageRankResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::centrality::PersonalizationVector<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
 pub cugraph::centrality::PersonalizationVector::values: &'a cugraph::array::DeviceArrayView<'a, W>
 pub cugraph::centrality::PersonalizationVector::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
@@ -531,17 +514,17 @@ impl cugraph::graph::Graph<cugraph::graph::Transposed>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::eigenvector_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::EigenvectorCentralityParams) -> cugraph::error::Result<cugraph::centrality::EigenvectorCentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::eigenvector_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::EigenvectorCentralityParams) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams) -> cugraph::error::Result<cugraph::centrality::HitsResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits_with_initial_hubs<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams, core::option::Option<&cugraph::centrality::hits::HitsInitialHubs<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::HitsResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::katz_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::KatzCentralityParams) -> cugraph::error::Result<cugraph::centrality::KatzCentralityResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::katz_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::KatzCentralityParams) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
 impl<T: cugraph::graph::Transposition> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::all_pairs_cosine_similarity_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::CosineSimilarityResult>
 pub fn cugraph::graph::Graph<T>::all_pairs_jaccard_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::JaccardSimilarityResult>
@@ -566,11 +549,11 @@ pub fn cugraph::graph::Graph<T>::out_degrees_all(&mut self, &cugraph::handle::En
 pub fn cugraph::graph::Graph<T>::out_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
 pub fn cugraph::graph::Graph<T>::overlap_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::OverlapSimilarityResult>
 pub fn cugraph::graph::Graph<T>::sorensen_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::SorensenSimilarityResult>
-pub fn cugraph::graph::Graph<T>::strongly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::StronglyConnectedComponentsResult>
+pub fn cugraph::graph::Graph<T>::strongly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::LabelingResult>
 pub fn cugraph::graph::Graph<T>::triangle_count<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
 pub fn cugraph::graph::Graph<T>::triangle_count_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
 pub fn cugraph::graph::Graph<T>::vertex_pairs<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
-pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::WeaklyConnectedComponentsResult>
+pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::LabelingResult>
 impl<T> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
@@ -650,20 +633,15 @@ pub struct cugraph::labeling::connected_components::ConnectedComponentsParams
 pub cugraph::labeling::connected_components::ConnectedComponentsParams::do_expensive_check: bool
 pub struct cugraph::labeling::ConnectedComponentsParams
 pub cugraph::labeling::ConnectedComponentsParams::do_expensive_check: bool
-pub struct cugraph::labeling::StronglyConnectedComponentsResult(_)
-impl cugraph::labeling::StronglyConnectedComponentsResult
-pub fn cugraph::labeling::StronglyConnectedComponentsResult::labels(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
-pub fn cugraph::labeling::StronglyConnectedComponentsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
-pub fn cugraph::labeling::StronglyConnectedComponentsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
-impl core::fmt::Debug for cugraph::labeling::StronglyConnectedComponentsResult
-pub fn cugraph::labeling::StronglyConnectedComponentsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct cugraph::labeling::WeaklyConnectedComponentsResult(_)
-impl cugraph::labeling::WeaklyConnectedComponentsResult
-pub fn cugraph::labeling::WeaklyConnectedComponentsResult::labels(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
-pub fn cugraph::labeling::WeaklyConnectedComponentsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
-pub fn cugraph::labeling::WeaklyConnectedComponentsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
-impl core::fmt::Debug for cugraph::labeling::WeaklyConnectedComponentsResult
-pub fn cugraph::labeling::WeaklyConnectedComponentsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::labeling::LabelingResult
+impl cugraph::labeling::LabelingResult
+pub fn cugraph::labeling::LabelingResult::labels(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::labeling::LabelingResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::labeling::LabelingResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::labeling::LabelingResult
+pub fn cugraph::labeling::LabelingResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::labeling::LabelingResult
+pub fn cugraph::labeling::LabelingResult::drop(&mut self)
 pub mod cugraph::layout
 pub mod cugraph::layout::force_atlas2
 pub struct cugraph::layout::force_atlas2::ForceAtlas2Params
@@ -1564,17 +1542,17 @@ impl cugraph::graph::Graph<cugraph::graph::Transposed>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::eigenvector_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::EigenvectorCentralityParams) -> cugraph::error::Result<cugraph::centrality::EigenvectorCentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::eigenvector_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::EigenvectorCentralityParams) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams) -> cugraph::error::Result<cugraph::centrality::HitsResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits_with_initial_hubs<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams, core::option::Option<&cugraph::centrality::hits::HitsInitialHubs<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::HitsResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
 pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::katz_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::KatzCentralityParams) -> cugraph::error::Result<cugraph::centrality::KatzCentralityResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
-pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::katz_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::KatzCentralityParams) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::CentralityResult>
 impl<T: cugraph::graph::Transposition> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::all_pairs_cosine_similarity_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::CosineSimilarityResult>
 pub fn cugraph::graph::Graph<T>::all_pairs_jaccard_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::JaccardSimilarityResult>
@@ -1599,11 +1577,11 @@ pub fn cugraph::graph::Graph<T>::out_degrees_all(&mut self, &cugraph::handle::En
 pub fn cugraph::graph::Graph<T>::out_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
 pub fn cugraph::graph::Graph<T>::overlap_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::OverlapSimilarityResult>
 pub fn cugraph::graph::Graph<T>::sorensen_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::SorensenSimilarityResult>
-pub fn cugraph::graph::Graph<T>::strongly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::StronglyConnectedComponentsResult>
+pub fn cugraph::graph::Graph<T>::strongly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::LabelingResult>
 pub fn cugraph::graph::Graph<T>::triangle_count<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
 pub fn cugraph::graph::Graph<T>::triangle_count_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
 pub fn cugraph::graph::Graph<T>::vertex_pairs<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
-pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::WeaklyConnectedComponentsResult>
+pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::LabelingResult>
 impl<T> cugraph::graph::Graph<T>
 pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
 pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>

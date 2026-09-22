@@ -1,4 +1,4 @@
-use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 use crate::{
     error::Result,
     exec::bounded::{
@@ -8,7 +8,7 @@ use crate::{
         },
         execute_bounded_edge_normalize_from_input,
     },
-    pipeline::PipelineTask,
+    pipeline::{PipelineTask, ResidentResourceId},
     plan::PlanNode,
 };
 
@@ -17,7 +17,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let output = single_output_resource(task)?;
         let Some(node) = self.plan.node(node_id) else {
@@ -38,6 +38,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id));
         };
         let frame = execute_bounded_edge_normalize_from_input(&mut self.execution, node_id, edge_normalize, *frame)?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 }

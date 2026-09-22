@@ -62,17 +62,10 @@ pub struct StreamFanoutReplayCandidateDiagnostics {
     pub consumer_count: usize,
     /// Join-probe consumer nodes that share this producer.
     pub join_probe_consumer_node_ids: Vec<NodeId>,
-    /// True when the returned plan duplicates the producer subtree.
+    /// True when the returned plan duplicates the producer subtree. A
+    /// candidate is rejected only when it lies outside the sink-reachable
+    /// subtree.
     pub applied: bool,
-    /// Rejection reason when no rewrite was applied.
-    pub rejected_reason: Option<StreamFanoutReplayRejectedReason>,
-}
-
-/// Reasons a stream-fanout replay candidate was not rewritten.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamFanoutReplayRejectedReason {
-    /// Candidate was found outside the sink-reachable subtree.
-    NotReachableFromSink,
 }
 
 #[doc(hidden)]
@@ -124,7 +117,6 @@ pub fn optimize_stream_fanout_replay(plan: QueryPlan, options: &StreamFanoutRepl
             consumer_count: direct_consumers[&fanout_node_id].len(),
             join_probe_consumer_node_ids,
             applied,
-            rejected_reason: (!applied).then_some(StreamFanoutReplayRejectedReason::NotReachableFromSink),
         });
     }
 

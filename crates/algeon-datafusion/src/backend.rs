@@ -719,7 +719,6 @@ fn backend_query_execution_config(execution_config: &AlgeonNativeExecutionConfig
     Ok(QueryExecutionConfig {
         lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
         source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
-        boundary_policy: execution_config.boundary_policy(),
         source_scheduler_policy: execution_config.source_scheduler_policy(),
         source_chunk_planning_mode: execution_config.source_chunk_planning_mode(),
         statistical_aggregate_execution_mode: execution_config.statistical_aggregate_execution_mode(),

@@ -7,7 +7,7 @@ use cugraph_sys::{
     cugraph_weakly_connected_components,
 };
 
-use super::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult};
+use super::LabelingResult;
 use crate::{
     error::{Result, check_error, require_non_null},
     graph::Graph,
@@ -32,7 +32,7 @@ pub(crate) fn weakly_connected_components<T>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,
     params: &ConnectedComponentsParams,
-) -> Result<WeaklyConnectedComponentsResult> {
+) -> Result<LabelingResult> {
     let mut result: *mut cugraph_labeling_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let graph_ptr = graph.as_ptr(handle, "weakly_connected_components")?;
@@ -53,7 +53,7 @@ pub(crate) fn weakly_connected_components<T>(
     let result = require_non_null(result, "weakly_connected_components", "labeling_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { WeaklyConnectedComponentsResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    unsafe { LabelingResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 /// Compute strongly connected components.
@@ -61,7 +61,7 @@ pub(crate) fn strongly_connected_components<T>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,
     params: &ConnectedComponentsParams,
-) -> Result<StronglyConnectedComponentsResult> {
+) -> Result<LabelingResult> {
     let mut result: *mut cugraph_labeling_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let graph_ptr = graph.as_ptr(handle, "strongly_connected_components")?;
@@ -82,5 +82,5 @@ pub(crate) fn strongly_connected_components<T>(
     let result = require_non_null(result, "strongly_connected_components", "labeling_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { StronglyConnectedComponentsResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    unsafe { LabelingResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

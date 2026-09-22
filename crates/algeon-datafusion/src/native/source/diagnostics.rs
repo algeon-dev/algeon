@@ -10,8 +10,7 @@ use query_engine::source::{
     ByteRangeDisposition as NativeByteRangeDisposition, PartitionColumnDisposition as NativePartitionColumnDisposition,
     PredicateDisposition as NativePredicateDisposition, RejectedSourceFeature as NativeRejectedSourceFeature,
     ScanLimitDisposition as NativeScanLimitDisposition, SchemaMappingDisposition as NativeSchemaMappingDisposition,
-    SourceDiagnostics as NativeSourceDiagnostics, SourceFormat,
-    ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
+    SourceDiagnostics as NativeSourceDiagnostics, ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
 };
 
 use super::{
@@ -260,7 +259,6 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     rejected_features.dedup();
 
     NativeSourceDiagnostics {
-        format: SourceFormat::Parquet,
         source_read_strategy: "local_kvikio".to_string(),
         credential_mode: "none".to_string(),
         lakehouse_cache_status: "disabled".to_string(),

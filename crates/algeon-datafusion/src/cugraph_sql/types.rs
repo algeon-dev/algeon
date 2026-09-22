@@ -125,12 +125,12 @@ impl CugraphAlgorithmSpec {
         .into())
     }
 
-    pub(crate) fn predicate_source_specs(&self) -> Vec<PredicateSourceSpec> {
+    pub(crate) fn predicate_source_specs(&self) -> Vec<Vec<PredicateSourceColumnRole>> {
         let mut sources = Vec::new();
         match &self.params {
             CugraphAlgorithmParams::Bfs(params) => {
                 if params.source.relation().is_some() {
-                    sources.push(PredicateSourceSpec { roles: vec![PredicateSourceColumnRole::Vertex] });
+                    sources.push(vec![PredicateSourceColumnRole::Vertex]);
                 }
                 for _input in [
                     params.predicates.include_vertices.as_ref(),
@@ -140,25 +140,25 @@ impl CugraphAlgorithmSpec {
                 .into_iter()
                 .flatten()
                 {
-                    sources.push(PredicateSourceSpec { roles: vec![PredicateSourceColumnRole::Vertex] });
+                    sources.push(vec![PredicateSourceColumnRole::Vertex]);
                 }
                 if params.predicates.include_edge_ids.is_some() {
-                    sources.push(PredicateSourceSpec { roles: vec![PredicateSourceColumnRole::EdgeId] });
+                    sources.push(vec![PredicateSourceColumnRole::EdgeId]);
                 }
                 if let Some(input) = &params.predicates.include_edges {
                     let mut roles = vec![PredicateSourceColumnRole::Source, PredicateSourceColumnRole::Destination];
                     if input.has_edge_id {
                         roles.push(PredicateSourceColumnRole::EdgeId);
                     }
-                    sources.push(PredicateSourceSpec { roles });
+                    sources.push(roles);
                 }
             },
-            CugraphAlgorithmParams::PersonalizedPageRank(_) => sources.push(PredicateSourceSpec {
-                roles: vec![PredicateSourceColumnRole::Vertex, PredicateSourceColumnRole::FloatValue],
-            }),
-            CugraphAlgorithmParams::Similarity(_) => sources.push(PredicateSourceSpec {
-                roles: vec![PredicateSourceColumnRole::FirstVertex, PredicateSourceColumnRole::SecondVertex],
-            }),
+            CugraphAlgorithmParams::PersonalizedPageRank(_) => {
+                sources.push(vec![PredicateSourceColumnRole::Vertex, PredicateSourceColumnRole::FloatValue])
+            },
+            CugraphAlgorithmParams::Similarity(_) => {
+                sources.push(vec![PredicateSourceColumnRole::FirstVertex, PredicateSourceColumnRole::SecondVertex])
+            },
             CugraphAlgorithmParams::ForceAtlas2(params) => {
                 if let Some(input) = &params.vertex_attributes {
                     let mut roles = vec![PredicateSourceColumnRole::Vertex];
@@ -171,16 +171,14 @@ impl CugraphAlgorithmSpec {
                     if input.has_mass {
                         roles.push(PredicateSourceColumnRole::Mass);
                     }
-                    sources.push(PredicateSourceSpec { roles });
+                    sources.push(roles);
                 }
                 if params.initial_positions.is_some() {
-                    sources.push(PredicateSourceSpec {
-                        roles: vec![
-                            PredicateSourceColumnRole::Vertex,
-                            PredicateSourceColumnRole::X,
-                            PredicateSourceColumnRole::Y,
-                        ],
-                    });
+                    sources.push(vec![
+                        PredicateSourceColumnRole::Vertex,
+                        PredicateSourceColumnRole::X,
+                        PredicateSourceColumnRole::Y,
+                    ]);
                 }
             },
             _ => {},
@@ -222,11 +220,6 @@ impl PredicateSourceColumnRole {
             Self::Y => CUGRAPH_Y_COLUMN,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PredicateSourceSpec {
-    pub(crate) roles: Vec<PredicateSourceColumnRole>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -770,7 +763,7 @@ pub(crate) fn vertex_id_domain_for_call(
                 algorithm.function_name()
             )));
         }
-        if algorithm.definition().logical_string_contract().is_none() {
+        if algorithm.definition().logical_string_output_columns().is_none() {
             return Err(unsupported_vertex_dtype_error(format!(
                 "cuGraph {} does not support logical string vertex mapping",
                 algorithm.function_name()

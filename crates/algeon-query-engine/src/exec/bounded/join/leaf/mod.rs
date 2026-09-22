@@ -17,8 +17,7 @@ use super::{
 };
 use crate::{
     chunk::{
-        SourceMetadataCache, SourceMetadataLoadContext,
-        plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
+        SourceMetadataCache, plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
     },
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
@@ -269,9 +268,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         // re-plan below, because dynamic filtering only narrows each file's
         // `row_groups` selection and never changes `source.files` itself.
         let mut metadata_cache = SourceMetadataCache::default();
-        let metadata_load_context = Some(SourceMetadataLoadContext { execution_context: context });
-        let footer_metadata =
-            source_footer_metadata(&self.source, &mut metadata_cache, metadata_load_context.as_ref())?;
+        let footer_metadata = source_footer_metadata(&self.source, &mut metadata_cache, Some(context))?;
         let footer_refs = footer_metadata.iter().map(|metadata| metadata.as_deref()).collect::<Vec<_>>();
         let footers = SourceFooterFacts::new(&footer_refs);
 
@@ -297,7 +294,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             &source,
             self.planning_policy,
             &mut metadata_cache,
-            metadata_load_context,
+            Some(context),
         )?;
         annotate_join_leaf_source_chunk_batching_reasons(
             &source,

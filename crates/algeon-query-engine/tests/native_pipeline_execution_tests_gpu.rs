@@ -109,11 +109,7 @@ use remaining_topologies::{
     resident_grouped_aggregate_subquery_filter_plan,
 };
 
-struct SuiteBackend {
-    core: GpuBackendCore,
-}
-
-static PIPELINE_BACKEND: Mutex<Option<SuiteBackend>> = Mutex::new(None);
+static PIPELINE_BACKEND: Mutex<Option<GpuBackendCore>> = Mutex::new(None);
 
 fn build_suite_backend() -> Result<GpuBackendCore> {
     let deployment = DeploymentIoCapability::from_probe_inputs(
@@ -142,9 +138,9 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()
 }
 
-fn ensure_suite_backend(backend: &mut Option<SuiteBackend>) -> Result<()> {
+fn ensure_suite_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {
     if backend.is_none() {
-        *backend = Some(SuiteBackend { core: build_suite_backend()? });
+        *backend = Some(build_suite_backend()?);
     }
     Ok(())
 }
@@ -158,7 +154,7 @@ mod cudf {
     use super::*;
 
     pub(super) struct Runtime {
-        backend: RefCell<MutexGuard<'static, Option<SuiteBackend>>>,
+        backend: RefCell<MutexGuard<'static, Option<GpuBackendCore>>>,
     }
 
     impl Runtime {
@@ -182,12 +178,8 @@ mod cudf {
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
-            let handle = backend
-                .as_ref()
-                .expect("suite backend is installed")
-                .core
-                .session_capability()
-                .admit_query_with_request(
+            let handle =
+                backend.as_ref().expect("suite backend is installed").session_capability().admit_query_with_request(
                     QueryAdmissionRequest::new()
                         .with_query_plan_capability_evidence(evidence)
                         .with_runtime_observation_owner(owner),
@@ -211,12 +203,10 @@ mod cudf {
             let evidence = AttemptCapabilityEvidence::aggregate(evidence_items)?;
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
-            let handle = backend
-                .as_ref()
-                .expect("suite backend is installed")
-                .core
-                .session_capability()
-                .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))?;
+            let handle =
+                backend.as_ref().expect("suite backend is installed").session_capability().admit_query_with_request(
+                    QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence),
+                )?;
             let context = handle.acquire_context()?;
             Ok(PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) })
         }

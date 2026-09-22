@@ -4,16 +4,13 @@ use cudf::{AggSpec, GroupByAgg, Runtime, core::Column};
 
 use super::errors::map_cudf_error_with;
 use crate::{
-    centrality::{
-        BetweennessCentralityResult, EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult,
-        KatzCentralityResult, PageRankResult,
-    },
+    centrality::{CentralityResult, EdgeBetweennessCentralityResult, HitsResult},
     community::{
         EcgResult, ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, SpectralClusteringResult,
         TriangleCountResult,
     },
     error::{Error, ErrorKind, Result},
-    labeling::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult},
+    labeling::LabelingResult,
     layout::LayoutResult,
     similarity::{
         CosineSimilarityResult, JaccardSimilarityResult, OverlapSimilarityResult, SorensenSimilarityResult, VertexPairs,
@@ -154,41 +151,8 @@ impl IntegerValues<'_> {
 // TryFrom impls; result structs → cudf::DataFrame
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub(crate) fn page_rank_result_to_dataframe(result: &PageRankResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
-    let operation = "page_rank_result_to_dataframe";
-    dataframe_from_named_series(
-        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
-        operation,
-    )
-}
-
-pub(crate) fn betweenness_result_to_dataframe(
-    result: &BetweennessCentralityResult,
-    runtime: &Runtime,
-) -> Result<cudf::DataFrame> {
-    let operation = "betweenness_result_to_dataframe";
-    dataframe_from_named_series(
-        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
-        operation,
-    )
-}
-
-pub(crate) fn eigenvector_centrality_result_to_dataframe(
-    result: &EigenvectorCentralityResult,
-    runtime: &Runtime,
-) -> Result<cudf::DataFrame> {
-    let operation = "eigenvector_centrality_result_to_dataframe";
-    dataframe_from_named_series(
-        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
-        operation,
-    )
-}
-
-pub(crate) fn katz_centrality_result_to_dataframe(
-    result: &KatzCentralityResult,
-    runtime: &Runtime,
-) -> Result<cudf::DataFrame> {
-    let operation = "katz_centrality_result_to_dataframe";
+pub(crate) fn centrality_result_to_dataframe(result: &CentralityResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "centrality_result_to_dataframe";
     dataframe_from_named_series(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
         operation,
@@ -337,23 +301,8 @@ pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime
     )
 }
 
-pub(crate) fn weakly_connected_components_result_to_dataframe(
-    result: &WeaklyConnectedComponentsResult,
-    runtime: &Runtime,
-) -> Result<cudf::DataFrame> {
-    let operation = "weakly_connected_components_result_to_dataframe";
-    let frame = dataframe_from_named_series(
-        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
-        operation,
-    )?;
-    canonicalize_component_labels(frame, runtime, operation)
-}
-
-pub(crate) fn strongly_connected_components_result_to_dataframe(
-    result: &StronglyConnectedComponentsResult,
-    runtime: &Runtime,
-) -> Result<cudf::DataFrame> {
-    let operation = "strongly_connected_components_result_to_dataframe";
+pub(crate) fn labeling_result_to_dataframe(result: &LabelingResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "labeling_result_to_dataframe";
     let frame = dataframe_from_named_series(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
         operation,

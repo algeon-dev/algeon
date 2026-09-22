@@ -20,8 +20,8 @@ pub use query_engine::{
     mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationLimits},
     runtime::{
-        ExecutionBoundaryPolicy, LakehouseCacheFillConfig, MemoryControlPolicy, SourceChunkPlanningMode,
-        SourceSchedulerPolicy, SourceStorageProfile,
+        LakehouseCacheFillConfig, MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
+        SourceStorageProfile,
     },
 };
 

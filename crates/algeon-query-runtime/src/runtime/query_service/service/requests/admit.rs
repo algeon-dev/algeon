@@ -302,7 +302,7 @@ impl QueryService {
             admitted_device_requirements: admitted
                 .device_entries
                 .iter()
-                .map(|(&ordinal, entry)| (ordinal, entry.requirement.clone()))
+                .map(|(&ordinal, requirement)| (ordinal, requirement.clone()))
                 .collect(),
             submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
             admitted_compatible_devices: admitted.compatible_devices.clone(),

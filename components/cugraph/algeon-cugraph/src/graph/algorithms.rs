@@ -6,8 +6,8 @@ use super::{Forward, Graph, Transposed, Transposition};
 use crate::{
     array::DeviceArrayView,
     centrality::{
-        BetweennessCentralityParams, BetweennessCentralityResult, EdgeBetweennessCentralityParams,
-        EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult, KatzCentralityResult, PageRankResult,
+        BetweennessCentralityParams, BetweennessCentralityResult, CentralityResult, EdgeBetweennessCentralityParams,
+        EdgeBetweennessCentralityResult, HitsResult,
         betweenness::betweenness_centrality,
         edge_betweenness::edge_betweenness_centrality,
         hits::{HitsInitialHubs, HitsParams, hits},
@@ -33,7 +33,7 @@ use crate::{
     error::Result,
     handle::EnteredContext,
     labeling::{
-        ConnectedComponentsParams, StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult,
+        ConnectedComponentsParams, LabelingResult,
         connected_components::{strongly_connected_components, weakly_connected_components},
     },
     layout::force_atlas2::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions, LayoutResult, force_atlas2},
@@ -72,7 +72,7 @@ use crate::{
 impl Graph<Transposed> {
     /// Compute PageRank on this transposed graph.
     ///
-    /// Returns a [`PageRankResult`]
+    /// Returns a [`CentralityResult`]
     /// containing vertex ids, scores, iteration count, and convergence status.
     ///
     /// This convenience method does not expose any typed auxiliary arrays, so
@@ -80,7 +80,7 @@ impl Graph<Transposed> {
     /// dtype. For advanced features (precomputed weights, initial guess), use
     /// [`pagerank_with`](Self::pagerank_with) and ensure those typed inputs
     /// match the graph's runtime dtypes.
-    pub fn pagerank(&mut self, handle: &EnteredContext<'_>, params: &PageRankParams) -> Result<PageRankResult> {
+    pub fn pagerank(&mut self, handle: &EnteredContext<'_>, params: &PageRankParams) -> Result<CentralityResult> {
         pagerank::<i32, f32>(handle, self, params, None, None)
     }
 
@@ -95,7 +95,7 @@ impl Graph<Transposed> {
         params: &PageRankParams,
         precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
         initial_guess: Option<&InitialGuess<'_, V, W>>,
-    ) -> Result<PageRankResult> {
+    ) -> Result<CentralityResult> {
         pagerank(handle, self, params, precomputed_weights, initial_guess)
     }
 
@@ -105,7 +105,7 @@ impl Graph<Transposed> {
         handle: &EnteredContext<'_>,
         params: &PersonalizedPageRankParams,
         personalization: &PersonalizationVector<'_, V, W>,
-    ) -> Result<PageRankResult> {
+    ) -> Result<CentralityResult> {
         personalized_pagerank(handle, self, params, personalization, None, None)
     }
 
@@ -117,7 +117,7 @@ impl Graph<Transposed> {
         personalization: &PersonalizationVector<'_, V, W>,
         precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
         initial_guess: Option<&InitialGuess<'_, V, W>>,
-    ) -> Result<PageRankResult> {
+    ) -> Result<CentralityResult> {
         personalized_pagerank(handle, self, params, personalization, precomputed_weights, initial_guess)
     }
 
@@ -126,7 +126,7 @@ impl Graph<Transposed> {
         &mut self,
         handle: &EnteredContext<'_>,
         params: &EigenvectorCentralityParams,
-    ) -> Result<EigenvectorCentralityResult> {
+    ) -> Result<CentralityResult> {
         eigenvector_centrality(handle, self, params)
     }
 
@@ -139,7 +139,7 @@ impl Graph<Transposed> {
         &mut self,
         handle: &EnteredContext<'_>,
         params: &KatzCentralityParams,
-    ) -> Result<KatzCentralityResult> {
+    ) -> Result<CentralityResult> {
         katz_centrality(handle, self, params)
     }
 
@@ -585,7 +585,7 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         params: &ConnectedComponentsParams,
-    ) -> Result<WeaklyConnectedComponentsResult> {
+    ) -> Result<LabelingResult> {
         weakly_connected_components(handle, self, params)
     }
 
@@ -594,7 +594,7 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &EnteredContext<'_>,
         params: &ConnectedComponentsParams,
-    ) -> Result<StronglyConnectedComponentsResult> {
+    ) -> Result<LabelingResult> {
         strongly_connected_components(handle, self, params)
     }
 

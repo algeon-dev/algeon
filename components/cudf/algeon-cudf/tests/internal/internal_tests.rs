@@ -1,8 +1,8 @@
 //! Tests for the `internal` module's infrastructure.
 //!
-//! `TempTableView`, `resolve`, and `reassemble` are `pub(crate)`, so we
-//! verify them **indirectly** through public DataFrame operations that
-//! exercise the internal helpers.
+//! `resolve` and `reassemble` are `pub(crate)`, so we verify them
+//! **indirectly** through public DataFrame operations that exercise the
+//! internal helpers.
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
@@ -22,12 +22,12 @@ use crate::common::{
 };
 
 // ---------------------------------------------------------------------------
-// TempTableView; exercised via filter, sort, distinct, drop_nulls
+// Borrowed TableView construction; exercised via filter, sort, distinct, drop_nulls
 // These operations internally build table views from temporary column views.
 // ---------------------------------------------------------------------------
 
 fn filter_preserves_row_and_column_counts() {
-    // filter internally uses build_table_view / TempTableView infrastructure.
+    // filter internally uses build_borrowed_table_view_from_columns.
     let ids = series::<i32>("ids", &[1, 2, 3, 4, 5]).unwrap();
     let vals = series::<f64>("vals", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
     let df = DataFrame::from_series([("id", ids), ("val", vals)]).unwrap();

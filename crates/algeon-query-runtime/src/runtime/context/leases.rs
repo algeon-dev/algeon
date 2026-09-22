@@ -145,7 +145,6 @@ impl ExecutionContext {
             attempt_member_lease,
             attempt_stream_provider_route: self.attempt_stream_provider_route.as_ref().map(Arc::clone),
             attempt_stream_provider_alias,
-            boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
             resident_source_cache: self.resident_source_cache.clone(),

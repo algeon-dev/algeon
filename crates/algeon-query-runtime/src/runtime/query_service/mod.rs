@@ -18,9 +18,9 @@ use super::{
     DeploymentIoCapability, DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
 };
 use super::{
-    DeviceRegistry, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
-    GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy,
-    SourceChunkPlanningMode, SourceSchedulerPolicy,
+    DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
+    LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, SourceChunkPlanningMode,
+    SourceSchedulerPolicy,
     cache_events::LakehouseCacheFillEventSink,
     context::{ExecutionContextParts, QueryServiceEpochUser, validate_service_stream_pool_device},
 };
@@ -43,7 +43,7 @@ mod tests;
 
 use admission::QueryCompletion;
 #[cfg(test)]
-use admission::{AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry, QueryAdmissionWaiter};
+use admission::{AdmissionState, DeviceAdmissionEntries, QueryAdmissionWaiter};
 pub use config::{QueryExecutionConfig, QueueBounds};
 use device_waiters::{PendingDeviceSlotNotifications, notify_shared_device_admission_available};
 pub use handle::{AdmittedQueryContext, QueryHandle};

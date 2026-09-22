@@ -71,7 +71,7 @@ pub use chunk::{
 };
 pub use diagnostics::{
     ByteRangeDisposition, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    SchemaMappingDisposition, SourceDiagnostics, SourceFormat, ZeroColumnCountDisposition,
+    SchemaMappingDisposition, SourceDiagnostics, ZeroColumnCountDisposition,
 };
 pub use local_parquet::{
     LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetReaderDecimalType, ParquetSourceLocation,

@@ -1791,9 +1791,9 @@ mod tests {
         use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
         use crate::{
-            execution_contracts::SourceChunkPlanningMode,
             expr::{AggregateSpec, Expr, LiteralValue},
             plan::{AggregateNode, FilterNode, NodeId},
+            runtime::SourceChunkPlanningMode,
             source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
         };
 

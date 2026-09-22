@@ -13,15 +13,8 @@ use crate::{
     util::log_safe_fingerprint,
 };
 
-/// Host boundary crossed by one GPU function occurrence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AttemptExecutionBoundary {
-    /// The GPU function materializes Arrow for a DataFusion consumer.
-    HostArrow,
-}
-
-/// One GPU function occurrence in a DataFusion-owned execution graph.
+/// One GPU function occurrence in a DataFusion-owned execution graph. Every
+/// occurrence materializes host Arrow for a DataFusion consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct AttemptExecutionOccurrence {
@@ -30,7 +23,6 @@ pub struct AttemptExecutionOccurrence {
     execution_scope_fingerprint: String,
     deferred_execution_scope_identity: Option<DeferredGraphExecutionScopeIdentity>,
     output_schema_fingerprint: String,
-    boundary: AttemptExecutionBoundary,
     predecessors: Vec<String>,
 }
 
@@ -64,7 +56,6 @@ impl AttemptExecutionOccurrence {
             deferred_execution_scope_identity: deferred_graph_facts
                 .then(|| DeferredGraphExecutionScopeIdentity::for_plan(plan)),
             output_schema_fingerprint: log_safe_fingerprint(&format!("{:?}", plan.output_schema())),
-            boundary: AttemptExecutionBoundary::HostArrow,
             predecessors,
         }
     }
@@ -94,11 +85,6 @@ impl AttemptExecutionOccurrence {
     #[doc(hidden)]
     pub fn matches_schema(&self, plan: &QueryPlan) -> bool {
         self.output_schema_fingerprint == log_safe_fingerprint(&format!("{:?}", plan.output_schema()))
-    }
-
-    #[doc(hidden)]
-    pub fn is_host_arrow(&self) -> bool {
-        self.boundary == AttemptExecutionBoundary::HostArrow
     }
 }
 
@@ -154,9 +140,6 @@ impl AttemptExecutionManifest {
         if occurrence.producer_identity != producer_identity {
             return Err(manifest_error("execution_occurrence_producer_mismatch", Some(occurrence_id)));
         }
-        if occurrence.boundary != AttemptExecutionBoundary::HostArrow {
-            return Err(manifest_error("execution_occurrence_boundary_mismatch", Some(occurrence_id)));
-        }
         if !occurrence.matches_plan(plan) {
             return Err(manifest_error("execution_occurrence_plan_mismatch", Some(occurrence_id)));
         }
@@ -178,9 +161,6 @@ impl AttemptExecutionManifest {
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             return Err(manifest_error("execution_producer_not_admitted", Some(producer_identity)));
-        }
-        if !candidates.iter().any(|occurrence| occurrence.is_host_arrow()) {
-            return Err(manifest_error("execution_occurrence_boundary_mismatch", Some(producer_identity)));
         }
         if !candidates.iter().any(|occurrence| occurrence.matches_plan(plan)) {
             return Err(manifest_error("execution_occurrence_plan_mismatch", Some(producer_identity)));

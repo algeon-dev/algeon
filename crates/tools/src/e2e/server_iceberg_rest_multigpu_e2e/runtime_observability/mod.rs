@@ -58,7 +58,7 @@ pub(super) async fn run(args: Vec<String>) -> E2eResult<()> {
     let run_result = run_matrix(&params, &mut evidence).await;
     let fatal_result = scan_fatal_patterns(&evidence.server_logs);
     evidence.elapsed_ms = millis(started.elapsed());
-    evidence.fatal_patterns = fatal_result.evidence;
+    evidence.fatal_patterns = fatal_result;
     if let Err(error) = &run_result {
         evidence.status = "failed".to_string();
         evidence.failure = Some(error.to_string());

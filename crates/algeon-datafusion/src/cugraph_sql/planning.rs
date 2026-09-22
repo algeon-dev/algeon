@@ -31,9 +31,8 @@ use datafusion::{
 use super::CugraphAlgorithm;
 use super::{
     CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN,
-    CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphVertexIdDomain, PredicateSourceColumnRole,
-    PredicateSourceSpec, plan, validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
-    vertex_id_domain_for_call,
+    CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphVertexIdDomain, PredicateSourceColumnRole, plan,
+    validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
@@ -246,14 +245,14 @@ pub(super) fn validate_edge_source_schema(
 
 pub(super) fn validate_predicate_source_schema(
     spec: &CugraphAlgorithmSpec,
-    source: &PredicateSourceSpec,
+    source: &[PredicateSourceColumnRole],
     schema: &SchemaRef,
     vertex_domain: &CugraphVertexIdDomain,
 ) -> Result<()> {
     if let CugraphAlgorithmParams::Similarity(params) = &spec.params {
         return validate_similarity_pair_table_schema(&params.vertex_pairs, schema, vertex_domain);
     }
-    for role in &source.roles {
+    for role in source {
         let name = role.canonical_name();
         let field = schema
             .field_with_name(name)

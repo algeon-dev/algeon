@@ -37,7 +37,6 @@ fn query_service_handle_exposes_configured_execution_policies() {
 
     let handle = service.admit_query().unwrap();
 
-    assert_eq!(handle.boundary_policy(), ExecutionBoundaryPolicy::default());
     assert_eq!(handle.source_scheduler_policy(), SourceSchedulerPolicy::new(4));
     assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(handle.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);

@@ -3,7 +3,7 @@
 //! All tests require a GPU.
 
 use cudf::{
-    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, ReduceAgg, TypeId,
+    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ReduceAgg, TypeId,
     core::error::{FactKeyName, FactValue},
     testing::prelude::*,
 };
@@ -156,7 +156,6 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
     assert_eq!(report.request().boundary(), "q15_scalar_max");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
     assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(1));
     assert_eq!(report.retained_bytes(), None);
     assert_eq!(report.output_bytes(), None);
@@ -182,7 +181,6 @@ fn test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagno
 
     assert_eq!(output.scalar().value::<f64>().unwrap(), 3000.0);
     assert_eq!(report.request().boundary(), "q17_global_sum");
-    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(1));
     assert_eq!(report.retained_bytes(), None);
     assert_eq!(report.output_bytes(), None);

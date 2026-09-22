@@ -1,5 +1,5 @@
 use super::{
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState,
     admission::{JoinBuildStreamEstimate, settle_partitioned_join_build},
 };
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
         execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
         execute_bounded_compiled_join_probe_from_stream,
     },
-    pipeline::{PipelineTask, ResidentDataForm, ResourceSharing},
+    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing},
     plan::{JoinNode, NodeId},
 };
 
@@ -31,7 +31,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         if self.join_builds.contains_key(&node_id) || self.join_probes.contains_key(&node_id) {
             return Err(invalid("compiled join build task found existing state for its join node")
@@ -97,7 +97,7 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_builds.insert(node_id, build);
-        Ok(CompiledTaskOutput::empty())
+        Ok(Vec::new())
     }
 
     fn execute_join_build_from_resident_frame(
@@ -201,7 +201,7 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
@@ -331,13 +331,13 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_probes.insert(node_id, probe);
-        Ok(CompiledTaskOutput::empty())
+        Ok(Vec::new())
     }
 
     pub(super) fn execute_join_materialize_task(
         &mut self,
         task: &PipelineTask,
-    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
         let node_id = plan_node(task)?;
         let output = single_output_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
@@ -372,6 +372,6 @@ impl CompiledGpuTaskExecutor<'_> {
             .map_err(|error| attach_task_facts(error, task, node_id))?;
             CompiledGpuResource::new(frame)
         };
-        Ok(CompiledTaskOutput::new(vec![(output, resource)]))
+        Ok(vec![(output, resource)])
     }
 }
