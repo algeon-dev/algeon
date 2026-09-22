@@ -90,15 +90,10 @@ pub trait CompiledTaskExecutor {
 
     /// Runs before each runnable-task selection; `Err` fails the run and starts
     /// error cleanup.
-    fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
-        Ok(CompiledSchedulingCycle)
+    fn before_scheduling_cycle(&mut self) -> Result<()> {
+        Ok(())
     }
 }
-
-/// Scheduler behavior selected by an executor at a scheduling-cycle boundary.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CompiledSchedulingCycle;
 
 /// The resident resources produced by one compiled task.
 #[doc(hidden)]
@@ -180,11 +175,12 @@ pub struct CompiledPipelineScheduler<'a> {
 }
 
 impl<'a> CompiledPipelineScheduler<'a> {
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn new(pipeline: &'a CompiledPipeline) -> Result<Self> {
         Self::new_with_prioritized_join_builds(pipeline, BTreeSet::new())
     }
 
-    pub fn new_with_prioritized_join_builds(
+    pub(in crate::exec::bounded) fn new_with_prioritized_join_builds(
         pipeline: &'a CompiledPipeline,
         prioritized_join_builds: BTreeSet<PipelineTaskId>,
     ) -> Result<Self> {
@@ -205,9 +201,8 @@ impl<'a> CompiledPipelineScheduler<'a> {
         &self,
         state: &CompiledPipelineState<T>,
         flights: &mut CompiledFlightBoard,
-        cycle: CompiledSchedulingCycle,
     ) -> Result<&'a PipelineTask> {
-        let task = self.next_runnable_task(state, flights, cycle)?;
+        let task = self.next_runnable_task(state, flights)?;
         self.claim_task(task.id(), state, flights)
     }
 
@@ -328,20 +323,17 @@ impl<'a> CompiledPipelineScheduler<'a> {
         let mut flights = CompiledFlightBoard::default();
 
         while state.completed_task_count() < self.pipeline.tasks().len() {
-            let cycle = match executor.before_scheduling_cycle() {
-                Ok(cycle) => cycle,
-                Err(error) => {
-                    cleanup_preserving_primary(
-                        executor,
-                        &mut state,
-                        observation_scope,
-                        CleanupFailurePhase::SchedulingCycle,
-                        &error,
-                    );
-                    return Err(error);
-                },
-            };
-            let selected = match self.next_runnable_task(&state, &flights, cycle) {
+            if let Err(error) = executor.before_scheduling_cycle() {
+                cleanup_preserving_primary(
+                    executor,
+                    &mut state,
+                    observation_scope,
+                    CleanupFailurePhase::SchedulingCycle,
+                    &error,
+                );
+                return Err(error);
+            }
+            let selected = match self.next_runnable_task(&state, &flights) {
                 Ok(task) => task,
                 Err(error) => {
                     cleanup_preserving_primary(
@@ -471,7 +463,6 @@ impl<'a> CompiledPipelineScheduler<'a> {
         &self,
         state: &CompiledPipelineState<T>,
         flights: &CompiledFlightBoard,
-        _cycle: CompiledSchedulingCycle,
     ) -> Result<&'a PipelineTask> {
         let ready_tasks = self
             .pipeline
@@ -1018,9 +1009,8 @@ mod tests {
         let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state builds");
         let mut flights = CompiledFlightBoard::default();
 
-        let first = scheduler
-            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
-            .expect("first claim selects the source task");
+        let first =
+            scheduler.claim_next_runnable_task(&state, &mut flights).expect("first claim selects the source task");
         assert_eq!(first.id(), PipelineTaskId::new(0));
         assert_eq!(flights.flight(first.id()), CompiledTaskFlight::Running);
         assert_eq!(flights.in_flight_count(), 1);
@@ -1030,7 +1020,7 @@ mod tests {
         assert_eq!(duplicate.operation(), OPERATION);
 
         scheduler
-            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .claim_next_runnable_task(&state, &mut flights)
             .expect_err("the in-flight task is not offered to a second lane");
 
         scheduler
@@ -1050,7 +1040,7 @@ mod tests {
         scheduler.claim_task(first.id(), &state, &mut flights).expect_err("committed tasks are never redispatched");
 
         let second = scheduler
-            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .claim_next_runnable_task(&state, &mut flights)
             .expect("consumer is runnable after its input commits");
         assert_eq!(second.id(), PipelineTaskId::new(1));
         scheduler.mark_task_output_ready(second.id(), &mut flights).expect("consumer outputs ready");
@@ -1163,7 +1153,7 @@ mod tests {
         fn commit_union(&mut self) {
             let union = self
                 .scheduler
-                .claim_next_runnable_task(&self.state, &mut self.flights, CompiledSchedulingCycle)
+                .claim_next_runnable_task(&self.state, &mut self.flights)
                 .expect("union is runnable after both branches commit");
             assert_eq!(union.id(), PipelineTaskId::new(4));
             let union = union.id();
@@ -1312,7 +1302,7 @@ mod tests {
             )
             .expect("head commits");
         let next = scheduler
-            .claim_next_runnable_task(&state, &mut flights, CompiledSchedulingCycle)
+            .claim_next_runnable_task(&state, &mut flights)
             .expect("gate opened after the predecessor committed");
         assert_eq!(next.id(), gated);
     }

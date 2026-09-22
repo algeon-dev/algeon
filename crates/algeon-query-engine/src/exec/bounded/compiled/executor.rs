@@ -10,7 +10,7 @@ use super::{
     CompiledGpuResource,
     helpers::invalid,
     resource::CompiledGpuResourcePayload,
-    scheduler::{CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput},
+    scheduler::{CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
 use crate::{
@@ -96,10 +96,6 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             join_probes: BTreeMap::new(),
             host_output: None,
         })
-    }
-
-    pub fn remaining_bytes(&self) -> u64 {
-        self.execution.device_budget_bytes()
     }
 
     /// Merges a successful lane's dynamic-filter set into the coordinator.
@@ -248,7 +244,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         Ok(())
     }
 
-    fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
-        Ok(CompiledSchedulingCycle)
+    fn before_scheduling_cycle(&mut self) -> Result<()> {
+        Ok(())
     }
 }

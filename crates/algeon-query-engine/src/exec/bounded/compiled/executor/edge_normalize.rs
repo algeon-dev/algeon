@@ -31,7 +31,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id));
         };
         let input = single_input_resource(task)?;
-        let payload = state.consume_task_input_resource(task, input)?.into_payload();
+        let payload = state.consume_task_input_resource(task, input)?;
         let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = payload.payload else {
             return Err(invalid("compiled edge normalize task requires a resident frame input")
                 .with_fact("compiled_task_id", task.id())

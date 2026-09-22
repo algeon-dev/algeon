@@ -66,24 +66,6 @@ impl CompiledGpuResource {
         Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(stream) }
     }
 
-    pub fn num_rows(&self) -> usize {
-        match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_rows(),
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.num_rows() as usize,
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
-            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => 0,
-        }
-    }
-
-    pub fn num_columns(&self) -> usize {
-        match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_columns(),
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.num_columns(),
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
-            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => 0,
-        }
-    }
-
     /// Snapshots a shared input for lane-claim scratch state.
     ///
     /// Lane-family pipelines currently resolve single-consumer inputs by move;

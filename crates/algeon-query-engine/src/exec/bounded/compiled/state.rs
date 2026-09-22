@@ -27,37 +27,18 @@ struct ResidentResourceSlot<T> {
 }
 
 /// A resident resource payload released after its last compiled consumer.
-#[doc(hidden)]
 #[derive(Debug)]
-pub struct ReleasedCompiledResource<T> {
+pub(in crate::exec::bounded) struct ReleasedCompiledResource<T> {
     id: ResidentResourceId,
     payload: T,
 }
 
 impl<T> ReleasedCompiledResource<T> {
-    pub fn id(&self) -> ResidentResourceId {
+    pub(in crate::exec::bounded) fn id(&self) -> ResidentResourceId {
         self.id
     }
 
-    pub fn into_payload(self) -> T {
-        self.payload
-    }
-}
-
-/// A single-consumer resident resource moved into a compiled task executor.
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct ConsumedCompiledResource<T> {
-    id: ResidentResourceId,
-    payload: T,
-}
-
-impl<T> ConsumedCompiledResource<T> {
-    pub fn id(&self) -> ResidentResourceId {
-        self.id
-    }
-
-    pub fn into_payload(self) -> T {
+    pub(in crate::exec::bounded) fn into_payload(self) -> T {
         self.payload
     }
 }
@@ -88,6 +69,7 @@ impl<T> CompiledPipelineState<T> {
         self.completed_tasks.len()
     }
 
+    #[cfg(feature = "test-hooks")]
     pub fn execution_order(&self) -> &[PipelineTaskId] {
         &self.execution_order
     }
@@ -100,6 +82,7 @@ impl<T> CompiledPipelineState<T> {
         self.resources.get(&resource).is_some_and(|slot| slot.payload.is_some() && !slot.released)
     }
 
+    #[cfg(feature = "test-hooks")]
     pub fn is_resource_released(&self, resource: ResidentResourceId) -> bool {
         self.resources.get(&resource).is_some_and(|slot| slot.released)
     }
@@ -108,7 +91,7 @@ impl<T> CompiledPipelineState<T> {
         self.resources.values().filter(|slot| slot.payload.is_some() && !slot.released).count()
     }
 
-    pub fn drain_live_resources(&mut self) -> Vec<ReleasedCompiledResource<T>> {
+    pub(in crate::exec::bounded) fn drain_live_resources(&mut self) -> Vec<ReleasedCompiledResource<T>> {
         let mut released = Vec::new();
         for (id, slot) in &mut self.resources {
             if slot.released {
@@ -202,11 +185,7 @@ impl<T> CompiledPipelineState<T> {
         })
     }
 
-    pub fn consume_task_input_resource(
-        &mut self,
-        task: &PipelineTask,
-        resource: ResidentResourceId,
-    ) -> Result<ConsumedCompiledResource<T>> {
+    pub fn consume_task_input_resource(&mut self, task: &PipelineTask, resource: ResidentResourceId) -> Result<T> {
         if self.completed_tasks.contains(&task.id()) {
             return Err(invalid("compiled task consumed an input after completion")
                 .with_fact("compiled_task_id", task.id())
@@ -255,10 +234,10 @@ impl<T> CompiledPipelineState<T> {
         slot.released = true;
         slot.consumed_by = Some(task.id());
 
-        Ok(ConsumedCompiledResource { id: resource, payload })
+        Ok(payload)
     }
 
-    pub fn complete_task(
+    pub(in crate::exec::bounded) fn complete_task(
         &mut self,
         task: &PipelineTask,
         produced_resources: Vec<(ResidentResourceId, T)>,
@@ -312,7 +291,10 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
-    pub fn take_sink_output_resource(&mut self, pipeline: &CompiledPipeline) -> Result<ReleasedCompiledResource<T>> {
+    pub(in crate::exec::bounded) fn take_sink_output_resource(
+        &mut self,
+        pipeline: &CompiledPipeline,
+    ) -> Result<ReleasedCompiledResource<T>> {
         let sink_task = pipeline.sink().input();
         let matching = self
             .resources

@@ -38,7 +38,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let frame = match &node.kind {
             PlanNode::Filter(filter) => {
                 if state.can_consume_task_input_resource(task, input) {
-                    let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+                    let input_payload = state.consume_task_input_resource(task, input)?;
                     match input_payload.payload {
                         CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                             Ok(CompiledGpuResource::join_leaf_local_parquet_source(
@@ -154,7 +154,7 @@ impl CompiledGpuTaskExecutor<'_> {
             },
             PlanNode::Projection(projection) => {
                 if state.can_consume_task_input_resource(task, input) {
-                    let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+                    let input_payload = state.consume_task_input_resource(task, input)?;
                     match input_payload.payload {
                         CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                             Ok(CompiledGpuResource::join_leaf_local_parquet_source(

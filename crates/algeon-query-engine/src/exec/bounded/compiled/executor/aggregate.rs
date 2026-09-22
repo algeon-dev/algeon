@@ -56,7 +56,7 @@ impl CompiledGpuTaskExecutor<'_> {
             );
         let frame = if input_is_stream {
             let stream = if state.can_consume_task_input_resource(task, input) {
-                let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+                let input_payload = state.consume_task_input_resource(task, input)?;
                 let CompiledGpuResourcePayload::ResidentFrameStream(stream) = input_payload.payload else {
                     unreachable!("aggregate stream input was checked");
                 };
@@ -85,7 +85,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 preserve_output_stream,
             )
         } else if can_consume_join_leaf_source {
-            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let input_payload = state.consume_task_input_resource(task, input)?;
             let CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) = input_payload.payload else {
                 unreachable!("join leaf source payload was checked above")
             };
@@ -109,7 +109,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 topk.as_ref(),
             )
         } else if state.can_consume_task_input_resource(task, input) {
-            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let input_payload = state.consume_task_input_resource(task, input)?;
             let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
                 return Err(invalid("compiled aggregate task expected a resident frame input")
                     .with_fact("compiled_task_id", task.id())
@@ -258,7 +258,7 @@ impl CompiledGpuTaskExecutor<'_> {
         {
             let limit = limit_node(self.plan, task, limit_node_id)?.clone();
             let input_payload = if state.can_consume_task_input_resource(task, input) {
-                state.consume_task_input_resource(task, input)?.into_payload()
+                state.consume_task_input_resource(task, input)?
             } else {
                 let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &state.resource_payload(input)?.payload
                 else {

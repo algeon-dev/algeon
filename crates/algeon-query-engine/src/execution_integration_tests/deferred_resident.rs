@@ -1,5 +1,5 @@
 fn shared_roles_fixture() -> (plan::QueryPlan, Arc<ArrowSchema>) {
-    use crate::{
+    use query_engine::{
         expr::{BinaryOp, Expr, LiteralValue},
         source::{LocalParquetFile, LocalParquetSource, SourceNode},
     };
@@ -56,7 +56,7 @@ fn shared_two_join_fixture() -> (
     Arc<ArrowSchema>,
     Arc<ArrowSchema>,
 ) {
-    use crate::{
+    use query_engine::{
         expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
         plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
@@ -189,7 +189,7 @@ fn composed_provenance_evidence(
 
 fn same_schema_provenance_fixture()
 -> (plan::QueryPlan, plan::QueryPlan, plan::QueryPlan, Arc<ArrowSchema>) {
-    use crate::{
+    use query_engine::{
         plan::QueryPlanBuilder,
         source::{GpuResidentSource, LocalParquetSource, SourceNode},
     };

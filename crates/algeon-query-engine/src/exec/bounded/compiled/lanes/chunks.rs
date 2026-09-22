@@ -38,7 +38,7 @@ use crate::{
 pub(in crate::exec::bounded) struct AggregateLaneDispatch {
     context: Arc<ExecutionContext>,
     metrics: Arc<ExecutionMetrics>,
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(feature = "test-hooks")]
     completion_gate: Option<super::AggregateChunkCompletionGate>,
     lanes: Vec<LaneWorkLease>,
     observation_scope: Option<RuntimeExecutionObservationScope>,
@@ -157,7 +157,7 @@ impl AggregateLaneDispatch {
             metrics: Arc::clone(&support.metrics),
             lanes: lanes.to_vec(),
             observation_scope: observation_scope.cloned(),
-            #[cfg(any(test, feature = "test-hooks"))]
+            #[cfg(feature = "test-hooks")]
             completion_gate: support.aggregate_chunk_completion_gate.clone(),
         }
     }
@@ -189,7 +189,7 @@ impl AggregateLaneDispatch {
             metrics: Arc::new(execution.metrics().clone()),
             lanes,
             observation_scope,
-            #[cfg(any(test, feature = "test-hooks"))]
+            #[cfg(feature = "test-hooks")]
             completion_gate: None,
         };
         run(&dispatcher, execution)
@@ -255,7 +255,7 @@ impl AggregateLaneDispatch {
                 };
                 let result = work(execution, input);
                 let output = self.finish_work(execution, result)?;
-                #[cfg(any(test, feature = "test-hooks"))]
+                #[cfg(feature = "test-hooks")]
                 if let Some(gate) = &self.completion_gate {
                     gate(ordinal, 0, execution.context().attempt_claimed_fork_index());
                 }
@@ -304,7 +304,7 @@ impl AggregateLaneDispatch {
                 let metrics = Arc::clone(&self.metrics);
                 let observation_scope = self.observation_scope.clone();
                 let notification = completed.clone();
-                #[cfg(any(test, feature = "test-hooks"))]
+                #[cfg(feature = "test-hooks")]
                 let gate = self.completion_gate.clone();
                 // A saturated pool submission fails without dispatching: the
                 // ready outputs still need their readiness observed before
@@ -318,7 +318,7 @@ impl AggregateLaneDispatch {
                         let mut execution = BoundedExecutionAttempt::new(context, budget, &metrics)?;
                         let result = work(&mut execution, input);
                         let output = finish_lane_work(&execution, result, observation_scope.as_ref())?;
-                        #[cfg(any(test, feature = "test-hooks"))]
+                        #[cfg(feature = "test-hooks")]
                         if let Some(gate) = gate {
                             gate(ordinal, lane, context.attempt_claimed_fork_index());
                         }

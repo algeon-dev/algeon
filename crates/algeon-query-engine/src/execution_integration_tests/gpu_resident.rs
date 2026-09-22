@@ -1,19 +1,18 @@
 use std::time::Duration;
 
-pub use query_engine::{
-    admission, attempt, error, exec, expr, metrics, native_error, observability, parquet_stats, plan, runtime, source,
-};
-
-use crate::{
-    error::Result,
-    exec::{QueryExecutionRequest, execute_query_plan, output::QueryExecutionResult},
-    plan::QueryPlan,
+use query_engine::{
+    admission, attempt,
+    error::{self, Result},
+    exec::{self, QueryExecutionRequest, execute_query_plan, output::QueryExecutionResult},
+    native_error, observability, parquet_stats,
+    plan::{self, QueryPlan},
     runtime::{
-        DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendDeviceConfig,
+        self, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendDeviceConfig,
         GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
         KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
         QueueBounds, resident::GpuResidentInputMap,
     },
+    source,
 };
 
 fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts: usize) -> Result<QueryService> {

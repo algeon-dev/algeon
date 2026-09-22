@@ -16,19 +16,29 @@ mod resource;
 mod scheduler;
 mod state;
 
+#[cfg(feature = "test-hooks")]
 pub use executor::CompiledGpuTaskExecutor;
+#[cfg(not(feature = "test-hooks"))]
+use executor::CompiledGpuTaskExecutor;
 #[cfg(test)]
 pub(crate) use frame_stream::YieldedFrameCounterTestHarness;
 pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
-use lanes::run_resident_lane_borrow;
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
-pub use lanes::{
-    LaneDispatchSupport, is_lane_family_pipeline, is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline,
-    run_lane_dispatched,
-};
+pub use lanes::{LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched};
+#[cfg(not(feature = "test-hooks"))]
+use lanes::{LaneDispatchSupport, is_lane_family_pipeline, run_lane_dispatched};
+use lanes::{is_resident_aggregate_lane_pipeline, is_resident_sort_lane_pipeline, run_resident_lane_borrow};
+#[cfg(feature = "test-hooks")]
 pub use resource::CompiledGpuResource;
-pub use scheduler::{CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput};
-pub use state::{CompiledPipelineState, ReleasedCompiledResource};
+#[cfg(not(feature = "test-hooks"))]
+pub(in crate::exec::bounded) use resource::CompiledGpuResource;
+#[cfg(not(feature = "test-hooks"))]
+use scheduler::CompiledPipelineScheduler;
+#[cfg(feature = "test-hooks")]
+pub use scheduler::{CompiledPipelineScheduler, CompiledTaskExecutor, CompiledTaskOutput};
+#[cfg(feature = "test-hooks")]
+pub use state::CompiledPipelineState;
 
 #[cfg(test)]
 use crate::observability::assert_live_topology_references_resolve;

@@ -5,11 +5,9 @@ use query_engine::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterProducer,
         LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
     },
-    exec::ExecutionMetrics,
     optimizer::{
         DynamicFilterRouteDiscoveryOptions, JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan,
     },
-    pipeline::compile_pipeline,
     rapids_backend::rapids_analysis_context,
 };
 
@@ -203,30 +201,14 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             )
     }));
     let context = backend_context_with_grant(1024 * 1024);
-    let admitted = context.admit_plan_for_compiled_executor_test(&optimized.plan).unwrap();
-
-    let analysis = optimized.plan.capability_analysis(rapids_analysis_context());
-    let pipeline = compile_pipeline(&optimized.plan, &analysis).unwrap();
-    let scheduler = query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
-    let metrics_recorder = ExecutionMetrics::detached("metrics");
-    let gpu_inputs = GpuResidentInputMap::new();
-    let output = {
-        let metrics_context = metrics_recorder.scope_context(&admitted).unwrap();
-        let mut executor = query_engine::exec::CompiledGpuTaskExecutor::new(
-            &metrics_context,
-            &optimized.plan,
-            &pipeline,
-            &gpu_inputs,
-            &metrics_recorder,
-        )
-        .unwrap();
-        scheduler.run(&mut executor).unwrap();
-        executor.take_host_output().unwrap()
+    let result = execute_query_plan(&context, &optimized.plan).unwrap();
+    let QueryOutput::HostArrow(output) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    let metrics = metrics_recorder.snapshot();
+    let metrics = result.metrics();
     assert_eq!(output.num_rows(), 2);
-    assert_eq!(int32_array(&output, 0).values().as_ref(), &[1, 3]);
-    assert_eq!(int32_array(&output, 1).values().as_ref(), &[5, 4]);
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 3]);
+    assert_eq!(int32_array(output, 1).values().as_ref(), &[5, 4]);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "applied"
             && row.consumer_kind == "local_parquet_source"
@@ -257,8 +239,6 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             && row.post_decode_rows_after == Some(2)
     }));
     assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 2);
-
-    admitted.finish();
 
     fs::remove_dir_all(dir).unwrap();
 }
