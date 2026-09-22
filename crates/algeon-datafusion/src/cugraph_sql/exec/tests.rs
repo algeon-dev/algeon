@@ -48,8 +48,8 @@ use crate::{
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
         CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource, CugraphGraphOptions,
-        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
-        CugraphTriangleCountAllParams, CugraphVertexIdDomain,
+        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTriangleCountAllParams,
+        CugraphVertexIdDomain,
         exec::{
             input::{StagedCugraphSource, execute_edge_source_to_gpu, stage_cugraph_inputs},
             residency::{graph_residency_matches_edge_schema, native_graph_spec_for_residency},
@@ -115,7 +115,7 @@ fn memory_string_edge_source() -> Arc<dyn ExecutionPlan> {
 }
 
 fn memory_string_path_target_source() -> Arc<dyn ExecutionPlan> {
-    let schema = Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]));
+    let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
     let batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["bob"])) as ArrayRef]).unwrap();
     MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
@@ -460,11 +460,8 @@ fn triangle_spec() -> CugraphAlgorithmSpec {
     let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
     CugraphAlgorithmSpec {
         algorithm: CugraphAlgorithm::TriangleCountAll,
-        table_name: CugraphTableReference::parse("edges").unwrap(),
-        src_col: "src".to_string(),
-        dst_col: "dst".to_string(),
-        weight_col: Some("weight".to_string()),
-        edge_id_col: None,
+        has_weight: true,
+        has_edge_id: false,
         graph_options: CugraphGraphOptions {
             directed: false,
             renumber: true,
@@ -479,11 +476,8 @@ fn pagerank_spec() -> CugraphAlgorithmSpec {
     let params = CugraphAlgorithmParams::PageRank(CugraphPageRankParams::default());
     CugraphAlgorithmSpec {
         algorithm: CugraphAlgorithm::PageRank,
-        table_name: CugraphTableReference::parse("edges").unwrap(),
-        src_col: "src".to_string(),
-        dst_col: "dst".to_string(),
-        weight_col: Some("weight".to_string()),
-        edge_id_col: None,
+        has_weight: true,
+        has_edge_id: false,
         graph_options: CugraphGraphOptions {
             directed: true,
             renumber: true,
@@ -496,7 +490,7 @@ fn pagerank_spec() -> CugraphAlgorithmSpec {
 
 fn pagerank_utf8_spec() -> CugraphAlgorithmSpec {
     let mut spec = pagerank_spec();
-    spec.weight_col = None;
+    spec.has_weight = false;
     spec.output_schema = Arc::new(Schema::new(vec![
         Field::new("vertex", DataType::Utf8, false),
         Field::new("value", DataType::Float64, false),
@@ -509,17 +503,7 @@ fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
     let graph_options = algorithm.effective_default_graph_options(&CugraphGraphOptions::default());
     let output_schema =
         result_schema_for_vertex_domain(algorithm, &params, Some(&CugraphVertexIdDomain::StringLogical));
-    CugraphAlgorithmSpec {
-        algorithm,
-        table_name: CugraphTableReference::parse("edges").unwrap(),
-        src_col: "src".to_string(),
-        dst_col: "dst".to_string(),
-        weight_col: None,
-        edge_id_col: None,
-        graph_options,
-        params,
-        output_schema,
-    }
+    CugraphAlgorithmSpec { algorithm, has_weight: false, has_edge_id: false, graph_options, params, output_schema }
 }
 
 #[test]
@@ -548,11 +532,8 @@ fn bfs_spec() -> CugraphAlgorithmSpec {
     }));
     CugraphAlgorithmSpec {
         algorithm: CugraphAlgorithm::Bfs,
-        table_name: CugraphTableReference::parse("edges").unwrap(),
-        src_col: "src".to_string(),
-        dst_col: "dst".to_string(),
-        weight_col: None,
-        edge_id_col: None,
+        has_weight: false,
+        has_edge_id: false,
         graph_options: CugraphGraphOptions {
             directed: true,
             renumber: true,
@@ -572,11 +553,8 @@ fn bfs_utf8_spec() -> CugraphAlgorithmSpec {
     }));
     CugraphAlgorithmSpec {
         algorithm: CugraphAlgorithm::Bfs,
-        table_name: CugraphTableReference::parse("edges").unwrap(),
-        src_col: "src".to_string(),
-        dst_col: "dst".to_string(),
-        weight_col: None,
-        edge_id_col: None,
+        has_weight: false,
+        has_edge_id: false,
         graph_options: CugraphGraphOptions {
             directed: true,
             renumber: true,
@@ -591,8 +569,7 @@ fn bfs_utf8_path_spec() -> CugraphAlgorithmSpec {
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
     params.output.mode = CugraphBfsOutputMode::Path;
-    params.predicates.target_vertices =
-        Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("targets").unwrap(), "target_vertex"));
+    params.predicates.target_vertices = Some(CugraphGraphPredicateTable::new());
     spec.output_schema = result_schema_for_params(CugraphAlgorithm::Bfs, &spec.params);
     spec
 }
@@ -600,7 +577,7 @@ fn bfs_utf8_path_spec() -> CugraphAlgorithmSpec {
 #[test]
 fn logical_bfs_edge_id_capability_is_rejected_during_exec_construction() {
     let mut spec = bfs_utf8_spec();
-    spec.edge_id_col = Some("edge_id".to_string());
+    spec.has_edge_id = true;
     let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
 
     let error =
@@ -707,8 +684,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
 fn logical_bfs_include_edge_ids_capability_is_rejected_during_exec_construction() {
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
-    params.predicates.include_edge_ids =
-        Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("edge_ids").unwrap(), "edge_id"));
+    params.predicates.include_edge_ids = Some(CugraphGraphPredicateTable::new());
     let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
     let predicate_schema = Arc::new(Schema::new(vec![Field::new("edge_id", DataType::Int64, false)]));
     let predicate_source = Arc::new(EmptyExec::new(predicate_schema)) as Arc<dyn ExecutionPlan>;
@@ -750,7 +726,7 @@ fn logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema() {
     let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
         spec,
         edge_schema: string_edge_schema(),
-        predicate_schemas: vec![Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]))],
+        predicate_schemas: vec![Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]))],
         predicate_row_upper_bounds: vec![Some(1)],
         result_options: CugraphResultPlanOptions::default(),
         edge_normalize_inserted: false,
@@ -804,11 +780,10 @@ async fn bfs_path_materializes_only_the_bounded_frame_under_small_host_limit() {
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
     params.depth_limit = Some(6);
     params.output.mode = CugraphBfsOutputMode::Path;
-    params.predicates.target_vertices =
-        Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("targets").unwrap(), "target_vertex"));
+    params.predicates.target_vertices = Some(CugraphGraphPredicateTable::new());
     spec.output_schema = result_schema_for_params(spec.algorithm, &spec.params);
 
-    let target_schema = Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Int64, false)]));
+    let target_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
     let target_batch =
         RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int64Array::from(vec![6])) as ArrayRef])
             .unwrap();
@@ -1087,11 +1062,8 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
 fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
     let mut spec = bfs_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
-    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
-        CugraphTableReference::parse("source_vertices").unwrap(),
-        "source_vertex",
-    ));
-    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int64, false)]));
+    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new());
+    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
     let source_exec = Arc::new(EmptyExec::new(Arc::clone(&source_schema))) as Arc<dyn ExecutionPlan>;
     let mut exec = CugraphAlgoExec::try_new(
         spec,
@@ -1196,11 +1168,8 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
-    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
-        CugraphTableReference::parse("source_vertices").unwrap(),
-        "vertex_id",
-    ));
-    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Utf8, false)]));
+    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new());
+    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
     let source_batch = RecordBatch::try_new(
         Arc::clone(&source_schema),
         vec![Arc::new(StringArray::from(vec!["alice", "bob", "carol"])) as ArrayRef],
@@ -1698,11 +1667,8 @@ async fn cugraph_producer_preparation_charges_utf8_relation_sources_to_the_same_
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
-    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
-        CugraphTableReference::parse("source_vertices").unwrap(),
-        "source_vertex",
-    ));
-    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Utf8, false)]));
+    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new());
+    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
     let source_batch = RecordBatch::try_new(
         Arc::clone(&source_schema),
         vec![Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef],
@@ -2087,8 +2053,8 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
     let plan = ctx
         .sql(
             "SELECT distance, COUNT(*) AS reached \
-             FROM cugraph_bfs('citation_edges', 0, 'src', 'dst', NULL, \
-             '{\"depth_limit\": 3, \"output_mode\": \"normalized\"}') \
+             FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
+             source_vertex => 0, depth_limit => 3, output_mode => 'normalized') \
              WHERE distance <= 3 GROUP BY distance",
         )
         .await
@@ -2128,8 +2094,8 @@ async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
         .sql(
             "WITH path AS (\
              SELECT path_index, vertex FROM cugraph_bfs(\
-               'citation_edges', 0, 'src', 'dst', NULL,\
-               '{\"depth_limit\":3,\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex\"}'\
+               edges => (SELECT src, dst FROM citation_edges), source_vertex => 0, depth_limit => 3,\
+               output_mode => 'path', target_vertices => (SELECT vertex FROM targets)\
              )) \
              SELECT curr.vertex FROM path curr \
              JOIN path prev ON curr.path_index = prev.path_index + 1",
@@ -2193,8 +2159,9 @@ async fn force_atlas2_count_and_coordinate_sums_execute_natively() {
         .sql(
             &ctx,
             "SELECT COUNT(*) AS vertices, SUM(x) AS sum_x, SUM(y) AS sum_y \
-             FROM cugraph_force_atlas2('citation_edges', 'src', 'dst', 'weight', \
-             '{\"max_iter\": 20, \"seed\": 7, \"barnes_hut_optimize\": true}')",
+             FROM cugraph_force_atlas2(\
+               edges => (SELECT src, dst, weight FROM citation_edges), max_iter => 20, seed => 7,\
+               barnes_hut_optimize => true)",
         )
         .await;
     let execution_error = match stream {
@@ -2243,8 +2210,8 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_defa
     let plan = ctx
         .sql(
             "SELECT COUNT(*) AS reached \
-             FROM cugraph_bfs('citation_edges', 0, 'src', 'dst', NULL, \
-             '{\"depth_limit\": 3, \"output_mode\": \"normalized\"}')",
+             FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
+             source_vertex => 0, depth_limit => 3, output_mode => 'normalized')",
         )
         .await
         .unwrap()

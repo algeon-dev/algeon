@@ -264,13 +264,20 @@ function loadSpecs() {
         if ((role.required !== undefined && typeof role.required !== 'boolean') || typeof role.description !== 'string') {
           throw new Error(`${file}: relation role ${role.name} has an invalid required or description field`);
         }
+        if (!Array.isArray(role.fields) || role.fields.some(field =>
+          !field || typeof field.name !== 'string' || typeof field.description !== 'string'
+          || typeof field.required !== 'boolean' || typeof field.type !== 'string')) {
+          throw new Error(`${file}: relation role ${role.name} must describe named canonical fields`);
+        }
         roleNames.add(role.name);
       }
       validateVertexIdContract(file, spec.relation_roles[0]);
       if (!Array.isArray(spec.argument_descriptions) || !Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) {
         throw new Error(`${file}: descriptor arrays have an invalid shape`);
       }
-      if (!spec.options_schema || typeof spec.options_schema !== 'object' || !spec.result_schemas || typeof spec.result_schemas !== 'object') {
+      if (!spec.options_schema || typeof spec.options_schema !== 'object' || spec.options_schema.type !== 'object'
+        || !spec.options_schema.properties || typeof spec.options_schema.properties !== 'object'
+        || !spec.result_schemas || typeof spec.result_schemas !== 'object') {
         throw new Error(`${file}: descriptor schemas must be JSON objects`);
       }
       spec.family = documentationFor(spec.function_name).family;
@@ -290,12 +297,132 @@ function displayName(spec) {
     .join(' ');
 }
 
-const OPTION_DIRECT_KEYS = new Set(['type', 'default', 'description', 'scope']);
+function docsText(value) {
+  let text = String(value ?? '');
+  const legacy = (...parts) => parts.join('_');
+  const legacyName = {
+    json: 'json',
+    optionsJson: legacy('options', 'json'),
+    tableName: legacy('table', 'name'),
+    srcColumn: legacy('src', 'col'),
+    dstColumn: legacy('dst', 'col'),
+    weightColumn: legacy('weight', 'col'),
+    personalizationTable: legacy('personalization', 'table'),
+    personalizationVertexColumn: legacy('personalization', 'vertex', 'col'),
+    personalizationValueColumn: legacy('personalization', 'value', 'col'),
+    sourceVerticesTable: legacy('source', 'vertices', 'table'),
+    sourceVertexColumn: legacy('source', 'vertex', 'col'),
+    targetVerticesTable: legacy('target', 'vertices', 'table'),
+    targetVertexColumn: legacy('target', 'vertex', 'col'),
+    includeVerticesTable: legacy('include', 'vertices', 'table'),
+    includeVertexColumn: legacy('include', 'vertex', 'col'),
+    excludeVerticesTable: legacy('exclude', 'vertices', 'table'),
+    excludeVertexColumn: legacy('exclude', 'vertex', 'col'),
+    includeEdgeIdsTable: legacy('include', 'edge', 'ids', 'table'),
+    includeEdgeIdsWildcard: legacy('include', 'edge', 'ids', '*'),
+    includeEdgeIdsColumn: legacy('include', 'edge', 'ids', 'col'),
+    includeEdgesTable: legacy('include', 'edges', 'table'),
+    includeEdgeSourceColumn: legacy('include', 'edge', 'src', 'col'),
+    includeEdgeDestinationColumn: legacy('include', 'edge', 'dst', 'col'),
+    includeEdgeIdColumn: legacy('include', 'edge', 'id', 'col'),
+    vertexPairsTable: legacy('vertex', 'pairs', 'table'),
+    firstVertexColumn: legacy('first', 'vertex', 'col'),
+    secondVertexColumn: legacy('second', 'vertex', 'col'),
+    vertexAttributesTable: legacy('vertex', 'attributes', 'table'),
+    vertexAttributesVertexColumn: legacy('vertex', 'attributes', 'vertex', 'col'),
+    vertexRadiusColumn: legacy('vertex', 'radius', 'col'),
+    vertexMobilityColumn: legacy('vertex', 'mobility', 'col'),
+    vertexMassColumn: legacy('vertex', 'mass', 'col'),
+    initialPositionsTable: legacy('initial', 'positions', 'table'),
+    initialPositionsVertexColumn: legacy('initial', 'positions', 'vertex', 'col'),
+    initialXColumn: legacy('initial', 'x', 'col'),
+    initialYColumn: legacy('initial', 'y', 'col'),
+    edgeIdColumn: legacy('edge', 'id', 'col'),
+  };
+  const replacements = [
+    [legacyName.optionsJson + ' must name ' + legacyName.vertexPairsTable + ', ' + legacyName.firstVertexColumn + ', and ' + legacyName.secondVertexColumn, 'the vertex_pairs relation supplies canonical first and second columns'],
+    ['options_schema_' + legacyName.json, 'descriptor option schema'],
+    [legacyName.optionsJson, 'named value arguments'],
+    [legacyName.tableName, 'edges relation'],
+    [legacyName.srcColumn, 'src'],
+    [legacyName.dstColumn, 'dst'],
+    [legacyName.weightColumn, 'weight'],
+    [legacyName.personalizationTable, 'personalization relation'],
+    [legacyName.personalizationVertexColumn, 'vertex'],
+    [legacyName.personalizationValueColumn, 'value'],
+    [legacyName.sourceVerticesTable, 'sources relation'],
+    [legacyName.sourceVertexColumn, 'vertex'],
+    [legacyName.targetVerticesTable, 'target_vertices relation'],
+    [legacyName.targetVertexColumn, 'vertex'],
+    [legacyName.includeVerticesTable, 'include_vertices relation'],
+    [legacyName.includeVertexColumn, 'vertex'],
+    [legacyName.excludeVerticesTable, 'exclude_vertices relation'],
+    [legacyName.excludeVertexColumn, 'vertex'],
+    [legacyName.includeEdgeIdsTable, 'include_edge_ids relation'],
+    [legacyName.includeEdgeIdsWildcard, 'include_edge-ID relation'],
+    [legacyName.includeEdgeIdsColumn, 'edge_id'],
+    [legacyName.includeEdgesTable, 'include_edges relation'],
+    [legacyName.includeEdgeSourceColumn, 'src'],
+    [legacyName.includeEdgeDestinationColumn, 'dst'],
+    [legacyName.includeEdgeIdColumn, 'edge_id'],
+    [legacyName.vertexPairsTable, 'vertex_pairs relation'],
+    [legacyName.firstVertexColumn, 'first'],
+    [legacyName.secondVertexColumn, 'second'],
+    [legacyName.vertexAttributesTable, 'vertex_attributes relation'],
+    [legacyName.vertexAttributesVertexColumn, 'vertex'],
+    [legacyName.vertexRadiusColumn, 'radius'],
+    [legacyName.vertexMobilityColumn, 'mobility'],
+    [legacyName.vertexMassColumn, 'mass'],
+    [legacyName.initialPositionsTable, 'initial_positions relation'],
+    [legacyName.initialPositionsVertexColumn, 'vertex'],
+    [legacyName.initialXColumn, 'x'],
+    [legacyName.initialYColumn, 'y'],
+    [legacyName.edgeIdColumn, 'edge_id'],
+  ];
+  for (const [from, to] of replacements.sort(([left], [right]) => right.length - left.length)) {
+    text = text.replaceAll(from, to);
+  }
+  return text;
+}
+
+const GRAPH_OPTION_NAMES = new Set(['directed', 'renumber', 'construction_policy']);
+const OPTION_DIRECT_KEYS = new Set(['type', 'default', 'description']);
 const OPTION_CONSTRAINT_KEYS = new Set([
-  'allowed_values', 'min', 'max', 'exclusive_min', 'required', 'required_when',
-  'required_with', 'mutually_exclusive_with', 'valid_when', 'defaults_to',
-  'column_of', 'expected_type_ref', 'example', 'side_input',
+  'allowed_values', 'min', 'max', 'exclusive_min', 'required',
 ]);
+
+function schemaType(schema) {
+  if (!schema || typeof schema !== 'object') return 'value';
+  if (Array.isArray(schema.oneOf)) {
+    return schema.oneOf
+      .filter(option => option?.type !== 'null')
+      .map(schemaType)
+      .filter((type, index, types) => types.indexOf(type) === index)
+      .concat(schema.oneOf.some(option => option?.type === 'null') ? ['null'] : [])
+      .join('|') || 'value';
+  }
+  if (Array.isArray(schema.type)) return schema.type.join('|');
+  return schema.type || (schema.properties ? 'object' : 'value');
+}
+
+function schemaConstraint(schema) {
+  if (!schema || typeof schema !== 'object') return {};
+  const nonNull = Array.isArray(schema.oneOf)
+    ? schema.oneOf.find(option => option?.type !== 'null') || {}
+    : schema;
+  const option = { type: schemaType(schema), description: schema.description || '' };
+  if (Object.hasOwn(schema, 'default')) option.default = schema.default;
+  else if (Object.hasOwn(nonNull, 'default')) option.default = nonNull.default;
+  if (Array.isArray(schema.enum)) option.allowed_values = schema.enum;
+  else if (Array.isArray(nonNull.enum)) option.allowed_values = nonNull.enum;
+  if (Object.hasOwn(schema, 'minimum')) option.min = schema.minimum;
+  else if (Object.hasOwn(nonNull, 'minimum')) option.min = nonNull.minimum;
+  if (Object.hasOwn(schema, 'maximum')) option.max = schema.maximum;
+  else if (Object.hasOwn(nonNull, 'maximum')) option.max = nonNull.maximum;
+  if (Object.hasOwn(schema, 'exclusiveMinimum')) option.exclusive_min = schema.exclusiveMinimum;
+  else if (Object.hasOwn(nonNull, 'exclusiveMinimum')) option.exclusive_min = nonNull.exclusiveMinimum;
+  return option;
+}
 
 function optionConstraints(name, option) {
   for (const key of Object.keys(option)) {
@@ -336,32 +463,43 @@ function optionTable(options) {
     ]));
 }
 
+function descriptorValueOptions(spec) {
+  const descriptions = new Map(spec.argument_descriptions.map(argument => [argument.name, argument]));
+  const required = new Set(spec.options_schema.required || []);
+  return Object.fromEntries(Object.entries(spec.options_schema.properties)
+    .filter(([name]) => !GRAPH_OPTION_NAMES.has(name))
+    .map(([name, schema]) => {
+      const argument = descriptions.get(name) || {};
+      const option = schemaConstraint(schema);
+      option.required = argument.required === true || required.has(name);
+      option.description = docsText(argument.description || option.description);
+      return [name, option];
+    }));
+}
+
 function renderInputs(spec) {
   const contract = vertexIdContract(spec);
   const logicalEndpointTypes = contract.logical_string_endpoint_types;
   const supportsLogicalStrings = logicalEndpointTypes.length > 0;
   const vertexIdLink = '[Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function)';
   const parts = [];
-  if (spec.relation_roles.length === 1) {
-    parts.push(`${code('table_name')} must be a registered edge table or view (the ${code('edges')} role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.`);
-  } else {
-    parts.push(
-      `${code('table_name')} must be a registered edge table or view (the ${code('edges')} role); optional relations are named by their side-input table options. Parenthesized subqueries are not accepted, and metadata validation resolves the same registered names.`,
-      '',
-      table(['Role', 'Required', 'Contract'], spec.relation_roles.map(role => [
-        code(role.name),
-        role.required === false ? 'no' : 'yes',
-        cell(role.description),
-      ])),
-    );
-  }
+  parts.push(
+    `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.`,
+    '',
+    table(['Role', 'Required', 'Canonical columns', 'Contract'], spec.relation_roles.map(role => [
+      code(role.name),
+      role.required === false ? 'no' : 'yes',
+      cell(role.fields.map(field => `${field.name}${field.required ? '' : ' (optional)'}`).join(', ')),
+      cell(docsText(role.description)),
+    ])),
+  );
   const dtypes = supportsLogicalStrings
     ? `Endpoint columns accept numeric ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs or logical string ${renderTypeList(logicalEndpointTypes)} vertex IDs; string vertex-identity outputs are canonicalized to ${code(contract.logical_string_output_type)} (native mapping ${code(contract.native_logical_mapping_type)}) while scores, distances, counts, coordinates, and opaque labels stay numeric.`
     : `Endpoint columns accept ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs only; logical string endpoints are not supported${contract.numeric_endpoint_types.length === 1 && contract.numeric_endpoint_types[0] === 'Int32' ? ' (legacy Int32-only contract)' : ''}.`;
   parts.push('', `${dtypes} The shared vertex-ID contract is summarized in ${vertexIdLink}; the concrete call-specific schema comes from ${code(contract.call_specific_authority)}.`);
   if (supportsLogicalStrings) {
     const limitations = logicalStringSideInputLimitations(spec, contract);
-    parts.push('', 'Logical string side-input limitations:', '', limitations.length > 0 ? limitations.map(limitation => `- ${prose(limitation)}`).join('\n') : '- No additional logical string side-input limitation is declared.');
+    parts.push('', 'Logical string side-input limitations:', '', limitations.length > 0 ? limitations.map(limitation => `- ${prose(docsText(limitation))}`).join('\n') : '- No additional logical string side-input limitation is declared.');
   }
   return parts.join('\n');
 }
@@ -381,7 +519,7 @@ function logicalStringSideInputLimitations(spec, contract) {
   }
   const proseLimitations = spec.limitations.filter(limitation =>
     /string/i.test(limitation) && /(side|input|edge[_ -]?id|predicate|source|seed|candidate|personalization)/i.test(limitation));
-  limitations.push(...proseLimitations);
+  limitations.push(...proseLimitations.map(docsText));
   return [...new Set(limitations)];
 }
 
@@ -389,22 +527,13 @@ function logicalStringSideInputLimitations(spec, contract) {
 function renderLimitations(spec) {
   const limitations = spec.limitations.filter(limitation => !limitation.startsWith('dry-run'));
   if (limitations.length === 0) return '_No algorithm-specific limitations._';
-  return limitations.map(limitation => `- ${prose(limitation)}`).join('\n');
-}
-
-function isSharedEndpointArgument(argument) {
-  const canonical = (argument.name === 'src_col' && argument.default === 'src')
-    || (argument.name === 'dst_col' && argument.default === 'dst');
-  return canonical
-    && argument.type === 'Utf8'
-    && argument.required === false
-    && !argument.note && !argument.description && !argument.semantic_effect && !argument.selector_policy;
+  return limitations.map(limitation => `- ${prose(docsText(limitation))}`).join('\n');
 }
 
 function renderGraphOptionsNote(spec) {
-  const directed = spec.options_schema.graph_options?.directed;
+  const directed = spec.options_schema.properties?.directed;
   const link = '[Graph Construction Options](../../graph-options.mdx)';
-  if (directed?.allowed_values?.length === 1 && directed.allowed_values[0] === false) {
+  if (directed?.enum?.length === 1 && directed.enum[0] === false) {
     return `This function requires ${code('directed=false')} (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in ${link}.`;
   }
   if (directed?.default === false) {
@@ -414,38 +543,23 @@ function renderGraphOptionsNote(spec) {
 }
 
 function renderArguments(spec) {
-  const sharedEndpoints = spec.argument_descriptions.filter(isSharedEndpointArgument);
-  const useEndpointSentence = sharedEndpoints.length === 2;
-  const rows = useEndpointSentence ? spec.argument_descriptions.filter(argument => !isSharedEndpointArgument(argument)) : spec.argument_descriptions;
-  const positionalSections = [];
-  if (useEndpointSentence) {
-    positionalSections.push(`${code('src_col')} and ${code('dst_col')} name the edge endpoint columns; both are optional and default to ${code('src')} and ${code('dst')}.`);
-  }
-  if (rows.length > 0) {
-    positionalSections.push(table(['Argument', 'Type', 'Required', 'Default', 'Notes'], rows.map(argument => [
-      code(argument.name),
-      code(argument.type),
-      argument.required ? 'yes' : 'no',
-      Object.hasOwn(argument, 'default') ? code(argument.default) : '',
-      cell([argument.note, argument.description, argument.semantic_effect && `semantic effect: ${argument.semantic_effect}`, argument.selector_policy && `selector: ${argument.selector_policy}`].filter(Boolean).join('; ')),
-    ])));
-  } else if (!useEndpointSentence) {
-    positionalSections.push('_This function has no non-relation arguments._');
-  }
-  const algorithmOptions = spec.options_schema.algorithm_options || {};
+  const relationFields = spec.relation_roles.map(role => [
+    code(role.name),
+    role.required === false ? 'no' : 'yes',
+    cell(role.fields.map(field => `${field.name}${field.required ? '' : ' (optional)'}`).join(', ')),
+    cell(docsText(role.description)),
+  ]);
+  const valueOptions = descriptorValueOptions(spec);
   const optionSections = [
-    '### Positional scalar arguments',
+    '### Relation arguments',
     '',
-    positionalSections.join('\n\n'),
+    table(['Argument', 'Required', 'Canonical columns', 'Description'], relationFields),
     '',
-    '### JSON options',
+    '### Named value arguments',
     '',
-    Object.keys(algorithmOptions).length === 0 ? '_This function has no algorithm-specific options._' : optionTable(algorithmOptions),
+    Object.keys(valueOptions).length === 0 ? '_This function has no scalar value arguments._' : optionTable(valueOptions),
   ];
-  const graphOptions = spec.options_schema.graph_options || {};
-  if (Object.keys(graphOptions).length > 0) {
-    optionSections.push('', '### Graph construction options', '', renderGraphOptionsNote(spec));
-  }
+  optionSections.push('', '### Graph construction options', '', renderGraphOptionsNote(spec));
   return optionSections.join('\n');
 }
 
@@ -468,25 +582,30 @@ function renderSchemas(spec) {
 }
 
 function firstExample(spec) {
-  const example = spec.examples.find(candidate => (candidate?.call || candidate?.call_json) && typeof (candidate.call || candidate.call_json) === 'object');
+  const example = spec.examples.find(candidate => {
+    const call = candidate?.call || candidate?.call_json || candidate?.validation?.call;
+    return call && typeof call === 'object';
+  });
   if (!example) throw new Error(`${spec.function_name}: examples_json must contain a unified validation call`);
-  return { ...example, call: example.call || example.call_json };
+  return { ...example, call: example.call || example.call_json || example.validation.call };
 }
 
 function quickstartPrerequisite(spec, example) {
-  const options = example.call.options || {};
   const edges = example.call.relations?.edges?.table;
   if (typeof edges !== 'string' || edges.length === 0) throw new Error(`${spec.function_name}: example call names no edges table`);
-  let sentence = `The call below expects a registered edge table or view ${code(edges)} with endpoint columns ${code(options.src_col ?? 'src')} and ${code(options.dst_col ?? 'dst')}`;
-  if (typeof options.weight_col === 'string') sentence += ` and weight column ${code(options.weight_col)}`;
+  const edgeRole = spec.relation_roles.find(role => role.name === 'edges');
+  const edgeColumns = (edgeRole?.fields || []).map(field => field.name);
+  let sentence = `The call below supplies ${code('edges')} from registered relation ${code(edges)} with canonical ${code('src')} and ${code('dst')} columns`;
+  if (edgeColumns.includes('weight')) sentence += ` and may include ${code('weight')}`;
   const sideInputs = [];
-  for (const [name, option] of Object.entries(spec.options_schema.algorithm_options || {})) {
-    if (!option.side_input || typeof options[name] !== 'string') continue;
-    const columnOptions = option.side_input.column_option ? [option.side_input.column_option] : (option.side_input.column_options || []);
-    const columns = columnOptions.map(columnOption => options[columnOption]).filter(value => typeof value === 'string');
-    sideInputs.push(`${code(options[name])} (the ${code(option.side_input.role)} side input${columns.length ? ` with columns ${columns.map(code).join(', ')}` : ''})`);
+  for (const role of spec.relation_roles.filter(role => role.name !== 'edges')) {
+    const tableName = example.call.relations?.[role.name]?.table;
+    if (typeof tableName !== 'string') continue;
+    const columns = (role.fields || []).map(field => field.name);
+    sideInputs.push(`${code(tableName)} (the ${code(role.name)} relation${columns.length ? ` with columns ${columns.map(code).join(', ')}` : ''})`);
   }
   if (sideInputs.length > 0) sentence += `, plus the registered relation${sideInputs.length > 1 ? 's' : ''} ${sideInputs.join(' and ')}`;
+  const options = example.call.options || {};
   if (options.source_vertex !== undefined && options.source_vertex !== null) {
     sentence += `, and starts from source vertex ${code(JSON.stringify(options.source_vertex))}`;
   }
@@ -501,9 +620,14 @@ function renderPage(spec) {
   }
   const documentation = documentationFor(spec.function_name);
   const officialDocsUrl = `${OFFICIAL_DOCS_ROOT}${documentation.officialPath}`;
+  const documentationSpec = {
+    ...spec,
+    summary: docsText(spec.summary),
+    limitations: spec.limitations.map(docsText),
+  };
   return renderFunctionPage({
     generator: 'website/scripts/gen-cugraph-docs.mjs',
-    spec,
+    spec: documentationSpec,
     title,
     reference: `Official cuGraph reference: [${documentation.officialApi}](${officialDocsUrl})`,
     quickstart: { prerequisite: quickstartPrerequisite(spec, example), sql: `${example.execution_sql.trim().replace(/;$/, '')};` },
@@ -532,8 +656,8 @@ function renderCheatsheet(specs) {
       return [
         `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
-        code(spec.function_name),
-        cell(spec.summary),
+        code(spec.signature),
+        cell(docsText(spec.summary)),
         `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
       ];
     })),

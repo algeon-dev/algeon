@@ -135,7 +135,7 @@ function renderArguments(spec) {
     ? '_This function has no scalar SQL arguments beyond its relation arguments._'
     : table(['Argument', 'Type', 'Required', 'Description'], spec.argument_descriptions.map(argument => [
       code(argument.name),
-      code(argument.type),
+      code(argument.type || sqlArgumentType(argument)),
       argument.required ? 'yes' : 'no',
       cell(argument.description),
     ]));
@@ -155,9 +155,9 @@ function renderArguments(spec) {
     '',
     argumentsTable,
     '',
-    '### JSON options',
+    '### SQL value argument schemas',
     '',
-    rows.length === 0 ? '_This function has no options._' : table(['Option', 'Required', 'JSON shape', 'Default', 'Constraints', 'Description'], rows),
+    rows.length === 0 ? '_This function has no options._' : table(['Argument', 'Required', 'Literal shape', 'Default', 'Constraints', 'Description'], rows),
     '',
     '### Vector binding shapes',
     '',
@@ -165,9 +165,22 @@ function renderArguments(spec) {
   ].join('\n');
 }
 
+function sqlArgumentType(argument) {
+  const schema = argument.schema || {};
+  if (schema.enum) return `enum (${schema.enum.map(value => JSON.stringify(value)).join(', ')})`;
+  if (schema.type) return schema.type;
+  return schema.oneOf ? 'object' : 'literal';
+}
+
 function renderVectorBindingShapes(spec) {
   const bindingOption = Object.values(spec.options_schema.properties || {}).find(option => option?.properties?.vector?.oneOf);
-  if (!bindingOption) throw new Error(`${spec.function_name}: no renderable relation-binding option`);
+  if (!bindingOption) {
+    return [
+      'Each relation subquery must project a non-null `id` field followed by either one or more non-null `Float32` feature fields or one non-null list vector field named `vector`.',
+      '',
+      'For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.',
+    ].join('\n');
+  }
   const binding = bindingOption.properties;
   const alternatives = binding.vector.oneOf;
   const columns = alternatives.find(shape => shape?.properties?.columns)?.properties?.columns;

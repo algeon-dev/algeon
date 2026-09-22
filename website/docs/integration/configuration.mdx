@@ -198,7 +198,7 @@ cuGraph registration is controlled by these settings:
 The construction-policy override is rejected when
 `ALGEON_SERVER_CUGRAPH_ENABLED` is false. A binary without the `cugraph` feature can still expose the frontend,
 but execution returns a structured `required_feature_disabled` error.
-Per-call `options_json` overrides these defaults; see
+Per-call named `construction_policy` and other graph values override these defaults; see
 [Graph Inputs and Construction](../cugraph/graph-options.mdx).
 
 cuVS has no enable variable. The server installs cuVS SQL on every session it

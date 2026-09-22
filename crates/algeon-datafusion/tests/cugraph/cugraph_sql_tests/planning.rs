@@ -21,16 +21,19 @@ async fn cugraph_sql_planning_preserves_structured_logical_edge_id_capability_er
     register_string_bfs_edges_with_edge_id(&ctx, "string_edges");
     register_string_vertex_memtable(&ctx, "edge_ids", "edge_id", &["e0"]);
 
-    for (options, expected_include_edge_ids) in [
-        (r#"{"edge_id_col":"edge_id"}"#, "false"),
-        (r#"{"edge_id_col":"edge_id","include_edge_ids_table":"edge_ids","include_edge_ids_col":"edge_id"}"#, "true"),
+    for (sql, expected_include_edge_ids) in [
+        (
+            "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst, edge_id FROM string_edges), source_vertex => 'a')",
+            "false",
+        ),
+        (
+            "SELECT * FROM cugraph_bfs(\
+                edges => (SELECT src, dst, edge_id FROM string_edges), source_vertex => 'a',\
+                include_edge_ids => (SELECT edge_id FROM edge_ids))",
+            "true",
+        ),
     ] {
-        let df = ctx
-            .sql(&format!("SELECT * FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{options}')"))
-            .await
-            .expect("logical BFS SQL should parse before physical capability preflight");
-        let error =
-            df.create_physical_plan().await.expect_err("logical edge-id BFS must fail physical capability preflight");
+        let error = ctx.sql(sql).await.expect_err("logical edge-id BFS must fail during logical capability preflight");
         let algeon = typed_algeon_error(&error);
 
         assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
@@ -46,66 +49,140 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "graph_edges_i32", DataType::Int32, DataType::Int32, DataType::Float64);
+    register_personalization_memtable(&ctx, "ppr_seeds", DataType::Int64);
 
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_pagerank('graph_edges')", CugraphAlgorithm::PageRank).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_bfs('graph_edges', 0)", CugraphAlgorithm::Bfs).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_louvain('graph_edges')", CugraphAlgorithm::Louvain).await;
     assert_sql_schema(
         &ctx,
-        "SELECT * FROM cugraph_eigenvector_centrality('graph_edges')",
+        "SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::PageRank,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM graph_edges), source_vertex => 0)",
+        CugraphAlgorithm::Bfs,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_louvain(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::Louvain,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_eigenvector_centrality(edges => (SELECT src, dst FROM graph_edges))",
         CugraphAlgorithm::EigenvectorCentrality,
     )
     .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_katz_centrality('graph_edges')", CugraphAlgorithm::KatzCentrality)
-        .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_hits('graph_edges')", CugraphAlgorithm::Hits).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_sssp('graph_edges', 0)", CugraphAlgorithm::Sssp).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_degrees_all('graph_edges')", CugraphAlgorithm::DegreesAll).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_in_degrees_all('graph_edges')", CugraphAlgorithm::InDegreesAll)
-        .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_out_degrees_all('graph_edges')", CugraphAlgorithm::OutDegreesAll)
-        .await;
     assert_sql_schema(
         &ctx,
-        "SELECT * FROM cugraph_weakly_connected_components('graph_edges')",
+        "SELECT * FROM cugraph_katz_centrality(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::KatzCentrality,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_hits(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::Hits,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_sssp(edges => (SELECT src, dst FROM graph_edges), source_vertex => 0)",
+        CugraphAlgorithm::Sssp,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_degrees_all(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::DegreesAll,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_in_degrees_all(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::InDegreesAll,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_out_degrees_all(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::OutDegreesAll,
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_weakly_connected_components(edges => (SELECT src, dst FROM graph_edges))",
         CugraphAlgorithm::WeaklyConnectedComponents,
     )
     .await;
     assert_sql_schema(
         &ctx,
-        "SELECT * FROM cugraph_strongly_connected_components('graph_edges')",
+        "SELECT * FROM cugraph_strongly_connected_components(edges => (SELECT src, dst FROM graph_edges))",
         CugraphAlgorithm::StronglyConnectedComponents,
     )
     .await;
     assert_sql_schema(
         &ctx,
-        "SELECT * FROM cugraph_triangle_count_all('graph_edges')",
+        "SELECT * FROM cugraph_triangle_count_all(edges => (SELECT src, dst FROM graph_edges))",
         CugraphAlgorithm::TriangleCountAll,
     )
     .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_core_number('graph_edges')", CugraphAlgorithm::CoreNumber).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_k_core('graph_edges')", CugraphAlgorithm::KCore).await;
     assert_sql_schema(
         &ctx,
-        "SELECT * FROM cugraph_minimum_spanning_tree('graph_edges', 'src', 'dst', 'weight')",
-        CugraphAlgorithm::MinimumSpanningTree,
+        "SELECT * FROM cugraph_core_number(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::CoreNumber,
     )
     .await;
     assert_sql_schema(
         &ctx,
-        r#"SELECT * FROM cugraph_personalized_pagerank('graph_edges', 'src', 'dst', NULL, '{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}')"#,
+        "SELECT * FROM cugraph_k_core(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::KCore,
+    )
+    .await;
+    assert_sql_schema_with_vertex_type(
+        &ctx,
+        "SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM graph_edges_i32))",
+        CugraphAlgorithm::MinimumSpanningTree,
+        &DataType::Int32,
+        &["src", "dst"],
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        r#"SELECT * FROM cugraph_personalized_pagerank(edges => (SELECT src, dst FROM graph_edges), personalization => (SELECT vertex, value FROM ppr_seeds))"#,
         CugraphAlgorithm::PersonalizedPageRank,
     )
     .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_leiden('graph_edges')", CugraphAlgorithm::Leiden).await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_ecg('graph_edges')", CugraphAlgorithm::Ecg).await;
     assert_sql_schema(
         &ctx,
-        "SELECT * FROM cugraph_spectral_modularity_maximization('graph_edges')",
-        CugraphAlgorithm::SpectralModularityMaximization,
+        "SELECT * FROM cugraph_leiden(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::Leiden,
     )
     .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_force_atlas2('graph_edges')", CugraphAlgorithm::ForceAtlas2).await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_ecg(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::Ecg,
+    )
+    .await;
+    assert_sql_schema_with_vertex_type(
+        &ctx,
+        "SELECT * FROM cugraph_spectral_modularity_maximization(edges => (SELECT src, dst FROM graph_edges_i32))",
+        CugraphAlgorithm::SpectralModularityMaximization,
+        &DataType::Int32,
+        &["vertex"],
+    )
+    .await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_force_atlas2(edges => (SELECT src, dst FROM graph_edges))",
+        CugraphAlgorithm::ForceAtlas2,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -129,8 +206,9 @@ async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second
         ("cugraph_cosine", CugraphAlgorithm::Cosine),
     ] {
         let sql = format!(
-            "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
-             '{{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+            "SELECT * FROM {function}(\
+             edges => (SELECT src, dst FROM similarity_edges),\
+             vertex_pairs => (SELECT first, second FROM candidate_pairs))"
         );
         assert_sql_schema_with_vertex_type(&ctx, &sql, algorithm, &DataType::Int32, &["first", "second"]).await;
         let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
@@ -139,8 +217,9 @@ async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second
         assert_eq!(cugraph.children().len(), 2, "{function} must retain independent edge and candidate-pair inputs",);
 
         let nullable_sql = format!(
-            "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
-             '{{\"vertex_pairs_table\":\"nullable_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+            "SELECT * FROM {function}(\
+             edges => (SELECT src, dst FROM similarity_edges),\
+             vertex_pairs => (SELECT first, second FROM nullable_pairs))"
         );
         ctx.sql(&nullable_sql)
             .await
@@ -150,15 +229,16 @@ async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second
             .expect("nullable but null-free pair schemas must be admitted until execution");
 
         for (pairs, first, second, expected) in [
-            ("missing_pairs", "first", "second", "No table named 'missing_pairs' for cuGraph side-input source"),
-            ("candidate_pairs", "missing", "second", "missing first vertex column 'missing'"),
+            ("missing_pairs", "first", "second", "missing_pairs' not found"),
+            ("candidate_pairs", "missing", "second", "No field named missing"),
             ("mismatched_pairs", "first", "second", "must have the same dtype"),
             ("int64_pairs", "first", "second", "must have dtype Int32"),
             ("utf8_pairs", "first", "second", "must have dtype Int32"),
         ] {
             let sql = format!(
-                "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
-                 '{{\"vertex_pairs_table\":\"{pairs}\",\"first_vertex_col\":\"{first}\",\"second_vertex_col\":\"{second}\"}}')"
+                "SELECT * FROM {function}(\
+                 edges => (SELECT src, dst FROM similarity_edges),\
+                 vertex_pairs => (SELECT {first}, {second} FROM {pairs}))"
             );
             let error = match ctx.sql(&sql).await {
                 Ok(df) => df.create_physical_plan().await.unwrap_err(),
@@ -176,12 +256,13 @@ async fn cugraph_strongly_connected_components_rejects_undirected_graph_option()
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
     let error = ctx
         .sql(
             "SELECT * FROM cugraph_strongly_connected_components(\
-             'graph_edges', 'src', 'dst', 'weight', \
-             '{\"directed\":false,\"renumber\":true,\"construction_policy\":\"python_cugraph\"}')",
+             edges => (SELECT src, dst, weight FROM graph_edges),\
+             directed => false, renumber => true, construction_policy => 'python_cugraph')",
         )
         .await
         .unwrap_err()
@@ -197,16 +278,17 @@ async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
     for (sql, expected) in [
         (
             "SELECT * FROM cugraph_minimum_spanning_tree(\
-             'graph_edges', 'src', 'dst', 'weight', '{\"directed\":true}')",
+             edges => (SELECT src, dst, weight FROM graph_edges), directed => true)",
             "cugraph_minimum_spanning_tree requires directed=false",
         ),
         (
             "SELECT * FROM cugraph_spectral_modularity_maximization(\
-             'graph_edges', 'src', 'dst', NULL, '{\"directed\":true}')",
+             edges => (SELECT src, dst FROM graph_edges), directed => true)",
             "cugraph_spectral_modularity_maximization requires directed=false",
         ),
     ] {
@@ -228,18 +310,17 @@ async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorit
 
     for (int64_sql, int32_sql, expected_algorithm) in [
         (
-            "SELECT * FROM cugraph_minimum_spanning_tree('edges_i64', 'src', 'dst', 'weight')",
-            "SELECT * FROM cugraph_minimum_spanning_tree('edges_i32', 'src', 'dst', 'weight')",
+            "SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM edges_i64))",
+            "SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM edges_i32))",
             "cugraph_minimum_spanning_tree",
         ),
         (
-            "SELECT * FROM cugraph_spectral_modularity_maximization('edges_i64')",
-            "SELECT * FROM cugraph_spectral_modularity_maximization('edges_i32')",
+            "SELECT * FROM cugraph_spectral_modularity_maximization(edges => (SELECT src, dst FROM edges_i64))",
+            "SELECT * FROM cugraph_spectral_modularity_maximization(edges => (SELECT src, dst FROM edges_i32))",
             "cugraph_spectral_modularity_maximization",
         ),
     ] {
-        let int64_df = ctx.sql(int64_sql).await.unwrap();
-        let error = int64_df.create_physical_plan().await.unwrap_err();
+        let error = ctx.sql(int64_sql).await.unwrap_err();
         let algeon = typed_algeon_error(&error);
         assert_eq!(algeon.code(), ErrorCode::RequiredGpuOperationUnsupported);
         assert_eq!(algeon.fact_value("algorithm"), Some(expected_algorithm));
@@ -251,18 +332,10 @@ async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorit
     }
 
     let malformed = ctx
-        .sql("SELECT * FROM cugraph_minimum_spanning_tree('edges_i64', 'missing_src', 'dst', 'weight')")
-        .await
-        .unwrap()
-        .create_physical_plan()
+        .sql("SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT missing_src AS src, dst, weight FROM edges_i64))")
         .await
         .unwrap_err();
-    let DataFusionError::External(source) = &malformed else {
-        panic!("missing columns must remain a typed external planning error: {malformed}");
-    };
-    let algeon = source.downcast_ref::<Error>().expect("External error must contain the adapter Error");
-    assert_eq!(algeon.code(), ErrorCode::FieldNotFound);
-    assert!(malformed.to_string().contains("missing source column 'missing_src'"));
+    assert!(malformed.to_string().contains("missing_src"));
 }
 
 #[tokio::test]
@@ -272,11 +345,14 @@ async fn cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function() 
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "targets", "vertex", DataType::Int64, false);
 
     let df = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', NULL, \
-             '{\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT src, dst FROM graph_edges), source_vertex => 0,\
+             output_mode => 'path', target_vertices => (SELECT vertex FROM targets))",
         )
         .await
         .unwrap();
@@ -299,13 +375,14 @@ async fn cugraph_bfs_path_mode_requires_target_relation() {
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
     let error = ctx
-        .sql("SELECT * FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', NULL, '{\"output_mode\":\"path\"}')")
+        .sql("SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM graph_edges), source_vertex => 0, output_mode => 'path')")
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("BFS path output requires target_vertices_table and target_vertex_col options"));
+    assert!(error.contains("BFS path output requires target_vertices"));
 }
 
 #[tokio::test]
@@ -315,13 +392,15 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
     let error = ctx
-        .sql("SELECT * FROM cugraph_bfs_path('graph_edges', 0, 'src', 'dst', NULL, '{}')")
+        .sql("SELECT * FROM cugraph_bfs_path(edges => (SELECT src, dst FROM graph_edges), source_vertex => 0)")
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("cugraph_bfs_path"));
+    assert!(!ctx.state().table_functions().contains_key("cugraph_bfs_path"));
+    assert!(!error.is_empty());
 
     let error = ctx.sql("SELECT * FROM gpu_describe_function('cugraph_bfs_path')").await.unwrap_err().to_string();
     assert!(error.contains("unknown GPU function 'cugraph_bfs_path'"));
@@ -331,7 +410,7 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
             r#"SELECT valid, error_code, message
                FROM gpu_validate_call(
                  'cugraph_bfs_path',
-                 '{"schema_version":1,"relations":{"edges":{"table":"raw_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst"}}'
+                 '{"relations":{"edges":{"table":"raw_edges"}},"options":{"source_vertex":0}}'
                )"#,
         )
         .await
@@ -352,13 +431,19 @@ async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
         .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_bfs('graph_edges', 0)", CugraphAlgorithm::Bfs).await;
+    assert_sql_schema(
+        &ctx,
+        "SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM graph_edges), source_vertex => 0)",
+        CugraphAlgorithm::Bfs,
+    )
+    .await;
 
     let df = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', NULL, \
-             '{\"output_mode\":\"normalized\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT src, dst FROM graph_edges), source_vertex => 0, output_mode => 'normalized')",
         )
         .await
         .unwrap();
@@ -384,14 +469,14 @@ async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() 
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "numeric_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
-    let df = ctx
+    let error = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs('numeric_edges', 'a', 'src', 'dst', NULL, \
-             '{\"output_mode\":\"normalized\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT src, dst FROM numeric_edges), source_vertex => 'a', output_mode => 'normalized')",
         )
         .await
-        .unwrap();
-    let error = df.create_physical_plan().await.unwrap_err().to_string();
+        .unwrap_err()
+        .to_string();
     assert!(
         error.contains("string vertex selector requires a string source column"),
         "unexpected planning error: {error}"
@@ -410,10 +495,9 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
 
     let df = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-             '{\"source_vertices_table\":\"bfs_sources\",\
-                \"source_vertex_col\":\"vertex_id\",\
-                \"output_mode\":\"normalized\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT src, dst FROM raw_edges),\
+             sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'normalized')",
         )
         .await
         .unwrap();
@@ -426,6 +510,31 @@ async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema()
             Field::new("reachable", DataType::Boolean, false),
         ],
     );
+}
+
+#[tokio::test]
+async fn cugraph_relation_arguments_reject_outer_query_correlation() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "outer_vertices", "vertex", DataType::Int64, false);
+
+    let error = ctx
+        .sql(
+            "SELECT outer_vertices.vertex, graph.distance \
+             FROM outer_vertices \
+             JOIN cugraph_bfs(\
+                 edges => (SELECT src, dst FROM graph_edges WHERE src = outer_vertices.vertex),\
+                 source_vertex => 0) AS graph \
+             ON outer_vertices.vertex = graph.vertex",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("outer_vertices"), "unexpected correlation error: {error}");
 }
 
 #[tokio::test]
@@ -442,12 +551,10 @@ async fn cugraph_bfs_string_subplans_lower_to_native_gpu_producers() {
 
     let df = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-             '{\"source_vertices_table\":\"bfs_sources\",\
-                \"source_vertex_col\":\"vertex_id\",\
-                \"include_vertices_table\":\"included\",\
-                \"include_vertex_col\":\"vertex_id\",\
-                \"output_mode\":\"normalized\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT src, dst FROM raw_edges),\
+             sources => (SELECT vertex_id AS vertex FROM bfs_sources),\
+             include_vertices => (SELECT vertex_id AS vertex FROM included), output_mode => 'normalized')",
         )
         .await
         .unwrap();
@@ -475,9 +582,10 @@ async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
-             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"exclude_vertices_table\":\"excluded_vertices\",\"exclude_vertex_col\":\"vertex_id\",\
-                     \"include_edges_table\":\"allowed_edges\",\"include_edge_src_col\":\"src\",\"include_edge_dst_col\":\"dst\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
+                  exclude_vertices => (SELECT vertex_id AS vertex FROM excluded_vertices),\
+                  include_edges => (SELECT src, dst FROM allowed_edges))",
         )
         .await
         .unwrap();
@@ -526,41 +634,46 @@ async fn cugraph_relation_projections_preserve_exact_camel_case_columns() {
 
     let sqls = [
         (
-            r#"SELECT * FROM cugraph_bfs('camel_edges', NULL, 'edgeSrc', 'edgeDst', 'edgeWeight',
-                '{"source_vertices_table":"camel_source","source_vertex_col":"sourceVertex"}')"#,
+            r#"SELECT * FROM cugraph_bfs(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight FROM camel_edges),
+                sources => (SELECT "sourceVertex" AS vertex FROM camel_source))"#,
             "BFS source relation",
         ),
         (
-            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
-                '{"include_vertices_table":"camel_include","include_vertex_col":"includeVertex"}')"#,
+            r#"SELECT * FROM cugraph_bfs(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight FROM camel_edges),
+                source_vertex => 0, include_vertices => (SELECT "includeVertex" AS vertex FROM camel_include))"#,
             "BFS include relation",
         ),
         (
-            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
-                '{"exclude_vertices_table":"camel_exclude","exclude_vertex_col":"excludeVertex"}')"#,
+            r#"SELECT * FROM cugraph_bfs(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight FROM camel_edges),
+                source_vertex => 0, exclude_vertices => (SELECT "excludeVertex" AS vertex FROM camel_exclude))"#,
             "BFS exclude relation",
         ),
         (
-            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
-                '{"target_vertices_table":"camel_target","target_vertex_col":"targetVertex"}')"#,
+            r#"SELECT * FROM cugraph_bfs(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight FROM camel_edges),
+                source_vertex => 0, target_vertices => (SELECT "targetVertex" AS vertex FROM camel_target))"#,
             "BFS target relation",
         ),
         (
-            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
-                '{"edge_id_col":"edgeKey","include_edges_table":"camel_allowed_edges",
-                  "include_edge_src_col":"edgeSource","include_edge_dst_col":"edgeDestination",
-                  "include_edge_id_col":"edgeId"}')"#,
+            r#"SELECT * FROM cugraph_bfs(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight, "edgeKey" AS edge_id FROM camel_edges),
+                source_vertex => 0,
+                include_edges => (SELECT "edgeSource" AS src, "edgeDestination" AS dst, "edgeId" AS edge_id FROM camel_allowed_edges))"#,
             "BFS include-edges relation",
         ),
         (
-            r#"SELECT * FROM cugraph_personalized_pagerank('camel_edges', 'edgeSrc', 'edgeDst', 'edgeWeight',
-                '{"personalization_table":"camel_seeds","personalization_vertex_col":"seedVertex",
-                  "personalization_value_col":"seedValue"}')"#,
+            r#"SELECT * FROM cugraph_personalized_pagerank(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst, "edgeWeight" AS weight FROM camel_edges),
+                personalization => (SELECT "seedVertex" AS vertex, "seedValue" AS value FROM camel_seeds))"#,
             "personalized PageRank relation",
         ),
         (
-            r#"SELECT * FROM cugraph_jaccard('camel_edges', 'edgeSrc', 'edgeDst', NULL,
-                '{"vertex_pairs_table":"camel_pairs","first_vertex_col":"pairLeft","second_vertex_col":"pairRight"}')"#,
+            r#"SELECT * FROM cugraph_jaccard(
+                edges => (SELECT "edgeSrc" AS src, "edgeDst" AS dst FROM camel_edges),
+                vertex_pairs => (SELECT "pairLeft" AS first, "pairRight" AS second FROM camel_pairs))"#,
             "similarity pair relation",
         ),
     ];
@@ -697,7 +810,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
     let df = ctx
         .sql(
             "SELECT vertex, partition \
-             FROM cugraph_louvain('tiny_communities', 'src', 'dst', 'weight', '{\"directed\":false}') \
+             FROM cugraph_louvain(edges => (SELECT src, dst, weight FROM tiny_communities), directed => false) \
              ORDER BY vertex",
         )
         .await
@@ -720,8 +833,9 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
     let raw_df = ctx
         .sql(
             "SELECT vertex, partition \
-             FROM cugraph_louvain('tiny_communities', 'src', 'dst', 'weight', \
-                                  '{\"directed\":false,\"construction_policy\":\"raw_libcugraph\"}') \
+             FROM cugraph_louvain(\
+                  edges => (SELECT src, dst, weight FROM tiny_communities),\
+                  directed => false, construction_policy => 'raw_libcugraph') \
              ORDER BY vertex",
         )
         .await
@@ -881,7 +995,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let directed_df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('canonical_directed_edges', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM canonical_directed_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -900,7 +1014,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let undirected_df = ctx
         .sql(
             "SELECT vertex, partition \
-             FROM cugraph_louvain('canonical_undirected_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+             FROM cugraph_louvain(edges => (SELECT src, dst FROM canonical_undirected_edges), directed => false) \
              ORDER BY vertex",
         )
         .await
@@ -919,7 +1033,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let weighted_df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('weighted_min_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM weighted_min_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -934,7 +1048,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let grouped_by_extra_df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('grouped_by_extra_edge_attr', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM grouped_by_extra_edge_attr)) \
              ORDER BY vertex",
         )
         .await
@@ -949,7 +1063,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let projected_duplicate_df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('projected_duplicate_edges', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM projected_duplicate_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -964,7 +1078,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let aggregate_alias_df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('aggregate_alias_overwrites_dst_edges', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM aggregate_alias_overwrites_dst_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -979,7 +1093,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let aggregate_over_canonical_df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('aggregate_over_canonical_edges', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM aggregate_over_canonical_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -995,7 +1109,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let filtered_reverse_df = ctx
         .sql(
             "SELECT vertex, partition \
-             FROM cugraph_louvain('filtered_reverse_expansion_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+             FROM cugraph_louvain(edges => (SELECT src, dst FROM filtered_reverse_expansion_edges), directed => false) \
              ORDER BY vertex",
         )
         .await
@@ -1010,7 +1124,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     let mixed_memory_df = ctx
         .sql(
             "SELECT vertex, partition \
-             FROM cugraph_louvain('mixed_memory_reverse_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+             FROM cugraph_louvain(edges => (SELECT src, dst FROM mixed_memory_reverse_edges), directed => false) \
              ORDER BY vertex",
         )
         .await

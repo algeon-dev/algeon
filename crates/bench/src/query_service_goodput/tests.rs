@@ -408,10 +408,10 @@ fn graph_items_carry_their_seed_count_as_work_units() {
 
     assert_eq!(batched.work_units, 256);
     assert_eq!(split.work_units, 64);
-    assert!(batched.sql.contains("\"k\": 256"));
+    assert!(batched.sql.contains("k => 256"));
 
     let bfs = super::workload::resolve_item("graph.bfs", 7).unwrap();
-    assert!(bfs.sql.contains(", 7,"), "the discovered seed must reach the traversal item: {}", bfs.sql);
+    assert!(bfs.sql.contains("source_vertex => 7"), "the discovered seed must reach the traversal item: {}", bfs.sql);
 }
 
 /// Every vertex-keyed algorithm returns one row per vertex, so a fingerprint

@@ -1,9 +1,17 @@
 use super::{support::*, *};
 
 fn gpu_call(edges: &str, options: serde_json::Value) -> String {
+    gpu_call_with_relations(edges, serde_json::json!({}), options)
+}
+
+fn gpu_call_with_relations(edges: &str, side_relations: serde_json::Value, options: serde_json::Value) -> String {
+    let mut relations = serde_json::Map::new();
+    relations.insert("edges".to_string(), serde_json::json!({ "table": edges }));
+    if let Some(side_relations) = side_relations.as_object() {
+        relations.extend(side_relations.clone());
+    }
     serde_json::json!({
-        "schema_version": 1,
-        "relations": { "edges": { "table": edges } },
+        "relations": relations,
         "options": options,
     })
     .to_string()
@@ -11,6 +19,21 @@ fn gpu_call(edges: &str, options: serde_json::Value) -> String {
 
 async fn validate(ctx: &SessionContext, function: &str, edges: &str, options: serde_json::Value) -> RecordBatch {
     let call = gpu_call(edges, options).replace('\'', "''");
+    validate_call(ctx, function, call).await
+}
+
+async fn validate_with_relations(
+    ctx: &SessionContext,
+    function: &str,
+    edges: &str,
+    side_relations: serde_json::Value,
+    options: serde_json::Value,
+) -> RecordBatch {
+    let call = gpu_call_with_relations(edges, side_relations, options).replace('\'', "''");
+    validate_call(ctx, function, call).await
+}
+
+async fn validate_call(ctx: &SessionContext, function: &str, call: String) -> RecordBatch {
     let sql = format!(
         "SELECT valid, error_code, message, function_name, relations_resolved, normalized_call_json, \
          output_schema_json, would_execute_gpu, details_json \
@@ -40,7 +63,11 @@ async fn cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog() {
     let functions = state.table_functions();
 
     for definition in CUGRAPH_OPERATION_REGISTRY {
-        assert!(functions.contains_key(definition.sql_function_name));
+        assert!(
+            !functions.contains_key(definition.sql_function_name),
+            "{} is planned by the relation planner, not registered as an execution UDTF",
+            definition.sql_function_name
+        );
     }
     for name in ["gpu_list_functions", "gpu_describe_function", "gpu_validate_call"] {
         assert!(functions.contains_key(name), "common catalog UDTF {name} must be installed");
@@ -56,9 +83,7 @@ async fn cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog() {
 
     let registered_cugraph_udtfs: std::collections::BTreeSet<&str> =
         functions.keys().filter_map(|name| name.strip_prefix("cugraph_").map(|_| name.as_str())).collect();
-    let registry_function_names: std::collections::BTreeSet<&str> =
-        CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect();
-    assert_eq!(registered_cugraph_udtfs, registry_function_names);
+    assert!(registered_cugraph_udtfs.is_empty());
 }
 
 #[tokio::test]
@@ -113,41 +138,30 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
     assert_eq!(string_value(batch, 1, 0), "cugraph");
     assert_eq!(json_value(string_value(batch, 2, 0))[0]["name"], "edges");
     let arguments = json_value(string_value(batch, 3, 0));
-    assert!(json_array_item_by_name(&arguments, "source_vertex_or_vertices").is_object());
+    assert!(json_array_item_by_name(&arguments, "source_vertex").is_object());
     let options = json_value(string_value(batch, 4, 0));
-    assert_eq!(options["graph_options"]["directed"]["default"], true);
+    assert_eq!(options["properties"]["directed"]["default"], true);
     let schemas = json_value(string_value(batch, 5, 0));
     assert_eq!(schemas["call_specific_authority"], "gpu_validate_call");
     assert!(schemas["field_descriptions"].as_array().unwrap().iter().any(|field| field["name"] == "vertex"));
     let request_schema = json_value(string_value(batch, 6, 0));
     assert_eq!(request_schema["properties"]["relations"]["required"], serde_json::json!(["edges"]));
-    assert_eq!(request_schema["properties"]["schema_version"]["const"], 1);
-    assert!(
-        request_schema["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("no version 0 reader or version negotiation"))
-    );
-    assert!(
-        request_schema["properties"]["schema_version"]["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("rejected before family dispatch"))
-    );
+    assert_eq!(request_schema["required"], serde_json::json!(["relations", "options"]));
+    assert!(request_schema.get("description").is_none());
+    assert_eq!(request_schema["properties"].as_object().unwrap().len(), 2);
     assert!(
         request_schema["properties"]["options"]["description"]
             .as_str()
-            .is_some_and(|description| description.contains("Flat cuGraph option object"))
+            .is_some_and(|description| description.contains("Named cuGraph value arguments"))
     );
     assert!(request_schema["properties"]["options"].get("x_cugraph_options_schema").is_none());
     let examples = json_value(string_value(batch, 7, 0));
     assert_eq!(
         examples[0]["call_json"],
         serde_json::json!({
-            "schema_version": 1,
             "relations": { "edges": { "table": "target_edges" } },
             "options": {
                 "source_vertex": 123,
-                "src_col": "src",
-                "dst_col": "dst",
                 "depth_limit": 4,
             },
         })
@@ -168,7 +182,7 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
 }
 
 #[tokio::test]
-async fn cugraph_examples_use_versioned_common_envelopes_with_flat_options() {
+async fn cugraph_examples_use_common_envelopes_with_flat_options() {
     let state = SessionStateBuilder::new_with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL")
@@ -188,7 +202,7 @@ async fn cugraph_examples_use_versioned_common_envelopes_with_flat_options() {
         for example in examples.as_array().unwrap() {
             assert_eq!(example["function_name"], definition.sql_function_name);
             let call = &example["call_json"];
-            assert_eq!(call["schema_version"], 1);
+            assert_eq!(call.as_object().unwrap().len(), 2);
             assert_eq!(call["relations"]["edges"]["table"], "target_edges");
             assert!(call["options"].is_object());
             assert!(call["options"].get("options").is_none());
@@ -217,9 +231,6 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
         "target_edges",
         serde_json::json!({
             "source_vertex": 0,
-            "src_col": "src",
-            "dst_col": "dst",
-            "weight_col": "weight",
             "depth_limit": 2,
             "output_mode": "normalized",
         }),
@@ -229,13 +240,16 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
     assert!(is_null_value(&batch, 1, 0));
     assert_eq!(string_value(&batch, 3, 0), "cugraph_bfs");
     assert!(bool_value(&batch, 4, 0));
-    assert!(string_value(&batch, 5, 0).contains(r#""schema_version":1"#));
+    let normalized = json_value(string_value(&batch, 5, 0));
+    assert_eq!(normalized.as_object().unwrap().len(), 2);
+    assert_eq!(normalized["relations"]["edges"]["table"], "target_edges");
     assert!(string_value(&batch, 6, 0).contains(r#""reachable""#));
     assert!(bool_value(&batch, 7, 0));
     let bfs = ctx
         .sql(
-            "SELECT * FROM cugraph_bfs('target_edges', 0, 'src', 'dst', 'weight', \
-             '{\"depth_limit\":2,\"output_mode\":\"normalized\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT src, dst, weight FROM target_edges), source_vertex => 0,\
+             depth_limit => 2, output_mode => 'normalized')",
         )
         .await
         .unwrap();
@@ -258,11 +272,11 @@ async fn cugraph_validation_output_schema_matches_pagerank_provider_for_each_ver
     register_string_pagerank_parity_edges(&ctx, "string_edges", "unused_numeric_edges");
 
     for (edges, expected_vertex_type) in [("integer_edges", DataType::Int64), ("string_edges", DataType::Utf8)] {
-        let batch =
-            validate(&ctx, "cugraph_pagerank", edges, serde_json::json!({"src_col":"src","dst_col":"dst"})).await;
+        let batch = validate(&ctx, "cugraph_pagerank", edges, serde_json::json!({})).await;
         assert!(bool_value(&batch, 0, 0), "{}", string_value(&batch, 2, 0));
 
-        let df = ctx.sql(&format!("SELECT * FROM cugraph_pagerank('{edges}', 'src', 'dst')")).await.unwrap();
+        let df =
+            ctx.sql(&format!("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM {edges}))")).await.unwrap();
         assert_eq!(df.schema().field(0).data_type(), &expected_vertex_type, "{edges} PageRank vertex type");
         assert_validation_schema_matches(&batch, df.schema().inner());
     }
@@ -283,16 +297,14 @@ async fn cugraph_validation_requires_flat_common_options() {
         "raw_edges",
         serde_json::json!({
             "source_vertex": 0,
-            "src_col": "src",
-            "dst_col": "dst",
             "options": { "depth_limit": 2 },
         }),
     )
     .await;
 
     assert!(!bool_value(&batch, 0, 0));
-    assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
-    assert!(string_value(&batch, 2, 0).contains("must be flat"));
+    assert_eq!(string_value(&batch, 1, 0), "unsupported_option");
+    assert!(string_value(&batch, 2, 0).contains("unknown option 'options'"));
 }
 
 #[tokio::test]
@@ -306,29 +318,23 @@ async fn cugraph_validation_keeps_relation_aware_errors_structured() {
     register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Int32, DataType::Int32, false);
     register_vertex_pair_memtable(&ctx, "bad_pairs", DataType::Int32, DataType::Int64, false);
 
-    let valid = validate(
+    let valid = validate_with_relations(
         &ctx,
         "cugraph_jaccard",
         "edges",
-        serde_json::json!({
-            "src_col": "src", "dst_col": "dst",
-            "vertex_pairs_table": "candidate_pairs",
-            "first_vertex_col": "first", "second_vertex_col": "second"
-        }),
+        serde_json::json!({"vertex_pairs": {"table": "candidate_pairs"}}),
+        serde_json::json!({}),
     )
     .await;
     assert!(bool_value(&valid, 0, 0), "{}", string_value(&valid, 2, 0));
     assert!(string_value(&valid, 6, 0).contains(r#""similarity""#));
 
-    let invalid = validate(
+    let invalid = validate_with_relations(
         &ctx,
         "cugraph_jaccard",
         "edges",
-        serde_json::json!({
-            "src_col": "src", "dst_col": "dst",
-            "vertex_pairs_table": "bad_pairs",
-            "first_vertex_col": "first", "second_vertex_col": "second"
-        }),
+        serde_json::json!({"vertex_pairs": {"table": "bad_pairs"}}),
+        serde_json::json!({}),
     )
     .await;
     assert!(!bool_value(&invalid, 0, 0));
@@ -350,16 +356,13 @@ async fn cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsin
         .build();
     let ctx = SessionContext::new_with_state(state);
     for (call, code) in [
-        (r#"{"schema_version":1,"relations":{},"options":{}}"#, "missing_relation"),
+        (r#"{"relations":{},"options":{}}"#, "missing_relation"),
         (
-            r#"{"schema_version":1,"relations":{"edges":{"table":"edges"},"other":{"table":"other"}},"options":{}}"#,
+            r#"{"relations":{"edges":{"table":"edges"},"other":{"table":"other"}},"options":{}}"#,
             "unknown_relation_role",
         ),
-        (r#"{"schema_version":2,"relations":{"edges":{"table":"edges"}},"options":{}}"#, "unsupported_schema_version"),
-        (
-            r#"{"schema_version":1,"relations":{"edges":{"table":"edges"}},"options":{},"extra":true}"#,
-            "invalid_call_json",
-        ),
+        (r#"{"relations":{"edges":{"table":"edges"}}}"#, "invalid_call_json"),
+        (r#"{"relations":{"edges":{"table":"edges"}},"options":{},"extra":true}"#, "invalid_call_json"),
     ] {
         let escaped = call.replace('\'', "''");
         let batches = ctx
@@ -375,7 +378,7 @@ async fn cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsin
     }
 
     let unknown = ctx
-        .sql("SELECT valid, error_code, function_name FROM gpu_validate_call('bfs', '{\"schema_version\":1,\"relations\":{},\"options\":{}}')")
+        .sql("SELECT valid, error_code, function_name FROM gpu_validate_call('bfs', '{\"relations\":{},\"options\":{}}')")
         .await
         .unwrap()
         .collect()
@@ -456,9 +459,12 @@ async fn cugraph_string_selector_descriptors_publish_their_logical_types() {
         if function_name == "cugraph_sssp" {
             let source =
                 arguments.as_array().unwrap().iter().find(|argument| argument["name"] == "source_vertex").unwrap();
-            assert_eq!(source["type"], "Int64|Utf8");
+            assert_eq!(source["schema"]["type"], serde_json::json!(["integer", "string"]));
         } else {
-            assert_eq!(options["algorithm_options"]["seeds"]["type"], "List<Int64>|List<Utf8>|null");
+            let seeds = &options["properties"]["seeds"];
+            assert_eq!(seeds["oneOf"][1]["type"], "null");
+            assert_eq!(seeds["oneOf"][0]["oneOf"][0]["items"]["type"], "integer");
+            assert_eq!(seeds["oneOf"][0]["oneOf"][1]["items"]["type"], "string");
         }
     }
 }
@@ -499,13 +505,7 @@ async fn cugraph_m1_algorithms_validate_all_string_endpoint_family_combinations(
     ];
     for algorithm in algorithms {
         for (table, _, _) in &endpoint_types {
-            let batch = validate(
-                &ctx,
-                algorithm.function_name(),
-                table,
-                serde_json::json!({"src_col": "src", "dst_col": "dst"}),
-            )
-            .await;
+            let batch = validate(&ctx, algorithm.function_name(), table, serde_json::json!({})).await;
             assert!(
                 bool_value(&batch, 0, 0),
                 "{} rejected {table}: {}",
@@ -528,36 +528,24 @@ async fn cugraph_m2_relation_side_inputs_validate_and_canonicalize_string_output
     register_personalization_memtable(&ctx, "personalization", DataType::Utf8View);
     register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Utf8View, DataType::LargeUtf8, false);
 
-    let personalized = validate(
+    let personalized = validate_with_relations(
         &ctx,
         "cugraph_personalized_pagerank",
         "string_edges",
-        serde_json::json!({
-            "src_col": "src",
-            "dst_col": "dst",
-            "weight_col": "weight",
-            "personalization_table": "personalization",
-            "personalization_vertex_col": "vertex",
-            "personalization_value_col": "value"
-        }),
+        serde_json::json!({"personalization": {"table": "personalization"}}),
+        serde_json::json!({}),
     )
     .await;
     assert!(bool_value(&personalized, 0, 0), "{}", string_value(&personalized, 2, 0));
     assert_eq!(json_value(string_value(&personalized, 6, 0))["fields"][0]["data_type"], "Utf8");
 
     for function in ["cugraph_jaccard", "cugraph_sorensen", "cugraph_overlap", "cugraph_cosine"] {
-        let similarity = validate(
+        let similarity = validate_with_relations(
             &ctx,
             function,
             "string_edges",
-            serde_json::json!({
-                "src_col": "src",
-                "dst_col": "dst",
-                "weight_col": "weight",
-                "vertex_pairs_table": "candidate_pairs",
-                "first_vertex_col": "first",
-                "second_vertex_col": "second"
-            }),
+            serde_json::json!({"vertex_pairs": {"table": "candidate_pairs"}}),
+            serde_json::json!({}),
         )
         .await;
         assert!(bool_value(&similarity, 0, 0), "{function}: {}", string_value(&similarity, 2, 0));
@@ -577,26 +565,9 @@ async fn cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas(
     register_edge_memtable(&ctx, "string_edges", DataType::Utf8View, DataType::LargeUtf8, DataType::Float64);
 
     let cases = [
-        (
-            "cugraph_sssp",
-            serde_json::json!({
-                "src_col": "src",
-                "dst_col": "dst",
-                "weight_col": "weight",
-                "source_vertex": "alice"
-            }),
-            vec!["vertex", "predecessor"],
-        ),
-        (
-            "cugraph_betweenness_centrality",
-            serde_json::json!({"src_col": "src", "dst_col": "dst", "seeds": ["alice", "carol"]}),
-            vec!["vertex"],
-        ),
-        (
-            "cugraph_edge_betweenness_centrality",
-            serde_json::json!({"src_col": "src", "dst_col": "dst", "seeds": ["alice"]}),
-            vec!["source", "destination"],
-        ),
+        ("cugraph_sssp", serde_json::json!({"source_vertex": "alice"}), vec!["vertex", "predecessor"]),
+        ("cugraph_betweenness_centrality", serde_json::json!({"seeds": ["alice", "carol"]}), vec!["vertex"]),
+        ("cugraph_edge_betweenness_centrality", serde_json::json!({"seeds": ["alice"]}), vec!["source", "destination"]),
     ];
     for (function, options, identity_columns) in cases {
         let batch = validate(&ctx, function, "string_edges", options).await;
@@ -613,18 +584,7 @@ async fn cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas(
         }
     }
 
-    let mismatch = validate(
-        &ctx,
-        "cugraph_sssp",
-        "string_edges",
-        serde_json::json!({
-            "src_col": "src",
-            "dst_col": "dst",
-            "weight_col": "weight",
-            "source_vertex": 1
-        }),
-    )
-    .await;
+    let mismatch = validate(&ctx, "cugraph_sssp", "string_edges", serde_json::json!({"source_vertex": 1})).await;
     assert!(!bool_value(&mismatch, 0, 0));
     assert_eq!(string_value(&mismatch, 1, 0), "vertex_dtype_mismatch");
 }

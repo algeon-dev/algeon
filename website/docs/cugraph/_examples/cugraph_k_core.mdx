@@ -12,7 +12,8 @@ the local workspace; plain SQL can then verify the contract it guarantees:
 ```sql
 -- Local workspace materialization; this does not write to lake.citation_network.
 CREATE TABLE kcore30 AS
-SELECT src, dst FROM cugraph_k_core('citation_edges', 'src', 'dst', NULL, '{"k":30}');
+SELECT src, dst
+FROM cugraph_k_core(edges => (SELECT src, dst FROM citation_edges), k => 30);
 
 WITH deg AS (
   SELECT v, SUM(o) AS outd, SUM(i) AS ind
@@ -45,7 +46,7 @@ workspace table name:
 
 ```sql
 SELECT p.year, p.title
-FROM cugraph_pagerank('kcore30', 'src', 'dst') r
+FROM cugraph_pagerank(edges => (SELECT src, dst FROM kcore30)) r
 JOIN papers p ON p.paper_id = r.vertex
 ORDER BY r.value DESC
 LIMIT 5;

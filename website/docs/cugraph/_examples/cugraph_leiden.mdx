@@ -26,9 +26,9 @@ JOIN ai_nodes a ON a.paper_id = e.src
 JOIN ai_nodes b ON b.paper_id = e.dst;
 
 WITH lv AS (
-  SELECT vertex, "partition" AS louvain_c FROM cugraph_louvain('ai_edges', 'src', 'dst')),
+  SELECT vertex, "partition" AS louvain_c FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges))),
 ld AS (
-  SELECT vertex, "partition" AS leiden_c FROM cugraph_leiden('ai_edges', 'src', 'dst')),
+  SELECT vertex, "partition" AS leiden_c FROM cugraph_leiden(edges => (SELECT src, dst FROM ai_edges))),
 joint AS (
   SELECT lv.louvain_c, ld.leiden_c, COUNT(*) AS n
   FROM lv JOIN ld ON ld.vertex = lv.vertex

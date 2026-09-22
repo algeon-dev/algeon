@@ -4,7 +4,8 @@ use datafusion::physical_expr::PhysicalExpr;
 use query_engine::plan::edge_plan_has_simple_directed_edge_topology;
 
 use super::{
-    AggregateExec, AggregateMode, Column, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy, DataSourceExec,
+    AggregateExec, AggregateMode, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN,
+    CUGRAPH_EDGE_WEIGHT_COLUMN, Column, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy, DataSourceExec,
     ExecutionPlan, FileScanConfig, MemorySourceConfig, ProjectionExec, RepartitionExec, Schema, SortExec, UnionExec,
 };
 use crate::native::datafusion_local_parquet_scan_has_simple_directed_edge_topology;
@@ -17,7 +18,7 @@ pub(super) struct CugraphEdgeCanonicalFacts {
 
 impl CugraphEdgeCanonicalFacts {
     fn satisfies_python_options(self, spec: &CugraphAlgorithmSpec) -> bool {
-        self.dedup_present && spec.weight_col.is_none() && (spec.graph_options.directed || self.add_reverse_present)
+        self.dedup_present && !spec.has_weight && (spec.graph_options.directed || self.add_reverse_present)
     }
 }
 
@@ -56,13 +57,21 @@ pub(super) fn cugraph_edge_canonical_facts(
     }
 
     if let Some(source) = plan.downcast_ref::<DataSourceExec>()
-        && datafusion_local_parquet_scan_has_simple_directed_edge_topology(source, &spec.src_col, &spec.dst_col)
+        && datafusion_local_parquet_scan_has_simple_directed_edge_topology(
+            source,
+            CUGRAPH_EDGE_SOURCE_COLUMN,
+            CUGRAPH_EDGE_DESTINATION_COLUMN,
+        )
     {
         return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
     }
 
     if let Some(native_plan) = super::admission::lowered_native_edge_plan(plan)
-        && edge_plan_has_simple_directed_edge_topology(native_plan, &spec.src_col, &spec.dst_col)
+        && edge_plan_has_simple_directed_edge_topology(
+            native_plan,
+            CUGRAPH_EDGE_SOURCE_COLUMN,
+            CUGRAPH_EDGE_DESTINATION_COLUMN,
+        )
     {
         return CugraphEdgeCanonicalFacts { dedup_present: true, ..Default::default() };
     }
@@ -258,12 +267,12 @@ pub(super) fn projection_edge_orientation(
         return None;
     }
 
-    if column_matches_edge_role(source_input, input_indices.source, &spec.src_col)
-        && column_matches_edge_role(destination_input, input_indices.destination, &spec.dst_col)
+    if column_matches_edge_role(source_input, input_indices.source, CUGRAPH_EDGE_SOURCE_COLUMN)
+        && column_matches_edge_role(destination_input, input_indices.destination, CUGRAPH_EDGE_DESTINATION_COLUMN)
     {
         Some(EdgeProjectionOrientation::Forward)
-    } else if column_matches_edge_role(source_input, input_indices.destination, &spec.dst_col)
-        && column_matches_edge_role(destination_input, input_indices.source, &spec.src_col)
+    } else if column_matches_edge_role(source_input, input_indices.destination, CUGRAPH_EDGE_DESTINATION_COLUMN)
+        && column_matches_edge_role(destination_input, input_indices.source, CUGRAPH_EDGE_SOURCE_COLUMN)
     {
         Some(EdgeProjectionOrientation::Reverse)
     } else {
@@ -272,9 +281,10 @@ pub(super) fn projection_edge_orientation(
 }
 
 pub(super) fn projection_preserves_weight(projection: &ProjectionExec, spec: &CugraphAlgorithmSpec) -> bool {
-    let Some(weight_col) = spec.weight_col.as_deref() else {
+    if !spec.has_weight {
         return true;
-    };
+    }
+    let weight_col = CUGRAPH_EDGE_WEIGHT_COLUMN;
     let Some(weight_index) = unique_schema_column_index(projection.schema().as_ref(), weight_col) else {
         return false;
     };
@@ -302,10 +312,10 @@ pub(super) enum EdgeColumnRole {
 
 pub(super) fn unique_edge_schema_column_indices(
     schema: &Schema,
-    spec: &CugraphAlgorithmSpec,
+    _spec: &CugraphAlgorithmSpec,
 ) -> Option<EdgeSchemaColumnIndices> {
-    let source = unique_schema_column_index(schema, &spec.src_col)?;
-    let destination = unique_schema_column_index(schema, &spec.dst_col)?;
+    let source = unique_schema_column_index(schema, CUGRAPH_EDGE_SOURCE_COLUMN)?;
+    let destination = unique_schema_column_index(schema, CUGRAPH_EDGE_DESTINATION_COLUMN)?;
     (source != destination).then_some(EdgeSchemaColumnIndices { source, destination })
 }
 
@@ -325,12 +335,12 @@ pub(super) fn unique_schema_column_index(schema: &Schema, column_name: &str) -> 
 pub(super) fn edge_column_role(
     expr: &dyn PhysicalExpr,
     input_indices: EdgeSchemaColumnIndices,
-    spec: &CugraphAlgorithmSpec,
+    _spec: &CugraphAlgorithmSpec,
 ) -> Option<EdgeColumnRole> {
     let column = physical_column(expr)?;
-    if column_matches_edge_role(column, input_indices.source, &spec.src_col) {
+    if column_matches_edge_role(column, input_indices.source, CUGRAPH_EDGE_SOURCE_COLUMN) {
         Some(EdgeColumnRole::Source)
-    } else if column_matches_edge_role(column, input_indices.destination, &spec.dst_col) {
+    } else if column_matches_edge_role(column, input_indices.destination, CUGRAPH_EDGE_DESTINATION_COLUMN) {
         Some(EdgeColumnRole::Destination)
     } else {
         None

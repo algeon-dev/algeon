@@ -159,34 +159,33 @@ const GRAPH_ITEMS: &[(&str, u64)] = &[
 fn graph_sql(name: &str, seed: i64) -> Option<String> {
     let sql = match name {
         "pagerank" => format!(
-            "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank('{GRAPH_EDGE_TABLE}', 'src', 'dst', \
-             'weight')"
+            "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM {GRAPH_EDGE_TABLE}))"
         ),
         "bfs" => format!(
-            "SELECT COUNT(*) AS reached, SUM(distance) AS total FROM cugraph_bfs('{GRAPH_EDGE_TABLE}', {seed}, \
-             'src', 'dst', NULL, '{{\"output_mode\": \"normalized\"}}')"
+            "SELECT COUNT(*) AS reached, SUM(distance) AS total FROM cugraph_bfs(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}), \
+             source_vertex => {seed}, output_mode => 'normalized')"
         ),
         "sssp" => format!(
-            "SELECT COUNT(*) AS n, SUM(distance) AS total FROM cugraph_sssp('{GRAPH_EDGE_TABLE}', {seed}, 'src', \
-             'dst', 'weight')"
+            "SELECT COUNT(*) AS n, SUM(distance) AS total FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM {GRAPH_EDGE_TABLE}), \
+             source_vertex => {seed})"
         ),
         // Labels are canonical minimum-vertex ids, so their sum is a stable
         // fingerprint of both the partition and its canonical assignment.
         "wcc" => format!(
             "SELECT COUNT(*) AS n, SUM(label) AS total FROM \
-             cugraph_weakly_connected_components('{GRAPH_EDGE_TABLE}', 'src', 'dst')"
+             cugraph_weakly_connected_components(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}))"
         ),
         "triangles" => format!(
             "SELECT COUNT(*) AS n, SUM(triangle_count) AS total FROM \
-             cugraph_triangle_count_all('{GRAPH_EDGE_TABLE}', 'src', 'dst', NULL, '{{\"directed\": false}}')"
+             cugraph_triangle_count_all(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}), directed => false)"
         ),
         "betweenness_k64" => format!(
             "SELECT COUNT(*) AS n, SUM(value) AS total FROM \
-             cugraph_betweenness_centrality('{GRAPH_EDGE_TABLE}', 'src', 'dst', NULL, '{{\"k\": 64}}')"
+             cugraph_betweenness_centrality(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}), k => 64)"
         ),
         "betweenness_k256" => format!(
             "SELECT COUNT(*) AS n, SUM(value) AS total FROM \
-             cugraph_betweenness_centrality('{GRAPH_EDGE_TABLE}', 'src', 'dst', NULL, '{{\"k\": 256}}')"
+             cugraph_betweenness_centrality(edges => (SELECT src, dst FROM {GRAPH_EDGE_TABLE}), k => 256)"
         ),
         _ => return None,
     };

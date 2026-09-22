@@ -19,7 +19,8 @@ JOIN papers pd ON pd.paper_id = e.dst
 WHERE ps.year > 1900 AND pd.year > 1900;
 
 SELECT CAST(ROUND(s.distance) AS BIGINT) AS time_cost, p.year, p.title
-FROM cugraph_sssp('edges_time_cost', 2963403868, 'src', 'dst', 'weight') s
+FROM cugraph_sssp(
+  edges => (SELECT src, dst, weight FROM edges_time_cost), source_vertex => 2963403868) s
 JOIN papers p ON p.paper_id = s.vertex
 WHERE s.distance < 1e300
 ORDER BY p.year ASC, s.distance ASC

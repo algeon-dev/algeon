@@ -6,12 +6,12 @@ use super::{env::EnvValues, *};
 /// its structured `required_feature_disabled` capability error.
 pub const ALGEON_SERVER_CUGRAPH_ENABLED_ENV: &str = "ALGEON_SERVER_CUGRAPH_ENABLED";
 /// Default cuGraph graph construction backend. Use `python_cugraph` or
-/// `raw_libcugraph`; per-call `options_json` can override it.
+/// `raw_libcugraph`; named graph arguments can override it for one call.
 pub const ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str = "ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY";
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphServerConfig {
     /// Operator-level graph construction defaults used by cuGraph SQL UDTFs.
-    /// Per-call `options_json` still overrides these values.
+    /// Named graph arguments still override these values for one call.
     pub default_graph_options: CugraphGraphOptions,
 }
 pub(super) fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConfig>> {

@@ -17,20 +17,25 @@ Compare explicit vertex pairs as twice their shared-neighbor count divided by th
 ## Signature
 
 ```sql
-cugraph_sorensen(table_name, src_col, dst_col, weight_col, options_json)
+cugraph_sorensen(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, vertex_pairs => (relation subquery))
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`, plus the registered relation `candidate_pairs` (the `vertex_pairs` side input with columns `first`, `second`). Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `candidate_pairs` (the `vertex_pairs` relation with columns `first`, `second`). Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_sorensen('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}');
+SELECT * FROM cugraph_sorensen(edges => (SELECT src, dst FROM target_edges), vertex_pairs => (SELECT first, second FROM candidate_pairs));
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
+
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `vertex_pairs` | yes | first, second | explicit vertex pairs used by similarity scoring |
 
 Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
@@ -41,21 +46,16 @@ Logical string side-input limitations:
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `vertex_pairs` | yes | first, second | explicit vertex pairs used by similarity scoring |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
+### Named value arguments
 
-### JSON options
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `first_vertex_col` | `Utf8` |  | required; column of `vertex_pairs_table`; type ref `vertex_pairs_domain` | First endpoint column in vertex_pairs_table. |
-| `second_vertex_col` | `Utf8` |  | required; column of `vertex_pairs_table`; type ref `vertex_pairs_domain` | Second endpoint column in vertex_pairs_table. |
-| `vertex_pairs_table` | `Utf8` |  | required; side input (vertex_pairs, cols: `first_vertex_col`, `second_vertex_col`) | Table or view containing the explicit candidate vertex pairs. |
+_This function has no scalar value arguments._
 
 ### Graph construction options
 
@@ -80,12 +80,12 @@ import Examples from '../../_examples/cugraph_sorensen.mdx';
 ## Limits
 
 - similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed
-- options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col
+- vertex_pairs is a required relation with canonical first and second columns
 - candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column
 - null candidate-pair values are rejected at execution and are never dropped
 - candidate pairs are a multiset: duplicate, reversed, and self pairs remain distinct output rows
 - result rows have no global ordering; use ORDER BY when order is required
-- providing weight_col selects weighted similarity; omitting it selects unit-weight similarity
+- providing edges.weight selects weighted similarity; omitting it selects unit-weight similarity
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
 ## Validate the call
@@ -95,7 +95,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_sorensen',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst","vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}}'
+  '{"relations":{"edges":{"table":"target_edges"},"vertex_pairs":{"table":"candidate_pairs"}},"options":{}}'
 );
 ```
 

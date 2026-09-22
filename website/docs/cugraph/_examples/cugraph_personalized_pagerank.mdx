@@ -15,10 +15,9 @@ CREATE VIEW bert_seed AS
 SELECT CAST(2896457183 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value;
 
 SELECT ROUND(r.value, 6) AS ppr, p.year, p.title
-FROM cugraph_personalized_pagerank('citation_edges', 'src', 'dst', NULL,
-       '{"personalization_table":"bert_seed",
-         "personalization_vertex_col":"vertex",
-         "personalization_value_col":"value"}') r
+FROM cugraph_personalized_pagerank(
+  edges => (SELECT src, dst FROM citation_edges),
+  personalization => (SELECT vertex, value FROM bert_seed)) r
 JOIN papers p ON p.paper_id = r.vertex
 WHERE r.vertex <> 2896457183
   AND NOT EXISTS (SELECT 1 FROM citation_edges e

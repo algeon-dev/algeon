@@ -12,7 +12,8 @@ use query_engine::{
 };
 
 use super::{
-    AlgeonNativeExecutionConfig, AlgeonNativeMetrics, Boundedness, BoxFuture, Column, CugraphAlgorithmParams,
+    AlgeonNativeExecutionConfig, AlgeonNativeMetrics, Boundedness, BoxFuture, CUGRAPH_EDGE_DESTINATION_COLUMN,
+    CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN, Column, CugraphAlgorithmParams,
     CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphEdgeCanonicalFacts, CugraphInputRowBounds,
     CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionError, DisplayAs, DisplayFormatType,
     EagerCugraphHostOutput, EmissionType, EquivalenceProperties, Error, ErrorCode, ExecutionContext, ExecutionPlan,
@@ -620,8 +621,8 @@ impl CugraphAlgoExec {
             input_boundary: "singleflight_host_result".to_string(),
             output_boundary: "gpu_resident".to_string(),
             construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
-            source_column: self.spec.src_col.clone(),
-            destination_column: self.spec.dst_col.clone(),
+            source_column: CUGRAPH_EDGE_SOURCE_COLUMN.to_string(),
+            destination_column: CUGRAPH_EDGE_DESTINATION_COLUMN.to_string(),
             weight_column: None,
             directed: self.spec.graph_options.directed,
             renumber: self.spec.graph_options.renumber,
@@ -655,8 +656,8 @@ impl CugraphAlgoExec {
             input_boundary: "singleflight_gpu_result".to_string(),
             output_boundary: "gpu_resident".to_string(),
             construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
-            source_column: self.spec.src_col.clone(),
-            destination_column: self.spec.dst_col.clone(),
+            source_column: CUGRAPH_EDGE_SOURCE_COLUMN.to_string(),
+            destination_column: CUGRAPH_EDGE_DESTINATION_COLUMN.to_string(),
             weight_column: None,
             directed: self.spec.graph_options.directed,
             renumber: self.spec.graph_options.renumber,
@@ -869,8 +870,8 @@ impl CugraphAlgoExec {
             input_boundary: input_boundary.to_string(),
             output_boundary: "host_arrow".to_string(),
             construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
-            source_column: self.spec.src_col.clone(),
-            destination_column: self.spec.dst_col.clone(),
+            source_column: CUGRAPH_EDGE_SOURCE_COLUMN.to_string(),
+            destination_column: CUGRAPH_EDGE_DESTINATION_COLUMN.to_string(),
             weight_column: None,
             directed: self.spec.graph_options.directed,
             renumber: self.spec.graph_options.renumber,
@@ -1136,16 +1137,17 @@ fn cugraph_deferred_execution_capability_evidence(
 
 impl DisplayAs for CugraphAlgoExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let weight_column = if self.spec.has_weight { CUGRAPH_EDGE_WEIGHT_COLUMN } else { "<none>" };
+        let edge_id_column = if self.spec.has_edge_id { CUGRAPH_EDGE_ID_COLUMN } else { "<none>" };
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CugraphAlgoExec: algorithm={:?}, table={}, src_col={}, dst_col={}, weight_col={}, edge_id_col={}, predicate_source_count={}, construction_policy={}, memory_control_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                "CugraphAlgoExec: algorithm={:?}, src_col={}, dst_col={}, weight_col={}, edge_id_col={}, predicate_source_count={}, construction_policy={}, memory_control_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
                 self.spec.algorithm,
-                self.spec.table_name,
-                self.spec.src_col,
-                self.spec.dst_col,
-                self.spec.weight_col.as_deref().unwrap_or("<none>"),
-                self.spec.edge_id_col.as_deref().unwrap_or("<none>"),
+                CUGRAPH_EDGE_SOURCE_COLUMN,
+                CUGRAPH_EDGE_DESTINATION_COLUMN,
+                weight_column,
+                edge_id_column,
                 self.predicate_sources.len(),
                 self.spec.graph_options.construction_policy.as_str(),
                 self.native_execution_config.memory_control_policy(),
@@ -1154,11 +1156,10 @@ impl DisplayAs for CugraphAlgoExec {
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "algorithm={:?}", self.spec.algorithm)?;
-                writeln!(f, "table={}", self.spec.table_name)?;
-                writeln!(f, "src_col={}", self.spec.src_col)?;
-                writeln!(f, "dst_col={}", self.spec.dst_col)?;
-                writeln!(f, "weight_col={}", self.spec.weight_col.as_deref().unwrap_or("<none>"))?;
-                writeln!(f, "edge_id_col={}", self.spec.edge_id_col.as_deref().unwrap_or("<none>"))?;
+                writeln!(f, "src_col={CUGRAPH_EDGE_SOURCE_COLUMN}")?;
+                writeln!(f, "dst_col={CUGRAPH_EDGE_DESTINATION_COLUMN}")?;
+                writeln!(f, "weight_col={}", weight_column)?;
+                writeln!(f, "edge_id_col={}", edge_id_column)?;
                 writeln!(f, "predicate_source_count={}", self.predicate_sources.len())?;
                 writeln!(f, "construction_policy={}", self.spec.graph_options.construction_policy.as_str())?;
                 writeln!(f, "memory_control_policy={}", self.native_execution_config.memory_control_policy())?;

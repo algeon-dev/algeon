@@ -10,7 +10,7 @@ join proves the edge table and the node table agree for all 4.9M papers:
 
 ```sql
 SELECT COUNT(*) AS mismatches
-FROM cugraph_out_degrees_all('citation_edges', 'src', 'dst') d
+FROM cugraph_out_degrees_all(edges => (SELECT src, dst FROM citation_edges)) d
 JOIN papers p ON p.paper_id = d.vertex
 WHERE d.out_degree <> p.n_references;
 ```

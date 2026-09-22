@@ -1,7 +1,7 @@
 ---
 title: SSSP
 sidebar_label: SSSP
-description: "Compute minimum path distances and predecessors from one source vertex, using bound edge weights or unit cost 1 when weight_col is omitted."
+description: "Compute minimum path distances and predecessors from one source vertex, using edges.weight or unit cost 1 when that field is omitted."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -12,25 +12,29 @@ SQL function: `cugraph_sssp`
 
 Official cuGraph reference: [C API](https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp)
 
-Compute minimum path distances and predecessors from one source vertex, using bound edge weights or unit cost 1 when weight_col is omitted.
+Compute minimum path distances and predecessors from one source vertex, using edges.weight or unit cost 1 when that field is omitted.
 
 ## Signature
 
 ```sql
-cugraph_sssp(table_name, source_vertex [, src_col, dst_col [, weight_col [, options_json]]])
+cugraph_sssp(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, source_vertex => value, cutoff => value)
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`, and starts from source vertex `123`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, and starts from source vertex `123`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_sssp('target_edges', 123);
+SELECT * FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM target_edges), source_vertex => 123);
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
+
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
 
 Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
@@ -40,20 +44,18 @@ Logical string side-input limitations:
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `source_vertex` | `Int64\|Utf8` | yes |  |  |
-| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
-
-### JSON options
+### Named value arguments
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `cutoff` | `Float64\|null` | `null` | min 0 | Maximum edge-weight sum to explore from the source; vertices farther than the cutoff are reported unreachable. Null means no cutoff. |
+| `cutoff` | `number\|null` | `null` | min 0 | optional non-negative SSSP distance cutoff |
+| `source_vertex` | `integer\|string` |  | required | required scalar SSSP source vertex |
 
 ### Graph construction options
 
@@ -77,7 +79,7 @@ import Examples from '../../_examples/cugraph_sssp.mdx';
 
 ## Limits
 
-- omitting weight_col assigns unit cost 1 to every edge
+- omitting edges.weight assigns unit cost 1 to every edge
 
 ## Validate the call
 
@@ -86,7 +88,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_sssp',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":123,"src_col":"src","dst_col":"dst"}}'
+  '{"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":123}}'
 );
 ```
 

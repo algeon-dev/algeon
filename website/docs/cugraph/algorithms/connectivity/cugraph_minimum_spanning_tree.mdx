@@ -17,40 +17,42 @@ Select a minimum-total-weight acyclic edge set, producing a spanning tree for a 
 ## Signature
 
 ```sql
-cugraph_minimum_spanning_tree(table_name, src_col, dst_col, weight_col [, options_json])
+cugraph_minimum_spanning_tree(edges => (relation subquery), directed => value, renumber => value, construction_policy => value)
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst` and weight column `weight`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_minimum_spanning_tree('target_edges', 'src', 'dst', 'weight');
+SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM target_edges));
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
+
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight, edge_id (optional) | weighted edge relation with canonical src, dst, and required weight columns |
 
 Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight, edge_id (optional) | weighted edge relation with canonical src, dst, and required weight columns |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `weight_col` | `Utf8\|null` | yes |  | required edge weight column; semantic effect: required edge weights define the spanning-tree objective |
+### Named value arguments
 
-### JSON options
-
-_This function has no algorithm-specific options._
+_This function has no scalar value arguments._
 
 ### Graph construction options
 
-This function builds an undirected graph by default (`directed=false`); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
+This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output
 
@@ -79,7 +81,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_minimum_spanning_tree',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst","weight_col":"weight"}}'
+  '{"relations":{"edges":{"table":"target_edges"}},"options":{}}'
 );
 ```
 

@@ -149,7 +149,7 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             expected_graph_occurrences: 1,
             validate_construction_markers: true,
             sql: "SELECT vertex, partition \
-                  FROM cugraph_louvain('graph_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+                  FROM cugraph_louvain(edges => (SELECT src, dst FROM graph_edges), directed => false) \
                   ORDER BY vertex",
         },
         Variant {
@@ -159,7 +159,7 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             expected_graph_occurrences: 1,
             validate_construction_markers: true,
             sql: "SELECT vertex, partition \
-                  FROM cugraph_louvain('canonical_undirected_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+                  FROM cugraph_louvain(edges => (SELECT src, dst FROM canonical_undirected_edges), directed => false) \
                   ORDER BY vertex",
         },
         Variant {
@@ -169,8 +169,8 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             expected_graph_occurrences: 1,
             validate_construction_markers: true,
             sql: "SELECT vertex, partition \
-                  FROM cugraph_louvain('canonical_undirected_edges', 'src', 'dst', NULL, \
-                                       '{\"directed\":false,\"construction_policy\":\"raw_libcugraph\"}') \
+                  FROM cugraph_louvain(edges => (SELECT src, dst FROM canonical_undirected_edges), directed => false, \
+                                       construction_policy => 'raw_libcugraph') \
                   ORDER BY vertex",
         },
         Variant {
@@ -182,13 +182,13 @@ fn variants(execution_mode: AlgeonGpuExecutionMode) -> [Variant; 5] {
             sql: "WITH pagerank AS ( \
                   SELECT vertex, value AS pagerank_value \
                       FROM cugraph_pagerank( \
-                          'graph_edges', 'src', 'dst', NULL, \
-                          '{\"construction_policy\":\"python_cugraph\"}') \
+                          edges => (SELECT src, dst FROM graph_edges), \
+                          construction_policy => 'python_cugraph') \
                   ), layout AS ( \
                       SELECT vertex, x, y \
                       FROM cugraph_force_atlas2( \
-                          'graph_edges', 'src', 'dst', NULL, \
-                          '{\"max_iter\":5,\"seed\":42,\"construction_policy\":\"python_cugraph\"}') \
+                          edges => (SELECT src, dst FROM graph_edges), max_iter => 5, seed => 42, \
+                          construction_policy => 'python_cugraph') \
                   ) \
                   SELECT p.vertex, p.pagerank_value, l.x, l.y \
                   FROM layout l JOIN pagerank p ON p.vertex = l.vertex \

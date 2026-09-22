@@ -11,7 +11,7 @@ authorities (typically a survey), and an **authority** is cited by many hubs
 
 ```sql
 SELECT p.year, p.n_references, p.title
-FROM cugraph_hits('citation_edges', 'src', 'dst') h
+FROM cugraph_hits(edges => (SELECT src, dst FROM citation_edges)) h
 JOIN papers p ON p.paper_id = h.vertex
 ORDER BY h.hub_score DESC
 LIMIT 4;
@@ -26,7 +26,7 @@ LIMIT 4;
 
 ```sql
 SELECT p.year, p.n_citation, p.title
-FROM cugraph_hits('citation_edges', 'src', 'dst') h
+FROM cugraph_hits(edges => (SELECT src, dst FROM citation_edges)) h
 JOIN papers p ON p.paper_id = h.vertex
 ORDER BY h.authority_score DESC
 LIMIT 4;

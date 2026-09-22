@@ -12,7 +12,7 @@ audience lies outside the dataset:
 SELECT p.year, d.in_degree AS in_graph, p.n_citation AS reported,
        p.n_citation - d.in_degree AS outside,
        p.title AS paper
-FROM cugraph_in_degrees_all('citation_edges', 'src', 'dst') d
+FROM cugraph_in_degrees_all(edges => (SELECT src, dst FROM citation_edges)) d
 JOIN papers p ON p.paper_id = d.vertex
 ORDER BY d.in_degree DESC
 LIMIT 5;

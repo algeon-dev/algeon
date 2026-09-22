@@ -3,7 +3,7 @@ sidebar_position: 4
 slug: /reference/gpu-function-catalog
 title: GPU Function Catalog API
 sidebar_label: GPU Function Catalog API
-description: Schema reference for discovering installed cuGraph and cuVS SQL functions, inspecting descriptors, and validating versioned call envelopes.
+description: Schema reference for discovering installed cuGraph and cuVS SQL functions, inspecting descriptors, and validating GPU function call envelopes.
 ---
 
 # GPU Function Catalog API
@@ -31,11 +31,11 @@ For the task-oriented list, describe, validate, and execute workflow, use
 This page is the detailed API reference for the metadata functions and their
 response schemas.
 
-Execution syntax is provider-specific: a cuGraph function takes a registered
-edge table or view name as a positional argument, while a cuVS function takes
-parenthesized relation-valued subqueries. Validation is provider-neutral: the
-`call_json` envelope names registered tables or views by role and never
-evaluates SQL text embedded in JSON.
+Execution syntax is provider-specific: cuGraph and cuVS functions use named
+arguments, with each relation supplied as a parenthesized relation-valued
+subquery. Validation is provider-neutral: the `call_json` envelope names
+registered tables or views by role and never evaluates SQL text embedded in
+JSON.
 
 ## gpu_list_functions
 
@@ -98,7 +98,7 @@ as `{}` and `[]`, not SQL `NULL`.
 ## gpu_validate_call(function_name, call_json)
 
 `gpu_validate_call` takes an exact canonical execution-function name and a
-common versioned JSON envelope. The selected provider owns the meaning of
+common JSON envelope. The selected provider owns the meaning of
 relation roles and options, while the envelope consistently names function
 inputs.
 
@@ -107,16 +107,14 @@ SELECT *
 FROM gpu_validate_call(
   'cuvs_kmeans',
   '{
-    "schema_version":1,
     "relations":{"input":{"table":"embedding_vectors"}},
     "options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}
   }'
 );
 ```
 
-Version 1 requires exactly these envelope fields:
+The envelope requires exactly these fields:
 
-- `schema_version`: integer `1`.
 - `relations`: object keyed by the descriptor-defined relation roles. Each
   relation currently has exactly one `table` field with a one-, two-, or
   three-part DataFusion table or view reference.
@@ -134,7 +132,7 @@ temporary view first.
 | `message` | `Utf8` | no | Human-readable validation result. |
 | `function_name` | `Utf8` | no | Canonical name, or the unresolved requested name. |
 | `relations_resolved` | `Boolean` | no | Whether every required relation resolved. |
-| `normalized_call_json` | `Utf8` | no | Versioned envelope after defaults and canonicalization. |
+| `normalized_call_json` | `Utf8` | no | Canonical envelope after defaults and canonicalization. |
 | `output_schema_json` | `Utf8` | no | Concrete output schema when it can be derived. |
 | `would_execute_gpu` | `Boolean` | no | Whether this function call would target GPU execution after static planning. |
 | `details_json` | `Utf8` | no | Structured per-relation and provider-specific validation facts. |

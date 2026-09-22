@@ -17,7 +17,7 @@ pub use exec::CuvsAlgoExec;
 pub(crate) use gpu_family::{CuvsGpuFunctionFamily, cuvs_gpu_function_availability};
 pub use logical::CuvsLogicalNode;
 pub use options::{CuvsValidatedOptions, CuvsVectorRelationBinding};
-pub use query_planner::{CuvsExtensionPlanner, CuvsQueryPlanner};
+pub use query_planner::{AlgeonQueryPlanner, CuvsExtensionPlanner};
 pub use registry::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PCA_FUNCTION,
     CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,

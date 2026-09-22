@@ -5,8 +5,7 @@ use std::sync::{
 
 use algeon_datafusion::{
     cugraph_sql::{
-        CUGRAPH_BFS_FUNCTION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_PAGERANK_FUNCTION, CugraphAlgorithm,
-        CugraphSqlConfig, parse_cugraph_algorithm_spec,
+        CUGRAPH_BFS_FUNCTION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_PAGERANK_FUNCTION, CugraphAlgorithm, CugraphSqlConfig,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -27,13 +26,14 @@ use datafusion::{
     prelude::SessionContext,
 };
 
-#[test]
-fn cugraph_sql_frontend_is_public_without_the_native_feature() {
+#[tokio::test]
+async fn cugraph_sql_frontend_is_public_without_the_native_feature() {
     let _bfs_function: &str = CUGRAPH_BFS_FUNCTION;
     assert_eq!(CugraphAlgorithm::all().len(), CUGRAPH_OPERATION_REGISTRY.len());
-    let error = parse_cugraph_algorithm_spec(CugraphAlgorithm::PageRank, &[], &CugraphSqlConfig::default())
-        .expect_err("missing table name must retain parser validation");
-    assert!(error.to_string().contains("cugraph_pagerank received 0 arguments"));
+    let ctx = feature_off_context(Arc::new(AtomicUsize::new(0)));
+    let error =
+        ctx.sql("SELECT * FROM cugraph_pagerank()").await.expect_err("missing edges must retain binder validation");
+    assert!(error.to_string().contains("required argument 'edges' is missing"), "{error}");
 }
 
 #[tokio::test]
@@ -57,7 +57,6 @@ async fn feature_off_installation_keeps_the_registry_visible_and_unavailable() {
     }
 
     let call = serde_json::json!({
-        "schema_version": 1,
         "relations": {"edges": {"table": "edges"}},
         "options": {},
     });
@@ -86,7 +85,7 @@ async fn feature_off_installation_keeps_the_registry_visible_and_unavailable() {
 async fn feature_off_execution_rejects_before_the_edge_source_can_scan() {
     let scans = Arc::new(AtomicUsize::new(0));
     let ctx = feature_off_context(Arc::clone(&scans));
-    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank('edges')").await.unwrap();
+    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges))").await.unwrap();
     let plan = dataframe.create_physical_plan().await.unwrap();
     assert!(contains_zero_child_feature_disabled_exec(Arc::clone(&plan)));
     assert_eq!(scans.load(Ordering::SeqCst), 0, "physical planning must not scan the edge source");
@@ -106,7 +105,7 @@ async fn feature_off_execution_rejects_before_the_edge_source_can_scan() {
 async fn feature_off_execution_remains_typed_under_the_no_cpu_requirement() {
     let scans = Arc::new(AtomicUsize::new(0));
     let ctx = feature_off_no_cpu_context(Arc::clone(&scans));
-    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank('edges')").await.unwrap();
+    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges))").await.unwrap();
     let plan = dataframe.create_physical_plan().await.unwrap();
     assert!(contains_zero_child_feature_disabled_exec(Arc::clone(&plan)));
 
@@ -122,7 +121,7 @@ async fn feature_off_execution_remains_typed_under_the_no_cpu_requirement() {
 #[tokio::test]
 async fn feature_off_preserves_schema_validation_before_capability_rejection() {
     let ctx = feature_off_context(Arc::new(AtomicUsize::new(0)));
-    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank('bad_edges')").await.unwrap();
+    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM bad_edges))").await.unwrap();
     let error = dataframe.create_physical_plan().await.expect_err("missing source column must remain a schema error");
     assert!(error.to_string().contains("missing source column 'src'"), "{error}");
 }

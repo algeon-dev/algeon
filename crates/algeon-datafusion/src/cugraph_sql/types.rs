@@ -1,7 +1,7 @@
-use std::{fmt, num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::common::{DataFusionError, Result, TableReference};
+use datafusion::common::{DataFusionError, Result};
 use query_engine::plan::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, GraphAlgorithmParams as NativeGraphAlgorithmParams,
     GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphConstructionOptions as NativeGraphConstructionOptions,
@@ -10,10 +10,22 @@ use query_engine::plan::{
 };
 
 use super::{plan_error, registry::CugraphAlgorithm};
-use crate::{
-    error::{Error, ErrorCode},
-    gpu_functions::parse_table_reference,
-};
+use crate::error::{Error, ErrorCode};
+
+pub(crate) const CUGRAPH_EDGE_SOURCE_COLUMN: &str = "src";
+pub(crate) const CUGRAPH_EDGE_DESTINATION_COLUMN: &str = "dst";
+pub(crate) const CUGRAPH_EDGE_WEIGHT_COLUMN: &str = "weight";
+pub(crate) const CUGRAPH_EDGE_ID_COLUMN: &str = "edge_id";
+
+pub(crate) const CUGRAPH_VERTEX_COLUMN: &str = "vertex";
+pub(crate) const CUGRAPH_VALUE_COLUMN: &str = "value";
+pub(crate) const CUGRAPH_FIRST_VERTEX_COLUMN: &str = "first";
+pub(crate) const CUGRAPH_SECOND_VERTEX_COLUMN: &str = "second";
+pub(crate) const CUGRAPH_RADIUS_COLUMN: &str = "radius";
+pub(crate) const CUGRAPH_MOBILITY_COLUMN: &str = "mobility";
+pub(crate) const CUGRAPH_MASS_COLUMN: &str = "mass";
+pub(crate) const CUGRAPH_X_COLUMN: &str = "x";
+pub(crate) const CUGRAPH_Y_COLUMN: &str = "y";
 
 /// Cumulative host-memory ceilings for one explicit CPU-to-GPU-to-CPU graph
 /// island.
@@ -62,19 +74,15 @@ impl Default for GpuIslandHostBoundaryConfig {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CugraphSqlConfig {
-    /// Graph construction defaults applied before per-call `options_json`
-    /// overrides.
+    /// Graph construction defaults applied before named value arguments.
     pub default_graph_options: CugraphGraphOptions,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphAlgorithmSpec {
     pub algorithm: CugraphAlgorithm,
-    pub table_name: CugraphTableReference,
-    pub src_col: String,
-    pub dst_col: String,
-    pub weight_col: Option<String>,
-    pub edge_id_col: Option<String>,
+    pub has_weight: bool,
+    pub has_edge_id: bool,
     pub graph_options: CugraphGraphOptions,
     pub params: CugraphAlgorithmParams,
     pub output_schema: SchemaRef,
@@ -96,11 +104,11 @@ impl CugraphAlgorithmSpec {
         let (include_edge_ids, include_edge_id_col) = match &self.params {
             CugraphAlgorithmParams::Bfs(params) => (
                 params.predicates.include_edge_ids.is_some(),
-                params.predicates.include_edges.as_ref().is_some_and(|input| input.edge_id_col.is_some()),
+                params.predicates.include_edges.as_ref().is_some_and(|input| input.has_edge_id),
             ),
             _ => (false, false),
         };
-        if self.edge_id_col.is_none() && !include_edge_ids && !include_edge_id_col {
+        if !self.has_edge_id && !include_edge_ids && !include_edge_id_col {
             return Ok(());
         }
         Err(Error::new(
@@ -111,7 +119,7 @@ impl CugraphAlgorithmSpec {
                 self.algorithm.function_name()
             ),
         )
-        .with_fact("edge_id_col", self.edge_id_col.is_some())
+        .with_fact("edge_id_col", self.has_edge_id)
         .with_fact("include_edge_ids", include_edge_ids)
         .with_fact("include_edge_id_col", include_edge_id_col)
         .into())
@@ -121,13 +129,10 @@ impl CugraphAlgorithmSpec {
         let mut sources = Vec::new();
         match &self.params {
             CugraphAlgorithmParams::Bfs(params) => {
-                if let Some(input) = params.source.relation() {
-                    sources.push(PredicateSourceSpec {
-                        table_name: input.table_name.clone(),
-                        columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
-                    });
+                if params.source.relation().is_some() {
+                    sources.push(PredicateSourceSpec { roles: vec![PredicateSourceColumnRole::Vertex] });
                 }
-                for input in [
+                for _input in [
                     params.predicates.include_vertices.as_ref(),
                     params.predicates.exclude_vertices.as_ref(),
                     params.predicates.target_vertices.as_ref(),
@@ -135,62 +140,47 @@ impl CugraphAlgorithmSpec {
                 .into_iter()
                 .flatten()
                 {
-                    sources.push(PredicateSourceSpec {
-                        table_name: input.table_name.clone(),
-                        columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
-                    });
+                    sources.push(PredicateSourceSpec { roles: vec![PredicateSourceColumnRole::Vertex] });
                 }
-                if let Some(input) = &params.predicates.include_edge_ids {
-                    sources.push(PredicateSourceSpec {
-                        table_name: input.table_name.clone(),
-                        columns: vec![PredicateSourceColumn::edge_id(input.column.clone())],
-                    });
+                if params.predicates.include_edge_ids.is_some() {
+                    sources.push(PredicateSourceSpec { roles: vec![PredicateSourceColumnRole::EdgeId] });
                 }
                 if let Some(input) = &params.predicates.include_edges {
-                    let mut columns = vec![
-                        PredicateSourceColumn::vertex(input.source_col.clone()),
-                        PredicateSourceColumn::vertex(input.destination_col.clone()),
-                    ];
-                    if let Some(edge_id) = &input.edge_id_col
-                        && !columns.iter().any(|column| column.name == *edge_id)
-                    {
-                        columns.push(PredicateSourceColumn::edge_id(edge_id.clone()));
+                    let mut roles = vec![PredicateSourceColumnRole::Source, PredicateSourceColumnRole::Destination];
+                    if input.has_edge_id {
+                        roles.push(PredicateSourceColumnRole::EdgeId);
                     }
-                    sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                    sources.push(PredicateSourceSpec { roles });
                 }
             },
-            CugraphAlgorithmParams::PersonalizedPageRank(params) => sources.push(PredicateSourceSpec {
-                table_name: params.personalization.table_name.clone(),
-                columns: vec![
-                    PredicateSourceColumn::vertex(params.personalization.vertex_col.clone()),
-                    PredicateSourceColumn::float_value(params.personalization.value_col.clone()),
-                ],
+            CugraphAlgorithmParams::PersonalizedPageRank(_) => sources.push(PredicateSourceSpec {
+                roles: vec![PredicateSourceColumnRole::Vertex, PredicateSourceColumnRole::FloatValue],
             }),
-            CugraphAlgorithmParams::Similarity(params) => sources.push(PredicateSourceSpec {
-                table_name: params.vertex_pairs.table_name.clone(),
-                columns: vec![
-                    PredicateSourceColumn::vertex(params.vertex_pairs.first_vertex_col.clone()),
-                    PredicateSourceColumn::vertex(params.vertex_pairs.second_vertex_col.clone()),
-                ],
+            CugraphAlgorithmParams::Similarity(_) => sources.push(PredicateSourceSpec {
+                roles: vec![PredicateSourceColumnRole::FirstVertex, PredicateSourceColumnRole::SecondVertex],
             }),
             CugraphAlgorithmParams::ForceAtlas2(params) => {
                 if let Some(input) = &params.vertex_attributes {
-                    let mut columns = vec![PredicateSourceColumn::vertex(input.vertex_col.clone())];
-                    for column in [&input.radius_col, &input.mobility_col, &input.mass_col].into_iter().flatten() {
-                        if !columns.iter().any(|existing| existing.name == *column) {
-                            columns.push(PredicateSourceColumn::float32_value(column.clone()));
-                        }
+                    let mut roles = vec![PredicateSourceColumnRole::Vertex];
+                    if input.has_radius {
+                        roles.push(PredicateSourceColumnRole::Radius);
                     }
-                    sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                    if input.has_mobility {
+                        roles.push(PredicateSourceColumnRole::Mobility);
+                    }
+                    if input.has_mass {
+                        roles.push(PredicateSourceColumnRole::Mass);
+                    }
+                    sources.push(PredicateSourceSpec { roles });
                 }
-                if let Some(input) = &params.initial_positions {
-                    let mut columns = vec![PredicateSourceColumn::vertex(input.vertex_col.clone())];
-                    for column in [&input.x_col, &input.y_col] {
-                        if !columns.iter().any(|existing| existing.name == *column) {
-                            columns.push(PredicateSourceColumn::float32_value(column.clone()));
-                        }
-                    }
-                    sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                if params.initial_positions.is_some() {
+                    sources.push(PredicateSourceSpec {
+                        roles: vec![
+                            PredicateSourceColumnRole::Vertex,
+                            PredicateSourceColumnRole::X,
+                            PredicateSourceColumnRole::Y,
+                        ],
+                    });
                 }
             },
             _ => {},
@@ -199,87 +189,44 @@ impl CugraphAlgorithmSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CugraphTableReference {
-    parts: Vec<String>,
-}
-
-impl CugraphTableReference {
-    pub fn parse(raw: &str) -> Result<Self> {
-        let Some(reference) = parse_table_reference(raw) else {
-            return Err(Error::new(
-                ErrorCode::InvalidRequest,
-                "algeon_datafusion.cugraph_sql.table_reference",
-                format!(
-                    "cuGraph table source '{raw}' must be a valid table, schema.table, or catalog.schema.table SQL identifier"
-                ),
-            )
-            .with_log_safe_fact("reason", "invalid_table_reference")
-            .into());
-        };
-        Ok(Self { parts: reference.to_vec() })
-    }
-
-    pub fn parts(&self) -> &[String] {
-        &self.parts
-    }
-
-    pub(crate) fn datafusion_reference(&self) -> TableReference {
-        datafusion_table_reference_from_parts(&self.parts)
-    }
-}
-
-impl fmt::Display for CugraphTableReference {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", datafusion_table_reference_from_parts(&self.parts).to_quoted_string())
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PredicateSourceColumnRole {
     Vertex,
     EdgeId,
     FloatValue,
-    Float32Value,
+    Source,
+    Destination,
+    FirstVertex,
+    SecondVertex,
+    Radius,
+    Mobility,
+    Mass,
+    X,
+    Y,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PredicateSourceColumn {
-    pub(crate) name: String,
-    pub(crate) role: PredicateSourceColumnRole,
-}
-
-impl PredicateSourceColumn {
-    fn vertex(name: impl Into<String>) -> Self {
-        Self { name: name.into(), role: PredicateSourceColumnRole::Vertex }
-    }
-
-    fn edge_id(name: impl Into<String>) -> Self {
-        Self { name: name.into(), role: PredicateSourceColumnRole::EdgeId }
-    }
-
-    fn float_value(name: impl Into<String>) -> Self {
-        Self { name: name.into(), role: PredicateSourceColumnRole::FloatValue }
-    }
-
-    fn float32_value(name: impl Into<String>) -> Self {
-        Self { name: name.into(), role: PredicateSourceColumnRole::Float32Value }
+impl PredicateSourceColumnRole {
+    pub(crate) const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Vertex => CUGRAPH_VERTEX_COLUMN,
+            Self::EdgeId => CUGRAPH_EDGE_ID_COLUMN,
+            Self::FloatValue => CUGRAPH_VALUE_COLUMN,
+            Self::Source => CUGRAPH_EDGE_SOURCE_COLUMN,
+            Self::Destination => CUGRAPH_EDGE_DESTINATION_COLUMN,
+            Self::FirstVertex => CUGRAPH_FIRST_VERTEX_COLUMN,
+            Self::SecondVertex => CUGRAPH_SECOND_VERTEX_COLUMN,
+            Self::Radius => CUGRAPH_RADIUS_COLUMN,
+            Self::Mobility => CUGRAPH_MOBILITY_COLUMN,
+            Self::Mass => CUGRAPH_MASS_COLUMN,
+            Self::X => CUGRAPH_X_COLUMN,
+            Self::Y => CUGRAPH_Y_COLUMN,
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PredicateSourceSpec {
-    pub(crate) table_name: CugraphTableReference,
-    pub(crate) columns: Vec<PredicateSourceColumn>,
-}
-
-fn datafusion_table_reference_from_parts(parts: &[String]) -> TableReference {
-    match parts {
-        [table] => TableReference::bare(table.as_str()),
-        [schema, table] => TableReference::partial(schema.as_str(), table.as_str()),
-        [catalog, schema, table] => TableReference::full(catalog.as_str(), schema.as_str(), table.as_str()),
-        _ => unreachable!("CugraphTableReference::parse validates one to three identifier parts"),
-    }
+    pub(crate) roles: Vec<PredicateSourceColumnRole>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -395,7 +342,7 @@ impl CugraphAlgorithmParams {
                         epsilon: params.pagerank.epsilon,
                         max_iterations: params.pagerank.max_iterations,
                     },
-                    personalization: CugraphPageRankPersonalizationTable::default(),
+                    personalization: CugraphPageRankPersonalizationTable,
                 })
             },
             NativeGraphAlgorithmParams::Bfs(params) => Self::Bfs(Box::new(CugraphBfsParams {
@@ -522,37 +469,15 @@ impl CugraphAlgorithmParams {
     }
 }
 
-/// Typed selector for the relation of aligned vertex pairs consumed by a
-/// similarity coefficient.
-///
-/// The pair relation is resolved by the SQL adapter during planning and then
-/// lowered as a normal native-plan input.  Keeping a table reference here is
-/// therefore limited to the DataFusion-facing layer; native IR stores only its
-/// input node and selected column names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CugraphVertexPairTable {
-    pub table_name: CugraphTableReference,
-    pub first_vertex_col: String,
-    pub second_vertex_col: String,
-}
+/// Presence of the aligned vertex-pair relation consumed by a similarity
+/// coefficient. Its child projection owns the canonical `first` and `second`
+/// fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphVertexPairTable;
 
 impl CugraphVertexPairTable {
-    pub fn new(
-        table_name: CugraphTableReference,
-        first_vertex_col: impl Into<String>,
-        second_vertex_col: impl Into<String>,
-    ) -> Self {
-        Self { table_name, first_vertex_col: first_vertex_col.into(), second_vertex_col: second_vertex_col.into() }
-    }
-}
-
-impl Default for CugraphVertexPairTable {
-    fn default() -> Self {
-        Self::new(
-            CugraphTableReference::parse("vertex_pairs").expect("default vertex-pair table name is valid"),
-            "first",
-            "second",
-        )
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -584,26 +509,12 @@ pub struct CugraphPersonalizedPageRankParams {
     pub personalization: CugraphPageRankPersonalizationTable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CugraphPageRankPersonalizationTable {
-    pub table_name: CugraphTableReference,
-    pub vertex_col: String,
-    pub value_col: String,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphPageRankPersonalizationTable;
 
 impl CugraphPageRankPersonalizationTable {
-    pub fn new(table_name: CugraphTableReference, vertex_col: impl Into<String>, value_col: impl Into<String>) -> Self {
-        Self { table_name, vertex_col: vertex_col.into(), value_col: value_col.into() }
-    }
-}
-
-impl Default for CugraphPageRankPersonalizationTable {
-    fn default() -> Self {
-        Self::new(
-            CugraphTableReference::parse("personalization").expect("default personalization table name is valid"),
-            "vertex",
-            "value",
-        )
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -685,7 +596,7 @@ impl CugraphBfsSource {
 
     pub fn source_vertices_column(&self) -> &str {
         match self {
-            Self::Relation(input) => input.column.as_str(),
+            Self::Relation(_) => CUGRAPH_VERTEX_COLUMN,
             Self::Scalar(_) | Self::LiteralList(_) => "__source_vertex",
         }
     }
@@ -934,21 +845,15 @@ pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
 /// Validates the static schema contract for an explicit-pair similarity
 /// relation after the caller resolves it from the catalog.
 pub(crate) fn validate_similarity_pair_table_schema(
-    table: &CugraphVertexPairTable,
+    _table: &CugraphVertexPairTable,
     schema: &SchemaRef,
     vertex_domain: &CugraphVertexIdDomain,
 ) -> Result<()> {
-    let first = schema.field_with_name(&table.first_vertex_col).map_err(|_| {
-        missing_column_error(format!(
-            "cuGraph vertex-pair source '{}' is missing first vertex column '{}'",
-            table.table_name, table.first_vertex_col
-        ))
+    let first = schema.field_with_name(CUGRAPH_FIRST_VERTEX_COLUMN).map_err(|_| {
+        missing_column_error("cuGraph vertex-pair child is missing canonical first vertex column 'first'")
     })?;
-    let second = schema.field_with_name(&table.second_vertex_col).map_err(|_| {
-        missing_column_error(format!(
-            "cuGraph vertex-pair source '{}' is missing second vertex column '{}'",
-            table.table_name, table.second_vertex_col
-        ))
+    let second = schema.field_with_name(CUGRAPH_SECOND_VERTEX_COLUMN).map_err(|_| {
+        missing_column_error("cuGraph vertex-pair child is missing canonical second vertex column 'second'")
     })?;
 
     let both_in_logical_string_domain = vertex_domain.is_string_logical()
@@ -956,27 +861,20 @@ pub(crate) fn validate_similarity_pair_table_schema(
         && vertex_domain.accepts(second.data_type());
     if first.data_type() != second.data_type() && !both_in_logical_string_domain {
         return Err(vertex_dtype_mismatch_error(format!(
-            "cuGraph vertex-pair columns '{}' and '{}' in '{}' must have the same dtype, found {:?} and {:?}",
-            table.first_vertex_col,
-            table.second_vertex_col,
-            table.table_name,
+            "cuGraph vertex-pair columns 'first' and 'second' must have the same dtype, found {:?} and {:?}",
             first.data_type(),
             second.data_type(),
         )));
     }
     if !vertex_domain.accepts(first.data_type()) {
         return Err(vertex_dtype_mismatch_error(format!(
-            "cuGraph vertex-pair first vertex column '{}' in '{}' must have dtype {}",
-            table.first_vertex_col,
-            table.table_name,
+            "cuGraph vertex-pair first vertex column 'first' must have dtype {}",
             vertex_domain.label(),
         )));
     }
     if !vertex_domain.accepts(second.data_type()) {
         return Err(vertex_dtype_mismatch_error(format!(
-            "cuGraph vertex-pair second vertex column '{}' in '{}' must have dtype {}",
-            table.second_vertex_col,
-            table.table_name,
+            "cuGraph vertex-pair second vertex column 'second' must have dtype {}",
             vertex_domain.label(),
         )));
     }
@@ -1063,39 +961,23 @@ impl CugraphBfsPredicateInputs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CugraphGraphPredicateTable {
-    pub table_name: CugraphTableReference,
-    pub column: String,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphGraphPredicateTable;
 
 impl CugraphGraphPredicateTable {
-    pub fn new(table_name: CugraphTableReference, column: impl Into<String>) -> Self {
-        Self { table_name, column: column.into() }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CugraphGraphEdgePredicateTable {
-    pub table_name: CugraphTableReference,
-    pub source_col: String,
-    pub destination_col: String,
-    pub edge_id_col: Option<String>,
+    pub has_edge_id: bool,
 }
 
 impl CugraphGraphEdgePredicateTable {
-    pub fn new(
-        table_name: CugraphTableReference,
-        source_col: impl Into<String>,
-        destination_col: impl Into<String>,
-        edge_id_col: Option<impl Into<String>>,
-    ) -> Self {
-        Self {
-            table_name,
-            source_col: source_col.into(),
-            destination_col: destination_col.into(),
-            edge_id_col: edge_id_col.map(Into::into),
-        }
+    pub const fn new(has_edge_id: bool) -> Self {
+        Self { has_edge_id }
     }
 }
 
@@ -1434,45 +1316,31 @@ pub struct CugraphForceAtlas2Params {
     pub initial_positions: Option<CugraphForceAtlas2InitialPositionsTable>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CugraphForceAtlas2VertexAttributesTable {
-    pub table_name: CugraphTableReference,
-    pub vertex_col: String,
-    pub radius_col: Option<String>,
-    pub mobility_col: Option<String>,
-    pub mass_col: Option<String>,
+    pub has_radius: bool,
+    pub has_mobility: bool,
+    pub has_mass: bool,
 }
 
-impl Default for CugraphForceAtlas2VertexAttributesTable {
-    fn default() -> Self {
-        Self {
-            table_name: CugraphTableReference::parse("vertex_attributes")
-                .expect("default vertex-attribute table name is valid"),
-            vertex_col: "vertex".to_string(),
-            radius_col: None,
-            mobility_col: None,
-            mass_col: None,
-        }
+impl CugraphForceAtlas2VertexAttributesTable {
+    pub const fn new(has_radius: bool, has_mobility: bool, has_mass: bool) -> Self {
+        Self { has_radius, has_mobility, has_mass }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CugraphForceAtlas2InitialPositionsTable {
-    pub table_name: CugraphTableReference,
-    pub vertex_col: String,
-    pub x_col: String,
-    pub y_col: String,
-}
+pub struct CugraphForceAtlas2InitialPositionsTable;
 
 impl Default for CugraphForceAtlas2InitialPositionsTable {
     fn default() -> Self {
-        Self {
-            table_name: CugraphTableReference::parse("initial_positions")
-                .expect("default initial-position table name is valid"),
-            vertex_col: "vertex".to_string(),
-            x_col: "x".to_string(),
-            y_col: "y".to_string(),
-        }
+        Self
+    }
+}
+
+impl CugraphForceAtlas2InitialPositionsTable {
+    pub const fn new() -> Self {
+        Self
     }
 }
 

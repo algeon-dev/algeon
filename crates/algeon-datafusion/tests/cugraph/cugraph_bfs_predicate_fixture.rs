@@ -67,12 +67,10 @@ pub async fn run_numeric_include_edges_acceptance() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, reachable \
-             FROM cugraph_bfs('bfs_raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"include_edges_table\":\"bfs_allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\",\
-                     \"output_mode\":\"normalized\"}') \
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM bfs_raw_edges), source_vertex => 0,\
+                  construction_policy => 'raw_libcugraph', output_mode => 'normalized',\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM bfs_allowed_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -154,12 +152,10 @@ pub async fn run_utf8_include_edges_acceptance() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, reachable \
-             FROM cugraph_bfs('bfs_utf8_raw_edges', 'v00000000', 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"include_edges_table\":\"bfs_utf8_allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\",\
-                     \"output_mode\":\"normalized\"}') \
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'normalized',\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM bfs_utf8_allowed_edges)) \
              ORDER BY vertex",
         )
         .await
@@ -248,14 +244,11 @@ pub async fn run_utf8_path_acceptance() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('bfs_utf8_raw_edges', 'v00000000', 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"bfs_utf8_target_vertices\",\
-                     \"target_vertex_col\":\"vertex_id\",\
-                     \"include_edges_table\":\"bfs_utf8_allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\"}') \
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_target_vertices),\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM bfs_utf8_allowed_edges)) \
              ORDER BY path_index",
         )
         .await
@@ -340,31 +333,24 @@ pub async fn run_utf8_vertex_predicates_acceptance() {
         (
             "include_vertices",
             &fixture.included_vertices,
-            "{\"construction_policy\":\"raw_libcugraph\",\
-              \"include_vertices_table\":\"bfs_utf8_included_vertices\",\
-              \"include_vertex_col\":\"vertex_id\",\
-              \"output_mode\":\"normalized\"}",
+            "construction_policy => 'raw_libcugraph', output_mode => 'normalized', \
+              include_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_included_vertices)",
         ),
         (
             "exclude_vertices",
             &fixture.excluded_vertices,
-            "{\"construction_policy\":\"raw_libcugraph\",\
-              \"exclude_vertices_table\":\"bfs_utf8_excluded_vertices\",\
-              \"exclude_vertex_col\":\"vertex_id\",\
-              \"output_mode\":\"normalized\"}",
+            "construction_policy => 'raw_libcugraph', output_mode => 'normalized', \
+              exclude_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_excluded_vertices)",
         ),
         (
             "target_vertices",
             &fixture.target_vertices,
-            "{\"construction_policy\":\"raw_libcugraph\",\
-              \"target_vertices_table\":\"bfs_utf8_target_vertices\",\
-              \"target_vertex_col\":\"vertex_id\",\
-              \"return_target_info\":true,\
-              \"output_mode\":\"normalized\"}",
+            "construction_policy => 'raw_libcugraph', output_mode => 'normalized', return_target_info => true, \
+              target_vertices => (SELECT vertex_id AS vertex FROM bfs_utf8_target_vertices)",
         ),
     ];
 
-    for (mode, predicate_path, options_json) in cases {
+    for (mode, predicate_path, call_arguments) in cases {
         let oracle = python_bfs_utf8_vertex_predicate_oracle(&fixture, predicate_path, mode)
             .expect("Python cuGraph oracle is required for the selected UTF-8 BFS predicate acceptance test");
         let select_list = if mode == "target_vertices" {
@@ -374,7 +360,7 @@ pub async fn run_utf8_vertex_predicates_acceptance() {
         };
         let sql = format!(
             "SELECT {select_list} \
-             FROM cugraph_bfs('bfs_utf8_raw_edges', 'v00000000', 'src', 'dst', NULL, '{options_json}') \
+             FROM cugraph_bfs(edges => (SELECT src, dst FROM bfs_utf8_raw_edges), source_vertex => 'v00000000', {call_arguments}) \
              ORDER BY vertex"
         );
         let sql_start = Instant::now();

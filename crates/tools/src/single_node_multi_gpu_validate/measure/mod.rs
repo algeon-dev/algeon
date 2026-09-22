@@ -133,7 +133,7 @@ const RATE_OVERRUN_TOLERANCE: Duration = Duration::from_millis(1);
 const FEATURE_OFF_CUGRAPH_EDGE_TABLE: &str = "__algeon_feature_off_cugraph_edges";
 
 fn feature_off_cugraph_sql() -> String {
-    format!("SELECT * FROM cugraph_pagerank('{FEATURE_OFF_CUGRAPH_EDGE_TABLE}')")
+    format!("SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM {FEATURE_OFF_CUGRAPH_EDGE_TABLE}))")
 }
 
 /// The runner's two bounded phases. Submission stops at the configured

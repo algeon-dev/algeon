@@ -249,7 +249,7 @@ fn assert_single_sealed_attempt_report(payload: &str, expected_outcome: &str) {
 #[test]
 fn statement_execution_domain_classifier_is_fail_closed() {
     let service = super::service::bounded_test_service(Duration::from_secs(30));
-    let validate_call = r#"{"schema_version":1,"relations":{"input":{"table":"input"}},"options":{}}"#;
+    let validate_call = r#"{"relations":{"input":{"table":"input"}},"options":{}}"#;
     let metadata_queries = [
         "SHOW TABLES",
         "SHOW COLUMNS FROM t",
@@ -353,7 +353,7 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
         Duration::from_secs(30),
     );
 
-    let validate_call = r#"{"schema_version":1,"relations":{"input":{"table":"input"}},"options":{}}"#;
+    let validate_call = r#"{"relations":{"input":{"table":"input"}},"options":{}}"#;
     for sql in [
         format!(
             "SELECT function_name, provider \

@@ -17,20 +17,24 @@ Score vertices from the number of walks that reach them, attenuating longer walk
 ## Signature
 
 ```sql
-cugraph_katz_centrality(table_name [, src_col, dst_col [, weight_col [, options_json]]])
+cugraph_katz_centrality(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, alpha => value, beta => value, epsilon => value, max_iterations => value)
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_katz_centrality('target_edges');
+SELECT * FROM cugraph_katz_centrality(edges => (SELECT src, dst FROM target_edges));
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
+
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
 
 Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
@@ -40,22 +44,20 @@ Logical string side-input limitations:
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
-
-### JSON options
+### Named value arguments
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `alpha` | `Float64` | `0.01` | max 1; &gt; 0 | Attenuation factor applied per path length; larger values let longer paths contribute more. cuGraph requires alpha below the inverse of the graph's largest eigenvalue for the iteration to converge. |
-| `beta` | `Float64` | `1` | &gt; 0 | Constant added to every vertex's score in each iteration. One scalar applies to all vertices; per-vertex betas are not exposed. |
-| `epsilon` | `Float64` | `0.000001` | &gt; 0 | Convergence tolerance: iteration stops once the L1 sum of score changes between consecutive iterations is below the vertex count multiplied by epsilon. Smaller values tighten convergence and may need more iterations. |
-| `max_iterations` | `UInt32` | `1000` | min 1 | Upper bound on Katz iterations. |
+| `alpha` | `number` | `0.01` | max 1; &gt; 0 | Katz alpha in (0, 1] |
+| `beta` | `number` | `1` | &gt; 0 | positive Katz beta |
+| `epsilon` | `number` | `0.000001` | &gt; 0 | positive convergence tolerance |
+| `max_iterations` | `integer` | `1000` | min 1 | maximum iteration count, at least 1 |
 
 ### Graph construction options
 
@@ -87,7 +89,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_katz_centrality',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst"}}'
+  '{"relations":{"edges":{"table":"target_edges"}},"options":{}}'
 );
 ```
 

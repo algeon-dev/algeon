@@ -33,11 +33,11 @@ JOIN attention_ego_nodes b ON b.paper_id = e.dst;
 
 WITH layout AS (
   SELECT vertex, x, y
-  FROM cugraph_force_atlas2('attention_ego_edges', 'src', 'dst', NULL,
-                            '{"max_iter":500, "seed":42}')),
+  FROM cugraph_force_atlas2(
+    edges => (SELECT src, dst FROM attention_ego_edges), max_iter => 500, seed => 42)),
 community AS (
   SELECT vertex, "partition"
-  FROM cugraph_louvain('attention_ego_edges', 'src', 'dst'))
+  FROM cugraph_louvain(edges => (SELECT src, dst FROM attention_ego_edges)))
 SELECT l.vertex, l.x, l.y, c."partition", p.title, p.year
 FROM layout l
 JOIN community c ON c.vertex = l.vertex
@@ -69,8 +69,7 @@ for every vertex:
 CREATE VIEW initial_layout AS
 SELECT vertex, x, y
 FROM cugraph_force_atlas2(
-  'attention_ego_edges', 'src', 'dst', NULL,
-  '{"max_iter":250,"seed":42}');
+  edges => (SELECT src, dst FROM attention_ego_edges), max_iter => 250, seed => 42);
 
 CREATE VIEW layout_attributes AS
 SELECT vertex,
@@ -80,20 +79,10 @@ FROM initial_layout;
 
 SELECT vertex, x, y
 FROM cugraph_force_atlas2(
-  'attention_ego_edges', 'src', 'dst', NULL,
-  '{
-    "max_iter":250,
-    "seed":42,
-    "prevent_overlapping":true,
-    "vertex_attributes_table":"layout_attributes",
-    "vertex_attributes_vertex_col":"vertex",
-    "vertex_radius_col":"radius",
-    "vertex_mass_col":"mass",
-    "initial_positions_table":"initial_layout",
-    "initial_positions_vertex_col":"vertex",
-    "initial_x_col":"x",
-    "initial_y_col":"y"
-  }');
+  edges => (SELECT src, dst FROM attention_ego_edges), max_iter => 250, seed => 42,
+  prevent_overlapping => true,
+  vertex_attributes => (SELECT vertex, radius, mass FROM layout_attributes),
+  initial_positions => (SELECT vertex, x, y FROM initial_layout));
 ```
 
 Both side inputs reject null, duplicate, missing, or extra vertices. Radius,

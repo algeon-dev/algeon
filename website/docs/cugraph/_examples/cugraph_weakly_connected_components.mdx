@@ -10,8 +10,8 @@ edge, 99.4% form a single giant component:
 ```sql
 WITH comp AS (
   SELECT label, COUNT(*) AS members
-  FROM cugraph_weakly_connected_components('citation_edges', 'src', 'dst', NULL,
-                                           '{"directed":false}')
+  FROM cugraph_weakly_connected_components(
+    edges => (SELECT src, dst FROM citation_edges), directed => false)
   GROUP BY label)
 SELECT COUNT(*) AS components, MAX(members) AS giant, SUM(members) AS vertices
 FROM comp;
@@ -32,8 +32,8 @@ giant one: one row per component, represented by its most-cited member.
 -- Local workspace snapshot; this does not write to lake.citation_network.
 CREATE TABLE wcc_snapshot AS
 SELECT vertex, label
-FROM cugraph_weakly_connected_components('citation_edges', 'src', 'dst', NULL,
-                                         '{"directed":false}');
+FROM cugraph_weakly_connected_components(
+  edges => (SELECT src, dst FROM citation_edges), directed => false);
 
 WITH sizes AS (
   SELECT label, COUNT(*) AS members FROM wcc_snapshot

@@ -90,7 +90,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
         r#"SELECT valid, error_code, relations_resolved, details_json, would_execute_gpu
            FROM gpu_validate_call(
              'cugraph_bfs',
-             '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","depth_limit":2}}'
+             '{"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":0,"depth_limit":2}}'
            )"#,
     )
     .await;
@@ -109,13 +109,9 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
         format!(r#"datafusion."{uuid_schema}".edgesummary"#),
     ] {
         let call = serde_json::json!({
-            "schema_version": 1,
             "relations": { "edges": { "table": table } },
             "options": {
                 "source_vertex": 0,
-                "src_col": "src",
-                "dst_col": "dst",
-                "weight_col": "weight"
             }
         })
         .to_string()
@@ -132,10 +128,10 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
     for sql in [
         format!(
-            r#"SELECT * FROM cugraph_pagerank('"{uuid_schema}".edgesummary', 'src', 'dst', 'weight') LIMIT 0"#
+            r#"SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM "{uuid_schema}".edgesummary)) LIMIT 0"#
         ),
         format!(
-            r#"SELECT * FROM cugraph_bfs('datafusion."{uuid_schema}".edgesummary', 0, 'src', 'dst', 'weight') LIMIT 0"#
+            r#"SELECT * FROM cugraph_bfs(edges => (SELECT src, dst, weight FROM datafusion."{uuid_schema}".edgesummary), source_vertex => 0) LIMIT 0"#
         ),
     ] {
         client.execute(sql, None).await.unwrap().try_decode_schema().unwrap();
@@ -145,7 +141,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
         &mut client,
         r#"CREATE VIEW graph_hits AS
            SELECT *
-           FROM cugraph_bfs('target_edges', 0, 'src', 'dst', 'weight', '{"depth_limit":2}')"#,
+           FROM cugraph_bfs(edges => (SELECT src, dst, weight FROM target_edges), source_vertex => 0, depth_limit => 2)"#,
     )
     .await;
     let schema = client
@@ -192,7 +188,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
         r#"SELECT valid, error_code, relations_resolved, details_json, would_execute_gpu
            FROM gpu_validate_call(
              'cugraph_bfs',
-             '{"schema_version":1,"relations":{"edges":{"table":"nullable_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","depth_limit":2}}'
+             '{"relations":{"edges":{"table":"nullable_edges"}},"options":{"source_vertex":0,"depth_limit":2}}'
            )"#,
     )
     .await;
@@ -292,19 +288,13 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
 
     let bfs_sql = r#"SELECT path_index, source, target, vertex, distance
            FROM cugraph_bfs(
-             'graph_edges',
-             NULL,
-             'src',
-             'dst',
-             'weight',
-             '{"directed":true,
-               "renumber":true,
-               "construction_policy":"raw_libcugraph",
-               "source_vertices_table":"bfs_sources",
-               "source_vertex_col":"vertex_id",
-               "output_mode":"path",
-               "target_vertices_table":"bfs_targets",
-               "target_vertex_col":"vertex_id"}'
+             edges => (SELECT src, dst, weight FROM graph_edges),
+             sources => (SELECT vertex_id AS vertex FROM bfs_sources),
+             directed => true,
+             renumber => true,
+             construction_policy => 'raw_libcugraph',
+             output_mode => 'path',
+             target_vertices => (SELECT vertex_id AS vertex FROM bfs_targets)
            )
            ORDER BY path_index"#;
     let explain = execute_batches(&mut client, &format!("EXPLAIN {bfs_sql}")).await;
@@ -338,19 +328,13 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     execute_batches(&mut client, "CREATE VIEW missing_bfs_sources AS SELECT CAST(12345 AS BIGINT) AS vertex_id").await;
     let empty_bfs_sql = r#"SELECT path_index, source, target, vertex, distance
            FROM cugraph_bfs(
-             'graph_edges',
-             NULL,
-             'src',
-             'dst',
-             'weight',
-             '{"directed":true,
-               "renumber":true,
-               "construction_policy":"raw_libcugraph",
-               "source_vertices_table":"missing_bfs_sources",
-               "source_vertex_col":"vertex_id",
-               "output_mode":"path",
-               "target_vertices_table":"bfs_targets",
-               "target_vertex_col":"vertex_id"}'
+             edges => (SELECT src, dst, weight FROM graph_edges),
+             sources => (SELECT vertex_id AS vertex FROM missing_bfs_sources),
+             directed => true,
+             renumber => true,
+             construction_policy => 'raw_libcugraph',
+             output_mode => 'path',
+             target_vertices => (SELECT vertex_id AS vertex FROM bfs_targets)
            )
            ORDER BY path_index"#;
     let empty_flight_info = client.execute(empty_bfs_sql.to_string(), None).await.unwrap();
@@ -371,19 +355,13 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     .await;
     let partial_error_sql = r#"SELECT path_index, source, target, vertex, distance
            FROM cugraph_bfs(
-             'graph_edges',
-             NULL,
-             'src',
-             'dst',
-             'weight',
-             '{"directed":true,
-               "renumber":true,
-               "construction_policy":"raw_libcugraph",
-               "source_vertices_table":"partial_bfs_sources",
-               "source_vertex_col":"vertex_id",
-               "output_mode":"path",
-               "target_vertices_table":"bfs_targets",
-               "target_vertex_col":"vertex_id"}'
+             edges => (SELECT src, dst, weight FROM graph_edges),
+             sources => (SELECT vertex_id AS vertex FROM partial_bfs_sources),
+             directed => true,
+             renumber => true,
+             construction_policy => 'raw_libcugraph',
+             output_mode => 'path',
+             target_vertices => (SELECT vertex_id AS vertex FROM bfs_targets)
            )
            ORDER BY path_index"#;
     let partial_flight_info = client.execute(partial_error_sql.to_string(), None).await.unwrap();
@@ -404,21 +382,14 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
         .await;
     let bad_predicate_sql = r#"SELECT path_index, source, target, vertex, distance
            FROM cugraph_bfs(
-             'graph_edges',
-             NULL,
-             'src',
-             'dst',
-             'weight',
-             '{"directed":true,
-               "renumber":true,
-               "construction_policy":"raw_libcugraph",
-               "source_vertices_table":"empty_bfs_sources",
-               "source_vertex_col":"vertex_id",
-               "include_vertices_table":"bad_included_vertices",
-               "include_vertex_col":"vertex_id",
-               "output_mode":"path",
-               "target_vertices_table":"bfs_targets",
-               "target_vertex_col":"vertex_id"}'
+             edges => (SELECT src, dst, weight FROM graph_edges),
+             sources => (SELECT vertex_id AS vertex FROM empty_bfs_sources),
+             directed => true,
+             renumber => true,
+             construction_policy => 'raw_libcugraph',
+             include_vertices => (SELECT vertex_id AS vertex FROM bad_included_vertices),
+             output_mode => 'path',
+             target_vertices => (SELECT vertex_id AS vertex FROM bfs_targets)
            )
            ORDER BY path_index"#;
     let bad_predicate_flight_info = client.execute(bad_predicate_sql.to_string(), None).await.unwrap();

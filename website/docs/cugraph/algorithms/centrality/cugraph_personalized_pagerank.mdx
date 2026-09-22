@@ -17,20 +17,25 @@ Rank vertices with PageRank while biasing random-walk restarts toward explicitly
 ## Signature
 
 ```sql
-cugraph_personalized_pagerank(table_name, src_col, dst_col, weight_col, options_json)
+cugraph_personalized_pagerank(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, personalization => (relation subquery), alpha => value, epsilon => value, max_iterations => value)
 ```
 
 ## Quickstart
 
-The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`. Substitute your own registered relations.
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `ppr_seeds` (the `personalization` relation with columns `vertex`, `value`). Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}');
+SELECT * FROM cugraph_personalized_pagerank(edges => (SELECT src, dst FROM target_edges), personalization => (SELECT vertex, value FROM ppr_seeds));
 ```
 
 ## Inputs
 
-`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.
+
+| Role | Required | Canonical columns | Contract |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `personalization` | yes | vertex, value | personalization relation with vertex and numeric value columns |
 
 Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
@@ -40,24 +45,20 @@ Logical string side-input limitations:
 
 ## Arguments and options
 
-### Positional scalar arguments
+### Relation arguments
 
-`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+| Argument | Required | Canonical columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | src, dst, weight (optional), edge_id (optional) | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+| `personalization` | yes | vertex, value | personalization relation with vertex and numeric value columns |
 
-| Argument | Type | Required | Default | Notes |
-| --- | --- | --- | --- | --- |
-| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
-
-### JSON options
+### Named value arguments
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `alpha` | `Float64` | `0.85` | min 0; max 1 | Damping factor: the probability that the random walk follows an outgoing edge instead of restarting. Higher values let distant structure influence scores more; lower values keep rank closer to the restart distribution. |
-| `epsilon` | `Float64` | `0.00001` | &gt; 0 | Convergence tolerance: iteration stops once the L1 sum of score changes between consecutive iterations is below the vertex count multiplied by epsilon. Smaller values tighten convergence and may need more iterations. |
-| `max_iterations` | `UInt32` | `100` | min 1 | Upper bound on PageRank iterations. If the bound is reached before epsilon is met, the scores computed so far are returned. |
-| `personalization_table` | `Utf8` |  | required | Table containing personalized PageRank vertex weights. |
-| `personalization_value_col` | `Utf8` |  | required; example `"value"` | Column in personalization_table holding each personalization vertex's relative restart weight; larger values pull more rank toward that vertex. |
-| `personalization_vertex_col` | `Utf8` |  | required; example `"vertex"` | Column in personalization_table naming the vertices the random walk restarts at; vertices absent from the table receive no restart mass. |
+| `alpha` | `number` | `0.85` | min 0; max 1 | PageRank damping factor in [0, 1] |
+| `epsilon` | `number` | `0.00001` | &gt; 0 | positive convergence tolerance |
+| `max_iterations` | `integer` | `100` | min 1 | maximum iteration count, at least 1 |
 
 ### Graph construction options
 
@@ -89,7 +90,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_personalized_pagerank',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst","personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}}'
+  '{"relations":{"edges":{"table":"target_edges"},"personalization":{"table":"ppr_seeds"}},"options":{}}'
 );
 ```
 

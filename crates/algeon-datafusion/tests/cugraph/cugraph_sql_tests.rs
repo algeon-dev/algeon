@@ -1,9 +1,7 @@
 use algeon_datafusion::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, GpuMemoryOwnership},
     cugraph_sql::{
-        CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
-        CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphSqlConfig,
-        parse_cugraph_algorithm_spec, stable_result_schema,
+        CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphGraphOptions, CugraphSqlConfig, stable_result_schema,
     },
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{AlgeonNativeComposedExec, AlgeonNativeExec},
@@ -20,10 +18,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{DataFusionError, ScalarValue},
+    common::DataFusionError,
     datasource::MemTable,
     execution::SessionStateBuilder,
-    logical_expr::col,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
     physical_plan::{ExecutionPlan, displayable},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},

@@ -17,13 +17,6 @@ use crate::{
     session::AlgeonSessionStateBuilderExt,
 };
 
-const KNN_OPTIONS: &str = r#"{
-  "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
-  "k":1,
-  "metric":"cosine"
-}"#;
-
 fn vector_schema(id_name: &str, id_type: DataType) -> SchemaRef {
     let mut fields = vec![Field::new(id_name, id_type, false)];
     fields.extend((0..2).map(|index| Field::new(format!("d{index}"), DataType::Float32, false)));
@@ -59,10 +52,9 @@ async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
     let ctx = lowering_context();
     let sql = format!(
         "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
-             (SELECT * FROM dataset_vectors), \
-             (SELECT * FROM query_vectors), \
-             '{}')",
-        KNN_OPTIONS.replace('\'', "''")
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'cosine')"
     );
     let logical = ctx.state().create_logical_plan(&sql).await.expect("cuVS logical planning");
     let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
@@ -84,8 +76,8 @@ async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
     let VectorAlgorithmParams::BruteForceKnn(params) = &vector.spec.params else {
         panic!("brute-force kNN must lower to its typed parameter payload")
     };
-    assert_eq!(params.dataset.row_id, VectorRowIdBinding::Column("item_id".to_string()));
-    assert_eq!(params.queries.row_id, VectorRowIdBinding::Column("query_id".to_string()));
+    assert_eq!(params.dataset.row_id, VectorRowIdBinding::Column("id".to_string()));
+    assert_eq!(params.queries.row_id, VectorRowIdBinding::Column("id".to_string()));
     assert_eq!(
         vector.spec.output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
         ["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"],

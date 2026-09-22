@@ -12,13 +12,16 @@ use query_engine::{
 };
 
 use super::{
-    BinaryOp, CaseWhen, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds,
-    CugraphBfsOutputMode, CugraphGpuFrame, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
-    CugraphResultPlanOptions, CugraphVertexSelector, DataFusionError, DataType, Error, ErrorCode, ExecutionContext,
-    ExecutionPlan, GpuDataFrame, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GraphAlgorithm,
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBfsEndpointPolicy, GraphBfsLeader,
-    GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams,
-    GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEigenvectorCentralityParams,
+    BinaryOp, CUGRAPH_EDGE_DESTINATION_COLUMN, CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN,
+    CUGRAPH_EDGE_WEIGHT_COLUMN, CUGRAPH_MASS_COLUMN, CUGRAPH_MOBILITY_COLUMN, CUGRAPH_RADIUS_COLUMN,
+    CUGRAPH_VALUE_COLUMN, CUGRAPH_VERTEX_COLUMN, CUGRAPH_X_COLUMN, CUGRAPH_Y_COLUMN, CaseWhen, CugraphAlgorithm,
+    CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphGpuFrame,
+    CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, CugraphResultPlanOptions, CugraphVertexSelector,
+    DataFusionError, DataType, Error, ErrorCode, ExecutionContext, ExecutionPlan, GpuDataFrame, GpuResidentInputMap,
+    GpuResidentSource, GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
+    GraphBetweennessCentralityParams, GraphBfsEndpointPolicy, GraphBfsLeader, GraphBfsParams, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
+    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEigenvectorCentralityParams,
     GraphExecutionMetrics, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params,
     GraphForceAtlas2VertexAttributesInput, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType,
     GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
@@ -216,7 +219,7 @@ pub(super) fn cugraph_schema_query_plan(definition: &CugraphPlanDefinition) -> R
     };
     let bfs_path_output_rows =
         bfs_path_output_row_bound(&execution_spec, edge_vertex_upper_bound, edge_row_upper_bound)?;
-    let native_vertex_type = graph_edge_schema.field_with_name(&execution_spec.src_col)?.data_type();
+    let native_vertex_type = graph_edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN)?.data_type();
     let graph_spec = native_graph_spec(
         &execution_spec,
         edge_normalize_inserted,
@@ -313,10 +316,13 @@ pub(super) fn native_graph_spec(
     bfs_path_output_rows: Option<u64>,
     vertex_type: &DataType,
 ) -> GraphAlgorithmSpec {
-    let mut edge_columns =
-        GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
-    if let Some(edge_id) = &spec.edge_id_col {
-        edge_columns = edge_columns.with_edge_id(edge_id.clone());
+    let mut edge_columns = GraphEdgeColumnBindings::new(
+        CUGRAPH_EDGE_SOURCE_COLUMN.to_string(),
+        CUGRAPH_EDGE_DESTINATION_COLUMN.to_string(),
+        spec.has_weight.then(|| CUGRAPH_EDGE_WEIGHT_COLUMN.to_string()),
+    );
+    if spec.has_edge_id {
+        edge_columns = edge_columns.with_edge_id(CUGRAPH_EDGE_ID_COLUMN.to_string());
     }
     let algorithm = native_algorithm(spec.algorithm);
     let params = native_algorithm_params(&spec.params, predicate_nodes, bfs_path_output_rows);
@@ -359,7 +365,7 @@ pub(super) fn native_graph_spec_for_placement_hint(
             )))
         })
         .collect::<Vec<_>>();
-    let vertex_type = edge_schema.field_with_name(&spec.src_col).ok()?.data_type();
+    let vertex_type = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).ok()?.data_type();
     matches!(vertex_type, DataType::Int32 | DataType::Int64)
         .then(|| native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes, None, vertex_type))
 }
@@ -445,12 +451,9 @@ pub(super) fn bfs_normalized_output_projection(
     Ok(Some(outputs))
 }
 
-pub(super) fn bfs_unreachable_distance_sentinel(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<i64> {
-    let source_field = edge_schema.field_with_name(&spec.src_col).map_err(|_| {
-        plan_error(format!(
-            "cuGraph BFS output normalization could not find source column '{}' in edge source schema",
-            spec.src_col
-        ))
+pub(super) fn bfs_unreachable_distance_sentinel(_spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<i64> {
+    let source_field = edge_schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).map_err(|_| {
+        plan_error("cuGraph BFS output normalization could not find canonical source column 'src' in edge schema")
     })?;
     match source_field.data_type() {
         DataType::Int32 => Ok(i64::from(i32::MAX)),
@@ -486,8 +489,8 @@ pub(super) fn native_algorithm_params(
                 },
                 personalization: NativeGraphPageRankPersonalizationInput::new(
                     personalization_node,
-                    params.personalization.vertex_col.clone(),
-                    params.personalization.value_col.clone(),
+                    CUGRAPH_VERTEX_COLUMN,
+                    CUGRAPH_VALUE_COLUMN,
                 ),
             })
         },
@@ -595,18 +598,18 @@ pub(super) fn native_algorithm_params(
             let vertex_attributes = params.vertex_attributes.as_ref().map(|input| {
                 GraphForceAtlas2VertexAttributesInput::new(
                     next.next().expect("ForceAtlas2 vertex-attributes node missing"),
-                    input.vertex_col.clone(),
-                    input.radius_col.clone(),
-                    input.mobility_col.clone(),
-                    input.mass_col.clone(),
+                    CUGRAPH_VERTEX_COLUMN,
+                    input.has_radius.then_some(CUGRAPH_RADIUS_COLUMN),
+                    input.has_mobility.then_some(CUGRAPH_MOBILITY_COLUMN),
+                    input.has_mass.then_some(CUGRAPH_MASS_COLUMN),
                 )
             });
-            let initial_positions = params.initial_positions.as_ref().map(|input| {
+            let initial_positions = params.initial_positions.as_ref().map(|_input| {
                 GraphForceAtlas2InitialPositionsInput::new(
                     next.next().expect("ForceAtlas2 initial-positions node missing"),
-                    input.vertex_col.clone(),
-                    input.x_col.clone(),
-                    input.y_col.clone(),
+                    CUGRAPH_VERTEX_COLUMN,
+                    CUGRAPH_X_COLUMN,
+                    CUGRAPH_Y_COLUMN,
                 )
             });
             GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params {
@@ -628,12 +631,12 @@ pub(super) fn native_algorithm_params(
                 initial_positions,
             })
         },
-        CugraphAlgorithmParams::Similarity(params) => {
+        CugraphAlgorithmParams::Similarity(_params) => {
             let vertex_pairs_node = predicate_nodes.first().copied().expect("similarity vertex-pairs node missing");
             GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
                 vertex_pairs_node,
-                params.vertex_pairs.first_vertex_col.clone(),
-                params.vertex_pairs.second_vertex_col.clone(),
+                "first",
+                "second",
             )))
         },
     }
@@ -679,24 +682,24 @@ pub(super) fn native_bfs_params(
         ));
     }
     native.predicates = NativeGraphBfsPredicateInputs {
-        include_vertices: params.predicates.include_vertices.as_ref().map(|input| {
-            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), input.column.clone())
+        include_vertices: params.predicates.include_vertices.as_ref().map(|_input| {
+            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), CUGRAPH_VERTEX_COLUMN)
         }),
-        exclude_vertices: params.predicates.exclude_vertices.as_ref().map(|input| {
-            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), input.column.clone())
+        exclude_vertices: params.predicates.exclude_vertices.as_ref().map(|_input| {
+            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), CUGRAPH_VERTEX_COLUMN)
         }),
-        target_vertices: params.predicates.target_vertices.as_ref().map(|input| {
-            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), input.column.clone())
+        target_vertices: params.predicates.target_vertices.as_ref().map(|_input| {
+            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), CUGRAPH_VERTEX_COLUMN)
         }),
-        include_edge_ids: params.predicates.include_edge_ids.as_ref().map(|input| {
-            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), input.column.clone())
+        include_edge_ids: params.predicates.include_edge_ids.as_ref().map(|_input| {
+            NativeGraphPredicateInput::new(next.next().expect("predicate node missing"), CUGRAPH_EDGE_ID_COLUMN)
         }),
         include_edges: params.predicates.include_edges.as_ref().map(|input| {
             NativeGraphEdgePredicateInput::new(
                 next.next().expect("predicate node missing"),
-                input.source_col.clone(),
-                input.destination_col.clone(),
-                input.edge_id_col.clone(),
+                CUGRAPH_EDGE_SOURCE_COLUMN,
+                CUGRAPH_EDGE_DESTINATION_COLUMN,
+                input.has_edge_id.then_some(CUGRAPH_EDGE_ID_COLUMN),
             )
         }),
     };
@@ -727,8 +730,7 @@ mod tests {
     use super::*;
     use crate::cugraph_sql::{
         CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
-        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, exec::PlanNode,
-        result_schema_for_params,
+        CugraphGraphConstructionPolicy, CugraphGraphOptions, exec::PlanNode, result_schema_for_params,
     };
 
     fn bfs_spec(source: CugraphBfsSource, output_mode: CugraphBfsOutputMode) -> CugraphAlgorithmSpec {
@@ -740,11 +742,8 @@ mod tests {
         }));
         CugraphAlgorithmSpec {
             algorithm: CugraphAlgorithm::Bfs,
-            table_name: CugraphTableReference::parse("edges").expect("static table identifier is valid"),
-            src_col: "src".to_string(),
-            dst_col: "dst".to_string(),
-            weight_col: None,
-            edge_id_col: None,
+            has_weight: false,
+            has_edge_id: false,
             graph_options: CugraphGraphOptions {
                 directed: true,
                 renumber: true,

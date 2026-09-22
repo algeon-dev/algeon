@@ -100,9 +100,8 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
         r#"SELECT valid, error_code, relations_resolved, details_json, would_execute_gpu
            FROM gpu_validate_call(
              'cugraph_bfs',
-             '{{"schema_version":1,"relations":{{"edges":{{"table":"{target_view}"}}}},"options":{{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":{weight_col_json},"depth_limit":2}}}}'
+             '{{"relations":{{"edges":{{"table":"{target_view}"}}}},"options":{{"source_vertex":0,"depth_limit":2}}}}'
            )"#,
-        weight_col_json = weight_col.map(|column| format!("\"{column}\"")).unwrap_or_else(|| "null".to_string())
     );
     let batches = execute_batches(&mut client, &validate_sql).await?;
     let batch = single_batch(&batches)?;
@@ -124,13 +123,14 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     }
     require_bool(batch, 4, 0, true)?;
 
-    let graph_weight_arg = weight_col.map(|column| format!("'{column}'")).unwrap_or_else(|| "NULL".to_string());
+    let edge_projection = weight_col.map(|_| "src, dst, weight").unwrap_or("src, dst");
     execute_batches(
         &mut client,
         &format!(
             r#"CREATE VIEW {graph_view} AS
                SELECT *
-               FROM cugraph_bfs('{target_view}', 0, 'src', 'dst', {graph_weight_arg}, '{{"depth_limit":2}}')"#
+               FROM cugraph_bfs(
+                 edges => (SELECT {edge_projection} FROM {target_view}), source_vertex => 0, depth_limit => 2)"#
         ),
     )
     .await?;

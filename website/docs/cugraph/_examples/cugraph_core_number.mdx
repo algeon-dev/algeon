@@ -10,7 +10,8 @@ workspace view, find the deepest shell, and list its members:
 
 ```sql
 CREATE VIEW cores AS
-SELECT vertex, core_number FROM cugraph_core_number('citation_edges', 'src', 'dst');
+SELECT vertex, core_number
+FROM cugraph_core_number(edges => (SELECT src, dst FROM citation_edges));
 
 SELECT MAX(core_number) AS deepest,
        COUNT(*) FILTER (WHERE core_number = 70) AS members

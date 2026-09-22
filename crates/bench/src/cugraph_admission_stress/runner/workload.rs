@@ -12,14 +12,14 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
     vec![
         spec(
             "pagerank",
-            "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank('citation_edges', 'src', 'dst', 'weight')"
+            "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM citation_edges))"
                 .to_string(),
             false,
             false,
         ),
         spec(
             "pagerank_nw",
-            "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank('citation_edges', 'src', 'dst', NULL)"
+            "SELECT COUNT(*) AS n, SUM(value) AS total FROM cugraph_pagerank(edges => (SELECT src, dst FROM citation_edges))"
                 .to_string(),
             false,
             false,
@@ -27,8 +27,8 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
         spec(
             "bfs",
             format!(
-                "SELECT COUNT(*) AS reached FROM cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
-                 '{{\"depth_limit\": 3, \"output_mode\": \"normalized\"}}')"
+                "SELECT COUNT(*) AS reached FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
+                 source_vertex => {seed}, depth_limit => 3, output_mode => 'normalized')"
             ),
             false,
             false,
@@ -37,8 +37,8 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
         spec(
             "bfs_deep",
             format!(
-                "SELECT COUNT(*) AS reached FROM cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
-                 '{{\"output_mode\": \"normalized\"}}')"
+                "SELECT COUNT(*) AS reached FROM cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), \
+                 source_vertex => {seed}, output_mode => 'normalized')"
             ),
             false,
             false,
@@ -47,8 +47,8 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
             "bfs_deep_full",
             format!(
                 "SELECT vertex, distance, predecessor, reachable FROM \
-                 cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
-                 '{{\"output_mode\": \"normalized\"}}')"
+                 cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), source_vertex => {seed}, \
+                 output_mode => 'normalized')"
             ),
             false,
             false,
@@ -57,58 +57,58 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
             "bfs_deep_full_sorted",
             format!(
                 "SELECT vertex, distance, predecessor, reachable FROM \
-                 cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
-                 '{{\"output_mode\": \"normalized\"}}') ORDER BY vertex"
+                 cugraph_bfs(edges => (SELECT src, dst FROM citation_edges), source_vertex => {seed}, \
+                 output_mode => 'normalized') ORDER BY vertex"
             ),
             false,
             false,
         ),
         spec(
             "sssp",
-            format!("SELECT COUNT(*) AS n FROM cugraph_sssp('citation_edges', {seed}, 'src', 'dst', 'weight')"),
+            format!("SELECT COUNT(*) AS n FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM citation_edges), source_vertex => {seed})"),
             false,
             false,
         ),
         spec(
             "wcc",
-            "SELECT COUNT(*) AS n FROM cugraph_weakly_connected_components('citation_edges', 'src', 'dst')".to_string(),
+            "SELECT COUNT(*) AS n FROM cugraph_weakly_connected_components(edges => (SELECT src, dst FROM citation_edges))".to_string(),
             false,
             false,
         ),
         spec(
             "louvain",
-            "SELECT COUNT(DISTINCT partition) AS communities FROM cugraph_louvain('citation_edges', 'src', 'dst', \
-             NULL, '{\"directed\": false}')"
+            "SELECT COUNT(DISTINCT partition) AS communities FROM cugraph_louvain(\
+             edges => (SELECT src, dst FROM citation_edges), directed => false)"
                 .to_string(),
             false,
             false,
         ),
         spec(
             "core_number",
-            "SELECT COUNT(*) AS n FROM cugraph_core_number('citation_edges', 'src', 'dst', NULL, '{\"directed\": \
-             false}')"
+            "SELECT COUNT(*) AS n FROM cugraph_core_number(\
+             edges => (SELECT src, dst FROM citation_edges), directed => false)"
                 .to_string(),
             false,
             false,
         ),
         spec(
             "triangles",
-            "SELECT COUNT(*) AS n FROM cugraph_triangle_count_all('citation_edges', 'src', 'dst', NULL, \
-             '{\"directed\": false}')"
+            "SELECT COUNT(*) AS n FROM cugraph_triangle_count_all(\
+             edges => (SELECT src, dst FROM citation_edges), directed => false)"
                 .to_string(),
             false,
             false,
         ),
         spec(
             "degrees",
-            "SELECT COUNT(*) AS n FROM cugraph_degrees_all('citation_edges', 'src', 'dst')".to_string(),
+            "SELECT COUNT(*) AS n FROM cugraph_degrees_all(edges => (SELECT src, dst FROM citation_edges))".to_string(),
             false,
             false,
         ),
         spec(
             "betweenness",
-            "SELECT COUNT(*) AS n FROM cugraph_betweenness_centrality('citation_edges', 'src', 'dst', NULL, \
-             '{\"k\": 64}')"
+            "SELECT COUNT(*) AS n FROM cugraph_betweenness_centrality(\
+             edges => (SELECT src, dst FROM citation_edges), k => 64)"
                 .to_string(),
             false,
             false,
@@ -130,7 +130,7 @@ pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {
         ),
         spec(
             "graph_enrich",
-            "WITH pr AS (SELECT vertex, value FROM cugraph_pagerank('citation_edges', 'src', 'dst', 'weight')) \
+            "WITH pr AS (SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM citation_edges))) \
              SELECT p.year, COUNT(*) AS papers, MAX(pr.value) AS top_pagerank FROM pr JOIN papers p ON p.paper_id = \
              pr.vertex GROUP BY p.year ORDER BY p.year"
                 .to_string(),

@@ -38,32 +38,34 @@ use tokio::{
 use super::{support::*, *};
 
 const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
-     FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-          '{\"construction_policy\":\"raw_libcugraph\"}') \
+     FROM cugraph_bfs(\
+          edges => (SELECT src, dst FROM raw_edges), source_vertex => 0, \
+          construction_policy => 'raw_libcugraph') \
      ORDER BY vertex";
 
 const RAW_BFS_TOP_K_SQL: &str = "SELECT vertex, distance, predecessor \
-     FROM cugraph_bfs('phase_c_top_k_edges', 0, 'src', 'dst', NULL, \
-          '{\"construction_policy\":\"raw_libcugraph\"}') \
+     FROM cugraph_bfs(\
+          edges => (SELECT src, dst FROM phase_c_top_k_edges), source_vertex => 0, \
+          construction_policy => 'raw_libcugraph') \
      ORDER BY distance \
      LIMIT 100";
 
 const PAGERANK_TOP_K_SQL: &str = "SELECT vertex, value \
-     FROM cugraph_pagerank('phase_c_top_k_edges', 'src', 'dst', 'weight') \
+     FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM phase_c_top_k_edges)) \
      ORDER BY value DESC \
      LIMIT 100";
 
 const PAGERANK_FLOAT32_TOP_K_SQL: &str = "SELECT vertex, value \
-     FROM cugraph_pagerank('phase_c_top_k_edges_float32', 'src', 'dst', 'weight') \
+     FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM phase_c_top_k_edges_float32)) \
      ORDER BY value DESC \
      LIMIT 100";
 
 const PAGERANK_FORCEATLAS2_JOIN_SQL: &str = "WITH pagerank AS (\n\
         SELECT vertex, value AS pagerank_value\n\
-        FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight')\n\
+        FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM graph_edges))\n\
     ), layout AS (\n\
         SELECT vertex, x, y\n\
-        FROM cugraph_force_atlas2('graph_edges', 'src', 'dst', 'weight')\n\
+        FROM cugraph_force_atlas2(edges => (SELECT src, dst, weight FROM graph_edges))\n\
     )\n\
     SELECT p.vertex, p.pagerank_value, l.x, l.y\n\
     FROM layout l JOIN pagerank p ON p.vertex = l.vertex\n\
@@ -183,7 +185,7 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     let df = ctx
         .sql(
             "SELECT vertex, out_degree \
-             FROM cugraph_degrees_all('filtered_edges', 'src', 'dst') \
+             FROM cugraph_degrees_all(edges => (SELECT src, dst FROM filtered_edges)) \
              WHERE out_degree > 0 ORDER BY vertex",
         )
         .await
@@ -245,7 +247,7 @@ async fn functions_only_keeps_sql_limit_outside_the_cugraph_function() {
     );
     register_edge_memtable(&ctx, "limit_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let plan = ctx
-        .sql("SELECT vertex, value FROM cugraph_pagerank('limit_edges', 'src', 'dst', 'weight') LIMIT 2")
+        .sql("SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM limit_edges)) LIMIT 2")
         .await
         .unwrap()
         .create_physical_plan()
@@ -268,7 +270,7 @@ async fn assert_repeated_cugraph_cte_executes(mode: AlgeonGpuExecutionMode, expe
         .sql(
             "WITH graph_result AS (\
                  SELECT vertex, in_degree, out_degree \
-                 FROM cugraph_degrees_all('shared_cte_edges', 'src', 'dst', 'weight')\
+                 FROM cugraph_degrees_all(edges => (SELECT src, dst, weight FROM shared_cte_edges))\
              ) \
              SELECT a.vertex, a.out_degree, b.in_degree \
              FROM graph_result a JOIN graph_result b ON a.vertex = b.vertex \
@@ -421,12 +423,12 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         (
             "PageRank",
             "SELECT vertex, value FROM cugraph_pagerank(\
-             'phase_c_top_k_edges', 'src', 'dst', 'weight') LIMIT 3",
+             edges => (SELECT src, dst, weight FROM phase_c_top_k_edges)) LIMIT 3",
         ),
         (
             "Eigenvector",
             "SELECT vertex, value FROM cugraph_eigenvector_centrality(\
-             'phase_c_top_k_edges', 'src', 'dst', 'weight') LIMIT 3",
+             edges => (SELECT src, dst, weight FROM phase_c_top_k_edges)) LIMIT 3",
         ),
     ] {
         let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
@@ -714,8 +716,10 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
 
     let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
-    let plan =
-        attempt.plan_sql(&ctx, "SELECT * FROM cugraph_degrees_all('tiny_directed_edges', 'src', 'dst')").await.unwrap();
+    let plan = attempt
+        .plan_sql(&ctx, "SELECT * FROM cugraph_degrees_all(edges => (SELECT src, dst FROM tiny_directed_edges))")
+        .await
+        .unwrap();
     let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
     let mut batches = Vec::new();
     while let Some(batch) = stream.next().await {
@@ -802,7 +806,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_hits_and_bfs_use_materialized_ed
     // static graph model; only the four rows surviving Filter should price the
     // deferred graph phase.
     let hits_batches = ctx
-        .sql("SELECT * FROM cugraph_hits('filtered_edges', 'src', 'dst')")
+        .sql("SELECT * FROM cugraph_hits(edges => (SELECT src, dst FROM filtered_edges))")
         .await
         .unwrap()
         .collect()
@@ -815,7 +819,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_hits_and_bfs_use_materialized_ed
     );
 
     let bfs_batches = ctx
-        .sql("SELECT * FROM cugraph_bfs('filtered_edges', 0, 'src', 'dst')")
+        .sql("SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM filtered_edges), source_vertex => 0)")
         .await
         .unwrap()
         .collect()
@@ -836,7 +840,7 @@ async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
     const DEVICE_CAPACITY_BYTES: u64 = 256 * 1024 * 1024;
     const VERTICES: i64 = 60_000;
     const BFS_SQL: &str = "SELECT COUNT(*) AS reached, SUM(distance) AS total \
-         FROM cugraph_bfs('overlap_edges', 0, 'src', 'dst', NULL, '{\"output_mode\": \"normalized\"}')";
+         FROM cugraph_bfs(edges => (SELECT src, dst FROM overlap_edges), source_vertex => 0, output_mode => 'normalized')";
 
     // Parquet edges (not a MemTable) so the planner attaches graph residency
     // and mints a singleflight key: a directed cycle plus antipodal chords
@@ -921,7 +925,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and
     let (backend, ctx) = filtered_local_parquet_context(&path, DEVICE_CAPACITY_BYTES).await;
 
     let batches = ctx
-        .sql("SELECT * FROM cugraph_hits('filtered_edges', 'src', 'dst')")
+        .sql("SELECT * FROM cugraph_hits(edges => (SELECT src, dst FROM filtered_edges))")
         .await
         .unwrap()
         .collect()
@@ -971,7 +975,7 @@ async fn cugraph_sql_gpu_actual_allocation_exceeding_query_cap_reports_memory_li
     let error = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_betweenness_centrality('raw_edges', 'src', 'dst', NULL, '{\"k\": 2}') \
+             FROM cugraph_betweenness_centrality(edges => (SELECT src, dst FROM raw_edges), k => 2) \
              ORDER BY vertex",
         )
         .await
@@ -1020,7 +1024,7 @@ pub async fn run_pagerank_filter_sort_limit_acceptance() {
     let df = ctx
         .sql(
             "SELECT vertex, value \
-             FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM graph_edges)) \
              WHERE value > 0 \
              ORDER BY value DESC, vertex ASC \
              LIMIT 3",
@@ -1103,10 +1107,8 @@ async fn cugraph_sql_gpu_personalized_pagerank_executes_with_side_input() {
         .sql(
             "SELECT vertex, value \
              FROM cugraph_personalized_pagerank(\
-               'ppr_edges', 'src', 'dst', 'weight', \
-               '{\"personalization_table\":\"ppr_seeds\",\
-                 \"personalization_vertex_col\":\"vertex\",\
-                 \"personalization_value_col\":\"value\"}'\
+               edges => (SELECT src, dst, weight FROM ppr_edges), \
+               personalization => (SELECT vertex, value FROM ppr_seeds)\
              ) \
              ORDER BY vertex",
         )
@@ -1146,8 +1148,8 @@ async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
     let batches = ctx
         .sql(
             "SELECT vertex, x, y \
-             FROM cugraph_force_atlas2('layout_edges', 'src', 'dst', 'weight', \
-                  '{\"max_iter\":5,\"seed\":42}') \
+             FROM cugraph_force_atlas2(\
+                  edges => (SELECT src, dst, weight FROM layout_edges), max_iter => 5, seed => 42) \
              ORDER BY vertex",
         )
         .await
@@ -1221,8 +1223,8 @@ async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers
         .sql(
             "SELECT first, second, similarity \
              FROM cugraph_jaccard(\
-               'string_similarity_edges', 'src', 'dst', NULL, \
-               '{\"vertex_pairs_table\":\"string_candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+               edges => (SELECT src, dst FROM string_similarity_edges), \
+               vertex_pairs => (SELECT first, second FROM string_candidate_pairs)\
              ) ORDER BY similarity DESC LIMIT 70",
         )
         .await
@@ -1260,8 +1262,8 @@ async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers
         .sql(
             "SELECT first, second, similarity \
              FROM cugraph_jaccard(\
-               'string_similarity_edges', 'src', 'dst', NULL, \
-               '{\"vertex_pairs_table\":\"string_candidate_pairs_values\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+               edges => (SELECT src, dst FROM string_similarity_edges), \
+               vertex_pairs => (SELECT first, second FROM string_candidate_pairs_values)\
              ) ORDER BY similarity DESC",
         )
         .await
@@ -1321,8 +1323,8 @@ async fn cugraph_sql_gpu_similarity_rejects_actual_null_pair_values() {
     let error = ctx
         .sql(
             "SELECT * FROM cugraph_jaccard(\
-             'similarity_edges', 'src', 'dst', NULL, \
-             '{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}')",
+             edges => (SELECT src, dst FROM similarity_edges), \
+             vertex_pairs => (SELECT first, second FROM candidate_pairs))",
         )
         .await
         .unwrap()
@@ -1345,8 +1347,8 @@ async fn cugraph_sql_gpu_similarity_executes_weighted_jaccard_for_nullable_int64
 
     let sql = "SELECT first, second, similarity \
                FROM cugraph_jaccard(\
-                 'similarity_edges', 'src', 'dst', 'weight', \
-                 '{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+                 edges => (SELECT src, dst, weight FROM similarity_edges), \
+                 vertex_pairs => (SELECT first, second FROM candidate_pairs)\
                )";
     let df = ctx.sql(sql).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
@@ -1375,8 +1377,8 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
     register_i64_similarity_pairs(&ctx, "absent_pairs", false, vec![Some(99)], vec![Some(0)]);
 
     let empty_sql = "SELECT * FROM cugraph_jaccard(\
-                     'similarity_edges', 'src', 'dst', NULL, \
-                     '{\"vertex_pairs_table\":\"empty_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+                     edges => (SELECT src, dst FROM similarity_edges), \
+                     vertex_pairs => (SELECT first, second FROM empty_pairs)\
                    )";
     let empty_df = ctx.sql(empty_sql).await.unwrap();
     let empty_plan = empty_df.create_physical_plan().await.unwrap();
@@ -1393,8 +1395,8 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
     let error = ctx
         .sql(
             "SELECT * FROM cugraph_jaccard(\
-               'similarity_edges', 'src', 'dst', NULL, \
-               '{\"vertex_pairs_table\":\"absent_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}')",
+               edges => (SELECT src, dst FROM similarity_edges), \
+               vertex_pairs => (SELECT first, second FROM absent_pairs))",
         )
         .await
         .unwrap()
@@ -1416,11 +1418,10 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
     let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
-             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"include_edges_table\":\"allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 0, \
+                  construction_policy => 'raw_libcugraph', \
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM allowed_edges))",
         )
         .await
         .unwrap();
@@ -1508,42 +1509,45 @@ async fn cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_sh
     let cases = [
         (
             "source_vertices",
-            "SELECT * FROM cugraph_bfs('camelEdges', NULL, 'edgeSrc', 'edgeDst', NULL, \
-             '{\"source_vertices_table\":\"camelSources\",\"source_vertex_col\":\"sourceVertex\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst FROM camelEdges), \
+             sources => (SELECT \"sourceVertex\" AS vertex FROM camelSources))",
         ),
         (
             "include_vertices",
-            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
-             '{\"include_vertices_table\":\"camelIncluded\",\"include_vertex_col\":\"includeVertex\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst FROM camelEdges), source_vertex => 0, \
+             include_vertices => (SELECT \"includeVertex\" AS vertex FROM camelIncluded))",
         ),
         (
             "exclude_vertices",
-            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
-             '{\"exclude_vertices_table\":\"camelExcluded\",\"exclude_vertex_col\":\"excludeVertex\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst FROM camelEdges), source_vertex => 0, \
+             exclude_vertices => (SELECT \"excludeVertex\" AS vertex FROM camelExcluded))",
         ),
         (
             "target_vertices",
-            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
-             '{\"target_vertices_table\":\"camelTargets\",\"target_vertex_col\":\"targetVertex\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst FROM camelEdges), source_vertex => 0, \
+             target_vertices => (SELECT \"targetVertex\" AS vertex FROM camelTargets))",
         ),
         (
             "include_edges",
-            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
-             '{\"edge_id_col\":\"edgeKey\",\"include_edges_table\":\"camelAllowedEdges\",\
-               \"include_edge_src_col\":\"edgeSource\",\
-               \"include_edge_dst_col\":\"edgeDestination\",\"include_edge_id_col\":\"edgeId\"}')",
+            "SELECT * FROM cugraph_bfs(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst, \"edgeKey\" AS edge_id FROM camelEdges), source_vertex => 0, \
+             include_edges => (SELECT \"edgeSource\" AS src, \"edgeDestination\" AS dst, \"edgeId\" AS edge_id FROM camelAllowedEdges))",
         ),
         (
             "personalization",
-            "SELECT * FROM cugraph_personalized_pagerank('camelEdges', 'edgeSrc', 'edgeDst', 'edgeWeight', \
-             '{\"personalization_table\":\"camelSeeds\",\"personalization_vertex_col\":\"seedVertex\",\
-               \"personalization_value_col\":\"seedValue\"}')",
+            "SELECT * FROM cugraph_personalized_pagerank(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst, \"edgeWeight\" AS weight FROM camelEdges), \
+             personalization => (SELECT \"seedVertex\" AS vertex, \"seedValue\" AS value FROM camelSeeds))",
         ),
         (
             "vertex_pairs",
-            "SELECT * FROM cugraph_jaccard('camelEdges', 'edgeSrc', 'edgeDst', 'edgeWeight', \
-             '{\"vertex_pairs_table\":\"camelPairs\",\"first_vertex_col\":\"pairLeft\",\
-               \"second_vertex_col\":\"pairRight\"}')",
+            "SELECT * FROM cugraph_jaccard(\
+             edges => (SELECT \"edgeSrc\" AS src, \"edgeDst\" AS dst, \"edgeWeight\" AS weight FROM camelEdges), \
+             vertex_pairs => (SELECT \"pairLeft\" AS first, \"pairRight\" AS second FROM camelPairs))",
         ),
     ];
     for (role, sql) in cases {
@@ -1560,9 +1564,9 @@ async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, reachable \
-             FROM cugraph_bfs('raw_edges', [0, 10], 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"output_mode\":\"normalized\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertices => [0, 10], \
+                  construction_policy => 'raw_libcugraph', output_mode => 'normalized')",
         )
         .await
         .unwrap()
@@ -1585,9 +1589,9 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, predecessor, reachable \
-             FROM cugraph_bfs('raw_edges', ['a', 'x'], 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"output_mode\":\"normalized\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertices => ['a', 'x'], \
+                  construction_policy => 'raw_libcugraph', output_mode => 'normalized')",
         )
         .await
         .unwrap()
@@ -1653,12 +1657,10 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     let plan = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', 'bd2f79216e59522ab2ce48a860bcbfdf', 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"depth_limit\":6,\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}') \
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 'bd2f79216e59522ab2ce48a860bcbfdf',\
+                  construction_policy => 'raw_libcugraph', depth_limit => 6, output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets)) \
              ORDER BY path_index",
         )
         .await
@@ -1686,12 +1688,10 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
         .sql(
             "WITH path AS (\
                  SELECT path_index, source, target, vertex, distance \
-                 FROM cugraph_bfs('raw_edges', 'bd2f79216e59522ab2ce48a860bcbfdf', 'src', 'dst', NULL, \
-                      '{\"construction_policy\":\"raw_libcugraph\",\
-                         \"depth_limit\":6,\
-                         \"output_mode\":\"path\",\
-                         \"target_vertices_table\":\"targets\",\
-                         \"target_vertex_col\":\"vertex_id\"}')\
+                 FROM cugraph_bfs(\
+                      edges => (SELECT src, dst FROM raw_edges), source_vertex => 'bd2f79216e59522ab2ce48a860bcbfdf',\
+                      construction_policy => 'raw_libcugraph', depth_limit => 6, output_mode => 'path',\
+                      target_vertices => (SELECT vertex_id AS vertex FROM targets))\
              ) \
              SELECT path.vertex, metadata.label \
              FROM path LEFT JOIN path_metadata metadata ON path.vertex = metadata.vertex",
@@ -1744,12 +1744,10 @@ async fn cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex() 
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"depth_limit\":0,\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
+                  construction_policy => 'raw_libcugraph', depth_limit => 0, output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -1772,13 +1770,10 @@ async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}') \
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets)) \
              ORDER BY path_index",
         )
         .await
@@ -1804,13 +1799,10 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -1831,13 +1823,10 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -1859,15 +1848,11 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_reje
     let error = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\",\
-                     \"include_vertices_table\":\"included\",\
-                     \"include_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets),\
+                  include_vertices => (SELECT vertex_id AS vertex FROM included))",
         )
         .await
         .unwrap()
@@ -1894,15 +1879,11 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rej
     let error = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\",\
-                     \"include_vertices_table\":\"included\",\
-                     \"include_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets),\
+                  include_vertices => (SELECT vertex_id AS vertex FROM included))",
         )
         .await
         .unwrap()
@@ -1928,13 +1909,10 @@ async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
     let error = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -1960,13 +1938,10 @@ async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -1987,13 +1962,10 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
     let batches = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -2015,15 +1987,11 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is
     let error = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\",\
-                     \"include_vertices_table\":\"included\",\
-                     \"include_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets),\
+                  include_vertices => (SELECT vertex_id AS vertex FROM included))",
         )
         .await
         .unwrap()
@@ -2045,25 +2013,28 @@ async fn cugraph_sql_gpu_m1_string_algorithms_preserve_numeric_vertex_identity_c
     register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
 
     let cases = [
-        ("louvain", "SELECT vertex FROM cugraph_louvain('{table}')"),
-        ("eigenvector", "SELECT vertex FROM cugraph_eigenvector_centrality('{table}')"),
-        ("katz", "SELECT vertex FROM cugraph_katz_centrality('{table}')"),
-        ("hits", "SELECT vertex FROM cugraph_hits('{table}')"),
-        ("degrees", "SELECT vertex FROM cugraph_degrees_all('{table}')"),
-        ("in-degrees", "SELECT vertex FROM cugraph_in_degrees_all('{table}')"),
-        ("out-degrees", "SELECT vertex FROM cugraph_out_degrees_all('{table}')"),
-        ("weak components", "SELECT vertex FROM cugraph_weakly_connected_components('{table}')"),
+        ("louvain", "SELECT vertex FROM cugraph_louvain(edges => (SELECT src, dst FROM {table}))"),
+        ("eigenvector", "SELECT vertex FROM cugraph_eigenvector_centrality(edges => (SELECT src, dst FROM {table}))"),
+        ("katz", "SELECT vertex FROM cugraph_katz_centrality(edges => (SELECT src, dst FROM {table}))"),
+        ("hits", "SELECT vertex FROM cugraph_hits(edges => (SELECT src, dst FROM {table}))"),
+        ("degrees", "SELECT vertex FROM cugraph_degrees_all(edges => (SELECT src, dst FROM {table}))"),
+        ("in-degrees", "SELECT vertex FROM cugraph_in_degrees_all(edges => (SELECT src, dst FROM {table}))"),
+        ("out-degrees", "SELECT vertex FROM cugraph_out_degrees_all(edges => (SELECT src, dst FROM {table}))"),
+        (
+            "weak components",
+            "SELECT vertex FROM cugraph_weakly_connected_components(edges => (SELECT src, dst FROM {table}))",
+        ),
         (
             "strong components",
-            "SELECT vertex FROM cugraph_strongly_connected_components('{table}', 'src', 'dst', NULL, '{\"directed\":true}')",
+            "SELECT vertex FROM cugraph_strongly_connected_components(edges => (SELECT src, dst FROM {table}))",
         ),
-        ("triangle count", "SELECT vertex FROM cugraph_triangle_count_all('{table}')"),
-        ("core number", "SELECT vertex FROM cugraph_core_number('{table}')"),
-        ("leiden", "SELECT vertex FROM cugraph_leiden('{table}')"),
-        ("ecg", "SELECT vertex FROM cugraph_ecg('{table}')"),
+        ("triangle count", "SELECT vertex FROM cugraph_triangle_count_all(edges => (SELECT src, dst FROM {table}))"),
+        ("core number", "SELECT vertex FROM cugraph_core_number(edges => (SELECT src, dst FROM {table}))"),
+        ("leiden", "SELECT vertex FROM cugraph_leiden(edges => (SELECT src, dst FROM {table}))"),
+        ("ecg", "SELECT vertex FROM cugraph_ecg(edges => (SELECT src, dst FROM {table}))"),
         (
             "force atlas 2",
-            "SELECT vertex FROM cugraph_force_atlas2('{table}', 'src', 'dst', NULL, '{\"max_iter\":5,\"seed\":42}')",
+            "SELECT vertex FROM cugraph_force_atlas2(edges => (SELECT src, dst FROM {table}), max_iter => 5, seed => 42)",
         ),
     ];
 
@@ -2083,8 +2054,8 @@ async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_ide
     register_string_algorithm_parity_side_inputs(&ctx);
 
     let string_ppr = "SELECT vertex FROM cugraph_personalized_pagerank(\
-        'string_edges', 'src', 'dst', NULL, \
-        '{\"personalization_table\":\"string_ppr_seeds\",\"personalization_vertex_col\":\"vertex\",\"personalization_value_col\":\"value\"}')";
+        edges => (SELECT src, dst FROM string_edges), \
+        personalization => (SELECT vertex, value FROM string_ppr_seeds))";
     let numeric_ppr =
         string_ppr.replace("string_edges", "numeric_edges").replace("string_ppr_seeds", "numeric_ppr_seeds");
     assert_eq!(identity_rows(&ctx, string_ppr, 1).await, identity_rows(&ctx, &numeric_ppr, 1).await);
@@ -2092,8 +2063,8 @@ async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_ide
     for function in ["cugraph_jaccard", "cugraph_sorensen", "cugraph_overlap", "cugraph_cosine"] {
         let string_sql = format!(
             "SELECT first, second FROM {function}(\
-             'string_edges', 'src', 'dst', NULL, \
-             '{{\"vertex_pairs_table\":\"string_candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+             edges => (SELECT src, dst FROM string_edges), \
+             vertex_pairs => (SELECT first, second FROM string_candidate_pairs))"
         );
         let numeric_sql = string_sql
             .replace("string_edges", "numeric_edges")
@@ -2105,8 +2076,8 @@ async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_ide
         );
     }
 
-    let string_k_core = "SELECT src, dst FROM cugraph_k_core('string_edges')";
-    let numeric_k_core = "SELECT src, dst FROM cugraph_k_core('numeric_edges')";
+    let string_k_core = "SELECT src, dst FROM cugraph_k_core(edges => (SELECT src, dst FROM string_edges))";
+    let numeric_k_core = "SELECT src, dst FROM cugraph_k_core(edges => (SELECT src, dst FROM numeric_edges))";
     assert_eq!(identity_rows(&ctx, string_k_core, 2).await, identity_rows(&ctx, numeric_k_core, 2).await);
     drop_session_context_on_blocking_thread(ctx).await;
 }
@@ -2131,7 +2102,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
         .unwrap();
     ctx.sql(
         "CREATE VIEW core_edges AS \
-         SELECT src, dst FROM cugraph_k_core('graph_edges_i32', 'src', 'dst', NULL, '{\"k\":1}')",
+         SELECT src, dst FROM cugraph_k_core(edges => (SELECT src, dst FROM graph_edges_i32), k => 1)",
     )
     .await
     .unwrap()
@@ -2140,7 +2111,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
     .unwrap();
 
     let outer = ctx
-        .sql("SELECT vertex, value FROM cugraph_pagerank('core_edges', 'src', 'dst') ORDER BY vertex")
+        .sql("SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM core_edges)) ORDER BY vertex")
         .await
         .unwrap();
     assert_eq!(outer.schema().field(0).data_type(), &DataType::Int32);
@@ -2156,7 +2127,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
 
     ctx.sql(
         "CREATE VIEW top_seeds AS \
-         SELECT vertex, value FROM cugraph_pagerank('graph_edges_i32', 'src', 'dst') \
+         SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM graph_edges_i32)) \
          ORDER BY value DESC, vertex LIMIT 2",
     )
     .await
@@ -2167,10 +2138,8 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
     let personalized = ctx
         .sql(
             "SELECT vertex, value FROM cugraph_personalized_pagerank(\
-                 'graph_edges_i32', 'src', 'dst', NULL, \
-                 '{\"personalization_table\":\"top_seeds\",\
-                    \"personalization_vertex_col\":\"vertex\",\
-                    \"personalization_value_col\":\"value\"}') \
+                 edges => (SELECT src, dst FROM graph_edges_i32), \
+                 personalization => (SELECT vertex, value FROM top_seeds)) \
              ORDER BY vertex",
         )
         .await
@@ -2188,7 +2157,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
 
     ctx.sql(
         "CREATE VIEW string_top_seeds AS \
-         SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+         SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) \
          ORDER BY value DESC, vertex LIMIT 2",
     )
     .await
@@ -2199,10 +2168,8 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
     let string_personalized = ctx
         .sql(
             "SELECT vertex, value FROM cugraph_personalized_pagerank(\
-                 'string_edges', 'src', 'dst', NULL, \
-                 '{\"personalization_table\":\"string_top_seeds\",\
-                    \"personalization_vertex_col\":\"vertex\",\
-                    \"personalization_value_col\":\"value\"}') \
+                 edges => (SELECT src, dst FROM string_edges), \
+                 personalization => (SELECT vertex, value FROM string_top_seeds)) \
              ORDER BY value DESC, vertex LIMIT 5",
         )
         .await
@@ -2230,29 +2197,29 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
             "aggregate",
             "SELECT COUNT(value) AS count_value, SUM(value) AS sum_value, \
                     MIN(value) AS min_value, MAX(value) AS max_value \
-             FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight')",
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM ordinary_graph_edges))",
         ),
         (
             "provenance union",
             "SELECT vertex, 'pagerank' AS provenance \
-             FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM ordinary_graph_edges)) \
              UNION ALL \
              SELECT vertex, 'katz' AS provenance \
-             FROM cugraph_katz_centrality('ordinary_graph_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_katz_centrality(edges => (SELECT src, dst, weight FROM ordinary_graph_edges)) \
              ORDER BY provenance",
         ),
         (
             "global row number",
             "SELECT vertex, value, \
                     ROW_NUMBER() OVER (ORDER BY value DESC, vertex) AS row_number \
-             FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM ordinary_graph_edges)) \
              ORDER BY row_number",
         ),
         (
             "global row number limit",
             "SELECT vertex, value, \
                     ROW_NUMBER() OVER (ORDER BY value DESC, vertex) AS row_number \
-             FROM cugraph_pagerank('row_number_limit_edges', 'src', 'dst', 'weight') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM row_number_limit_edges)) \
              ORDER BY row_number \
              LIMIT 3",
         ),
@@ -2286,20 +2253,20 @@ async fn cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows() {
     let selectors = [
         (
             "sssp",
-            "SELECT vertex, predecessor FROM cugraph_sssp('string_edges', 'a', 'src', 'dst', 'weight')",
-            "SELECT vertex, predecessor FROM cugraph_sssp('numeric_edges', 1, 'src', 'dst', 'weight')",
+            "SELECT vertex, predecessor FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM string_edges), source_vertex => 'a')",
+            "SELECT vertex, predecessor FROM cugraph_sssp(edges => (SELECT src, dst, weight FROM numeric_edges), source_vertex => 1)",
             2,
         ),
         (
             "betweenness",
-            "SELECT vertex FROM cugraph_betweenness_centrality('string_edges', 'src', 'dst', NULL, '{\"seeds\":[\"a\",\"c\"]}')",
-            "SELECT vertex FROM cugraph_betweenness_centrality('numeric_edges', 'src', 'dst', NULL, '{\"seeds\":[1,3]}')",
+            "SELECT vertex FROM cugraph_betweenness_centrality(edges => (SELECT src, dst FROM string_edges), seeds => ['a', 'c'])",
+            "SELECT vertex FROM cugraph_betweenness_centrality(edges => (SELECT src, dst FROM numeric_edges), seeds => [1, 3])",
             1,
         ),
         (
             "edge betweenness",
-            "SELECT source, destination FROM cugraph_edge_betweenness_centrality('string_edges', 'src', 'dst', NULL, '{\"seeds\":[\"a\",\"c\"]}')",
-            "SELECT source, destination FROM cugraph_edge_betweenness_centrality('numeric_edges', 'src', 'dst', NULL, '{\"seeds\":[1,3]}')",
+            "SELECT source, destination FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM string_edges), seeds => ['a', 'c'])",
+            "SELECT source, destination FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM numeric_edges), seeds => [1, 3])",
             2,
         ),
     ];
@@ -2320,11 +2287,10 @@ async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, predecessor, reachable \
-             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"source_vertices_table\":\"bfs_sources\",\
-                     \"source_vertex_col\":\"vertex_id\",\
-                     \"output_mode\":\"normalized\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges),\
+                  sources => (SELECT vertex_id AS vertex FROM bfs_sources), output_mode => 'normalized',\
+                  construction_policy => 'raw_libcugraph')",
         )
         .await
         .unwrap()
@@ -2346,7 +2312,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     register_string_vertex_memtable(&ctx, "node_universe", "vertex", &["a", "b", "c", "d", "isolated"]);
     let large_limit = HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
     register_large_string_pagerank_edges(&ctx, "large_string_edges", "large_numeric_edges", large_limit);
-    let string_sql = "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst')";
+    let string_sql = "SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges))";
 
     let coverage = validate_query(&ctx, string_sql).await.unwrap();
     assert_eq!(coverage.gpu_path(), "native");
@@ -2361,20 +2327,22 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let string_batches = collect(Arc::clone(&string_plan), ctx.task_ctx()).await.unwrap();
 
     let numeric_batches = ctx
-        .sql("SELECT vertex, value FROM cugraph_pagerank('numeric_edges', 'src', 'dst')")
+        .sql("SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM numeric_edges))")
         .await
         .unwrap()
         .collect()
         .await
         .unwrap();
-    let limited_df =
-        ctx.sql("SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') LIMIT 2").await.unwrap();
+    let limited_df = ctx
+        .sql("SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) LIMIT 2")
+        .await
+        .unwrap();
     let limited_plan = limited_df.create_physical_plan().await.unwrap();
     let limited_rows = collect(limited_plan, ctx.task_ctx()).await.unwrap();
     assert_eq!(limited_rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     let top_k_df = ctx
         .sql(
-            "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+            "SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) \
              ORDER BY value DESC LIMIT 2",
         )
         .await
@@ -2388,20 +2356,20 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
 
     let direct_large_sql = format!(
         "SELECT vertex, value \
-         FROM cugraph_pagerank('large_string_edges', 'src', 'dst') \
+         FROM cugraph_pagerank(edges => (SELECT src, dst FROM large_string_edges)) \
          ORDER BY value DESC \
          LIMIT {large_limit}"
     );
     let nested_large_sql = format!(
         "SELECT vertex, value \
          FROM (SELECT vertex, value \
-               FROM cugraph_pagerank('large_string_edges', 'src', 'dst') \
+               FROM cugraph_pagerank(edges => (SELECT src, dst FROM large_string_edges)) \
                ORDER BY value DESC \
                LIMIT {large_limit}) AS ranked"
     );
     let outer_large_sql = format!(
         "SELECT vertex, value \
-         FROM (SELECT vertex, value FROM cugraph_pagerank('large_string_edges', 'src', 'dst')) AS ranked \
+         FROM (SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM large_string_edges))) AS ranked \
          ORDER BY value DESC \
          LIMIT {large_limit}"
     );
@@ -2433,7 +2401,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
 
     let numeric_large_sql = format!(
         "SELECT vertex, value \
-         FROM cugraph_pagerank('large_numeric_edges', 'src', 'dst') \
+         FROM cugraph_pagerank(edges => (SELECT src, dst FROM large_numeric_edges)) \
          ORDER BY value DESC \
          LIMIT {large_limit}"
     );
@@ -2541,54 +2509,54 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         (
             "PageRank",
             "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM cugraph_pagerank('string_edges', 'src', 'dst') g \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) g \
              JOIN vertex_metadata m ON g.vertex = m.\"vertexId\" \
              ORDER BY g.value DESC LIMIT 3",
         ),
         (
             "BFS",
             "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
+             FROM cugraph_bfs(edges => (SELECT src, dst FROM string_edges), source_vertex => 'a') g \
              JOIN vertex_metadata m ON g.vertex = m.\"vertexId\" \
              ORDER BY g.distance, g.vertex LIMIT 10",
         ),
         (
             "PageRank non-unique Left",
             "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM cugraph_pagerank('string_edges', 'src', 'dst') g \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) g \
              LEFT JOIN vertex_metadata m ON g.vertex = m.\"vertexId\"",
         ),
         (
             "BFS non-unique Left",
             "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
+             FROM cugraph_bfs(edges => (SELECT src, dst FROM string_edges), source_vertex => 'a') g \
              LEFT JOIN vertex_metadata m ON g.vertex = m.\"vertexId\"",
         ),
         (
             "PageRank Left pre-enrichment Top-K",
             "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM (SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+             FROM (SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) \
                    ORDER BY value DESC LIMIT 3) g \
              LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\"",
         ),
         (
             "PageRank Left post-enrichment Top-K",
             "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM cugraph_pagerank('string_edges', 'src', 'dst') g \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) g \
              LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\" \
              ORDER BY g.value DESC LIMIT 3",
         ),
         (
             "BFS Left pre-enrichment Top-K",
             "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM (SELECT vertex, distance FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') \
+             FROM (SELECT vertex, distance FROM cugraph_bfs(edges => (SELECT src, dst FROM string_edges), source_vertex => 'a') \
                    ORDER BY distance, vertex LIMIT 3) g \
              LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\"",
         ),
         (
             "BFS Left post-enrichment Top-K",
             "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
-             FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
+             FROM cugraph_bfs(edges => (SELECT src, dst FROM string_edges), source_vertex => 'a') g \
              LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\" \
              ORDER BY g.distance, g.vertex LIMIT 3",
         ),
@@ -2620,8 +2588,8 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     let filtered_roles_sql = "WITH scores AS (\
              SELECT first, second, similarity \
              FROM cugraph_jaccard(\
-               'string_edges', 'src', 'dst', NULL, \
-               '{\"vertex_pairs_table\":\"role_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+               edges => (SELECT src, dst FROM string_edges),\
+               vertex_pairs => (SELECT first, second FROM role_pairs)\
              )\
          ), roles AS (\
              SELECT \"vertexId\", \"vertexName\" \
@@ -2657,7 +2625,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
 
     let ranked_metadata_sql = "WITH ranked AS (\
              SELECT vertex, value \
-             FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+             FROM cugraph_pagerank(edges => (SELECT src, dst FROM string_edges)) \
              ORDER BY value DESC, vertex \
              LIMIT 5\
          ), metadata AS (\
@@ -2789,12 +2757,10 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
     let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor, reachable \
-             FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"include_edges_table\":\"allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\",\
-                     \"output_mode\":\"normalized\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 'a',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'normalized',\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM allowed_edges))",
         )
         .await
         .unwrap();
@@ -2816,9 +2782,9 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, predecessor, reachable \
-             FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"output_mode\":\"normalized\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 'a',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'normalized')",
         )
         .await
         .unwrap()
@@ -2843,14 +2809,11 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
     let df = ctx
         .sql(
             "SELECT path_index, source, target, vertex, distance \
-             FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"output_mode\":\"path\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\",\
-                     \"include_edges_table\":\"allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\"}') \
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 'a',\
+                  construction_policy => 'raw_libcugraph', output_mode => 'path',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets),\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM allowed_edges)) \
              ORDER BY path_index",
         )
         .await
@@ -2874,11 +2837,10 @@ async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
     let batches = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
-             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"include_edges_table\":\"allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
+                  construction_policy => 'raw_libcugraph',\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM allowed_edges))",
         )
         .await
         .unwrap()
@@ -2901,10 +2863,10 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
     let error = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
-             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"target_vertices_table\":\"targets\",\
-                     \"target_vertex_col\":\"vertex_id\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
+                  construction_policy => 'raw_libcugraph',\
+                  target_vertices => (SELECT vertex_id AS vertex FROM targets))",
         )
         .await
         .unwrap()
@@ -2916,7 +2878,7 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
     let algeon = typed_algeon_error(&error);
     assert_eq!(algeon.fact_value("reason"), Some("predicate_column_contains_nulls"));
     assert_eq!(algeon.fact_value("predicate_role"), Some("target_vertices"));
-    assert_eq!(algeon.fact_value("column"), Some("vertex_id"));
+    assert_eq!(algeon.fact_value("column"), Some("vertex"));
 }
 
 #[tokio::test]
@@ -2928,11 +2890,10 @@ async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() 
     let df = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
-             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
-                  '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"include_edges_table\":\"allowed_edges\",\
-                     \"include_edge_src_col\":\"allowed_src\",\
-                     \"include_edge_dst_col\":\"allowed_dst\"}')",
+             FROM cugraph_bfs(\
+                  edges => (SELECT src, dst FROM raw_edges), source_vertex => 0,\
+                  construction_policy => 'raw_libcugraph',\
+                  include_edges => (SELECT allowed_src AS src, allowed_dst AS dst FROM allowed_edges))",
         )
         .await
         .unwrap();

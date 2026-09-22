@@ -27,7 +27,7 @@ JOIN ai_nodes b ON b.paper_id = e.dst;
 
 WITH community_fos AS (
   SELECT c."partition" AS community, p.primary_fos, COUNT(*) AS n
-  FROM cugraph_louvain('ai_edges', 'src', 'dst') c
+  FROM cugraph_louvain(edges => (SELECT src, dst FROM ai_edges)) c
   JOIN papers p ON p.paper_id = c.vertex
   GROUP BY c."partition", p.primary_fos),
 ranked AS (

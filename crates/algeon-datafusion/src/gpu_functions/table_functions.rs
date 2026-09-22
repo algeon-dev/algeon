@@ -480,7 +480,7 @@ mod tests {
         let valid = ctx
             .sql(
                 "SELECT valid, details_json FROM gpu_validate_call('fake_operation', \
-                 '{\"schema_version\":1,\"relations\":{\"input\":{\"table\":\"input\"}},\"options\":{}}')",
+                 '{\"relations\":{\"input\":{\"table\":\"input\"}},\"options\":{}}')",
             )
             .await
             .unwrap()
@@ -504,7 +504,7 @@ mod tests {
         }
         let ctx = SessionContext::new_with_state(state_builder.build());
         let batches = ctx
-            .sql("SELECT error_code FROM gpu_validate_call('missing', '{\"schema_version\":1,\"relations\":{},\"options\":{}}')")
+            .sql("SELECT error_code FROM gpu_validate_call('missing', '{\"relations\":{},\"options\":{}}')")
             .await
             .unwrap()
             .collect()

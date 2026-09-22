@@ -1032,7 +1032,7 @@ mod tests {
 
         let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
         let mut stream = attempt
-            .sql(&ctx, "SELECT * FROM cugraph_pagerank('edges')")
+            .sql(&ctx, "SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges))")
             .await
             .expect("feature-off execution must fail from the returned result stream");
         let error = stream

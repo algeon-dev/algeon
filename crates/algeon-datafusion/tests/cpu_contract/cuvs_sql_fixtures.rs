@@ -14,16 +14,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 
-pub const KNN_OPTIONS: &str = r#"{
-  "dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},
-  "queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},
-  "k":1,
-  "metric":"cosine"
-}"#;
-
-pub const KMEANS_OPTIONS: &str = r#"{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":1}"#;
-
-pub const PCA_OPTIONS: &str = r#"{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_components":2}"#;
+pub const KMEANS_OPTIONS: &str = r#"{"n_clusters":1}"#;
 
 pub fn cuvs_context() -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features()
@@ -45,6 +36,7 @@ pub fn cuvs_context_with_native_execution_config(config: AlgeonNativeExecutionCo
 fn context_with_state(state: SessionState) -> SessionContext {
     let ctx = SessionContext::new_with_state(state);
     register_table(&ctx, "dataset_vectors", vector_schema("item_id", DataType::Int64, false, 2));
+    register_table(&ctx, "canonical_vectors", vector_schema("id", DataType::Int64, false, 2));
     register_table(&ctx, "query_vectors", vector_schema("query_id", DataType::Utf8, false, 2));
     register_table(&ctx, "one_dim_queries", vector_schema("query_id", DataType::Utf8, false, 1));
     register_table(&ctx, "nullable_vectors", vector_schema("item_id", DataType::Int64, true, 2));

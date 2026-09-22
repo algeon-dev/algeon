@@ -109,7 +109,7 @@ impl Pipeline {
                     sql: format!(
                         "WITH pr AS ( \
                            SELECT vertex, value \
-                           FROM cugraph_pagerank('citation_edges', 'src', 'dst', 'weight') \
+                           FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM citation_edges)) \
                          ) \
                          SELECT p.paper_id, p.title, p.year, pr.value AS pagerank \
                          FROM pr \
@@ -123,18 +123,13 @@ impl Pipeline {
             PipelineKind::GraphBfsHops => {
                 let seed = int_param(self, values.object, "seed_paper_id", missing_policy)?;
                 let max_depth = int_param(self, values.object, "max_depth", missing_policy)?;
-                let options = sql_string_literal(
-                    &json!({
-                        "depth_limit": max_depth,
-                        "output_mode": "normalized"
-                    })
-                    .to_string(),
-                );
                 Ok(RenderedPipeline {
                     sql: format!(
                         "WITH bfs AS ( \
                            SELECT vertex, distance, reachable \
-                           FROM cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, {options}) \
+                           FROM cugraph_bfs(\
+                             edges => (SELECT src, dst FROM citation_edges), source_vertex => {seed}, \
+                             depth_limit => {max_depth}, output_mode => 'normalized') \
                          ) \
                          SELECT b.distance, COUNT(*) AS papers, MIN(p.title) AS sample_title \
                          FROM bfs b \
@@ -493,10 +488,6 @@ fn param_spec(pipeline: &Pipeline, name: &'static str) -> &'static ParamSpec {
         .iter()
         .find(|param| param.name == name)
         .expect("pipeline renderer requested an undeclared parameter")
-}
-
-fn sql_string_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 pub fn summaries(registry: PipelineRegistry) -> Vec<PipelineSummary> {

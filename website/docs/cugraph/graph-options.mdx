@@ -23,9 +23,9 @@ narrows either part of this shared contract.
 
 ## Construction options
 
-Every `cugraph_*` function accepts these shared options inside `options_json`,
-alongside any algorithm-specific options. They control how the GPU graph is
-built from the edge relation.
+Every `cugraph_*` function accepts these shared named value arguments alongside
+any algorithm-specific values. They control how the GPU graph is built from the
+edge relation.
 
 | Option | Type | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- |
@@ -87,7 +87,7 @@ Leave the option unset to use the default `python_cugraph` policy:
 
 ```sql
 SELECT *
-FROM cugraph_pagerank('edges', 'src', 'dst');
+FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges));
 ```
 
 Override one call when the edge relation is already prepared for raw
@@ -96,16 +96,13 @@ libcugraph-style construction:
 ```sql
 SELECT *
 FROM cugraph_pagerank(
-  'canonical_edges',
-  'src',
-  'dst',
-  'weight',
-  '{"construction_policy":"raw_libcugraph"}'
+  edges => (SELECT src, dst, weight FROM canonical_edges),
+  construction_policy => 'raw_libcugraph'
 );
 ```
 
 On the standalone Flight SQL server, set a process default with
-`ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY`. Per-call `options_json` still wins:
+`ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY`. A per-call named value still wins:
 
 ```bash
 ALGEON_SERVER_CUGRAPH_CONSTRUCTION_POLICY=raw_libcugraph \
@@ -121,11 +118,9 @@ Use `EXPLAIN` when the distinction matters:
 EXPLAIN
 SELECT *
 FROM cugraph_louvain(
-  'edges',
-  'src',
-  'dst',
-  'weight',
-  '{"directed":false,"construction_policy":"python_cugraph"}'
+  edges => (SELECT src, dst, weight FROM edges),
+  directed => false,
+  construction_policy => 'python_cugraph'
 );
 ```
 

@@ -12,7 +12,7 @@ papers with more, but shallower, citations.
 
 ```sql
 SELECT p.title, p.year, p.n_citation, r.value AS pagerank
-FROM cugraph_pagerank('citation_edges', 'src', 'dst') r
+FROM cugraph_pagerank(edges => (SELECT src, dst FROM citation_edges)) r
 JOIN papers p ON p.paper_id = r.vertex
 ORDER BY r.value DESC
 LIMIT 5;
@@ -42,7 +42,7 @@ PageRank ranks, by its own algorithm, among 4.9 million papers.
 ```sql
 WITH ranked AS (
   SELECT vertex, value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rank
-  FROM cugraph_pagerank('citation_edges', 'src', 'dst'))
+  FROM cugraph_pagerank(edges => (SELECT src, dst FROM citation_edges)))
 SELECT r.rank, p.title, p.year, r.value
 FROM ranked r JOIN papers p ON p.paper_id = r.vertex
 WHERE r.vertex = 2066636486;
@@ -56,10 +56,10 @@ Rank **#115** of 4,894,081 in this run.
 
 ### SQL defines which graph the GPU sees
 
-The first argument is any relation name, including a view. Joining the edge
-list to `papers` on **both** endpoints restricts the graph to citations within
-a chosen era, and PageRank then ranks the most important papers within that
-window (here, the pre-2000 literature).
+The named `edges` relation can read any table or view. Joining the edge list to
+`papers` on **both** endpoints restricts the graph to citations within a chosen
+era, and PageRank then ranks the most important papers within that window (here,
+the pre-2000 literature).
 
 ```sql
 CREATE VIEW edges_pre2000 AS
@@ -70,7 +70,7 @@ JOIN papers pd ON pd.paper_id = e.dst
 WHERE ps.year BETWEEN 1901 AND 2000 AND pd.year BETWEEN 1901 AND 2000;
 
 SELECT p.year, p.title
-FROM cugraph_pagerank('edges_pre2000', 'src', 'dst') r
+FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges_pre2000)) r
 JOIN papers p ON p.paper_id = r.vertex
 ORDER BY r.value DESC
 LIMIT 6;

@@ -10,7 +10,7 @@ field while surveying prior literature:
 
 ```sql
 SELECT d.in_degree, d.out_degree, p.year, p.title
-FROM cugraph_degrees_all('citation_edges', 'src', 'dst') d
+FROM cugraph_degrees_all(edges => (SELECT src, dst FROM citation_edges)) d
 JOIN papers p ON p.paper_id = d.vertex
 WHERE d.out_degree > 200 AND d.in_degree > 2000
 ORDER BY d.in_degree DESC
