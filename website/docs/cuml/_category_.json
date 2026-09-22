@@ -1,0 +1,9 @@
+{
+  "label": "cuML SQL API (WIP)",
+  "position": 5.6,
+  "collapsed": true,
+  "link": {
+    "type": "doc",
+    "id": "cuml/overview"
+  }
+}

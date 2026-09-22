@@ -1,11 +1,15 @@
 use std::{
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll},
 };
 
 use arrow::array::new_empty_array;
 use cudf::DataFrame;
+use futures::{StreamExt, stream::iter};
 use query_engine::{
     error::QueryErrorCode, native_error::cudf_query_error, plan::QueryPlan, runtime::ExecutionCancellation,
 };
@@ -218,10 +222,10 @@ pub(super) async fn collect_cugraph_inputs(
             error,
         ))
     })?;
-    let mut reservation = MemoryConsumer::new(CUGRAPH_HOST_INPUT_MEMORY_CONSUMER)
+    let reservation = MemoryConsumer::new(CUGRAPH_HOST_INPUT_MEMORY_CONSUMER)
         .with_can_spill(false)
         .register(task_context.memory_pool());
-    let mut staged_bytes = 0usize;
+    let staged_bytes = AtomicUsize::new(0);
     let host_evidence = HostReservationEvidence::new(max_input_staging_bytes, max_output_staging_bytes);
     let edge = stage_cugraph_source(
         "edge",
@@ -229,8 +233,8 @@ pub(super) async fn collect_cugraph_inputs(
         Arc::clone(&task_context),
         cancellation,
         max_input_staging_bytes,
-        &mut staged_bytes,
-        &mut reservation,
+        &staged_bytes,
+        &reservation,
     )
     .await?;
     let mut predicates = Vec::with_capacity(predicate_sources.len());
@@ -242,8 +246,8 @@ pub(super) async fn collect_cugraph_inputs(
                 Arc::clone(&task_context),
                 cancellation,
                 max_input_staging_bytes,
-                &mut staged_bytes,
-                &mut reservation,
+                &staged_bytes,
+                &reservation,
             )
             .await?,
         );
@@ -257,8 +261,8 @@ async fn stage_cugraph_source(
     task_context: Arc<TaskContext>,
     cancellation: &ExecutionCancellation,
     max_staging_bytes: usize,
-    staged_bytes: &mut usize,
-    reservation: &mut MemoryReservation,
+    staged_bytes: &AtomicUsize,
+    reservation: &MemoryReservation,
 ) -> Result<StagedCugraphSource> {
     if native_gpu_resident_producer(plan.as_ref()).is_some() {
         let plan = prepare_gpu_resident_producer_for_execution(plan, Arc::clone(&task_context)).await?;
@@ -272,18 +276,38 @@ async fn stage_cugraph_source(
         validate_host_wrapped_gpu_execution(plan.as_ref(), task_context.as_ref())?;
     }
 
+    // Every partition stays in flight: a DataFusion operator can hold one output partition until
+    // its siblings progress (a CollectLeft hash join's dynamic filter waits for every probe
+    // partition to report build bounds), so draining partitions one at a time deadlocks.
+    // `buffered` still yields partitions in ordinal order, keeping the staged edge order stable.
     let partition_count = plan.properties().output_partitioning().partition_count();
-    let mut batches = Vec::new();
-    for partition in 0..partition_count {
-        check_host_staging_cancellation(cancellation)?;
-        let mut stream = plan.execute(partition, Arc::clone(&task_context))?;
-        while let Some(batch) = stream.try_next().await? {
-            check_host_staging_cancellation(cancellation)?;
-            reserve_host_staging_batch(source_kind, "input", &batch, max_staging_bytes, staged_bytes, reservation)?;
-            batches.push(batch);
-        }
-    }
-    Ok(StagedCugraphSource::Host { schema, batches })
+    let partitions = iter(0..partition_count)
+        .map(|partition| {
+            let plan = &plan;
+            let task_context = Arc::clone(&task_context);
+            async move {
+                check_host_staging_cancellation(cancellation)?;
+                let mut stream = plan.execute(partition, task_context)?;
+                let mut batches = Vec::new();
+                while let Some(batch) = stream.try_next().await? {
+                    check_host_staging_cancellation(cancellation)?;
+                    reserve_host_staging_batch(
+                        source_kind,
+                        "input",
+                        &batch,
+                        max_staging_bytes,
+                        staged_bytes,
+                        reservation,
+                    )?;
+                    batches.push(batch);
+                }
+                Ok::<_, DataFusionError>(batches)
+            }
+        })
+        .buffered(partition_count.max(1))
+        .try_collect::<Vec<_>>()
+        .await?;
+    Ok(StagedCugraphSource::Host { schema, batches: partitions.into_iter().flatten().collect() })
 }
 
 pub(super) fn check_host_staging_cancellation(cancellation: &ExecutionCancellation) -> Result<()> {
@@ -301,17 +325,24 @@ fn reserve_host_staging_batch(
     boundary: &'static str,
     batch: &RecordBatch,
     max_staging_bytes: usize,
-    staged_bytes: &mut usize,
-    reservation: &mut MemoryReservation,
+    staged_bytes: &AtomicUsize,
+    reservation: &MemoryReservation,
 ) -> Result<()> {
     let batch_bytes = get_record_batch_memory_size(batch);
-    let Some(next_staged_bytes) = staged_bytes.checked_add(batch_bytes) else {
-        return Err(host_staging_limit_error(source_kind, boundary, *staged_bytes, batch_bytes, max_staging_bytes));
+    // Claim through compare-exchange so concurrently polled partitions cannot jointly overshoot
+    // the cumulative cap; a denied pool reservation below returns the claim.
+    let staged = loop {
+        let staged = staged_bytes.load(Ordering::Relaxed);
+        let next = staged
+            .checked_add(batch_bytes)
+            .filter(|next| *next <= max_staging_bytes)
+            .ok_or_else(|| host_staging_limit_error(source_kind, boundary, staged, batch_bytes, max_staging_bytes))?;
+        if staged_bytes.compare_exchange(staged, next, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            break staged;
+        }
     };
-    if next_staged_bytes > max_staging_bytes {
-        return Err(host_staging_limit_error(source_kind, boundary, *staged_bytes, batch_bytes, max_staging_bytes));
-    }
     reservation.try_grow(batch_bytes).map_err(|source| {
+        staged_bytes.fetch_sub(batch_bytes, Ordering::Relaxed);
         DataFusionError::from(
             Error::new(
                 ErrorCode::MemoryReservationFailed,
@@ -321,11 +352,10 @@ fn reserve_host_staging_batch(
             .with_fact("boundary", boundary)
             .with_fact("source_kind", source_kind)
             .with_fact("requested_bytes", batch_bytes)
-            .with_fact("staged_bytes", *staged_bytes)
+            .with_fact("staged_bytes", staged)
             .with_source(source),
         )
     })?;
-    *staged_bytes = next_staged_bytes;
     Ok(())
 }
 

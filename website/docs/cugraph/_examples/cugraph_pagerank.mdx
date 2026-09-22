@@ -37,7 +37,9 @@ a performance figure.
 
 The output of a `cugraph_*` function is a plain relation, so `ROW_NUMBER()`
 applies directly to it. This query finds where the paper that introduced
-PageRank ranks, by its own algorithm, among 4.9 million papers.
+PageRank ranks, by its own algorithm, among 4.9 million papers. The corpus
+holds two 1998 records with this title (the WWW conference paper and a journal
+record with two in-corpus citations), so the filter also pins `venue`.
 
 ```sql
 WITH ranked AS (
@@ -45,7 +47,8 @@ WITH ranked AS (
   FROM cugraph_pagerank(edges => (SELECT src, dst FROM citation_edges)))
 SELECT r.rank, p.title, p.year, r.value
 FROM ranked r JOIN papers p ON p.paper_id = r.vertex
-WHERE r.vertex = 2066636486;
+WHERE p.title = 'The anatomy of a large-scale hypertextual Web search engine'
+  AND p.year = 1998 AND p.venue = 'The Web Conference';
 ```
 
 | rank | title | year | value |
@@ -62,7 +65,7 @@ era, and PageRank then ranks the most important papers within that window (here,
 the pre-2000 literature).
 
 ```sql
-CREATE VIEW edges_pre2000 AS
+CREATE OR REPLACE VIEW edges_pre2000 AS
 SELECT e.src, e.dst
 FROM citation_edges e
 JOIN papers ps ON ps.paper_id = e.src

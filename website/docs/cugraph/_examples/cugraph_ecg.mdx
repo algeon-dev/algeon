@@ -57,14 +57,14 @@ ORDER BY purity_pct DESC;
 
 | algorithm | communities | ge100 | purity_pct |
 |---|---|---|---|
-| leiden | 2,670 | 16 | 44.1 |
-| ecg | 5,014 | 41 | 41.7 |
-| louvain | 1,960 | 14 | 38.5 |
+| ecg | 1,932 | 41 | 47.7 |
+| louvain | 1,233 | 27 | 47.1 |
+| leiden | 851 | 26 | 45.9 |
 
 In this run the three GPU graph builds plus the joins and aggregation returned
 together in about one second on the [capture host](../demo-dataset.mdx). ECG's
 consensus is deliberately conservative: it only keeps vertices together when
 most ensemble members agree, so on this subgraph it produced the finest
-partition (5,014 communities, 41 of them with 100+ papers) and scored above a
+partition (1,932 communities, 41 of them with 100+ papers) and scored above a
 single Louvain run on label purity. Determinism comes from `seed` (default 0);
 `ensemble_size` trades run time for consensus stability.

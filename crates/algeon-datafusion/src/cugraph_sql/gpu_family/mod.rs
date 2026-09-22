@@ -224,6 +224,7 @@ fn descriptor(
                     "name": column.name,
                     "required": column.required,
                     "type": relation_column_type(column.column_type),
+                    "data_types": relation_column_data_types(algorithm, column.column_type),
                     "description": column.description,
                 })).collect::<Vec<_>>(),
             });
@@ -651,19 +652,41 @@ fn relation_column_type(column_type: CugraphRelationColumnType) -> &'static str 
     }
 }
 
+const LOGICAL_STRING_ENDPOINT_TYPES: [&str; 3] = ["Utf8", "LargeUtf8", "Utf8View"];
+
+fn numeric_endpoint_types(algorithm: CugraphAlgorithm) -> &'static [&'static str] {
+    match algorithm.native_algorithm().vertex_id_type_support() {
+        GraphVertexIdTypeSupport::Int32OrInt64 => &["Int32", "Int64"],
+        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => &["Int32"],
+    }
+}
+
+fn logical_string_endpoint_types(algorithm: CugraphAlgorithm) -> &'static [&'static str] {
+    if algorithm.definition().logical_string_contract().is_some() { &LOGICAL_STRING_ENDPOINT_TYPES } else { &[] }
+}
+
+/// Arrow dtypes a relation column may carry. Vertex columns of side inputs must
+/// additionally share the edge endpoints' vertex domain, and edge IDs exist only
+/// in integer vertex domains; `gpu_validate_call` enforces both per call.
+fn relation_column_data_types(
+    algorithm: CugraphAlgorithm,
+    column_type: CugraphRelationColumnType,
+) -> Vec<&'static str> {
+    match column_type {
+        CugraphRelationColumnType::VertexId => {
+            [numeric_endpoint_types(algorithm), logical_string_endpoint_types(algorithm)].concat()
+        },
+        CugraphRelationColumnType::EdgeId => numeric_endpoint_types(algorithm).to_vec(),
+        CugraphRelationColumnType::Numeric => vec!["Float32", "Float64"],
+        CugraphRelationColumnType::Float32 => vec!["Float32"],
+    }
+}
+
 fn vertex_id_contract(algorithm: CugraphAlgorithm) -> Value {
-    let numeric_endpoint_types = match algorithm.native_algorithm().vertex_id_type_support() {
-        GraphVertexIdTypeSupport::Int32OrInt64 => json!(["Int32", "Int64"]),
-        GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => json!(["Int32"]),
-    };
     let logical_string = algorithm.definition().logical_string_contract();
     json!({
-        "numeric_endpoint_types": numeric_endpoint_types,
-        "logical_string_endpoint_types": if logical_string.is_some() {
-            json!(["Utf8", "LargeUtf8", "Utf8View"])
-        } else {
-            json!([])
-        },
+        "numeric_endpoint_types": numeric_endpoint_types(algorithm),
+        "logical_string_endpoint_types": logical_string_endpoint_types(algorithm),
         "logical_string_output_type": logical_string.map(|_| "Utf8"),
         "native_logical_mapping_type": logical_string.map(|contract| format!("{:?}", contract.native_id_type.data_type())),
         "edge_id_supported_for_logical_string": false,

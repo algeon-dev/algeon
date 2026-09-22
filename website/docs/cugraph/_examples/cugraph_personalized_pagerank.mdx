@@ -6,22 +6,27 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 Personalized PageRank biases the walk toward seed vertices supplied by a
 relation. Seeding on BERT ranks the papers its citation neighborhood returns to
-most often. The rows of interest are the ones BERT does **not** already cite: a
-`NOT EXISTS` anti-join against the edge table removes the direct references,
-leaving the indirect ancestry:
+most often. The seed view resolves BERT from its title and year (a 2019
+conference record shares the title), and every later reference to the seed
+reads that view. The rows of interest are the ones BERT does **not** already
+cite: a `NOT EXISTS` anti-join against the edge table removes the direct
+references, leaving the indirect ancestry:
 
 ```sql
-CREATE VIEW bert_seed AS
-SELECT CAST(2896457183 AS BIGINT) AS vertex, CAST(1.0 AS DOUBLE) AS value;
+CREATE OR REPLACE VIEW bert_seed AS
+SELECT paper_id AS vertex, CAST(1.0 AS DOUBLE) AS value
+FROM papers
+WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'
+  AND year = 2018;
 
 SELECT ROUND(r.value, 6) AS ppr, p.year, p.title
 FROM cugraph_personalized_pagerank(
   edges => (SELECT src, dst FROM citation_edges),
   personalization => (SELECT vertex, value FROM bert_seed)) r
 JOIN papers p ON p.paper_id = r.vertex
-WHERE r.vertex <> 2896457183
-  AND NOT EXISTS (SELECT 1 FROM citation_edges e
-                  WHERE e.src = 2896457183 AND e.dst = r.vertex)
+WHERE NOT EXISTS (SELECT 1 FROM bert_seed s WHERE s.vertex = r.vertex)
+  AND NOT EXISTS (SELECT 1 FROM citation_edges e JOIN bert_seed s ON s.vertex = e.src
+                  WHERE e.dst = r.vertex)
 ORDER BY r.value DESC
 LIMIT 8;
 ```
@@ -39,5 +44,5 @@ LIMIT 8;
 
 BERT never cites Jelinek's 1975-1983 speech-decoding papers, statistical
 machine translation, or the Penn Treebank, yet the walk reaches them two or
-three references deep. The seed table, the exclusion of the seed itself, and
+three references deep. The seed view, the exclusion of the seed itself, and
 the anti-join are all ordinary SQL composed around one GPU call.

@@ -94,6 +94,8 @@ POLICY_SCRIPTS=(
   scripts/ci/check_prose_slop.sh
   scripts/ci/tests/check_sloplint_tests.sh
   scripts/ci/check_sloplint.sh
+  scripts/ci/tests/check_cugraph_example_ddl_tests.sh
+  scripts/ci/check_cugraph_example_ddl.sh
 )
 
 policy_scripts() {

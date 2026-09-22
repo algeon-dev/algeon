@@ -8,14 +8,18 @@ Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
 Following citations forward (`src` → `dst`) walks into a paper's reference
 ancestry. Projecting `dst AS src, src AS dst` into the named `edges` relation
 traverses the same edges in the opposite direction (from a paper to the papers
-that cite it, and then their citers) without building a new table. Starting from
-AlexNet (2012), each BFS generation is one hop outward in citing papers:
+that cite it, and then their citers) without building a new table. The `sources`
+relation resolves the start vertex from AlexNet's title and year, so no paper id
+appears in the query; each BFS generation is one hop outward in citing papers:
 
 ```sql
 SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
 FROM cugraph_bfs(
   edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),
-  source_vertex => 2163605009, depth_limit => 3, output_mode => 'normalized') b
+  sources => (SELECT paper_id AS vertex FROM papers
+              WHERE title = 'ImageNet Classification with Deep Convolutional Neural Networks'
+                AND year = 2012),
+  depth_limit => 3, output_mode => 'normalized') b
 JOIN papers p ON p.paper_id = b.vertex
 WHERE b.reachable
 GROUP BY b.distance
@@ -35,19 +39,22 @@ Three citation generations reach ~151k papers. (The reversed traversal reads
 ### Path mode with a SQL-defined target
 
 `output_mode: "path"` reconstructs the shortest hop chain between the source
-and a target. The target is not a literal; it is a **relation** that must
-resolve to exactly one row, so a `WHERE` clause on `papers` is enough to select
-the paper titled *Long short-term memory*. This query traces the reference path
-from BERT (2018) back to LSTM (1997).
+and a target. Both endpoints are **relations**, so a `WHERE` clause on `papers`
+selects each one by title and year; `target_vertices` must resolve to exactly
+one row. This query traces the reference path from BERT (2018) back to LSTM
+(1997). The `year` predicate matters here: the corpus also holds a 2019
+conference record titled identically to the BERT preprint.
 
 ```sql
-CREATE VIEW lstm_target AS
-SELECT paper_id AS vertex FROM papers WHERE title = 'Long short-term memory';
-
 SELECT b.path_index, b.distance, p.year, p.title
 FROM cugraph_bfs(
-  edges => (SELECT src, dst FROM citation_edges), source_vertex => 2896457183,
-  output_mode => 'path', target_vertices => (SELECT vertex FROM lstm_target)) b
+  edges => (SELECT src, dst FROM citation_edges),
+  sources => (SELECT paper_id AS vertex FROM papers
+              WHERE title = 'BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding'
+                AND year = 2018),
+  output_mode => 'path',
+  target_vertices => (SELECT paper_id AS vertex FROM papers
+                      WHERE title = 'Long short-term memory' AND year = 1997)) b
 JOIN papers p ON p.paper_id = b.vertex
 ORDER BY b.path_index;
 ```
@@ -58,19 +65,25 @@ ORDER BY b.path_index;
 | 1 | 1 | 2015 | Semi-supervised Sequence Learning |
 | 2 | 2 | 1997 | Long short-term memory |
 
-Two hops of references separate BERT from LSTM.
+Two hops of references separate BERT from LSTM. Several two-hop chains exist,
+and path output returns one of them: other runs pass through *SemEval-2017
+Task 1* or *Aligning Books and Movies* instead.
 
 ### Multi-source BFS from a seed view
 
 Passing the named `sources` relation starts the traversal from every row of a
 SQL result. Here the three CNN
 classics (AlexNet, VGG, ResNet) form one combined frontier, so `distance`
-measures hops from the nearest of the three founding papers:
+measures hops from the nearest of the three founding papers. Each title is
+paired with its year because the corpus also holds a 2015 preprint record of
+the ResNet paper under the same title:
 
 ```sql
-CREATE VIEW cnn_founders AS
+CREATE OR REPLACE VIEW cnn_founders AS
 SELECT paper_id AS vertex FROM papers
-WHERE paper_id IN (2163605009, 1686810756, 2194775991);
+WHERE (title = 'ImageNet Classification with Deep Convolutional Neural Networks' AND year = 2012)
+   OR (title = 'VERY DEEP CONVOLUTIONAL NETWORKS FOR LARGE-SCALE IMAGE RECOGNITION' AND year = 2014)
+   OR (title = 'Deep Residual Learning for Image Recognition' AND year = 2016);
 
 SELECT b.distance, COUNT(*) AS papers
 FROM cugraph_bfs(
@@ -88,3 +101,69 @@ ORDER BY b.distance;
 | 0 | 3 |
 | 1 | 28,776 |
 | 2 | 69,038 |
+
+### Title-keyed vertices on a small subgraph
+
+Logical string endpoints let a graph use titles as vertex IDs, so results come
+back readable without a join to `papers`. That is sound only where each title
+names one paper, and the
+[demo dataset](../demo-dataset.mdx#seed-papers-used-in-the-examples) repeats
+193,894 titles, which is why the examples above keep `paper_id` as the vertex
+domain. On a small subgraph the trade-off can be measured first. The reference
+ancestry of *Attention Is All You Need* (the seed, its 22 references, and every
+paper those cite) spans 370 papers but only 358 distinct titles:
+
+```sql
+CREATE OR REPLACE VIEW attention_ancestry AS
+WITH origins AS (
+  SELECT paper_id FROM papers
+  WHERE title = 'Attention is all you need' AND year = 2017
+  UNION ALL
+  SELECT e.dst FROM citation_edges e
+  JOIN papers p ON p.paper_id = e.src
+  WHERE p.title = 'Attention is all you need' AND p.year = 2017)
+SELECT e.src, e.dst
+FROM citation_edges e JOIN origins o ON o.paper_id = e.src;
+
+SELECT COUNT(DISTINCT n.paper_id) AS papers, COUNT(DISTINCT p.title) AS titles
+FROM (SELECT src AS paper_id FROM attention_ancestry
+      UNION SELECT dst FROM attention_ancestry) n
+JOIN papers p ON p.paper_id = n.paper_id;
+```
+
+| papers | titles |
+|---|---|
+| 370 | 358 |
+
+The 12 missing titles each belong to two records, mostly a preprint and its
+proceedings version. Keying the edges by title merges every such pair into one
+vertex. For a reading list that merge is intended, since both records are one
+work; for unrelated papers that share a generic title it would corrupt the
+topology. Here BFS starts from a title literal, and `vertex` comes back as
+`Utf8`:
+
+```sql
+SELECT b.distance, b.vertex
+FROM cugraph_bfs(
+  edges => (SELECT ps.title AS src, pd.title AS dst
+            FROM attention_ancestry a
+            JOIN papers ps ON ps.paper_id = a.src
+            JOIN papers pd ON pd.paper_id = a.dst),
+  source_vertex => 'Attention is all you need', output_mode => 'normalized') b
+WHERE b.distance <= 1
+ORDER BY b.distance, b.vertex
+LIMIT 6;
+```
+
+| distance | vertex |
+|---|---|
+| 0 | Attention is all you need |
+| 1 | A Decomposable Attention Model for Natural Language Inference |
+| 1 | A Deep Reinforced Model for Abstractive Summarization |
+| 1 | Adam: A Method for Stochastic Optimization |
+| 1 | Deep Recurrent Models with Fast-Forward Connections for Neural Machine Translation |
+| 1 | Deep Residual Learning for Image Recognition |
+
+All 358 titles are reachable: 22 at distance 1 and 335 at distance 2. String
+graphs reject `edge_id` columns and edge-ID predicate relations; see the
+[Vertex ID support](../graph-options.mdx#vertex-id-support-by-function) matrix.

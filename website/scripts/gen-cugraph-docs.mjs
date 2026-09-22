@@ -269,6 +269,12 @@ function loadSpecs() {
           || typeof field.required !== 'boolean' || typeof field.type !== 'string')) {
           throw new Error(`${file}: relation role ${role.name} must describe named canonical fields`);
         }
+        for (const field of role.fields) {
+          if (!Array.isArray(field.data_types) || field.data_types.length === 0
+            || field.data_types.some(type => typeof type !== 'string' || type.length === 0)) {
+            throw new Error(`${file}: relation field ${role.name}.${field.name} is missing data_types; recapture cuGraph descriptors before generating docs`);
+          }
+        }
         roleNames.add(role.name);
       }
       validateVertexIdContract(file, spec.relation_roles[0]);
@@ -484,14 +490,7 @@ function renderInputs(spec) {
   const vertexIdLink = '[Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function)';
   const parts = [];
   parts.push(
-    `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns; optional roles use the canonical fields listed below. Metadata validation resolves registered tables named in its JSON request.`,
-    '',
-    table(['Role', 'Required', 'Canonical columns', 'Contract'], spec.relation_roles.map(role => [
-      code(role.name),
-      role.required === false ? 'no' : 'yes',
-      cell(role.fields.map(field => `${field.name}${field.required ? '' : ' (optional)'}`).join(', ')),
-      cell(docsText(role.description)),
-    ])),
+    `Every relation is a named parenthesized ${code('SELECT')} subquery. The required ${code('edges')} role uses canonical ${code('src')} and ${code('dst')} columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.`,
   );
   const dtypes = supportsLogicalStrings
     ? `Endpoint columns accept numeric ${renderTypeList(contract.numeric_endpoint_types)} vertex IDs or logical string ${renderTypeList(logicalEndpointTypes)} vertex IDs; string vertex-identity outputs are canonicalized to ${code(contract.logical_string_output_type)} (native mapping ${code(contract.native_logical_mapping_type)}) while scores, distances, counts, coordinates, and opaque labels stay numeric.`
@@ -542,18 +541,57 @@ function renderGraphOptionsNote(spec) {
   return `Graph construction follows the shared defaults (${code('directed=true')}, renumbering, ${code('python_cugraph')} policy) documented in ${link}.`;
 }
 
+function renderRelationColumns(role) {
+  const groups = [];
+  for (const field of role.fields) {
+    const types = renderTypeList(field.data_types);
+    const required = field.required !== false;
+    const group = groups.find(candidate => candidate.types === types && candidate.required === required);
+    if (group) group.fields.push(field.name);
+    else groups.push({ fields: [field.name], required, types });
+  }
+  const items = groups
+    .map(group => `<li>${group.fields.map(code).join(', ')}${group.required ? '' : ' (optional)'}: ${group.types}</li>`)
+    .join('');
+  return `<ul>${items}</ul>`;
+}
+
+function renderDomainRules(spec) {
+  const contract = vertexIdContract(spec);
+  const supportsLogicalStrings = contract.logical_string_endpoint_types.length > 0;
+  const fieldsOfType = type => spec.relation_roles.flatMap(role => role.fields
+    .filter(field => field.type === type)
+    .map(field => ({ role: role.name, field: field.name })));
+  const sideVertexRoles = [...new Set(fieldsOfType('vertex_id')
+    .filter(({ role }) => role !== 'edges')
+    .map(({ role }) => role))];
+  const rules = [];
+  if (sideVertexRoles.length > 0) {
+    const domain = supportsLogicalStrings
+      ? `the integer type of ${code('src')} and ${code('dst')}, or any listed string type when the endpoints are strings`
+      : `the integer type of ${code('src')} and ${code('dst')}`;
+    rules.push(`Vertex columns of ${sideVertexRoles.map(code).join(', ')} must use the same vertex domain as ${code('edges')}: ${domain}.`);
+  }
+  if (fieldsOfType('integer_edge_id').length > 0) {
+    rules.push(`Every ${code('edge_id')} column must have the integer type of ${code('src')} and ${code('dst')}${supportsLogicalStrings ? '; string-keyed graphs accept no edge IDs' : ''}.`);
+  }
+  return rules.join(' ');
+}
+
 function renderArguments(spec) {
   const relationFields = spec.relation_roles.map(role => [
     code(role.name),
     role.required === false ? 'no' : 'yes',
-    cell(role.fields.map(field => `${field.name}${field.required ? '' : ' (optional)'}`).join(', ')),
+    renderRelationColumns(role),
     cell(docsText(role.description)),
   ]);
+  const domainRules = renderDomainRules(spec);
   const valueOptions = descriptorValueOptions(spec);
   const optionSections = [
     '### Relation arguments',
     '',
-    table(['Argument', 'Required', 'Canonical columns', 'Description'], relationFields),
+    table(['Argument', 'Required', 'Columns', 'Description'], relationFields),
+    ...(domainRules ? ['', domainRules] : []),
     '',
     '### Named value arguments',
     '',

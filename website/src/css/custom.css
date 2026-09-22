@@ -664,3 +664,16 @@
     min-width: 22rem;
   }
 }
+
+.markdown table td ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.markdown table td ul li {
+  margin-bottom: 0.25rem;
+}
+
+.markdown table td ul li:last-child {
+  margin-bottom: 0;
+}

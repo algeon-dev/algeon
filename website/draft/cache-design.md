@@ -1,10 +1,7 @@
----
-sidebar_position: 3
-slug: /design/cache
-description: How Algeon caches lakehouse bytes, decoded GPU sources, and resident graphs.
----
-
 # Cache Design
+
+> **Draft**: records lakehouse byte caching, decoded GPU sources, and resident graph caching.
+> It is not published on the website yet.
 
 Algeon has two independent cache families. The lakehouse cache stores Parquet
 files on the local filesystem. The GPU-resident caches retain decoded source
@@ -88,7 +85,7 @@ own retention fail, and the object then stays attempt-owned and is released
 with the attempt. Physically, cache bytes and grant bytes do share the device,
 so a large resident cache leaves less real memory for an attempt's
 allocations inside its cap. See
-[Admission & Memory Governance](./admission.mdx#device-profiles-and-grants)
+[Admission & Memory Governance](../docs/design/admission.mdx#device-profiles-and-grants)
 for the grant side.
 
 Both GPU caches use the same residency lifecycle:

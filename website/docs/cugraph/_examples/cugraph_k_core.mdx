@@ -11,7 +11,7 @@ the local workspace; plain SQL can then verify the contract it guarantees:
 
 ```sql
 -- Local workspace materialization; this does not write to lake.citation_network.
-CREATE TABLE kcore30 AS
+CREATE OR REPLACE TABLE kcore30 AS
 SELECT src, dst
 FROM cugraph_k_core(edges => (SELECT src, dst FROM citation_edges), k => 30);
 
@@ -35,8 +35,10 @@ both directions.
 
 The k-core edge list comes back **symmetrized**: each undirected core edge
 appears in both directions (2,043,052 rows here, i.e. ~1.0M undirected
-edges). Note also that this per-direction floor is a stricter condition than
-`cugraph_core_number`'s `in_out` degree, which sums the two directions.
+edges), which is why the in and out floors match. Both functions count a
+paper's distinct citation neighbors, so this backbone is the set of papers
+whose [core number](../algorithms/structure/cugraph_core_number.mdx) is at
+least 30.
 
 ### Chain it into the next algorithm
 

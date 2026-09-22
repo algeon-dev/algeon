@@ -1171,6 +1171,58 @@ async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_force_atlas2_executes_with_vertex_side_inputs() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 1, 2, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 0, 3])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("layout_edges", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    for ddl in [
+        "CREATE VIEW layout_vertices AS SELECT * FROM (VALUES (CAST(0 AS BIGINT)), (1), (2), (3)) AS v(vertex)",
+        "CREATE VIEW layout_attributes AS \
+         SELECT vertex, CAST(0.75 AS REAL) AS radius, CAST(1.0 AS REAL) AS mass FROM layout_vertices",
+        "CREATE VIEW layout_positions AS \
+         SELECT vertex, CAST(vertex AS REAL) AS x, CAST(-vertex AS REAL) AS y FROM layout_vertices",
+    ] {
+        ctx.sql(ddl).await.unwrap().collect().await.unwrap();
+    }
+
+    // Side-input validation runs while the cuGraph handle routes the query stream, so it must
+    // use the query runtime rather than cuDF's default execution context.
+    let batches = ctx
+        .sql(
+            "SELECT vertex, x, y \
+             FROM cugraph_force_atlas2(\
+                  edges => (SELECT src, dst FROM layout_edges), max_iter => 5, seed => 42, \
+                  prevent_overlapping => true, \
+                  vertex_attributes => (SELECT vertex, radius, mass FROM layout_attributes), \
+                  initial_positions => (SELECT vertex, x, y FROM layout_positions)) \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2, 3]);
+    let x = batch.column(1).as_any().downcast_ref::<Float32Array>().unwrap();
+    let y = batch.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
+    for row in 0..batch.num_rows() {
+        assert!(x.value(row).is_finite() && y.value(row).is_finite(), "coordinates must be finite at row {row}");
+    }
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers() {
     let dir = unique_temp_dir("algeon-datafusion-cugraph-string-jaccard-70-by-70");
     let edge_path = dir.join("edges.parquet");

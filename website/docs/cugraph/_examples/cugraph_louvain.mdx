@@ -11,7 +11,7 @@ window function to keep the top 3 labels per community) shows how closely the
 detected communities align with the assigned labels:
 
 ```sql
-CREATE VIEW ai_nodes AS
+CREATE OR REPLACE VIEW ai_nodes AS
 SELECT paper_id FROM papers
 WHERE year >= 2010 AND primary_fos IN (
   'Deep learning', 'Artificial neural network', 'Convolutional neural network',
@@ -19,7 +19,7 @@ WHERE year >= 2010 AND primary_fos IN (
   'Reinforcement learning', 'Image segmentation', 'Feature extraction',
   'Object detection', 'Speech recognition');
 
-CREATE VIEW ai_edges AS
+CREATE OR REPLACE VIEW ai_edges AS
 SELECT e.src, e.dst
 FROM citation_edges e
 JOIN ai_nodes a ON a.paper_id = e.src
@@ -44,21 +44,25 @@ ORDER BY members DESC, rn;
 
 | members | rn | primary_fos | n |
 |---|---|---|---|
-| 10,684 | 1 | Convolutional neural network | 3,002 |
-| 10,684 | 2 | Object detection | 2,467 |
-| 10,684 | 3 | Deep learning | 2,247 |
-| 6,707 | 1 | Deep learning | 2,168 |
-| 6,707 | 2 | Convolutional neural network | 2,061 |
-| 6,707 | 3 | Feature extraction | 778 |
-| 5,118 | 1 | Deep learning | 1,591 |
-| 5,118 | 2 | Recurrent neural network | 1,289 |
-| 5,118 | 3 | Convolutional neural network | 714 |
-| 3,960 | 1 | Reinforcement learning | 3,157 |
-| 3,960 | 2 | Artificial neural network | 337 |
-| 3,960 | 3 | Deep learning | 204 |
+| 7,172 | 1 | Convolutional neural network | 2,698 |
+| 7,172 | 2 | Deep learning | 2,527 |
+| 7,172 | 3 | Artificial neural network | 869 |
+| 4,477 | 1 | Deep learning | 1,332 |
+| 4,477 | 2 | Recurrent neural network | 1,280 |
+| 4,477 | 3 | Artificial neural network | 624 |
+| 4,260 | 1 | Image segmentation | 1,919 |
+| 4,260 | 2 | Convolutional neural network | 921 |
+| 4,260 | 3 | Deep learning | 799 |
+| 3,859 | 1 | Reinforcement learning | 3,129 |
+| 3,859 | 2 | Artificial neural network | 279 |
+| 3,859 | 3 | Deep learning | 226 |
+| 3,518 | 1 | Object detection | 2,193 |
+| 3,518 | 2 | Convolutional neural network | 467 |
+| 3,518 | 3 | Deep learning | 342 |
 
-Louvain (1,960 communities over 38k papers) recovers recognizable subfield
-boundaries: a computer-vision community, a sequence-modeling community, and a
-reinforcement-learning community that is 80% one label. Note the quoted
+Louvain (1,233 communities over 38,054 papers) recovers recognizable subfield
+boundaries: convolutional-network, sequence-modeling, image-segmentation, and
+object-detection communities, plus a reinforcement-learning community that is
+81% one label. Note the quoted
 `"partition"`, since the output column name is a SQL keyword. `cugraph_leiden`
 is a drop-in replacement with the same call shape.

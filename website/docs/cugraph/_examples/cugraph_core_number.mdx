@@ -4,28 +4,32 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Find the densest citation core
 
-Core number measures how deep a vertex sits in recursively denser subgraphs
-(with `degree_type: "in_out"`, degree is in + out). Define the result as a
-workspace view, find the deepest shell, and list its members:
+Core number measures how deep a vertex sits in recursively denser subgraphs.
+The call builds an undirected graph, so a paper's degree is its number of
+distinct citation neighbors, whichever direction the citation points; every
+`degree_type` selector gives the same degree on that symmetric edge list.
+Define the result as a workspace view, find the deepest shell, and list its
+members:
 
 ```sql
-CREATE VIEW cores AS
+CREATE OR REPLACE VIEW cores AS
 SELECT vertex, core_number
 FROM cugraph_core_number(edges => (SELECT src, dst FROM citation_edges));
 
-SELECT MAX(core_number) AS deepest,
-       COUNT(*) FILTER (WHERE core_number = 70) AS members
-FROM cores;
+SELECT core_number AS deepest, COUNT(*) AS members
+FROM cores
+WHERE core_number = (SELECT MAX(core_number) FROM cores)
+GROUP BY core_number;
 ```
 
 | deepest | members |
 |---|---|
-| 70 | 5,913 |
+| 35 | 5,913 |
 
 ```sql
 SELECT p.year, p.title
 FROM cores c JOIN papers p ON p.paper_id = c.vertex
-WHERE c.core_number = 70
+WHERE c.core_number = (SELECT MAX(core_number) FROM cores)
 ORDER BY p.n_citation DESC
 LIMIT 6;
 ```
@@ -39,6 +43,6 @@ LIMIT 6;
 | 1995 | Support-Vector Networks |
 | 1986 | A Computational Approach to Edge Detection |
 
-The 70-core (5,913 papers, each with at least 70 combined in/out edges to
-other members of the shell) is recognizably the machine-learning and
-computer-vision literature.
+The 35-core (5,913 papers, each linked by citation to at least 35 other
+members of the shell) is recognizably the machine-learning and computer-vision
+literature.

@@ -44,16 +44,20 @@ ORDER BY leiden_parts DESC, members DESC;
 
 | louvain_c | members | leiden_parts |
 |---|---|---|
-| 0 | 10,684 | 8 |
-| 1 | 6,707 | 7 |
-| 3 | 5,118 | 3 |
-| 2 | 3,960 | 3 |
+| 0 | 7,172 | 5 |
+| 1 | 4,477 | 2 |
+| 2 | 4,260 | 1 |
+| 4 | 3,859 | 1 |
+| 3 | 3,518 | 1 |
 
-Louvain's 10,684-paper computer-vision community shatters into eight Leiden
-communities of 50+ members; overall the same graph yields 1,960 Louvain
-communities versus 2,670 for Leiden. When a Louvain community is only held
-together by a few incidental citations, Leiden's refinement phase is what
-separates it: the guarantee that every returned community is internally
-connected is the reason to prefer Leiden as the default. Both runs are
+Louvain's 7,172-paper convolutional-network community splits into five Leiden
+communities of 50+ members and its sequence-modeling community into two, while
+the image-segmentation, reinforcement-learning, and object-detection
+communities stay whole. The refinement does not simply produce more
+communities: over the whole graph Louvain returns 1,233 and Leiden 851. When a
+Louvain community is only held together by a few incidental citations,
+Leiden's refinement phase is what separates it: the guarantee that every
+returned community is internally connected is the reason to prefer Leiden as
+the default. Both runs are
 deterministic here (`seed` defaults to 0), which is why the community ids in
 this table are stable across sessions.

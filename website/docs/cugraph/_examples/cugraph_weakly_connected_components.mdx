@@ -30,7 +30,7 @@ giant one: one row per component, represented by its most-cited member.
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.
-CREATE TABLE wcc_snapshot AS
+CREATE OR REPLACE TABLE wcc_snapshot AS
 SELECT vertex, label
 FROM cugraph_weakly_connected_components(
   edges => (SELECT src, dst FROM citation_edges), directed => false);
