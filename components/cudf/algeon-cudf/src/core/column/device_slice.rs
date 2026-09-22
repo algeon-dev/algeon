@@ -2,33 +2,25 @@ use std::{marker::PhantomData, os::raw::c_void};
 
 use crate::core::types::TypeId;
 
-/// An opaque descriptor of a contiguous region of GPU device memory.
+/// A typed descriptor of a contiguous region of GPU device memory.
 ///
-/// `DeviceSlice` is a safe, typed handle that carries a device pointer, element
-/// count, and type information. It does **not** copy or dereference the pointer;
-/// device pointers are not accessible from host code, so holding one cannot cause
-/// undefined behavior.
+/// `DeviceSlice` carries a device pointer, element count, and type information.
+/// It does not copy or dereference the pointer. Any number of descriptors may
+/// describe the same allocation: [`device_slice()`](crate::core::Column::device_slice)
+/// issues a new one on every call from a shared `&Column`, and
+/// [`split_at()`](Self::split_at) issues two more without consuming its input.
+/// Holding a descriptor, even by `&mut`, proves nothing about exclusive access
+/// to the underlying bytes.
 ///
-/// This is a low-level raw-pointer helper, not the preferred cross-crate GPU
-/// interop contract. For external borrowed interop, prefer
-/// [`rapids_interop::BorrowedColumnView`] via
+/// The lifetime `'a` ties this slice to the [`Column`](crate::core::Column)
+/// that produced it, so the descriptor cannot outlive the allocation it points
+/// to.
+///
+/// This is a low-level raw-pointer helper. For borrowed interop across crates,
+/// prefer [`rapids_interop::BorrowedColumnView`] via
 /// [`Column::try_borrow_column_view`](crate::core::Column::try_borrow_column_view),
 /// which also carries null-mask semantics, base-pointer-plus-offset behavior,
 /// and execution provenance.
-///
-/// Create a `DeviceSlice` from a [`Column`](crate::core::Column) via
-/// [`device_slice()`](crate::core::Column::device_slice). Use
-/// [`split_at()`](Self::split_at) to partition it into sub-regions
-/// (e.g., source and destination vertex IDs).
-///
-/// `DeviceSlice` is `Send + Sync` because the underlying data lives on the GPU
-/// and is not host-dereferenceable. The safe public API exposes only `*const`
-/// pointers via [`as_ptr()`](Self::as_ptr); mutable access requires `&mut self`
-/// via [`as_mut_ptr()`](Self::as_mut_ptr), which upholds Rust's aliasing rules.
-///
-/// The lifetime `'a` ties this slice to the [`Column`](crate::core::Column)
-/// that produced it, preventing the slice
-/// from outliving the GPU memory it points to.
 #[derive(Debug)]
 pub struct DeviceSlice<'a> {
     pub(crate) ptr: *mut c_void,
@@ -38,22 +30,14 @@ pub struct DeviceSlice<'a> {
     pub(crate) _lifetime: PhantomData<&'a ()>,
 }
 
-// SAFETY: Device pointers are not dereferenceable from host code, so sharing
-// across threads cannot create a host-side race on device memory. The host-side
-// metadata (ptr, len, type_id, elem_size) is immutable after construction, and
-// the lifetime parameter ensures the underlying GPU memory remains valid.
-//
-// NOTE: Unlike the internal column/table view handles, which are `!Send + !Sync`,
-// `DeviceSlice` opts _in_ to Send + Sync. This is an intentional design choice:
-// `DeviceSlice` is a thin descriptor (pointer + length + type tag) with no FFI
-// methods that perform device operations, so there is no risk of CUDA-context or
-// stream misuse from another thread. It exists solely to pass device pointers to
-// external GPU libraries (e.g., cugraph).
-//
-// If `DeviceSlice` ever gains methods that launch kernels, enqueue copies, or
-// interact with a CUDA stream, the Send + Sync impls must be re-evaluated;
-// those operations may require stream synchronization or CUDA-context affinity
-// that a cross-thread send would violate.
+// SAFETY: Every safe operation on this type reads the host-side metadata
+// (ptr, len, type_id, elem_size), which is immutable after construction, and
+// returns the address without touching device memory or a CUDA stream, so
+// sharing or sending the descriptor cannot race on the host. This reasoning
+// covers the descriptor alone and says nothing about what a caller does with
+// the returned pointer. A method that launches a kernel, enqueues a copy, or
+// binds a stream would require re-evaluating these impls for thread and
+// CUDA-context affinity.
 unsafe impl Send for DeviceSlice<'_> {}
 unsafe impl Sync for DeviceSlice<'_> {}
 
@@ -73,28 +57,26 @@ impl DeviceSlice<'_> {
         self.type_id
     }
 
-    /// Returns the raw device pointer as a read-only pointer.
+    /// Returns the device address as a read-only pointer.
     ///
-    /// This pointer refers to GPU memory and cannot be dereferenced from host
-    /// code. It is intended for passing to GPU libraries (e.g., cugraph) that
-    /// accept device pointers.
-    ///
-    /// This method exposes only a pointer. It does not communicate null-mask
-    /// semantics, original column offset, or execution provenance.
-    ///
-    /// Returns `*const` (not `*mut`) because `DeviceSlice` is `Sync`; shared
-    /// references can cross threads, so the safe API must not hand out
-    /// mutation-capable pointers from `&self`. Use [`as_mut_ptr()`](Self::as_mut_ptr)
-    /// when mutable access is needed.
+    /// The pointer refers to GPU memory and is intended for passing to GPU
+    /// libraries (e.g., cugraph) that accept device pointers. It carries no
+    /// null-mask semantics, original column offset, or execution provenance.
+    /// A shared reference yields `*const` because `DeviceSlice` is `Sync`;
+    /// see [`as_mut_ptr()`](Self::as_mut_ptr) for the mutable address.
     pub fn as_ptr(&self) -> *const c_void {
         self.ptr as *const c_void
     }
 
-    /// Returns the raw device pointer as a mutable pointer.
+    /// Returns the device address without granting exclusive access to the
+    /// allocation.
     ///
-    /// Requires `&mut self` to uphold Rust's aliasing guarantees: only one
-    /// mutable reference may exist at a time, so no other thread can
-    /// simultaneously obtain a pointer to the same device memory region.
+    /// `&mut self` prevents obtaining the mutable address through a shared
+    /// reference to this descriptor and nothing more; other descriptors of the
+    /// same column may exist at the same time. Native writes through this
+    /// pointer require the caller to preserve
+    /// storage lifetime and coordinate access with other descriptors and with
+    /// GPU work on the same allocation.
     pub fn as_mut_ptr(&mut self) -> *mut c_void {
         self.ptr
     }

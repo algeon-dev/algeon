@@ -914,6 +914,7 @@ impl QueryAdmissionWaiter {
         };
         let sweep = self.service.sweep_expired_queued_requests_locked(&mut state);
         if !sweep.is_empty() {
+            // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
             drop(state);
             sweep.finish();
             state = match self.service.inner.admission.lock() {
@@ -932,7 +933,6 @@ impl QueryAdmissionWaiter {
         // falling through to placement and returning a misleading `Ok(None)`.
         if let Some(error) = self.terminal.take() {
             self.queued = false;
-            drop(state);
             return Err(error);
         }
         if let Some(error) = self.service.admission_terminal_rejection(&state) {

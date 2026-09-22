@@ -907,7 +907,7 @@ impl RuntimeOperatorStageObservation {
     }
 }
 
-/// Typed dynamic event payload. Later phases extend this enum at authoritative boundaries.
+/// Typed dynamic event payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeObservationPayload {

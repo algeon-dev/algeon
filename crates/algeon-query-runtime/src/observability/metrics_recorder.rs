@@ -184,7 +184,7 @@ impl MetricsRecorder {
         self.source(SourceReadFact::SourceReadTime(elapsed));
     }
 
-    // ---- elapsed time formerly added to fields directly -----------------
+    // ---- operator, merge, sort, and materialization time ---------------
 
     /// Adds native operator time.
     pub fn add_operator_time(&self, elapsed: Duration) {

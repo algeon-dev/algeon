@@ -162,10 +162,10 @@ static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 /// `hash_join_builds` memorizes reusable cuDF hash-join artifacts for repeated
 /// probes against the same build node, build keys, and null-equality contract.
 /// The repository retains the query runtime and device placement that produced
-/// the artifacts, and is released with this scratch object at query end. It is
-/// deliberately absent from bounded join execution until the lower layers expose
-/// honest pre-build hash-table reservation bytes and the engine can reserve
-/// build, probe, gather, and output memory before constructing join artifacts.
+/// the artifacts, and is released with this scratch object at query end.
+/// Bounded execution does not use this repository: each bounded join builds its
+/// own `GpuHashJoinBuildHandle` and observes the retained bytes after the build
+/// (see `bounded::join::hash::build_bounded_hash_join`).
 pub(super) struct ExecutionScratch {
     node_results: HashMap<NodeId, GpuDataFrame>,
     hash_join_builds: HashJoinBuildRepository,
