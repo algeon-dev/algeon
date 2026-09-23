@@ -1,0 +1,78 @@
+---
+title: Spectral Modularity Maximization
+sidebar_label: Spectral Modularity Maximization
+description: "Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means."
+slug: /cugraph/functions/cugraph_spectral_modularity_maximization
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
+
+# Spectral Modularity Maximization
+
+SQL function: `cugraph_spectral_modularity_maximization`
+
+Official cuGraph reference: [C API](https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization)
+
+Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means.
+
+## Quickstart
+
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
+
+```sql
+SELECT * FROM cugraph_spectral_modularity_maximization(edges => (SELECT src, dst FROM target_edges));
+```
+
+## Inputs
+
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
+
+Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
+
+## Arguments and options
+
+### Relation arguments
+
+| Argument | Required | Columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`</li><li>`weight` (optional): `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`</li></ul> | edge relation with canonical src and dst columns, plus optional weight and edge_id columns |
+
+Every `edge_id` column must have the integer type of `src` and `dst`.
+
+### Named value arguments
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `evs_max_iterations` | `integer` | `500` | min 1; max 2147483647 | eigenvalue solver iteration limit |
+| `evs_tolerance` | `number` | `0.01` | min 0 | non-negative eigenvalue solver tolerance |
+| `k_means_max_iterations` | `integer` | `100` | min 1; max 2147483647 | k-means iteration limit |
+| `k_means_tolerance` | `number` | `0.001` | min 0 | non-negative k-means tolerance |
+| `n_clusters` | `integer` | `2` | min 1; max 4294967295 | number of spectral clusters |
+| `n_eigenvectors` | `integer` | `2` | min 1; max 4294967295 | number of spectral eigenvectors |
+| `seed` | `integer` | `0` | min 0; max 18446744073709552000 | random initialization seed |
+
+### Graph construction options
+
+This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64` | no | Vertex assigned to a spectral clustering partition. |
+| `partition` | `Int64` | no | Cluster identifier assigned by spectral modularity maximization. |
+
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
+
+## Examples
+
+import Examples from '../../_examples/cugraph_spectral_modularity_maximization.mdx';
+
+<Examples />
+
+## Limits
+
+- cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
+- cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).

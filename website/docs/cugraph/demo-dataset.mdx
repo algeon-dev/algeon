@@ -143,7 +143,7 @@ one title is shared by 32 papers, so a title-keyed graph would merge those
 papers into single vertices. Each seed is resolved with
 `WHERE title = '…' AND year = …`, plus `venue` where title and year still
 collide, and results are joined back to `papers` for display. The
-[BFS page](./algorithms/traversal/cugraph_bfs.mdx#title-keyed-vertices-on-a-small-subgraph)
+[BFS page](./functions/traversal/cugraph_bfs.mdx#title-keyed-vertices-on-a-small-subgraph)
 shows what title keys do on a small subgraph.
 
 | Paper | `paper_id` | Exact `title` in the corpus | `year` | Extra predicate |
@@ -175,5 +175,5 @@ local session/workspace state, not an Iceberg table write.
 ### `n_citation` counts the whole world, in-degree counts this corpus
 
 `papers.n_citation` is AMiner's global citation count; an in-graph degree only
-counts edges present in this dataset. The [in-degree example](./algorithms/structure/cugraph_in_degrees_all.mdx)
+counts edges present in this dataset. The [in-degree example](./functions/structure/cugraph_in_degrees_all.mdx)
 measures exactly that gap.

@@ -642,19 +642,22 @@
   color: var(--ifm-link-color);
 }
 
-/* cuGraph overview cheatsheet: wrap description prose to fit the content area,
+/* Overview cheatsheet: wrap description prose to fit the content area,
    keeping compact columns nowrap and allowing horizontal scroll on narrow viewports. */
-.cugraph-function-cheatsheet {
+.cugraph-function-cheatsheet,
+.cuvs-function-cheatsheet {
   max-width: 100%;
   overflow-x: auto;
 }
 
-.cugraph-function-cheatsheet table {
+.cugraph-function-cheatsheet table,
+.cuvs-function-cheatsheet table {
   display: table;
   width: 100%;
 }
 
-.cugraph-function-cheatsheet table td {
+.cugraph-function-cheatsheet table td,
+.cuvs-function-cheatsheet table td {
   vertical-align: top;
 }
 
@@ -663,12 +666,20 @@
 .cugraph-function-cheatsheet table th:nth-child(2),
 .cugraph-function-cheatsheet table td:nth-child(2),
 .cugraph-function-cheatsheet table th:nth-child(4),
-.cugraph-function-cheatsheet table td:nth-child(4) {
+.cugraph-function-cheatsheet table td:nth-child(4),
+.cuvs-function-cheatsheet table th:nth-child(1),
+.cuvs-function-cheatsheet table td:nth-child(1),
+.cuvs-function-cheatsheet table th:nth-child(2),
+.cuvs-function-cheatsheet table td:nth-child(2),
+.cuvs-function-cheatsheet table th:nth-child(4),
+.cuvs-function-cheatsheet table td:nth-child(4) {
   white-space: nowrap;
 }
 
 .cugraph-function-cheatsheet table th:nth-child(3),
-.cugraph-function-cheatsheet table td:nth-child(3) {
+.cugraph-function-cheatsheet table td:nth-child(3),
+.cuvs-function-cheatsheet table th:nth-child(3),
+.cuvs-function-cheatsheet table td:nth-child(3) {
   white-space: normal;
   min-width: 16rem;
 }
@@ -685,3 +696,37 @@
 .markdown table td ul li:last-child {
   margin-bottom: 0;
 }
+
+/* In markdown tables, allow code in data cells to wrap so wide types or signatures
+   do not squeeze description columns. Identifiers in the first column stay nowrap. */
+.markdown table {
+  display: table;
+  width: 100%;
+}
+
+.markdown table th,
+.markdown table td {
+  vertical-align: top;
+}
+
+.markdown table td code {
+  white-space: normal;
+  word-break: normal;
+}
+
+.markdown table td:first-child code {
+  white-space: nowrap;
+}
+
+/* Ensure the description column in markdown tables retains generous width. */
+.markdown table td:last-child,
+.markdown table th:last-child {
+  min-width: 14rem;
+}
+
+/* Prevent wide type columns from monopolizing table width. */
+.markdown table td:nth-child(2),
+.markdown table th:nth-child(2) {
+  max-width: 18rem;
+}
+

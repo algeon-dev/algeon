@@ -9,7 +9,7 @@ Int32, so the example uses the
 [SQL renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-cugraph-c-api-algorithms)
 on a graph worth clustering: the k=30 citation core (every paper keeps at
 least 30 citation neighbors inside the subgraph, as in the
-[k-core example](../algorithms/structure/cugraph_k_core.mdx)). One algorithm's
+[k-core example](../functions/structure/cugraph_k_core.mdx)). One algorithm's
 output becomes the next algorithm's input, with a window function in between:
 
 ```sql
@@ -67,7 +67,7 @@ paper cluster and peels off coherent satellite literatures: a cryptography
 cluster, a fuzzy-logic/decision-making cluster, and a rough-set-theory cluster.
 That shape is characteristic of this algorithm on scale-free graphs; it will
 not carve a power-law nucleus into equal parts (asking Louvain or
-[Leiden](../algorithms/community/cugraph_leiden.mdx) does that better); what it
+[Leiden](../functions/community/cugraph_leiden.mdx) does that better); what it
 answers is "which satellite communities are spectrally separable from the
 core, given exactly `n_clusters` slots". The tight `evs_tolerance` matters;
 the loose default stops the eigensolver early and the satellites smear into

@@ -4,7 +4,7 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### The citations that bridge subfields
 
-Where [vertex betweenness](../algorithms/centrality/cugraph_betweenness_centrality.mdx)
+Where [vertex betweenness](../functions/centrality/cugraph_betweenness_centrality.mdx)
 scores papers, edge betweenness scores individual **citations**. The output is
 one row per edge (`source`, `destination`, `score`), so joining `papers` twice
 labels both ends of each load-bearing link. The graph is the same ~38k-vertex

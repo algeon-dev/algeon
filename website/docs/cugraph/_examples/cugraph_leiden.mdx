@@ -5,7 +5,7 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 ### Where Leiden disagrees with Louvain
 
 Leiden takes the same call shape as
-[`cugraph_louvain`](../algorithms/community/cugraph_louvain.mdx) but adds a
+[`cugraph_louvain`](../functions/community/cugraph_louvain.mdx) but adds a
 refinement phase that guarantees well-connected communities, splitting
 clusters Louvain merges. Joining the two partitions on `vertex` shows exactly
 where. The views are the Louvain example's 2010s AI subgraph:

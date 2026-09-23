@@ -1,0 +1,70 @@
+---
+title: Minimum Spanning Tree
+sidebar_label: Minimum Spanning Tree
+description: "Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise."
+slug: /cugraph/functions/cugraph_minimum_spanning_tree
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
+
+# Minimum Spanning Tree
+
+SQL function: `cugraph_minimum_spanning_tree`
+
+Official cuGraph reference: [Python API](https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/)
+
+Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise.
+
+## Quickstart
+
+The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
+
+```sql
+SELECT * FROM cugraph_minimum_spanning_tree(edges => (SELECT src, dst, weight FROM target_edges));
+```
+
+## Inputs
+
+Every relation is a named parenthesized `SELECT` subquery. The required `edges` role uses canonical `src` and `dst` columns; every role, its canonical columns, and their accepted Arrow types are listed under [Relation arguments](#relation-arguments). Metadata validation resolves registered tables named in its JSON request.
+
+Endpoint columns accept `Int32` vertex IDs only; logical string endpoints are not supported (legacy Int32-only contract). The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
+
+## Arguments and options
+
+### Relation arguments
+
+| Argument | Required | Columns | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | <ul><li>`src`, `dst`: `Int32`</li><li>`weight`: `Float32`, `Float64`</li><li>`edge_id` (optional): `Int32`</li></ul> | weighted edge relation with canonical src, dst, and required weight columns |
+
+Every `edge_id` column must have the integer type of `src` and `dst`.
+
+### Named value arguments
+
+_This function has no scalar value arguments._
+
+### Graph construction options
+
+This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `src` | `Int64` | no | Source vertex of an edge selected for the minimum spanning tree. |
+| `dst` | `Int64` | no | Destination vertex of an edge selected for the minimum spanning tree. |
+
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
+
+## Examples
+
+import Examples from '../../_examples/cugraph_minimum_spanning_tree.mdx';
+
+<Examples />
+
+## Limits
+
+- cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
+- cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).
