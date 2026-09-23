@@ -207,8 +207,8 @@ mod tests {
             JoinSpec, JoinType, LimitNode, PlanFacts, ProjectionNode, ProjectionOutput, SchemaBehavior, SortNode,
             UnionNode, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec,
             VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams,
-            VectorRelationBinding, VectorRowIdBinding, WindowNode, WindowSpec, vector_brute_force_knn_output_schema,
-            vector_kmeans_output_schema, vector_pca_output_schema,
+            VectorRelationBinding, VectorRowIdBinding, WindowNode, WindowSpec, vector_kmeans_output_schema,
+            vector_knn_output_schema, vector_pca_output_schema,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -420,7 +420,7 @@ mod tests {
         vector_algorithm_node(
             VectorAlgorithm::BruteForceKnn,
             VectorAlgorithmParams::BruteForceKnn(params),
-            vector_brute_force_knn_output_schema(DataType::Int32, DataType::Int32),
+            vector_knn_output_schema(DataType::Int32, DataType::Int32),
         )
     }
 

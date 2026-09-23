@@ -49,12 +49,13 @@ pub(super) fn unsupported_type(
     relation_role: &'static str,
     field: &str,
     actual: impl ToString,
-    expected: &'static str,
+    expected: impl ToString,
 ) -> DataFusionError {
+    let expected = expected.to_string();
     Error::new(
         ErrorCode::UnsupportedType,
         "algeon_datafusion.cuvs_sql.validate_schema",
-        format!("cuVS {relation_role} field '{field}' has an unsupported type"),
+        format!("cuVS {relation_role} field '{field}' has an unsupported type; supported types: {expected}"),
     )
     .with_log_safe_fact("cuvs_operation", operation.descriptor().sql_function_name)
     .with_log_safe_fact("relation_role", relation_role)

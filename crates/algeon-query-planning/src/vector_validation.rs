@@ -12,9 +12,9 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::Expr,
     plan::{
-        CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOptionKind, NodeId, PlanNode, ProjectionOutput,
-        QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorKMeansInit, VectorRelationBinding,
-        VectorRowIdBinding, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
+        CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOptionKind, CuvsVectorElementType, NodeId, PlanNode,
+        ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorKMeansInit,
+        VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema, vector_knn_output_schema,
         vector_pca_output_schema,
     },
 };
@@ -193,7 +193,10 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("dataset_features", dataset_dimension)
                     .with_fact("query_features", query_dimension));
             }
-            vector_brute_force_knn_output_schema(queries.id_type, dataset.id_type)
+            validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
+            validate_vector_element_support(CuvsOperation::BruteForceKnn, "dataset", &dataset, node_id)?;
+            validate_vector_element_support(CuvsOperation::BruteForceKnn, "queries", &queries, node_id)?;
+            vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
         VectorAlgorithmParams::KMeans(params) => {
             if params.n_clusters == 0 || params.max_iterations == 0 || params.n_init == 0 {
@@ -224,6 +227,8 @@ pub fn validate_vector_algorithm_node(
                         available_columns_by_node,
                         node_id,
                     )?;
+                    validate_matching_element_types("input", &input, "initial_centroids", &centroids, node_id)?;
+                    validate_vector_element_support(CuvsOperation::KMeans, "initial_centroids", &centroids, node_id)?;
                     if let (Some(input_dimension), Some(centroid_dimension)) = (input.dimension, centroids.dimension)
                         && input_dimension != centroid_dimension
                     {
@@ -252,6 +257,7 @@ pub fn validate_vector_algorithm_node(
                 },
                 (_, None) => {},
             }
+            validate_vector_element_support(CuvsOperation::KMeans, "input", &input, node_id)?;
             vector_kmeans_output_schema(input.id_type)
         },
         VectorAlgorithmParams::Pca(params) => {
@@ -284,6 +290,7 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("n_components", params.n_components)
                     .with_fact("feature_count", input.dimension.unwrap_or(0)));
             }
+            validate_vector_element_support(CuvsOperation::Pca, "input", &input, node_id)?;
             vector_pca_output_schema(input.id_type, params.n_components)
         },
     };
@@ -346,6 +353,56 @@ pub fn validate_vector_algorithm_node_contract(
 struct VectorRelationValidation {
     id_type: DataType,
     dimension: Option<usize>,
+    element_type: CuvsVectorElementType,
+}
+
+fn validate_matching_element_types(
+    left_role: &'static str,
+    left: &VectorRelationValidation,
+    right_role: &'static str,
+    right: &VectorRelationValidation,
+    node_id: NodeId,
+) -> Result<()> {
+    if left.element_type != right.element_type {
+        return Err(vector_algorithm_error("vector relation element types must match")
+            .with_fact("node_id", node_id)
+            .with_fact("reason", "vector_element_type_mismatch")
+            .with_fact("left_role", left_role)
+            .with_fact("left_type", left.element_type.as_str())
+            .with_fact("right_role", right_role)
+            .with_fact("right_type", right.element_type.as_str()));
+    }
+    Ok(())
+}
+
+fn validate_vector_element_support(
+    operation: CuvsOperation,
+    role: &'static str,
+    relation: &VectorRelationValidation,
+    node_id: NodeId,
+) -> Result<()> {
+    if !operation.descriptor().vector_element_support.contains(&relation.element_type) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "query_engine.vector_algorithm.validate",
+            "vector element type is not supported by this operation",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("relation_role", role)
+        .with_fact("reason", "unsupported_feature_type")
+        .with_fact("data_type", relation.element_type.as_str())
+        .with_fact(
+            "supported_types",
+            operation
+                .descriptor()
+                .vector_element_support
+                .iter()
+                .map(|element| element.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_vector_relation_binding(
@@ -357,7 +414,7 @@ fn validate_vector_relation_binding(
 ) -> Result<VectorRelationValidation> {
     let input = input_node(plan, binding.input, node_id)?;
     let available = available_columns(available_columns_by_node, binding.input)?;
-    let dimension = match &binding.vector {
+    let (dimension, element_type) = match &binding.vector {
         CuvsDenseVectorBinding::Columns(columns) => {
             if columns.is_empty() {
                 return Err(vector_algorithm_error("vector relation must bind at least one feature column")
@@ -366,6 +423,7 @@ fn validate_vector_relation_binding(
                     .with_fact("reason", "empty_feature_columns"));
             }
             let mut feature_names = BTreeSet::new();
+            let mut element_type = None;
             for column in columns {
                 if !feature_names.insert(column.as_str()) {
                     return Err(vector_algorithm_error("vector relation feature columns must be unique")
@@ -388,11 +446,12 @@ fn validate_vector_relation_binding(
                         .with_fact("reason", "missing_feature_column")
                         .with_fact("column", column)
                 })?;
-                if field.data_type() != &DataType::Float32 || field.is_nullable() {
+                let current_type = CuvsVectorElementType::from_data_type(field.data_type());
+                if current_type.is_none() || field.is_nullable() {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedType,
                         "query_engine.vector_algorithm.validate",
-                        "vector feature columns must be non-null Float32",
+                        "vector feature columns must have a non-null supported element type",
                     )
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
@@ -401,8 +460,17 @@ fn validate_vector_relation_binding(
                     .with_fact("data_type", format!("{:?}", field.data_type()))
                     .with_fact("nullable", field.is_nullable()));
                 }
+                let current_type = current_type.expect("validated vector element type");
+                if element_type.is_some_and(|element| element != current_type) {
+                    return Err(vector_algorithm_error("vector feature columns must have the same element type")
+                        .with_fact("node_id", node_id)
+                        .with_fact("relation_role", role)
+                        .with_fact("reason", "vector_element_type_mismatch")
+                        .with_fact("column", column));
+                }
+                element_type = Some(current_type);
             }
-            Some(columns.len())
+            (Some(columns.len()), element_type.expect("non-empty feature columns"))
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
             if !available.contains(column) {
@@ -426,45 +494,43 @@ fn validate_vector_relation_binding(
                     .with_fact("reason", "unsupported_feature_type")
                     .with_fact("column", column));
             }
-            match field.data_type() {
-                DataType::FixedSizeList(element, dimension) if *dimension > 0 => {
-                    if element.is_nullable() || element.data_type() != &DataType::Float32 {
-                        return Err(vector_algorithm_error("vector column elements must be non-null Float32")
-                            .with_fact("node_id", node_id)
-                            .with_fact("relation_role", role)
-                            .with_fact("reason", "unsupported_feature_type")
-                            .with_fact("column", column));
-                    }
-                    Some(*dimension as usize)
-                },
-                DataType::List(element) | DataType::LargeList(element) => {
-                    if element.is_nullable() || element.data_type() != &DataType::Float32 {
-                        return Err(vector_algorithm_error("vector column elements must be non-null Float32")
-                            .with_fact("node_id", node_id)
-                            .with_fact("relation_role", role)
-                            .with_fact("reason", "unsupported_feature_type")
-                            .with_fact("column", column));
-                    }
-                    None
-                },
+            let (element, dimension) = match field.data_type() {
+                DataType::FixedSizeList(element, dimension) if *dimension > 0 => (element, Some(*dimension as usize)),
+                DataType::List(element) | DataType::LargeList(element) => (element, None),
                 actual => {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedType,
                         "query_engine.vector_algorithm.validate",
-                        "vector column must be FixedSizeList<Float32, D>, List<Float32>, or LargeList<Float32>",
+                        "vector column must be a fixed-size or variable-size list",
                     )
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
                     .with_fact("reason", "unsupported_feature_type")
                     .with_fact("column", column)
-                    .with_fact("data_type", format!("{:?}", actual)));
+                    .with_fact("data_type", format!("{actual:?}")));
                 },
+            };
+            if element.is_nullable() {
+                return Err(vector_algorithm_error("vector column elements must be non-null")
+                    .with_fact("node_id", node_id)
+                    .with_fact("relation_role", role)
+                    .with_fact("reason", "unsupported_feature_type")
+                    .with_fact("column", column));
             }
+            let element_type = CuvsVectorElementType::from_data_type(element.data_type()).ok_or_else(|| {
+                vector_algorithm_error("vector column element type is not supported")
+                    .with_fact("node_id", node_id)
+                    .with_fact("relation_role", role)
+                    .with_fact("reason", "unsupported_feature_type")
+                    .with_fact("column", column)
+                    .with_fact("data_type", format!("{:?}", element.data_type()))
+            })?;
+            (dimension, element_type)
         },
     };
     match &binding.row_id {
         VectorRowIdBinding::RowIndex if role == "initial_centroids" => {
-            Ok(VectorRelationValidation { id_type: DataType::Int64, dimension })
+            Ok(VectorRelationValidation { id_type: DataType::Int64, dimension, element_type })
         },
         VectorRowIdBinding::RowIndex => Err(vector_algorithm_error(
             "vector dataset, query, and input relations require an explicit logical row-id column",
@@ -500,7 +566,7 @@ fn validate_vector_relation_binding(
                 .with_fact("data_type", format!("{:?}", field.data_type()))
                 .with_fact("nullable", field.is_nullable()));
             }
-            Ok(VectorRelationValidation { id_type: field.data_type().clone(), dimension })
+            Ok(VectorRelationValidation { id_type: field.data_type().clone(), dimension, element_type })
         },
     }
 }
@@ -548,9 +614,73 @@ mod tests {
 
     use super::*;
     use crate::{
-        plan::{QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorPcaParams},
+        plan::{
+            QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
+            VectorKMeansParams, VectorPcaParams,
+        },
         source::{GpuResidentSource, SourceNode},
     };
+
+    #[test]
+    fn relation_element_types_must_match_across_vector_bindings() {
+        let float32_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("x", DataType::Float32, false),
+        ]));
+        let float64_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("embedding", DataType::List(Arc::new(Field::new("item", DataType::Float64, false))), false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let dataset =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&float32_schema))));
+        let queries =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&float64_schema))));
+        let params = VectorBruteForceKnnParams::new(
+            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new_vector_column(queries, VectorRowIdBinding::column("id"), "embedding"),
+            1,
+            VectorDistanceMetric::L2Expanded,
+        );
+        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+            VectorAlgorithm::BruteForceKnn,
+            VectorAlgorithmParams::BruteForceKnn(params),
+            vector_knn_output_schema(DataType::Int64, DataType::Int64),
+        ));
+        let plan = builder.finish_with_host_sink(root);
+        let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
+            panic!("vector root")
+        };
+        let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed element types");
+        assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
+        assert_eq!(error.fact_value("left_type"), Some("Float32"));
+        assert_eq!(error.fact_value("right_type"), Some("Float64"));
+
+        let mut builder = QueryPlanBuilder::new();
+        let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", float32_schema)));
+        let centroids =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("centroids", float64_schema)));
+        let params =
+            VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]), 1)
+                .with_initial_centroids(VectorRelationBinding::new_vector_column(
+                    centroids,
+                    VectorRowIdBinding::RowIndex,
+                    "embedding",
+                ));
+        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+            VectorAlgorithm::KMeans,
+            VectorAlgorithmParams::KMeans(params),
+            vector_kmeans_output_schema(DataType::Int64),
+        ));
+        let plan = builder.finish_with_host_sink(root);
+        let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
+            panic!("vector root")
+        };
+        let error =
+            validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed centroid element type");
+        assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
+        assert_eq!(error.fact_value("right_role"), Some("initial_centroids"));
+    }
 
     #[test]
     fn relation_features_must_be_present_in_the_execution_available_columns() {

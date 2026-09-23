@@ -35,6 +35,12 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | `dataset` | yes | `table` | Dense-vector rows searched by the exact kNN operation. |
 | `queries` | yes | `table` | Dense-vector query rows matched against the evaluated dataset. |
 
+### Vector element types
+
+| Supported element type |
+| --- |
+| `Float32` |
+
 ## Arguments and options
 
 ### Scalar SQL arguments
@@ -53,7 +59,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector binding shapes
 
-Each relation subquery must project a non-null `id` field followed by either one or more non-null `Float32` feature fields or one non-null list vector field named `vector`.
+Each relation subquery must project a non-null `id` field followed by either one or more non-null feature fields of a supported element type (`Float32`) or one non-null list vector field named `vector`.
 
 For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.
 

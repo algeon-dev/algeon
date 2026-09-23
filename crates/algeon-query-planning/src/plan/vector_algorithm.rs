@@ -55,12 +55,44 @@ impl CuvsIdType {
 pub const CUVS_ID_TYPES: &[CuvsIdType] =
     &[CuvsIdType::Int32, CuvsIdType::Int64, CuvsIdType::Utf8, CuvsIdType::LargeUtf8, CuvsIdType::Utf8View];
 
+/// Vector element types accepted by cuVS operation descriptors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CuvsVectorElementType {
+    Float32,
+    Float64,
+    Int8,
+    UInt8,
+}
+
+impl CuvsVectorElementType {
+    pub fn from_data_type(data_type: &DataType) -> Option<Self> {
+        match data_type {
+            DataType::Float32 => Some(Self::Float32),
+            DataType::Float64 => Some(Self::Float64),
+            DataType::Int8 => Some(Self::Int8),
+            DataType::UInt8 => Some(Self::UInt8),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Float32 => "Float32",
+            Self::Float64 => "Float64",
+            Self::Int8 => "Int8",
+            Self::UInt8 => "UInt8",
+        }
+    }
+}
+
 /// SQL relation argument roles in the canonical operation registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsRelationRole {
     Dataset,
     Queries,
     Input,
+    X,
+    Y,
 }
 
 impl CuvsRelationRole {
@@ -69,6 +101,8 @@ impl CuvsRelationRole {
             Self::Dataset => "dataset",
             Self::Queries => "queries",
             Self::Input => "input",
+            Self::X => "x",
+            Self::Y => "y",
         }
     }
 
@@ -78,6 +112,8 @@ impl CuvsRelationRole {
             Self::Dataset => "Dense-vector rows searched by the exact kNN operation.",
             Self::Queries => "Dense-vector query rows matched against the evaluated dataset.",
             Self::Input => "Dense-vector rows consumed by the fit-and-transform operation.",
+            Self::X => "Dense-vector rows on the first axis of the pairwise distance result.",
+            Self::Y => "Dense-vector rows on the second axis of the pairwise distance result.",
         }
     }
 }
@@ -85,7 +121,7 @@ impl CuvsRelationRole {
 /// Stable relational output contract selected by an operation descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsOutputContract {
-    BruteForceKnn,
+    KnnNeighbors,
     KMeansAssignments,
     PcaComponents,
 }
@@ -193,6 +229,8 @@ pub struct CuvsOperationDescriptor {
     /// Relation arguments, each passed as a parenthesized subquery; the SQL
     /// surface admits no other relation syntax.
     pub relation_roles: &'static [CuvsRelationRole],
+    /// Supported dense-vector element types for every relation binding.
+    pub vector_element_support: &'static [CuvsVectorElementType],
     pub output_contract: CuvsOutputContract,
     pub options: &'static [CuvsOptionDefinition],
     pub output_fields: &'static [CuvsOutputFieldDefinition],
@@ -204,7 +242,20 @@ pub struct CuvsOperationDescriptor {
     pub limitations: &'static [&'static str],
 }
 
-fn cuvs_vector_relation_binding_schema() -> Value {
+fn cuvs_vector_relation_binding_schema(element_support: &[CuvsVectorElementType]) -> Value {
+    let elements = element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>().join(", ");
+    let list_types = element_support
+        .iter()
+        .map(|element| {
+            format!(
+                "FixedSizeList<{}, D>, List<{}>, or LargeList<{}>",
+                element.as_str(),
+                element.as_str(),
+                element.as_str()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -224,7 +275,7 @@ fn cuvs_vector_relation_binding_schema() -> Value {
                         "properties": {
                             "columns": {
                                 "type": "array", "minItems": 1, "uniqueItems": true,
-                                "description": "Ordered, unique non-null Float32 feature columns; order defines vector dimensions.",
+                                "description": format!("Ordered, unique non-null {elements} feature columns; order defines vector dimensions."),
                                 "items": {"type": "string", "minLength": 1}
                             }
                         }
@@ -235,7 +286,7 @@ fn cuvs_vector_relation_binding_schema() -> Value {
                         "properties": {
                             "column": {
                                 "type": "string", "minLength": 1,
-                                "description": "One non-null FixedSizeList<Float32, D>, List<Float32>, or LargeList<Float32> column."
+                                "description": format!("One non-null {list_types} column.")
                             }
                         }
                     }
@@ -245,6 +296,7 @@ fn cuvs_vector_relation_binding_schema() -> Value {
     })
 }
 
+const FLOAT32_VECTOR_SUPPORT: &[CuvsVectorElementType] = &[CuvsVectorElementType::Float32];
 const KNN_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::Dataset, CuvsRelationRole::Queries];
 const INPUT_RELATION: &[CuvsRelationRole] = &[CuvsRelationRole::Input];
 const KNN_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product"];
@@ -493,7 +545,8 @@ pub const CUVS_OPERATION_REGISTRY: &[CuvsOperationDescriptor] = &[
         summary: "Exact brute-force nearest-neighbor search over dense vectors.",
         use_this_when: "Use this when SQL can first filter a candidate relation and you need exact batch reranking, not a persistent ANN index.",
         relation_roles: KNN_RELATIONS,
-        output_contract: CuvsOutputContract::BruteForceKnn,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        output_contract: CuvsOutputContract::KnnNeighbors,
         options: KNN_OPTIONS,
         output_fields: KNN_OUTPUT_FIELDS,
         quickstart_sql: r#"SELECT *
@@ -516,6 +569,7 @@ FROM cuvs_brute_force_knn(
         summary: "K-means clustering assignments for dense vector rows.",
         use_this_when: "Use this when one statement should fit clusters over its evaluated relation and immediately join or aggregate the assignments.",
         relation_roles: INPUT_RELATION,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
         output_contract: CuvsOutputContract::KMeansAssignments,
         options: KMEANS_OPTIONS,
         output_fields: KMEANS_OUTPUT_FIELDS,
@@ -538,6 +592,7 @@ ORDER BY row_ordinal;"#,
         summary: "Principal-component analysis transform for dense vector rows.",
         use_this_when: "Use this when one statement should fit and transform its evaluated input relation for relational export or downstream visualization.",
         relation_roles: INPUT_RELATION,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
         output_contract: CuvsOutputContract::PcaComponents,
         options: PCA_OPTIONS,
         output_fields: PCA_OUTPUT_FIELDS,
@@ -564,7 +619,7 @@ impl CuvsOperationDescriptor {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
         for option in self.options {
-            let mut schema = option_schema(option.kind);
+            let mut schema = option_schema(option.kind, self.vector_element_support);
             schema["description"] = Value::String(option.description.to_string());
             properties.insert(option.name.to_string(), schema);
             if option.required {
@@ -582,9 +637,9 @@ impl CuvsOperationDescriptor {
     }
 }
 
-fn option_schema(kind: CuvsOptionKind) -> Value {
+fn option_schema(kind: CuvsOptionKind, element_support: &[CuvsVectorElementType]) -> Value {
     match kind {
-        CuvsOptionKind::RelationBinding => cuvs_vector_relation_binding_schema(),
+        CuvsOptionKind::RelationBinding => cuvs_vector_relation_binding_schema(element_support),
         CuvsOptionKind::PositiveInteger { maximum, default } => {
             let mut value = json!({"type": "integer", "minimum": 1, "maximum": maximum});
             if let Some(default) = default {
@@ -804,10 +859,9 @@ impl VectorRowIdBinding {
 /// Binding from one native relation to a dense vector matrix.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsDenseVectorBinding {
-    /// Separate non-null `Float32` columns packed in the listed order.
+    /// Separate non-null columns of one supported element type packed in the listed order.
     Columns(Vec<String>),
-    /// One non-null `FixedSizeList<Float32, D>`, `List<Float32>`, or
-    /// `LargeList<Float32>` column.
+    /// One non-null fixed-size or variable-size list column of a supported element type.
     VectorColumn(String),
 }
 
@@ -1175,8 +1229,8 @@ impl VectorAlgorithmNode {
     }
 }
 
-/// Stable relational result schema for brute-force kNN.
-pub fn vector_brute_force_knn_output_schema(query_id_type: DataType, neighbor_id_type: DataType) -> SchemaRef {
+/// Stable relational result schema for nearest-neighbor search.
+pub fn vector_knn_output_schema(query_id_type: DataType, neighbor_id_type: DataType) -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("query_ordinal", DataType::UInt64, false),
         Field::new("query_id", query_id_type, false),

@@ -194,15 +194,16 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                         "data_types": ["Int32", "Int64", "Utf8", "LargeUtf8", "Utf8View"]
                     },
                     "features": {
+                        "element_types": descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>(),
                         "one_of": [
                             {
                                 "shape": "wide",
-                                "rule": "Every non-id field is a non-null Float32 feature; projection order defines vector dimension order."
+                                "rule": "Every non-id field is a non-null feature of a supported element type; projection order defines vector dimension order."
                             },
                             {
                                 "shape": "list",
                                 "field": "vector",
-                                "rule": "The non-null vector field is FixedSizeList<Float32>, List<Float32>, or LargeList<Float32>, with no other non-id fields."
+                                "rule": "The non-null vector field is FixedSizeList, List, or LargeList of a supported element type, with no other non-id fields."
                             }
                         ]
                     }
@@ -396,6 +397,8 @@ fn example_table(role: CuvsRelationRole) -> &'static str {
         CuvsRelationRole::Dataset => "dataset_vectors",
         CuvsRelationRole::Queries => "query_vectors",
         CuvsRelationRole::Input => "input_vectors",
+        CuvsRelationRole::X => "x_vectors",
+        CuvsRelationRole::Y => "y_vectors",
     }
 }
 
@@ -533,7 +536,7 @@ fn operation_name(operation: CuvsOperation) -> &'static str {
 
 fn output_contract_name(contract: CuvsOutputContract) -> &'static str {
     match contract {
-        CuvsOutputContract::BruteForceKnn => "brute_force_knn",
+        CuvsOutputContract::KnnNeighbors => "knn_neighbors",
         CuvsOutputContract::KMeansAssignments => "kmeans_assignments",
         CuvsOutputContract::PcaComponents => "pca_components",
     }

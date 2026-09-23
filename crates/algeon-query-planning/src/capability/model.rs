@@ -398,6 +398,10 @@ pub enum VectorInputRole {
     Queries,
     /// Training/transform input for K-means or PCA.
     Input,
+    /// First axis of a pairwise distance result.
+    X,
+    /// Second axis of a pairwise distance result.
+    Y,
     /// Relation-backed initial K-means centroids.
     InitialCentroids,
 }
@@ -420,6 +424,8 @@ impl VectorInputRole {
             Self::Dataset => "dataset",
             Self::Queries => "queries",
             Self::Input => "input",
+            Self::X => "x",
+            Self::Y => "y",
             Self::InitialCentroids => "initial_centroids",
         }
     }

@@ -13,8 +13,7 @@ use query_engine::{
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
         VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams, VectorRelationBinding,
-        VectorRowIdBinding, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
-        vector_pca_output_schema,
+        VectorRowIdBinding, vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
     },
     runtime::{
         ExecutionContext, MemoryControlPolicy,
@@ -38,7 +37,7 @@ enum VectorFixtureShape {
 fn exact_knn_executes_gpu_resident_with_deterministic_ids_and_observed_stages() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
-    let output_schema = vector_brute_force_knn_output_schema(DataType::Int64, DataType::Int64);
+    let output_schema = vector_knn_output_schema(DataType::Int64, DataType::Int64);
     let mut builder = QueryPlanBuilder::new();
     let dataset =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&dataset_schema))));
@@ -380,7 +379,7 @@ fn knn_plan(dataset_schema: SchemaRef, query_schema: SchemaRef, shape: VectorFix
     let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
         VectorAlgorithm::BruteForceKnn,
         VectorAlgorithmParams::BruteForceKnn(params),
-        vector_brute_force_knn_output_schema(DataType::Int64, DataType::Int64),
+        vector_knn_output_schema(DataType::Int64, DataType::Int64),
     ));
     builder.finish_gpu_resident(root)
 }
