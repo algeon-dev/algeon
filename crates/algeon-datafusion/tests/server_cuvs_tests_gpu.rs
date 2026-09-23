@@ -61,7 +61,7 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
         metadata.column(0).as_any().downcast_ref::<StringArray>().expect("metadata function_name must be Utf8");
     assert_eq!(
         (0..operations.len()).map(|row| operations.value(row)).collect::<Vec<_>>(),
-        vec!["cuvs_brute_force_knn", "cuvs_kmeans", "cuvs_pca"],
+        vec!["cuvs_brute_force_knn", "cuvs_kmeans", "cuvs_pairwise_distance", "cuvs_pca", "cuvs_top_k"],
     );
 
     let knn = execute_batches(
@@ -75,6 +75,25 @@ async fn bounded_flight_sql_lists_and_executes_all_cuvs_operations() {
     )
     .await;
     assert_nonempty(&knn);
+
+    let pairwise = execute_batches(
+        &mut client,
+        "SELECT x_id, y_id, distance FROM cuvs_pairwise_distance(\
+             x => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             y => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             metric => 'l2_expanded') ORDER BY x_ordinal, y_ordinal",
+    )
+    .await;
+    assert_nonempty(&pairwise);
+
+    let top_k = execute_batches(
+        &mut client,
+        "SELECT id, rank, position, value FROM cuvs_top_k(\
+             input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             k => 1, select => 'max') ORDER BY row_ordinal, rank",
+    )
+    .await;
+    assert_nonempty(&top_k);
 
     let kmeans = execute_batches(
         &mut client,

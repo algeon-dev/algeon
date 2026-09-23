@@ -14,6 +14,8 @@ use super::{DataType, Field, NodeId, Schema, SchemaRef};
 pub const CUVS_BRUTE_FORCE_KNN_FUNCTION: &str = "cuvs_brute_force_knn";
 pub const CUVS_KMEANS_FUNCTION: &str = "cuvs_kmeans";
 pub const CUVS_PCA_FUNCTION: &str = "cuvs_pca";
+pub const CUVS_PAIRWISE_DISTANCE_FUNCTION: &str = "cuvs_pairwise_distance";
+pub const CUVS_TOP_K_FUNCTION: &str = "cuvs_top_k";
 
 /// Scalar ID types accepted by every cuVS relational operation.
 ///
@@ -111,7 +113,7 @@ impl CuvsRelationRole {
         match self {
             Self::Dataset => "Dense-vector rows searched by the exact kNN operation.",
             Self::Queries => "Dense-vector query rows matched against the evaluated dataset.",
-            Self::Input => "Dense-vector rows consumed by the fit-and-transform operation.",
+            Self::Input => "Dense-vector rows consumed by this operation.",
             Self::X => "Dense-vector rows on the first axis of the pairwise distance result.",
             Self::Y => "Dense-vector rows on the second axis of the pairwise distance result.",
         }
@@ -124,6 +126,8 @@ pub enum CuvsOutputContract {
     KnnNeighbors,
     KMeansAssignments,
     PcaComponents,
+    PairwiseDistances,
+    TopKValues,
 }
 
 /// Canonical scalar option metadata used by JSON schema generation and value
@@ -299,6 +303,8 @@ fn cuvs_vector_relation_binding_schema(element_support: &[CuvsVectorElementType]
 const FLOAT32_VECTOR_SUPPORT: &[CuvsVectorElementType] = &[CuvsVectorElementType::Float32];
 const KNN_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::Dataset, CuvsRelationRole::Queries];
 const INPUT_RELATION: &[CuvsRelationRole] = &[CuvsRelationRole::Input];
+const PAIRWISE_RELATIONS: &[CuvsRelationRole] = &[CuvsRelationRole::X, CuvsRelationRole::Y];
+const TOP_K_SELECTIONS: &[&str] = &["min", "max"];
 const KNN_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product"];
 const KMEANS_METRICS: &[&str] = &["l2_expanded", "l2_sqrt_expanded"];
 const KMEANS_INIT: &[&str] = &["kmeans++", "random"];
@@ -328,6 +334,46 @@ const KNN_OPTIONS: &[CuvsOptionDefinition] = &[
         required: true,
         kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: None },
         description: "Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first.",
+    },
+];
+const PAIRWISE_OPTIONS: &[CuvsOptionDefinition] = &[
+    CuvsOptionDefinition {
+        name: "x",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "First dense-vector relation.",
+    },
+    CuvsOptionDefinition {
+        name: "y",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "Second dense-vector relation.",
+    },
+    CuvsOptionDefinition {
+        name: "metric",
+        required: true,
+        kind: CuvsOptionKind::Enum { values: KNN_METRICS, default: None },
+        description: "Distance metric; inner_product is a similarity where larger is closer.",
+    },
+];
+const TOP_K_OPTIONS: &[CuvsOptionDefinition] = &[
+    CuvsOptionDefinition {
+        name: "input",
+        required: true,
+        kind: CuvsOptionKind::RelationBinding,
+        description: "Dense-vector rows to select from.",
+    },
+    CuvsOptionDefinition {
+        name: "k",
+        required: true,
+        kind: CuvsOptionKind::PositiveInteger { maximum: u32::MAX as u64, default: None },
+        description: "Number of values selected from each row.",
+    },
+    CuvsOptionDefinition {
+        name: "select",
+        required: true,
+        kind: CuvsOptionKind::Enum { values: TOP_K_SELECTIONS, default: None },
+        description: "Select the minimum or maximum values.",
     },
 ];
 const KMEANS_OPTIONS: &[CuvsOptionDefinition] = &[
@@ -464,6 +510,80 @@ const KNN_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
     },
 ];
 
+const PAIRWISE_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
+    CuvsOutputFieldDefinition {
+        name: "x_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based physical ordinal of the evaluated x row; it disambiguates duplicate x IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "x_id",
+        data_type: "same_as_x.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the x relation.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "y_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based physical ordinal of the evaluated y row; it disambiguates duplicate y IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "y_id",
+        data_type: "same_as_y.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the y relation.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "distance",
+        data_type: "Float32",
+        nullable: false,
+        repeats: None,
+        description: "Metric value for this x and y row pair; smaller is closer for distance metrics, while inner_product is a similarity where larger is closer.",
+    },
+];
+const TOP_K_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
+    CuvsOutputFieldDefinition {
+        name: "row_ordinal",
+        data_type: "UInt64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based physical ordinal of the evaluated input row; it disambiguates duplicate input IDs.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "id",
+        data_type: "same_as_input.id",
+        nullable: false,
+        repeats: None,
+        description: "Logical ID copied from the input relation.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "rank",
+        data_type: "UInt32",
+        nullable: false,
+        repeats: None,
+        description: "One-based value rank within an input row. Order consumers explicitly by row_ordinal, rank.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "position",
+        data_type: "Int64",
+        nullable: false,
+        repeats: None,
+        description: "Zero-based dimension index of the selected value within the input vector.",
+    },
+    CuvsOutputFieldDefinition {
+        name: "value",
+        data_type: "Float32",
+        nullable: false,
+        repeats: None,
+        description: "Selected Float32 input vector value; rank follows ascending values for min and descending values for max.",
+    },
+];
 const KMEANS_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
     CuvsOutputFieldDefinition {
         name: "row_ordinal",
@@ -516,6 +636,8 @@ const PCA_OUTPUT_FIELDS: &[CuvsOutputFieldDefinition] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CuvsOperation {
     BruteForceKnn,
+    PairwiseDistance,
+    TopK,
     KMeans,
     Pca,
 }
@@ -560,6 +682,53 @@ FROM cuvs_brute_force_knn(
             "Builds an exact query-local index over the evaluated dataset relation; it does not persist an ANN index or replace a vector database.",
             "The evaluated dataset must be non-empty and k must not exceed its row count. An empty query relation may return an empty result with the stable schema.",
             "Dataset and query vector dimensions must match after both relation children are evaluated.",
+        ],
+    },
+    CuvsOperationDescriptor {
+        operation: CuvsOperation::PairwiseDistance,
+        sql_function_name: CUVS_PAIRWISE_DISTANCE_FUNCTION,
+        display_name: "Pairwise Distance",
+        summary: "Pairwise distance or similarity for every x and y vector row.",
+        use_this_when: "Use this when every pair between two evaluated relations needs a metric value.",
+        relation_roles: PAIRWISE_RELATIONS,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        output_contract: CuvsOutputContract::PairwiseDistances,
+        options: PAIRWISE_OPTIONS,
+        output_fields: PAIRWISE_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT *
+FROM cuvs_pairwise_distance(
+  x => (SELECT id, d0, d1 FROM x_vectors),
+  y => (SELECT id, d0, d1 FROM y_vectors),
+  metric => 'l2_expanded'
+)
+ORDER BY x_ordinal, y_ordinal;"#,
+        limitations: &[
+            "Output rows equal x rows multiplied by y rows; the query allocation cap limits the result size.",
+            "Empty x or y returns an empty result with the stable schema.",
+            "x and y must share the same vector dimension and element type. inner_product is a similarity where larger is closer.",
+        ],
+    },
+    CuvsOperationDescriptor {
+        operation: CuvsOperation::TopK,
+        sql_function_name: CUVS_TOP_K_FUNCTION,
+        display_name: "Vector Top-K",
+        summary: "Select the smallest or largest values in every dense vector row.",
+        use_this_when: "Use this when each row needs its own ranked scalar values and vector positions.",
+        relation_roles: INPUT_RELATION,
+        vector_element_support: FLOAT32_VECTOR_SUPPORT,
+        output_contract: CuvsOutputContract::TopKValues,
+        options: TOP_K_OPTIONS,
+        output_fields: TOP_K_OUTPUT_FIELDS,
+        quickstart_sql: r#"SELECT *
+FROM cuvs_top_k(
+  input => (SELECT id, d0, d1 FROM input_vectors),
+  k => 1,
+  select => 'max'
+)
+ORDER BY row_ordinal, rank;"#,
+        limitations: &[
+            "k must not exceed the vector dimension. Empty input returns an empty result with the stable schema.",
+            "Equal selected values are ordered by position; when ties straddle rank k, the selected positions among them are unspecified.",
         ],
     },
     CuvsOperationDescriptor {
@@ -809,6 +978,10 @@ fn option_error(code: &'static str, message: impl Into<String>) -> CuvsOptionVal
 pub enum VectorAlgorithm {
     /// Exact brute-force k-nearest-neighbor search.
     BruteForceKnn,
+    /// Pairwise metric values between two relations.
+    PairwiseDistance,
+    /// Ranked values selected within each input vector.
+    TopK,
     /// K-means fit followed by row-label prediction.
     KMeans,
     /// Principal-component fit and transform.
@@ -820,6 +993,8 @@ impl VectorAlgorithm {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::BruteForceKnn => "brute_force_knn",
+            Self::PairwiseDistance => "pairwise_distance",
+            Self::TopK => "top_k",
             Self::KMeans => "kmeans",
             Self::Pca => "pca",
         }
@@ -962,6 +1137,28 @@ impl VectorBruteForceKnnParams {
     ) -> Self {
         Self { dataset, queries, k, metric }
     }
+}
+
+/// Pairwise distance parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorPairwiseDistanceParams {
+    /// First relation defining the result's x axis.
+    pub x: VectorRelationBinding,
+    /// Second relation defining the result's y axis.
+    pub y: VectorRelationBinding,
+    /// Metric evaluated for every x and y row pair.
+    pub metric: VectorDistanceMetric,
+}
+
+/// Per-row vector selection parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorTopKParams {
+    /// Relation supplying one dense vector per result row group.
+    pub input: VectorRelationBinding,
+    /// Number of values selected from each input vector.
+    pub k: usize,
+    /// Select the smallest values when true, or the largest when false.
+    pub select_min: bool,
 }
 
 /// K-means centroid initialization policy.
@@ -1149,6 +1346,10 @@ impl VectorPcaParams {
 pub enum VectorAlgorithmParams {
     /// Exact brute-force kNN parameters.
     BruteForceKnn(VectorBruteForceKnnParams),
+    /// Pairwise metric values between two relations.
+    PairwiseDistance(VectorPairwiseDistanceParams),
+    /// Ranked values selected within each input vector.
+    TopK(VectorTopKParams),
     /// K-means fit/predict parameters.
     KMeans(VectorKMeansParams),
     /// PCA fit-transform parameters.
@@ -1161,6 +1362,8 @@ impl VectorAlgorithmParams {
         matches!(
             (self, algorithm),
             (Self::BruteForceKnn(_), VectorAlgorithm::BruteForceKnn)
+                | (Self::PairwiseDistance(_), VectorAlgorithm::PairwiseDistance)
+                | (Self::TopK(_), VectorAlgorithm::TopK)
                 | (Self::KMeans(_), VectorAlgorithm::KMeans)
                 | (Self::Pca(_), VectorAlgorithm::Pca)
         )
@@ -1170,6 +1373,8 @@ impl VectorAlgorithmParams {
     pub fn relation_bindings(&self) -> Box<dyn Iterator<Item = &VectorRelationBinding> + '_> {
         match self {
             Self::BruteForceKnn(params) => Box::new([&params.dataset, &params.queries].into_iter()),
+            Self::PairwiseDistance(params) => Box::new([&params.x, &params.y].into_iter()),
+            Self::TopK(params) => Box::new(std::iter::once(&params.input)),
             Self::KMeans(params) => Box::new(std::iter::once(&params.input).chain(params.initial_centroids.iter())),
             Self::Pca(params) => Box::new(std::iter::once(&params.input)),
         }
@@ -1182,6 +1387,11 @@ impl VectorAlgorithmParams {
                 params.dataset.input = remap(params.dataset.input);
                 params.queries.input = remap(params.queries.input);
             },
+            Self::PairwiseDistance(params) => {
+                params.x.input = remap(params.x.input);
+                params.y.input = remap(params.y.input);
+            },
+            Self::TopK(params) => params.input.input = remap(params.input.input),
             Self::KMeans(params) => {
                 params.input.input = remap(params.input.input);
                 if let Some(centroids) = &mut params.initial_centroids {
@@ -1238,6 +1448,28 @@ pub fn vector_knn_output_schema(query_id_type: DataType, neighbor_id_type: DataT
         Field::new("neighbor_id", neighbor_id_type, false),
         Field::new("rank", DataType::UInt32, false),
         Field::new("distance", DataType::Float32, false),
+    ]))
+}
+
+/// Stable long-form row-major pairwise metric result.
+pub fn vector_pairwise_distance_output_schema(x_id_type: DataType, y_id_type: DataType) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("x_ordinal", DataType::UInt64, false),
+        Field::new("x_id", x_id_type, false),
+        Field::new("y_ordinal", DataType::UInt64, false),
+        Field::new("y_id", y_id_type, false),
+        Field::new("distance", DataType::Float32, false),
+    ]))
+}
+
+/// Stable ranked selection result schema.
+pub fn vector_top_k_output_schema(id_type: DataType) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("row_ordinal", DataType::UInt64, false),
+        Field::new("id", id_type, false),
+        Field::new("rank", DataType::UInt32, false),
+        Field::new("position", DataType::Int64, false),
+        Field::new("value", DataType::Float32, false),
     ]))
 }
 

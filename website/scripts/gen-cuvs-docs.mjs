@@ -26,6 +26,7 @@ const OPERATIONS_DIR = join(DOCS_DIR, 'operations');
 // alter SQL names or introduce an execution API family.
 const FAMILIES = {
   vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn'] },
+  distances_and_selection: { label: 'Distances and Selection', functions: ['cuvs_pairwise_distance', 'cuvs_top_k'] },
   clustering: { label: 'Clustering', functions: ['cuvs_kmeans'] },
   dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuvs_pca'] },
 };

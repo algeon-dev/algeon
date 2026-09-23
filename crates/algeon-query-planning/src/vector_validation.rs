@@ -15,7 +15,7 @@ use crate::{
         CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOptionKind, CuvsVectorElementType, NodeId, PlanNode,
         ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorKMeansInit,
         VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema, vector_knn_output_schema,
-        vector_pca_output_schema,
+        vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
     },
 };
 
@@ -180,10 +180,22 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("reason", "zero_k"));
             }
             validate_registry_maximum(CuvsOperation::BruteForceKnn, "k", params.k as u64, node_id)?;
-            let dataset =
-                validate_vector_relation_binding("dataset", &params.dataset, plan, available_columns_by_node, node_id)?;
-            let queries =
-                validate_vector_relation_binding("queries", &params.queries, plan, available_columns_by_node, node_id)?;
+            let dataset = validate_vector_relation_binding(
+                CuvsOperation::BruteForceKnn,
+                "dataset",
+                &params.dataset,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            let queries = validate_vector_relation_binding(
+                CuvsOperation::BruteForceKnn,
+                "queries",
+                &params.queries,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
             if let (Some(dataset_dimension), Some(query_dimension)) = (dataset.dimension, queries.dimension)
                 && dataset_dimension != query_dimension
             {
@@ -194,9 +206,60 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("query_features", query_dimension));
             }
             validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
-            validate_vector_element_support(CuvsOperation::BruteForceKnn, "dataset", &dataset, node_id)?;
-            validate_vector_element_support(CuvsOperation::BruteForceKnn, "queries", &queries, node_id)?;
             vector_knn_output_schema(queries.id_type, dataset.id_type)
+        },
+        VectorAlgorithmParams::PairwiseDistance(params) => {
+            let x = validate_vector_relation_binding(
+                CuvsOperation::PairwiseDistance,
+                "x",
+                &params.x,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            let y = validate_vector_relation_binding(
+                CuvsOperation::PairwiseDistance,
+                "y",
+                &params.y,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_matching_element_types("x", &x, "y", &y, node_id)?;
+            if let (Some(x_dimension), Some(y_dimension)) = (x.dimension, y.dimension)
+                && x_dimension != y_dimension
+            {
+                return Err(vector_algorithm_error("pairwise vector dimensions must match")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "feature_dimension_mismatch")
+                    .with_fact("x_dimension", x_dimension)
+                    .with_fact("y_dimension", y_dimension));
+            }
+            vector_pairwise_distance_output_schema(x.id_type, y.id_type)
+        },
+        VectorAlgorithmParams::TopK(params) => {
+            if params.k == 0 {
+                return Err(vector_algorithm_error("Top-K requires k greater than zero")
+                    .with_fact("node_id", node_id)
+                    .with_fact("algorithm", vector.spec.algorithm.as_str())
+                    .with_fact("reason", "zero_k"));
+            }
+            validate_registry_maximum(CuvsOperation::TopK, "k", params.k as u64, node_id)?;
+            let input = validate_vector_relation_binding(
+                CuvsOperation::TopK,
+                "input",
+                &params.input,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            if input.dimension.is_some_and(|dimension| params.k > dimension) {
+                return Err(vector_algorithm_error("Top-K k must be within the input dimension")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "k_exceeds_dimension")
+                    .with_fact("k", params.k));
+            }
+            vector_top_k_output_schema(input.id_type)
         },
         VectorAlgorithmParams::KMeans(params) => {
             if params.n_clusters == 0 || params.max_iterations == 0 || params.n_init == 0 {
@@ -216,11 +279,18 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("reason", "invalid_tolerance")
                     .with_fact("tolerance", params.tolerance));
             }
-            let input =
-                validate_vector_relation_binding("input", &params.input, plan, available_columns_by_node, node_id)?;
+            let input = validate_vector_relation_binding(
+                CuvsOperation::KMeans,
+                "input",
+                &params.input,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
             match (params.init, &params.initial_centroids) {
                 (VectorKMeansInit::Relation, Some(centroids)) => {
                     let centroids = validate_vector_relation_binding(
+                        CuvsOperation::KMeans,
                         "initial_centroids",
                         centroids,
                         plan,
@@ -228,7 +298,6 @@ pub fn validate_vector_algorithm_node(
                         node_id,
                     )?;
                     validate_matching_element_types("input", &input, "initial_centroids", &centroids, node_id)?;
-                    validate_vector_element_support(CuvsOperation::KMeans, "initial_centroids", &centroids, node_id)?;
                     if let (Some(input_dimension), Some(centroid_dimension)) = (input.dimension, centroids.dimension)
                         && input_dimension != centroid_dimension
                     {
@@ -257,12 +326,17 @@ pub fn validate_vector_algorithm_node(
                 },
                 (_, None) => {},
             }
-            validate_vector_element_support(CuvsOperation::KMeans, "input", &input, node_id)?;
             vector_kmeans_output_schema(input.id_type)
         },
         VectorAlgorithmParams::Pca(params) => {
-            let input =
-                validate_vector_relation_binding("input", &params.input, plan, available_columns_by_node, node_id)?;
+            let input = validate_vector_relation_binding(
+                CuvsOperation::Pca,
+                "input",
+                &params.input,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
             if params.n_iterations == 0 {
                 return Err(vector_algorithm_error("PCA iteration count must be greater than zero")
                     .with_fact("node_id", node_id)
@@ -290,7 +364,6 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("n_components", params.n_components)
                     .with_fact("feature_count", input.dimension.unwrap_or(0)));
             }
-            validate_vector_element_support(CuvsOperation::Pca, "input", &input, node_id)?;
             vector_pca_output_schema(input.id_type, params.n_components)
         },
     };
@@ -406,6 +479,7 @@ fn validate_vector_element_support(
 }
 
 fn validate_vector_relation_binding(
+    operation: CuvsOperation,
     role: &'static str,
     binding: &VectorRelationBinding,
     plan: &QueryPlan,
@@ -528,16 +602,16 @@ fn validate_vector_relation_binding(
             (dimension, element_type)
         },
     };
+    let relation = VectorRelationValidation { id_type: DataType::Int64, dimension, element_type };
+    validate_vector_element_support(operation, role, &relation, node_id)?;
     match &binding.row_id {
-        VectorRowIdBinding::RowIndex if role == "initial_centroids" => {
-            Ok(VectorRelationValidation { id_type: DataType::Int64, dimension, element_type })
+        VectorRowIdBinding::RowIndex if role == "initial_centroids" => Ok(relation),
+        VectorRowIdBinding::RowIndex => {
+            Err(vector_algorithm_error("vector result relations require an explicit logical row-id column")
+                .with_fact("node_id", node_id)
+                .with_fact("relation_role", role)
+                .with_fact("reason", "missing_logical_row_id_column"))
         },
-        VectorRowIdBinding::RowIndex => Err(vector_algorithm_error(
-            "vector dataset, query, and input relations require an explicit logical row-id column",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("relation_role", role)
-        .with_fact("reason", "missing_logical_row_id_column")),
         VectorRowIdBinding::Column(column) => {
             if !available.contains(column) {
                 return Err(vector_algorithm_error("vector row-id column is not produced by its input relation")
@@ -566,7 +640,7 @@ fn validate_vector_relation_binding(
                 .with_fact("data_type", format!("{:?}", field.data_type()))
                 .with_fact("nullable", field.is_nullable()));
             }
-            Ok(VectorRelationValidation { id_type: field.data_type().clone(), dimension, element_type })
+            Ok(VectorRelationValidation { id_type: field.data_type().clone(), ..relation })
         },
     }
 }
@@ -616,13 +690,13 @@ mod tests {
     use crate::{
         plan::{
             QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
-            VectorKMeansParams, VectorPcaParams,
+            VectorKMeansParams, VectorPcaParams, VectorTopKParams,
         },
         source::{GpuResidentSource, SourceNode},
     };
 
     #[test]
-    fn relation_element_types_must_match_across_vector_bindings() {
+    fn unsupported_element_types_are_rejected_per_binding_before_cross_binding_checks() {
         let float32_schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("x", DataType::Float32, false),
@@ -652,9 +726,8 @@ mod tests {
             panic!("vector root")
         };
         let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed element types");
-        assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
-        assert_eq!(error.fact_value("left_type"), Some("Float32"));
-        assert_eq!(error.fact_value("right_type"), Some("Float64"));
+        assert_eq!(error.fact_value("reason"), Some("unsupported_feature_type"));
+        assert_eq!(error.fact_value("data_type"), Some("Float64"));
 
         let mut builder = QueryPlanBuilder::new();
         let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", float32_schema)));
@@ -678,8 +751,37 @@ mod tests {
         };
         let error =
             validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed centroid element type");
-        assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
-        assert_eq!(error.fact_value("right_role"), Some("initial_centroids"));
+        assert_eq!(error.fact_value("reason"), Some("unsupported_feature_type"));
+        assert_eq!(error.fact_value("relation_role"), Some("initial_centroids"));
+    }
+
+    #[test]
+    fn top_k_zero_and_oversized_k_have_distinct_reasons() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("x", DataType::Float32, false),
+        ]));
+        for (k, reason) in [(0, "zero_k"), (2, "k_exceeds_dimension")] {
+            let mut builder = QueryPlanBuilder::new();
+            let input =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            let params = VectorTopKParams {
+                input: VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]),
+                k,
+                select_min: true,
+            };
+            let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+                VectorAlgorithm::TopK,
+                VectorAlgorithmParams::TopK(params),
+                vector_top_k_output_schema(DataType::Int64),
+            ));
+            let plan = builder.finish_with_host_sink(root);
+            let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
+                panic!("vector root")
+            };
+            let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("invalid k");
+            assert_eq!(error.fact_value("reason"), Some(reason));
+        }
     }
 
     #[test]

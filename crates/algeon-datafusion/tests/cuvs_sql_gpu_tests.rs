@@ -7,6 +7,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
     cuvs_sql::CuvsAlgoExec,
+    error::DataFusionErrorExt,
     native_exec::AlgeonNativeExecutionConfig,
     planner::AlgeonGpuExecutionMode,
     session::AlgeonSessionStateBuilderExt,
@@ -18,7 +19,7 @@ use algeon_datafusion::{
     planner::{FinalPlanDisposition, classify_final_plan},
 };
 use arrow::{
-    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray},
+    array::{ArrayRef, FixedSizeListArray, Float32Array, Int64Array, ListArray, StringArray, UInt32Array},
     buffer::OffsetBuffer,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -65,6 +66,118 @@ async fn native_required_accepts_a_raw_cugraph_function_root() {
         .expect("strict mode accepts a raw cuGraph function root");
     assert_eq!(classify_final_plan(graph.as_ref()), FinalPlanDisposition::Native);
     assert_eq!(collect(graph, ctx.task_ctx()).await.unwrap().iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn pairwise_and_top_k_sql_produce_ranked_device_results() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    let pairwise = plan_sql(
+        &ctx,
+        "SELECT x_id, y_id, distance FROM cuvs_pairwise_distance(\
+             x => (SELECT item_id AS id, d0, d1 FROM dataset_vectors WHERE item_id = 1), \
+             y => (SELECT item_id AS id, d0, d1 FROM dataset_vectors WHERE item_id = 2), \
+             metric => 'l2_expanded')",
+    )
+    .await;
+    let batches = collect(pairwise, ctx.task_ctx()).await.expect("pairwise SQL");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let batch = &batches[0];
+    assert_eq!(batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 1);
+    assert_eq!(batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap().value(0), 2);
+    assert!((batch.column(2).as_any().downcast_ref::<Float32Array>().unwrap().value(0) - 8.0).abs() < 1e-4);
+
+    let top_k = plan_sql(
+        &ctx,
+        "SELECT id, rank, position, value FROM cuvs_top_k(\
+             input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors WHERE item_id = 1), \
+             k => 2, select => 'max') ORDER BY rank",
+    )
+    .await;
+    let batches = collect(top_k, ctx.task_ctx()).await.expect("Top-K SQL");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    let batch = &batches[0];
+    assert_eq!(batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().as_ref(), &[1, 1]);
+    assert_eq!(batch.column(1).as_any().downcast_ref::<UInt32Array>().unwrap().values().as_ref(), &[1, 2]);
+    assert_eq!(batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap().values().as_ref(), &[0, 1]);
+    assert_eq!(batch.column(3).as_any().downcast_ref::<Float32Array>().unwrap().values().as_ref(), &[2.0, 0.0]);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn pairwise_and_top_k_preserve_empty_schemas_and_order_ties_by_position() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    let schema = wide_vector_schema("item_id");
+    let empty = wide_vector_batch(Arc::clone(&schema), "item_id", &[], &[], &[]);
+    ctx.register_table("empty_vectors", Arc::new(MemTable::try_new(schema, vec![vec![empty]]).unwrap())).unwrap();
+    for sql in [
+        "SELECT * FROM cuvs_pairwise_distance(x => (SELECT item_id AS id, d0, d1 FROM empty_vectors), y => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), metric => 'l2_expanded')",
+        "SELECT * FROM cuvs_pairwise_distance(x => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), y => (SELECT item_id AS id, d0, d1 FROM empty_vectors), metric => 'l2_expanded')",
+        "SELECT * FROM cuvs_top_k(input => (SELECT item_id AS id, d0, d1 FROM empty_vectors), k => 1, select => 'min')",
+    ] {
+        let plan = plan_sql(&ctx, sql).await;
+        assert_eq!(plan.schema().fields().len(), 5);
+        let batches = collect(plan, ctx.task_ctx()).await.expect("empty vector result");
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0, "{sql}");
+    }
+    let tie_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("d0", DataType::Float32, false),
+        Field::new("d1", DataType::Float32, false),
+        Field::new("d2", DataType::Float32, false),
+        Field::new("d3", DataType::Float32, false),
+    ]));
+    let tie_batch = RecordBatch::try_new(
+        Arc::clone(&tie_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![42_i64])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![1.0_f32])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![2.0_f32])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![1.0_f32])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![3.0_f32])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("tie_vectors", Arc::new(MemTable::try_new(tie_schema, vec![vec![tie_batch]]).unwrap())).unwrap();
+    let plan = plan_sql(&ctx,
+        "SELECT position, value FROM cuvs_top_k(input => (SELECT id, d0, d1, d2, d3 FROM tie_vectors), k => 4, select => 'min') ORDER BY rank"
+    ).await;
+    let batches = collect(plan, ctx.task_ctx()).await.expect("tie ordering");
+    let batch = &batches[0];
+    assert_eq!(batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().as_ref(), &[0, 2, 1, 3]);
+    assert_eq!(
+        batch.column(1).as_any().downcast_ref::<Float32Array>().unwrap().values().as_ref(),
+        &[1.0, 1.0, 2.0, 3.0]
+    );
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn top_k_rejects_k_above_evaluated_list_dimension() {
+    let (backend, ctx) = cuvs_bounded_context();
+    let item = Arc::new(Field::new("item", DataType::Float32, false));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("vector", DataType::List(Arc::clone(&item)), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![7_i64])) as ArrayRef,
+            Arc::new(uniform_list_f32_array(item, &[1.0, 2.0], 2)) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("list_top_k", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    let plan = plan_sql(
+        &ctx,
+        "SELECT * FROM cuvs_top_k(input => (SELECT id, vector FROM list_top_k), k => 3, select => 'min')",
+    )
+    .await;
+    let error = collect(plan, ctx.task_ctx()).await.expect_err("evaluated list dimension must bound k");
+    assert_eq!(error.find_algeon_error().and_then(|error| error.fact_value("reason")), Some("k_exceeds_dimension"));
     close_cuvs_test_backend(backend, ctx);
 }
 
@@ -464,7 +577,7 @@ async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_b
                      dataset => (SELECT item_id AS id, d0, d1 FROM partitioned_dataset_vectors), \
                      queries => (SELECT query_id AS id, d0, d1 FROM partitioned_query_vectors), \
                      k => 1, metric => 'l2_sqrt_expanded')\
-                 WHERE rank = 0\
+                 WHERE rank = 1\
              ) AS knn \
              JOIN labels ON knn.neighbor_id = labels.item_id \
              WHERE knn.neighbor_id = 1 \

@@ -32,7 +32,7 @@ Follow the pages in this order:
 | `query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation, and metrics | Rust | `crates/algeon-query-runtime/` |
 | `query-engine` | Native execution composition and the compatible public facade over planning and runtime | Rust | `crates/algeon-query-engine/` |
 | `components/cudf` | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
-| `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins official [`cuVS`](https://github.com/rapidsai/cuvs) | Rust + C++/CUDA | one component + submodule |
+| `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins the [`algeon-dev cuVS fork`](https://github.com/algeon-dev/cuvs) | Rust + C++/CUDA | one component + submodule |
 | `components/cugraph` | Safe Rust API over libcugraph (`cugraph`, `cugraph-sys`); pins the [`cugraph` fork](https://github.com/algeon-dev/cugraph) | Rust + C++/CUDA | one component + submodule |
 
 The root `.gitmodules` pins the three native sources and the root Cargo
@@ -44,7 +44,7 @@ there is one product checkout and one recursive submodule update.
 algeon/
 ├── components/cudf/cudf/       # pinned cuDF fork submodule
 ├── components/cugraph/cugraph/ # pinned cuGraph fork submodule
-├── components/cuvs/cuvs/       # pinned official cuVS submodule
+├── components/cuvs/cuvs/       # pinned algeon-dev cuVS fork submodule
 ├── crates/                      # planning, runtime, engine, and support crates
 ├── crates/algeon-datafusion/src/ # DataFusion adapter
 └── target/native/

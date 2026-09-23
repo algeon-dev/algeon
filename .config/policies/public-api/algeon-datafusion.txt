@@ -515,7 +515,9 @@ pub use algeon_datafusion::cuvs_sql::CUVS_BRUTE_FORCE_KNN_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_ID_TYPES
 pub use algeon_datafusion::cuvs_sql::CUVS_KMEANS_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_OPERATION_REGISTRY
+pub use algeon_datafusion::cuvs_sql::CUVS_PAIRWISE_DISTANCE_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_PCA_FUNCTION
+pub use algeon_datafusion::cuvs_sql::CUVS_TOP_K_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CuvsDenseVectorBinding
 pub use algeon_datafusion::cuvs_sql::CuvsIdType
 pub use algeon_datafusion::cuvs_sql::CuvsOperation
@@ -584,6 +586,7 @@ pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::canonical_json(&self) 
 pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::kmeans_clusters(&self) -> core::option::Option<u32>
 pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::knn_k(&self) -> core::option::Option<u32>
 pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::pca_components(&self) -> core::option::Option<u32>
+pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::top_k_k(&self) -> core::option::Option<u32>
 pub struct algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding
 impl algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding
 pub fn algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding::id(&self) -> &str

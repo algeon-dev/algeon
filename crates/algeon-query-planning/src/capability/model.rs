@@ -412,6 +412,9 @@ impl VectorInputRole {
         match (&vector.spec.params, input_index) {
             (VectorAlgorithmParams::BruteForceKnn(_), 0) => Self::Dataset,
             (VectorAlgorithmParams::BruteForceKnn(_), 1) => Self::Queries,
+            (VectorAlgorithmParams::PairwiseDistance(_), 0) => Self::X,
+            (VectorAlgorithmParams::PairwiseDistance(_), 1) => Self::Y,
+            (VectorAlgorithmParams::TopK(_), 0) => Self::Input,
             (VectorAlgorithmParams::KMeans(_), 0) | (VectorAlgorithmParams::Pca(_), 0) => Self::Input,
             (VectorAlgorithmParams::KMeans(_), 1) => Self::InitialCentroids,
             _ => Self::Input,

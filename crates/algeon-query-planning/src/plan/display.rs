@@ -298,6 +298,18 @@ fn format_vector_algorithm_params(params: &super::VectorAlgorithmParams) -> Stri
             params.k,
             params.metric
         ),
+        super::VectorAlgorithmParams::PairwiseDistance(params) => format!(
+            "x=({}) y=({}) metric={}",
+            format_vector_relation(&params.x),
+            format_vector_relation(&params.y),
+            params.metric
+        ),
+        super::VectorAlgorithmParams::TopK(params) => format!(
+            "input=({}) k={} select={}",
+            format_vector_relation(&params.input),
+            params.k,
+            if params.select_min { "min" } else { "max" }
+        ),
         super::VectorAlgorithmParams::KMeans(params) => format!(
             "input=({}) n_clusters={} max_iterations={} tolerance={} n_init={} init={} initial_centroids={} metric={}",
             format_vector_relation(&params.input),

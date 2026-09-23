@@ -12,8 +12,9 @@ use query_engine::{
     expr::Expr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams, VectorRelationBinding,
-        VectorRowIdBinding, vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPairwiseDistanceParams,
+        VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema,
+        vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
     },
     runtime::{
         ExecutionContext, MemoryControlPolicy,
@@ -23,7 +24,8 @@ use query_engine::{
 };
 
 use super::{
-    assert_attempt_domain_released, backend_context, execute_query_plan_direct, execute_query_plan_with_gpu_inputs,
+    assert_attempt_domain_released, backend_context, backend_context_with_grant, execute_query_plan_direct,
+    execute_query_plan_with_gpu_inputs,
 };
 
 #[derive(Clone, Copy)]
@@ -118,7 +120,7 @@ fn exact_knn_executes_gpu_resident_with_deterministic_ids_and_observed_stages() 
     assert_eq!(batch.num_rows(), 2);
     assert_eq!(batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().as_ref(), &[101, 102]);
     assert_eq!(batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap().values().as_ref(), &[20, 30]);
-    assert_eq!(batch.column(2).as_any().downcast_ref::<UInt32Array>().unwrap().values().as_ref(), &[0, 0]);
+    assert_eq!(batch.column(2).as_any().downcast_ref::<UInt32Array>().unwrap().values().as_ref(), &[1, 1]);
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     assert!(result.metrics().compiled_pipeline_tasks_executed >= 5);
     let task_mappings = result.metrics().plan_task_mappings();
@@ -185,6 +187,64 @@ fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_alloc
             .iter()
             .any(|mapping| { mapping.operator_kind.as_deref() == Some("vector_algorithm") })
     );
+    drop(gpu_inputs);
+    drop(runtime);
+    assert_attempt_domain_released(&admitted);
+    admitted.finish();
+}
+
+#[test]
+fn compiled_pairwise_output_allocation_failure_records_task_and_releases_attempt() {
+    let schema = vector_schema("id", VectorFixtureShape::Columns);
+    let mut builder = QueryPlanBuilder::new();
+    let x = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", Arc::clone(&schema))));
+    let y = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("y", Arc::clone(&schema))));
+    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::PairwiseDistance,
+        VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
+            x: VectorRelationBinding::new(x, VectorRowIdBinding::column("id"), ["x"]),
+            y: VectorRelationBinding::new(y, VectorRowIdBinding::column("id"), ["x"]),
+            metric: VectorDistanceMetric::L2Expanded,
+        }),
+        vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64),
+    ));
+    let plan = builder.finish_with_host_sink(root);
+    let ids = (0..256_i64).collect::<Vec<_>>();
+    let features = (0..256).map(|index| index as f32).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(ids)), Arc::new(Float32Array::from(features))],
+    )
+    .unwrap();
+    let context = backend_context_with_grant(64 * 1024_u64);
+    let admitted = context.admit_plan(&plan).expect("pairwise plan admission");
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    for name in ["x", "y"] {
+        gpu_inputs.insert(
+            name.into(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+                Arc::clone(&schema),
+            )
+            .unwrap(),
+        );
+    }
+    let (result, metrics, _observation) = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+    )
+    .into_parts();
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("pairwise N*M allocation must exceed query cap"),
+    };
+    assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed, "{error:?}");
+    assert!(
+        metrics.plan_task_mappings().iter().any(|mapping| mapping.operator_kind.as_deref() == Some("vector_algorithm"))
+    );
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
     drop(gpu_inputs);
     drop(runtime);
     assert_attempt_domain_released(&admitted);

@@ -3,12 +3,15 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{Series, frame::dataframe::GpuRecordBatch};
 use cuvs::{
-    BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, KMeansInit, KMeansMetric, KMeansModel, KMeansParams,
-    MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor,
-    fit_transform_owned,
+    BruteForceIndex, CuvsResources, DeviceBuffer, DeviceElement, DistanceMetric, KMeansInit, KMeansMetric, KMeansModel,
+    KMeansParams, MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor,
+    fit_transform_owned, pairwise_distance_into, select_k_into,
 };
 
-use super::assembly::{assemble_brute_force_knn_output, assemble_kmeans_output, assemble_pca_output};
+use super::assembly::{
+    assemble_brute_force_knn_output, assemble_kmeans_output, assemble_pairwise_distance_output, assemble_pca_output,
+    assemble_top_k_output,
+};
 use crate::{
     exec::{GpuDataFrame, *},
     observability::{
@@ -17,7 +20,7 @@ use crate::{
     plan::{
         CuvsDenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
         VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-        VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+        VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorTopKParams,
     },
 };
 
@@ -79,6 +82,12 @@ pub(in crate::exec) fn execute_vector_algorithm(
         VectorAlgorithmParams::BruteForceKnn(params) => {
             execute_brute_force_knn(context, plan, node_id, params, inputs, &resources, native_version)
         },
+        VectorAlgorithmParams::PairwiseDistance(params) => {
+            execute_pairwise_distance(context, plan, node_id, params, inputs, &resources, native_version)
+        },
+        VectorAlgorithmParams::TopK(params) => {
+            execute_top_k(context, plan, node_id, params, inputs, &resources, native_version)
+        },
         VectorAlgorithmParams::KMeans(params) => {
             execute_kmeans(context, plan, node_id, params, inputs, &resources, native_version)
         },
@@ -116,19 +125,25 @@ fn execute_brute_force_knn(
     let queries = relation_input(inputs, &params.queries, node_id, "queries")?;
     let dataset_rows = dataset.num_rows();
     if dataset_rows == 0 {
-        return Err(knn_input_error(node_id, "empty_dataset", "kNN dataset must contain at least one row")
-            .with_fact("k", params.k));
+        return Err(vector_input_error(
+            node_id,
+            VectorAlgorithm::BruteForceKnn,
+            "empty_dataset",
+            "kNN dataset must contain at least one row",
+        )
+        .with_fact("k", params.k));
     }
     if params.k > dataset_rows {
-        return Err(knn_input_error(
+        return Err(vector_input_error(
             node_id,
+            VectorAlgorithm::BruteForceKnn,
             "k_exceeds_dataset_rows",
             "kNN k must not exceed the evaluated dataset row count",
         )
         .with_fact("k", params.k)
         .with_fact("dataset_rows", dataset_rows));
     }
-    let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id)?;
+    let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id, VectorAlgorithm::BruteForceKnn)?;
 
     with_relation_tensor(
         context,
@@ -168,8 +183,9 @@ fn execute_brute_force_knn(
                     .output_schema();
                 let query_dimension = relation_dimension(&params.queries, query_schema, node_id, "queries")?;
                 if query_dimension != dimension {
-                    return Err(knn_input_error(
+                    return Err(vector_input_error(
                         node_id,
+                        VectorAlgorithm::BruteForceKnn,
                         "feature_dimension_mismatch",
                         "kNN dataset and query dimensions must match at execution",
                     )
@@ -226,8 +242,9 @@ fn execute_brute_force_knn(
                         )
                     })?;
                     if query_dimension != dimension {
-                        return Err(knn_input_error(
+                        return Err(vector_input_error(
                             node_id,
+                            VectorAlgorithm::BruteForceKnn,
                             "feature_dimension_mismatch",
                             "kNN dataset and query dimensions must match at execution",
                         )
@@ -324,6 +341,205 @@ fn execute_brute_force_knn(
     )
 }
 
+fn execute_pairwise_distance(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    params: &VectorPairwiseDistanceParams,
+    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    resources: &CuvsResources,
+    native_version: (u16, u16, u16),
+) -> Result<GpuDataFrame> {
+    let x = relation_input(inputs, &params.x, node_id, "x")?;
+    let y = relation_input(inputs, &params.y, node_id, "y")?;
+    let rows = checked_output_rows(x.num_rows(), y.num_rows(), node_id, VectorAlgorithm::PairwiseDistance)?;
+    let assemble = |distances| {
+        observe_assembly(context, node_id, VectorAlgorithm::PairwiseDistance, resources, native_version, rows, || {
+            context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
+            let result = assemble_pairwise_distance_output(context, params, x, y, distances)?;
+            context.check_cancellation("query_engine.vector_algorithm.after_assembly")?;
+            Ok(result)
+        })
+    };
+    if rows == 0 {
+        let empty = resources
+            .runtime()
+            .series(&[] as &[f32])
+            .map_err(|error| cudf_query_error(EXECUTE_OPERATION, "failed to create empty pairwise output", error))?;
+        return assemble(empty);
+    }
+    with_relation_tensor(
+        context,
+        plan,
+        node_id,
+        VectorAlgorithm::PairwiseDistance,
+        "x",
+        &params.x,
+        x,
+        resources,
+        native_version,
+        |x_tensor| {
+            let dimension = tensor_dimension(x_tensor, node_id, "x", "pairwise")?;
+            with_relation_tensor(
+                context,
+                plan,
+                node_id,
+                VectorAlgorithm::PairwiseDistance,
+                "y",
+                &params.y,
+                y,
+                resources,
+                native_version,
+                |y_tensor| {
+                    if dimension != tensor_dimension(y_tensor, node_id, "y", "pairwise")? {
+                        return Err(vector_input_error(
+                            node_id,
+                            VectorAlgorithm::PairwiseDistance,
+                            "feature_dimension_mismatch",
+                            "pairwise dimensions must match",
+                        ));
+                    }
+                    let mut distances = DeviceBuffer::<f32>::new(resources, rows).map_err(|error| {
+                        cuvs_query_error(NATIVE_OPERATION, "failed to allocate pairwise output", error)
+                    })?;
+                    observe_native(
+                        context,
+                        node_id,
+                        VectorAlgorithm::PairwiseDistance,
+                        resources,
+                        native_version,
+                        "pairwise_distance",
+                        x.num_rows(),
+                        matrix_bytes(x.num_rows(), dimension, node_id, "x")?,
+                        Some(rows),
+                        Some(matrix_bytes(x.num_rows(), y.num_rows(), node_id, "pairwise_output")?),
+                        || {
+                            context.check_cancellation("query_engine.vector_algorithm.before_pairwise")?;
+                            pairwise_distance_into(
+                                resources,
+                                x_tensor,
+                                y_tensor,
+                                distance_metric(params.metric),
+                                &mut distances,
+                            )
+                            .map_err(|error| {
+                                cuvs_query_error(NATIVE_OPERATION, "failed to compute pairwise distances", error)
+                            })?;
+                            context.check_cancellation("query_engine.vector_algorithm.after_pairwise")
+                        },
+                    )?;
+                    let distances = adopt_vector_output(distances, "pairwise distances")?;
+                    assemble(distances)
+                },
+            )
+        },
+    )
+}
+
+fn execute_top_k(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    params: &VectorTopKParams,
+    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    resources: &CuvsResources,
+    native_version: (u16, u16, u16),
+) -> Result<GpuDataFrame> {
+    let input = relation_input(inputs, &params.input, node_id, "input")?;
+    let rows = checked_output_rows(input.num_rows(), params.k, node_id, VectorAlgorithm::TopK)?;
+    let assemble = |positions, values| {
+        observe_assembly(context, node_id, VectorAlgorithm::TopK, resources, native_version, rows, || {
+            context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
+            let result = assemble_top_k_output(context, params, input, positions, values)?;
+            context.check_cancellation("query_engine.vector_algorithm.after_assembly")?;
+            Ok(result)
+        })
+    };
+    if input.num_rows() == 0 {
+        let positions = resources
+            .runtime()
+            .series(&[] as &[i64])
+            .map_err(|error| cudf_query_error(EXECUTE_OPERATION, "failed to create empty Top-K positions", error))?;
+        let values = resources
+            .runtime()
+            .series(&[] as &[f32])
+            .map_err(|error| cudf_query_error(EXECUTE_OPERATION, "failed to create empty Top-K values", error))?;
+        return assemble(positions, values);
+    }
+    with_relation_tensor(
+        context,
+        plan,
+        node_id,
+        VectorAlgorithm::TopK,
+        "input",
+        &params.input,
+        input,
+        resources,
+        native_version,
+        |tensor| {
+            let dimension = tensor_dimension(tensor, node_id, "input", "Top-K")?;
+            if params.k > dimension {
+                return Err(vector_input_error(
+                    node_id,
+                    VectorAlgorithm::TopK,
+                    "k_exceeds_dimension",
+                    "Top-K k must not exceed the evaluated vector dimension",
+                )
+                .with_fact("k", params.k)
+                .with_fact("dimension", dimension));
+            }
+            let mut positions = DeviceBuffer::<i64>::new(resources, rows)
+                .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate Top-K positions", error))?;
+            let mut values = DeviceBuffer::<f32>::new(resources, rows)
+                .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate Top-K values", error))?;
+            let output_bytes = rows
+                .checked_mul(std::mem::size_of::<i64>() + std::mem::size_of::<f32>())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or_else(|| size_overflow(node_id, "top_k_output"))?;
+            observe_native(
+                context,
+                node_id,
+                VectorAlgorithm::TopK,
+                resources,
+                native_version,
+                "select_k",
+                input.num_rows(),
+                matrix_bytes(input.num_rows(), dimension, node_id, "input")?,
+                Some(rows),
+                Some(output_bytes),
+                || {
+                    context.check_cancellation("query_engine.vector_algorithm.before_select_k")?;
+                    select_k_into(resources, tensor, params.k, params.select_min, &mut values, &mut positions)
+                        .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to select Top-K values", error))?;
+                    context.check_cancellation("query_engine.vector_algorithm.after_select_k")
+                },
+            )?;
+            assemble(adopt_vector_output(positions, "Top-K positions")?, adopt_vector_output(values, "Top-K values")?)
+        },
+    )
+}
+
+fn adopt_vector_output<T: DeviceElement>(buffer: DeviceBuffer<T>, name: &'static str) -> Result<Series> {
+    Series::from_column(
+        buffer
+            .into_column()
+            .map_err(|error| cuvs_query_error(EXECUTE_OPERATION, format!("failed to adopt {name}"), error))?,
+    )
+    .map_err(|error| cudf_query_error(EXECUTE_OPERATION, format!("failed to wrap {name}"), error))
+}
+
+fn vector_input_error(
+    node_id: NodeId,
+    algorithm: VectorAlgorithm,
+    reason: &'static str,
+    message: &'static str,
+) -> QueryError {
+    QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE_OPERATION, message)
+        .with_fact("node_id", node_id)
+        .with_fact("algorithm", algorithm.as_str())
+        .with_fact("reason", reason)
+}
+
 fn execute_kmeans(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -336,11 +552,17 @@ fn execute_kmeans(
     let input = relation_input(inputs, &params.input, node_id, "input")?;
     let input_rows = input.num_rows();
     if input_rows == 0 {
-        return Err(kmeans_input_error(node_id, "empty_input", "K-means input must contain at least one row"));
+        return Err(vector_input_error(
+            node_id,
+            VectorAlgorithm::KMeans,
+            "empty_input",
+            "K-means input must contain at least one row",
+        ));
     }
     if input_rows > i32::MAX as usize {
-        return Err(kmeans_input_error(
+        return Err(vector_input_error(
             node_id,
+            VectorAlgorithm::KMeans,
             "row_count_exceeds_cuvs_i32",
             "K-means input row count exceeds the cuVS i32 range",
         )
@@ -348,8 +570,9 @@ fn execute_kmeans(
         .with_fact("maximum_rows", i32::MAX));
     }
     if params.n_clusters > input_rows {
-        return Err(kmeans_input_error(
+        return Err(vector_input_error(
             node_id,
+            VectorAlgorithm::KMeans,
             "cluster_count_exceeds_input_rows",
             "K-means n_clusters must not exceed the evaluated input row count",
         )
@@ -414,8 +637,9 @@ fn execute_kmeans(
                     MatrixLayout::RowMajor,
                     |centroids, centroid_dimension| {
                         if centroid_dimension != dimension {
-                            return Err(kmeans_input_error(
+                            return Err(vector_input_error(
                                 node_id,
+                                VectorAlgorithm::KMeans,
                                 "feature_dimension_mismatch",
                                 "K-means input and initial-centroid dimensions must match at execution",
                             )
@@ -426,15 +650,17 @@ fn execute_kmeans(
                     },
                 )?,
                 (VectorKMeansInit::Relation, None) => {
-                    return Err(kmeans_input_error(
+                    return Err(vector_input_error(
                         node_id,
+                        VectorAlgorithm::KMeans,
                         "missing_initial_centroids",
                         "relation-initialized K-means requires an initial-centroids input",
                     ));
                 },
                 (_, Some(_)) => {
-                    return Err(kmeans_input_error(
+                    return Err(vector_input_error(
                         node_id,
+                        VectorAlgorithm::KMeans,
                         "unexpected_initial_centroids",
                         "K-means initial-centroids input requires relation initialization",
                     ));
@@ -493,8 +719,13 @@ fn execute_pca(
     let input = relation_input(inputs, &params.input, node_id, "input")?;
     let input_rows = input.num_rows();
     if input_rows < 2 {
-        return Err(pca_input_error(node_id, "insufficient_input_rows", "PCA requires at least two input rows")
-            .with_fact("input_rows", input_rows));
+        return Err(vector_input_error(
+            node_id,
+            VectorAlgorithm::Pca,
+            "insufficient_input_rows",
+            "PCA requires at least two input rows",
+        )
+        .with_fact("input_rows", input_rows));
     }
     let native_params = native_pca_params(params, node_id)?;
     with_owned_relation_matrix(
@@ -510,8 +741,9 @@ fn execute_pca(
         MatrixLayout::ColumnMajor,
         |mut packed_input, dimension| {
             if dimension < 2 {
-                return Err(pca_input_error(
+                return Err(vector_input_error(
                     node_id,
+                    VectorAlgorithm::Pca,
                     "insufficient_feature_dimension",
                     "PCA requires at least two evaluated input feature columns",
                 )
@@ -519,8 +751,9 @@ fn execute_pca(
                 .with_fact("minimum_feature_dimension", 2));
             }
             if params.n_components > dimension {
-                return Err(pca_input_error(
+                return Err(vector_input_error(
                     node_id,
+                    VectorAlgorithm::Pca,
                     "component_count_exceeds_feature_dimension",
                     "PCA n_components must not exceed the evaluated feature dimension",
                 )
@@ -1129,19 +1362,34 @@ fn tensor_dimension(
 
 fn native_kmeans_params(params: &VectorKMeansParams, node_id: NodeId) -> Result<KMeansParams> {
     let n_clusters = i32::try_from(params.n_clusters).map_err(|_| {
-        kmeans_input_error(node_id, "cluster_count_exceeds_cuvs_i32", "K-means n_clusters exceeds the cuVS i32 range")
-            .with_fact("n_clusters", params.n_clusters)
-            .with_fact("maximum_clusters", i32::MAX)
+        vector_input_error(
+            node_id,
+            VectorAlgorithm::KMeans,
+            "cluster_count_exceeds_cuvs_i32",
+            "K-means n_clusters exceeds the cuVS i32 range",
+        )
+        .with_fact("n_clusters", params.n_clusters)
+        .with_fact("maximum_clusters", i32::MAX)
     })?;
     let max_iter = i32::try_from(params.max_iterations).map_err(|_| {
-        kmeans_input_error(node_id, "max_iterations_exceeds_cuvs_i32", "K-means max_iter exceeds the cuVS i32 range")
-            .with_fact("max_iterations", params.max_iterations)
-            .with_fact("maximum_iterations", i32::MAX)
+        vector_input_error(
+            node_id,
+            VectorAlgorithm::KMeans,
+            "max_iterations_exceeds_cuvs_i32",
+            "K-means max_iter exceeds the cuVS i32 range",
+        )
+        .with_fact("max_iterations", params.max_iterations)
+        .with_fact("maximum_iterations", i32::MAX)
     })?;
     let n_init = i32::try_from(params.n_init).map_err(|_| {
-        kmeans_input_error(node_id, "n_init_exceeds_cuvs_i32", "K-means n_init exceeds the cuVS i32 range")
-            .with_fact("n_init", params.n_init)
-            .with_fact("maximum_n_init", i32::MAX)
+        vector_input_error(
+            node_id,
+            VectorAlgorithm::KMeans,
+            "n_init_exceeds_cuvs_i32",
+            "K-means n_init exceeds the cuVS i32 range",
+        )
+        .with_fact("n_init", params.n_init)
+        .with_fact("maximum_n_init", i32::MAX)
     })?;
     let init = match params.init {
         VectorKMeansInit::KMeansPlusPlus => KMeansInit::KMeansPlusPlus,
@@ -1164,19 +1412,30 @@ fn native_kmeans_params(params: &VectorKMeansParams, node_id: NodeId) -> Result<
 
 fn native_pca_params(params: &VectorPcaParams, node_id: NodeId) -> Result<PcaParams> {
     let n_components = i32::try_from(params.n_components).map_err(|_| {
-        pca_input_error(node_id, "component_count_exceeds_cuvs_i32", "PCA n_components exceeds the cuVS i32 range")
-            .with_fact("n_components", params.n_components)
-            .with_fact("maximum_components", i32::MAX)
+        vector_input_error(
+            node_id,
+            VectorAlgorithm::Pca,
+            "component_count_exceeds_cuvs_i32",
+            "PCA n_components exceeds the cuVS i32 range",
+        )
+        .with_fact("n_components", params.n_components)
+        .with_fact("maximum_components", i32::MAX)
     })?;
     let iterations = i32::try_from(params.n_iterations).map_err(|_| {
-        pca_input_error(node_id, "iterations_exceed_cuvs_i32", "PCA n_iterations exceeds the cuVS i32 range")
-            .with_fact("n_iterations", params.n_iterations)
-            .with_fact("maximum_iterations", i32::MAX)
+        vector_input_error(
+            node_id,
+            VectorAlgorithm::Pca,
+            "iterations_exceed_cuvs_i32",
+            "PCA n_iterations exceeds the cuVS i32 range",
+        )
+        .with_fact("n_iterations", params.n_iterations)
+        .with_fact("maximum_iterations", i32::MAX)
     })?;
     let tolerance = params.tolerance as f32;
     if !tolerance.is_finite() {
-        return Err(pca_input_error(
+        return Err(vector_input_error(
             node_id,
+            VectorAlgorithm::Pca,
             "tolerance_out_of_float32_range",
             "PCA tolerance cannot be represented by cuVS Float32",
         )
@@ -1370,17 +1629,23 @@ fn distance_metric(metric: VectorDistanceMetric) -> DistanceMetric {
     }
 }
 
-fn checked_output_rows(query_rows: usize, k: usize, node_id: NodeId) -> Result<usize> {
-    let output_rows = query_rows.checked_mul(k).ok_or_else(|| size_overflow(node_id, "output_rows"))?;
+fn checked_output_rows(rows: usize, factor: usize, node_id: NodeId, algorithm: VectorAlgorithm) -> Result<usize> {
+    let output_rows = rows.checked_mul(factor).ok_or_else(|| {
+        QueryError::new(QueryErrorCode::SizeOverflow, EXECUTE_OPERATION, "vector output row count overflowed")
+            .with_fact("node_id", node_id)
+            .with_fact("algorithm", algorithm.as_str())
+            .with_fact("reason", "output_row_count_overflow")
+    })?;
     if output_rows > i32::MAX as usize {
         return Err(QueryError::new(
             QueryErrorCode::CudfInvalidInput,
             EXECUTE_OPERATION,
-            "kNN output row count exceeds libcudf size_type range",
+            "vector output row count exceeds libcudf size_type range",
         )
         .with_fact("node_id", node_id)
-        .with_fact("query_rows", query_rows)
-        .with_fact("k", k)
+        .with_fact("algorithm", algorithm.as_str())
+        .with_fact("input_rows", rows)
+        .with_fact("factor", factor)
         .with_fact("output_rows", output_rows)
         .with_fact("maximum_rows", i32::MAX)
         .with_fact("reason", "row_count_exceeds_libcudf_size_type"));
@@ -1401,27 +1666,6 @@ fn size_overflow(node_id: NodeId, resource: &'static str) -> QueryError {
         .with_fact("algorithm", "brute_force_knn")
         .with_fact("resource", resource)
         .with_fact("reason", "size_calculation_overflow")
-}
-
-fn knn_input_error(node_id: NodeId, reason: &'static str, message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE_OPERATION, message)
-        .with_fact("node_id", node_id)
-        .with_fact("algorithm", "brute_force_knn")
-        .with_fact("reason", reason)
-}
-
-fn kmeans_input_error(node_id: NodeId, reason: &'static str, message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE_OPERATION, message)
-        .with_fact("node_id", node_id)
-        .with_fact("algorithm", "kmeans")
-        .with_fact("reason", reason)
-}
-
-fn pca_input_error(node_id: NodeId, reason: &'static str, message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfInvalidInput, EXECUTE_OPERATION, message)
-        .with_fact("node_id", node_id)
-        .with_fact("algorithm", "pca")
-        .with_fact("reason", reason)
 }
 
 #[cfg(test)]

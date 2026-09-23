@@ -361,6 +361,8 @@ fn examples(operation: CuvsOperation) -> Value {
             "k": 8,
             "metric":"l2_expanded"
         }),
+        CuvsOperation::PairwiseDistance => json!({ "metric": "l2_expanded" }),
+        CuvsOperation::TopK => json!({ "k": 1, "select": "max" }),
         CuvsOperation::KMeans => json!({
             "n_clusters": 8
         }),
@@ -529,6 +531,8 @@ fn schema_json(schema: &SchemaRef) -> Value {
 fn operation_name(operation: CuvsOperation) -> &'static str {
     match operation {
         CuvsOperation::BruteForceKnn => "brute_force_knn",
+        CuvsOperation::PairwiseDistance => "pairwise_distance",
+        CuvsOperation::TopK => "top_k",
         CuvsOperation::KMeans => "kmeans",
         CuvsOperation::Pca => "pca",
     }
@@ -537,6 +541,8 @@ fn operation_name(operation: CuvsOperation) -> &'static str {
 fn output_contract_name(contract: CuvsOutputContract) -> &'static str {
     match contract {
         CuvsOutputContract::KnnNeighbors => "knn_neighbors",
+        CuvsOutputContract::PairwiseDistances => "pairwise_distances",
+        CuvsOutputContract::TopKValues => "top_k_values",
         CuvsOutputContract::KMeansAssignments => "kmeans_assignments",
         CuvsOutputContract::PcaComponents => "pca_components",
     }

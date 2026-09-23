@@ -2,7 +2,10 @@ use cudf::{Series, TypeId};
 
 use crate::{
     exec::*,
-    plan::{VectorBruteForceKnnParams, VectorDistanceMetric, VectorRelationBinding, VectorRowIdBinding},
+    plan::{
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding,
+        VectorRowIdBinding, VectorTopKParams,
+    },
 };
 
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";
@@ -91,6 +94,7 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
         })?;
     let rank = output_ordinal
         .rem_scalar_in(k_u64, &execution)
+        .and_then(|rank| rank.add_scalar_in(1_u64, &execution))
         .and_then(|rank| rank.astype_in(TypeId::UInt32, &execution))
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN ranks on device", error))?;
     let output = sorted
@@ -101,6 +105,110 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
         .map_err(|error| {
             cudf_query_error(ASSEMBLY_OPERATION, "failed to finalize kNN relational output schema", error)
         })?;
+    Ok(GpuDataFrame::new(output))
+}
+
+pub(in crate::exec) fn assemble_pairwise_distance_output(
+    context: &ExecutionContext,
+    params: &VectorPairwiseDistanceParams,
+    x: &GpuDataFrame,
+    y: &GpuDataFrame,
+    distances: Series,
+) -> Result<GpuDataFrame> {
+    let rows = x.num_rows().checked_mul(y.num_rows()).ok_or_else(|| {
+        QueryError::new(QueryErrorCode::SizeOverflow, ASSEMBLY_OPERATION, "pairwise output rows overflowed")
+    })?;
+    require_libcudf_row_count(rows, "pairwise_distance")?;
+    require_series_contract(&distances, TypeId::Float32, rows, "distances")?;
+    let runtime = context.runtime()?;
+    let execution =
+        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let sequence = runtime
+        .sequence(0_u64, 1_u64, rows)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to create pairwise output ordinals", error))?;
+    // An empty axis has no valid divisor; the output still carries the stable five-column schema.
+    let divisor = y.num_rows().max(1) as u64;
+    let x_ordinal = sequence
+        .div_scalar_in(divisor, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive x ordinals", error))?;
+    let y_ordinal = sequence
+        .rem_scalar_in(divisor, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive y ordinals", error))?;
+    let x_map = x_ordinal
+        .astype_in(TypeId::Int32, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast x ordinals", error))?;
+    let y_map = y_ordinal
+        .astype_in(TypeId::Int32, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast y ordinals", error))?;
+    let x_id = relation_id_series(&params.x, x, "x")?
+        .gather_in(&x_map, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather x ids", error))?;
+    let y_id = relation_id_series(&params.y, y, "y")?
+        .gather_in(&y_map, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather y ids", error))?;
+    let output = runtime
+        .empty_dataframe()
+        .assign([
+            ("x_ordinal", x_ordinal),
+            ("x_id", x_id),
+            ("y_ordinal", y_ordinal),
+            ("y_id", y_id),
+            ("distance", distances),
+        ])
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to assemble pairwise output", error))?;
+    Ok(GpuDataFrame::new(output))
+}
+
+pub(in crate::exec) fn assemble_top_k_output(
+    context: &ExecutionContext,
+    params: &VectorTopKParams,
+    input: &GpuDataFrame,
+    positions: Series,
+    values: Series,
+) -> Result<GpuDataFrame> {
+    let rows = input.num_rows().checked_mul(params.k).ok_or_else(|| {
+        QueryError::new(QueryErrorCode::SizeOverflow, ASSEMBLY_OPERATION, "Top-K output rows overflowed")
+    })?;
+    require_libcudf_row_count(rows, "top_k")?;
+    require_series_contract(&positions, TypeId::Int64, rows, "positions")?;
+    require_series_contract(&values, TypeId::Float32, rows, "values")?;
+    let runtime = context.runtime()?;
+    let execution =
+        ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let sequence = runtime
+        .sequence(0_u64, 1_u64, rows)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to create Top-K ordinals", error))?;
+    let row_ordinal = sequence
+        .div_scalar_in(params.k as u64, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive Top-K row ordinals", error))?;
+    let gather_map = row_ordinal
+        .astype_in(TypeId::Int32, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast Top-K ordinals", error))?;
+    let id = relation_id_series(&params.input, input, "input")?
+        .gather_in(&gather_map, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather Top-K ids", error))?;
+    let sorted = runtime
+        .empty_dataframe()
+        .assign([("row_ordinal", row_ordinal), ("id", id), ("position", positions), ("value", values)])
+        .and_then(|frame| {
+            frame.with_execution(&execution).sort_values(
+                ["row_ordinal", "value", "position"],
+                CudfSortOptions::new()
+                    .with_descending(vec![false, !params.select_min, false])
+                    .with_nulls_first(vec![false, false, false])
+                    .with_stable(true),
+            )
+        })
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to order Top-K output", error))?;
+    let rank = sequence
+        .rem_scalar_in(params.k as u64, &execution)
+        .and_then(|rank| rank.add_scalar_in(1_u64, &execution))
+        .and_then(|rank| rank.astype_in(TypeId::UInt32, &execution))
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive Top-K ranks", error))?;
+    let output = sorted
+        .with_column("rank", rank)
+        .and_then(|frame| frame.select(["row_ordinal", "id", "rank", "position", "value"]))
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to finalize Top-K output", error))?;
     Ok(GpuDataFrame::new(output))
 }
 
@@ -278,7 +386,7 @@ mod tests {
             vec![0, 1, 0, 2]
         );
         assert_eq!(output.frame().series("neighbor_id").unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 10, 10, 20]);
-        assert_eq!(output.frame().series("rank").unwrap().to_vec_strict::<u32>().unwrap(), vec![0, 1, 0, 1]);
+        assert_eq!(output.frame().series("rank").unwrap().to_vec_strict::<u32>().unwrap(), vec![1, 2, 1, 2]);
         assert_eq!(
             output.frame().series("distance").unwrap().to_vec_strict::<f32>().unwrap(),
             vec![1.0, 1.0, 0.4, 0.6]

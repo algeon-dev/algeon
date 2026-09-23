@@ -6,7 +6,8 @@ use datafusion::{
     logical_expr::{Expr, FetchType, LogicalPlan, SkipType, UserDefinedLogicalNodeCore},
 };
 use query_engine::plan::{
-    CuvsIdType, CuvsVectorElementType, vector_kmeans_output_schema, vector_knn_output_schema, vector_pca_output_schema,
+    CuvsIdType, CuvsVectorElementType, vector_kmeans_output_schema, vector_knn_output_schema,
+    vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
 };
 
 use super::{
@@ -143,15 +144,25 @@ fn validate_input_schemas(
         }
         dimensions.push(validate_relation_binding(operation, input.schema(), binding)?);
     }
-    if operation == CuvsOperation::BruteForceKnn
-        && let [Some(dataset), Some(queries)] = dimensions.as_slice()
-        && dataset != queries
+    if matches!(operation, CuvsOperation::BruteForceKnn | CuvsOperation::PairwiseDistance)
+        && let [Some(first), Some(second)] = dimensions.as_slice()
+        && first != second
     {
         return Err(invalid_call(
             operation,
             "vector_dimension_mismatch",
-            format!("dataset dimension {dataset} does not match query dimension {queries}"),
+            format!(
+                "{} dimension {first} does not match {} dimension {second}",
+                operation.descriptor().relation_roles[0].as_str(),
+                operation.descriptor().relation_roles[1].as_str()
+            ),
         ));
+    }
+    if operation == CuvsOperation::TopK
+        && let Some(Some(dimension)) = dimensions.first()
+        && options.top_k_k().expect("validated Top-K options contain k") as usize > *dimension
+    {
+        return Err(invalid_call(operation, "k_exceeds_dimension", "Top-K k exceeds the vector dimension"));
     }
     if operation == CuvsOperation::Pca
         && let Some(Some(dimension)) = dimensions.first()
@@ -290,6 +301,7 @@ fn validate_known_cardinalities(
                 }
             }
         },
+        CuvsOperation::PairwiseDistance | CuvsOperation::TopK => {},
         CuvsOperation::KMeans => {
             if let Some(input_rows) = known_row_count(&inputs[0]) {
                 let n_clusters =
@@ -359,6 +371,13 @@ fn derive_output_schema(
             let query_id = output_id_field(inputs[1].schema(), options.bindings()[1].id(), "query_id")?;
             vector_knn_output_schema(query_id.data_type().clone(), dataset_id.data_type().clone())
         },
+        CuvsOutputContract::PairwiseDistances => vector_pairwise_distance_output_schema(
+            output_id_field(inputs[0].schema(), options.bindings()[0].id(), "x_id")?.data_type().clone(),
+            output_id_field(inputs[1].schema(), options.bindings()[1].id(), "y_id")?.data_type().clone(),
+        ),
+        CuvsOutputContract::TopKValues => vector_top_k_output_schema(
+            output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),
+        ),
         CuvsOutputContract::KMeansAssignments => vector_kmeans_output_schema(
             output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),
         ),
