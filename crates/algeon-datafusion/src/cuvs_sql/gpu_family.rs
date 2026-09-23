@@ -363,6 +363,9 @@ fn examples(operation: CuvsOperation) -> Value {
         }),
         CuvsOperation::IvfFlat => json!({ "k": 8, "metric": "l2_expanded", "n_lists": 16, "n_probes": 16 }),
         CuvsOperation::IvfPq => json!({ "k": 8, "metric": "l2_expanded", "n_lists": 16, "n_probes": 16, "pq_dim": 2 }),
+        CuvsOperation::Cagra => {
+            json!({ "k": 8, "metric": "l2_expanded", "graph_degree": 32, "intermediate_graph_degree": 64 })
+        },
         CuvsOperation::PairwiseDistance => json!({ "metric": "l2_expanded" }),
         CuvsOperation::TopK => json!({ "k": 1, "select": "max" }),
         CuvsOperation::KMeans => json!({
@@ -535,6 +538,7 @@ fn operation_name(operation: CuvsOperation) -> &'static str {
         CuvsOperation::BruteForceKnn => "brute_force_knn",
         CuvsOperation::IvfFlat => "ivf_flat",
         CuvsOperation::IvfPq => "ivf_pq",
+        CuvsOperation::Cagra => "cagra",
         CuvsOperation::PairwiseDistance => "pairwise_distance",
         CuvsOperation::TopK => "top_k",
         CuvsOperation::KMeans => "kmeans",

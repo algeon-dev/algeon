@@ -512,6 +512,7 @@ pub fn algeon_datafusion::cugraph_sql::result_schema_for_params(algeon_datafusio
 pub fn algeon_datafusion::cugraph_sql::stable_result_schema(algeon_datafusion::cugraph_sql::CugraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub mod algeon_datafusion::cuvs_sql
 pub use algeon_datafusion::cuvs_sql::CUVS_BRUTE_FORCE_KNN_FUNCTION
+pub use algeon_datafusion::cuvs_sql::CUVS_CAGRA_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_ID_TYPES
 pub use algeon_datafusion::cuvs_sql::CUVS_IVF_FLAT_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_IVF_PQ_FUNCTION

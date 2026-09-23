@@ -48,6 +48,14 @@ cudf_status_t cudf_int64_buffer_fill_where_float32_infinite_ex(int64_t* values,
                                                                 int64_t fill_value,
                                                                 cudf_exec_options_t const* options);
 
+/// Replace each Int64 equal to from with to and set its paired Float32 to positive infinity.
+cudf_status_t cudf_int64_float32_buffer_replace_value_and_set_paired_infinite_ex(int64_t* values,
+                                                                                 float* paired_values,
+                                                                                 size_t element_count,
+                                                                                 int64_t from,
+                                                                                 int64_t to,
+                                                                                 cudf_exec_options_t const* options);
+
 /// Count non-finite Float32 values whose paired Int64 value differs from excluded_value.
 cudf_status_t cudf_float32_buffer_non_finite_unless_int64_equals_count_ex(float const* values,
                                                                           int64_t const* paired_values,

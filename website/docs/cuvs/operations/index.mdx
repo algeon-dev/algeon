@@ -28,6 +28,9 @@ for the bounded-preflight and server-cache boundary.
 - [IVF-PQ](./cuvs_ivf_pq.mdx) compresses the query-local inverted-file index
   with product quantization. It supports L2, cosine distance, and inner
   product; omitted neighbor slots do not emit rows.
+- [CAGRA](./cuvs_cagra.mdx) builds a query-local graph index and searches it
+  approximately. It supports squared L2, cosine distance, and inner product;
+  missing neighbors do not emit rows.
 
 ## Distances and Selection
 

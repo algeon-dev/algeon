@@ -1,5 +1,6 @@
 use std::{
     any::Any,
+    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -27,10 +28,10 @@ use cudf::{
     runtime::stream::CudaStream,
 };
 use cuvs::{
-    BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, IvfFlatIndex, IvfFlatIndexParams,
-    IvfFlatSearchParams, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel,
-    KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams, ValidatedDeviceTensor, fit_transform_owned,
-    pairwise_distance_into, select_k_into,
+    BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchParams, CuvsResources, DeviceBuffer,
+    DistanceMetric, ErrorKind, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams, IvfPqIndex, IvfPqIndexParams,
+    IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams,
+    StreamPoolCoverage, ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
 };
 
 #[derive(Debug)]
@@ -92,14 +93,36 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
 const TEST_RESERVATION_LIMIT_BYTES: usize = 1 << 30;
 static NEXT_RESERVATION_ID: AtomicUsize = AtomicUsize::new(0xC0_0000);
 
-fn resources() -> (Arc<Runtime>, CuvsResources, cudf::StreamReservationLease) {
+struct CoveredCuvsResources {
+    _coverage: StreamPoolCoverage,
+    resources: CuvsResources,
+}
+
+impl Deref for CoveredCuvsResources {
+    type Target = CuvsResources;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resources
+    }
+}
+
+fn resources() -> (Arc<Runtime>, CoveredCuvsResources, cudf::StreamReservationLease) {
+    resources_with_limit(TEST_RESERVATION_LIMIT_BYTES)
+}
+
+fn resources_with_limit(limit_bytes: usize) -> (Arc<Runtime>, CoveredCuvsResources, cudf::StreamReservationLease) {
     assert!(cudf::DeviceId::count().expect("query CUDA device count") > 0);
     let runtime = Arc::new(Runtime::new().expect("runtime"));
     let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed) as u64;
-    let _reservation =
-        runtime.stream_reservation(reservation_id, TEST_RESERVATION_LIMIT_BYTES).expect("test stream reservation");
+    let manager = runtime.device_memory_manager().expect("device manager");
+    let domain = manager
+        .query_memory_domain(reservation_id, cudf::QueryMemoryDomainOptions::new(limit_bytes))
+        .expect("test query domain");
+    let reservation =
+        domain.reserve_stream(runtime.stream(), reservation_id, limit_bytes).expect("test stream reservation");
     let resources = CuvsResources::for_runtime(Arc::clone(&runtime)).expect("cuVS resources");
-    (runtime, resources, _reservation)
+    let coverage = resources.stream_pool_coverage(Some(&reservation)).expect("cover RAFT pool streams");
+    (runtime, CoveredCuvsResources { _coverage: coverage, resources }, reservation)
 }
 
 fn i64_to_host(runtime: &Runtime, buffer: DeviceBuffer<i64>) -> Vec<i64> {
@@ -587,6 +610,149 @@ fn ivf_pq_metrics_recall_against_brute_force_and_mark_missing_slots() {
     assert!(ids.iter().zip(&distances).any(|(id, distance)| *id == i64::MAX && *distance == f32::INFINITY));
     assert!(ids.iter().zip(&distances).all(|(id, distance)| *id == i64::MAX || distance.is_finite()));
     index.close().unwrap();
+}
+
+#[test]
+fn cagra_metrics_and_nn_descent_search_a_padded_dataset() {
+    let (runtime, resources, _reservation) = resources();
+    let rows = 512;
+    let dimensions = 8;
+    let points = (0..rows)
+        .flat_map(|row| {
+            (0..dimensions).map(move |dim| {
+                let cluster = (row / 64) as f32;
+                1.0 + if dim == row / 64 {
+                    4.0 + row as f32 * 0.003
+                } else if dim == (row / 64 + 1) % dimensions {
+                    (row % 64) as f32 * 0.2
+                } else {
+                    (row % 17) as f32 * 0.011 + cluster * 0.01
+                }
+            })
+        })
+        .collect::<Vec<f32>>();
+    let samples = [1_usize, 70, 140, 210, 280, 350, 420, 490];
+    let queries = samples
+        .iter()
+        .flat_map(|row| points[row * dimensions..(row + 1) * dimensions].iter().copied())
+        .collect::<Vec<_>>();
+    let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
+    let query_data = DeviceBuffer::from_slice(&resources, &queries).unwrap();
+    let matrix = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let query_matrix = query_data.as_validated_matrix(&resources, samples.len(), dimensions).unwrap();
+    for metric in [DistanceMetric::L2Expanded, DistanceMetric::InnerProduct, DistanceMetric::CosineExpanded] {
+        let brute = BruteForceIndex::build(&resources, &matrix, metric).unwrap();
+        let mut exact_ids = DeviceBuffer::<i64>::new(&resources, samples.len()).unwrap();
+        let mut exact_distances = DeviceBuffer::<f32>::new(&resources, samples.len()).unwrap();
+        brute.search_into(&query_matrix, 1, &mut exact_ids, &mut exact_distances).unwrap();
+        let exact_ids = i64_to_host(&runtime, exact_ids);
+        let exact_distances = f32_to_host(&runtime, exact_distances);
+        brute.close().unwrap();
+        let mut build = CagraIndexParams::new(metric);
+        build.graph_degree = 16;
+        build.intermediate_graph_degree = 32;
+        let index = CagraIndex::build(&resources, &matrix, build).unwrap();
+        assert!(
+            resources._coverage.usage().unwrap().iter().any(|usage| usage.peak_bytes > 0),
+            "CAGRA graph build must charge a RAFT pool stream to the query domain"
+        );
+        let mut ids = DeviceBuffer::<i64>::new(&resources, samples.len()).unwrap();
+        let mut distances = DeviceBuffer::<f32>::new(&resources, samples.len()).unwrap();
+        index.search_into(&query_matrix, 1, CagraSearchParams::default(), &mut ids, &mut distances).unwrap();
+        let ids = i64_to_host(&runtime, ids);
+        let distances = f32_to_host(&runtime, distances);
+        let recall = ids.iter().zip(&exact_ids).filter(|(actual, expected)| actual == expected).count();
+        let max_error = distances
+            .iter()
+            .zip(&exact_distances)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0_f32, f32::max);
+        eprintln!("CAGRA {metric:?}: recall@1 {recall}/{}, max distance error {max_error}", samples.len());
+        assert!(recall >= 6, "{metric:?} recall@1 {recall}/{}", samples.len());
+        assert!(max_error < 0.05, "{metric:?} max error {max_error}");
+        index.close().unwrap();
+    }
+    let mut build = CagraIndexParams::new(DistanceMetric::L2Expanded);
+    build.graph_degree = 16;
+    build.intermediate_graph_degree = 32;
+    build.build_algo = CagraBuildAlgo::NnDescent;
+    let index = CagraIndex::build(&resources, &matrix, build).unwrap();
+    let mut ids = DeviceBuffer::<i64>::new(&resources, samples.len()).unwrap();
+    let mut distances = DeviceBuffer::<f32>::new(&resources, samples.len()).unwrap();
+    index.search_into(&query_matrix, 1, CagraSearchParams::default(), &mut ids, &mut distances).unwrap();
+    assert!(i64_to_host(&runtime, ids).iter().all(|id| (0..rows as i64).contains(id)));
+    let k = 256;
+    let mut wide_ids = DeviceBuffer::<i64>::new(&resources, samples.len() * k).unwrap();
+    let mut wide_distances = DeviceBuffer::<f32>::new(&resources, samples.len() * k).unwrap();
+    index
+        .search_into(
+            &query_matrix,
+            k,
+            CagraSearchParams { itopk_size: k, max_iterations: 1, ..CagraSearchParams::default() },
+            &mut wide_ids,
+            &mut wide_distances,
+        )
+        .unwrap();
+    let wide_ids = i64_to_host(&runtime, wide_ids);
+    let wide_distances = f32_to_host(&runtime, wide_distances);
+    assert!(wide_ids.contains(&i64::MAX), "bounded CAGRA traversal must expose missing slots");
+    for (id, distance) in wide_ids.into_iter().zip(wide_distances) {
+        if id == i64::MAX {
+            assert!(distance.is_infinite());
+        } else {
+            assert!((0..rows as i64).contains(&id));
+            assert!(distance.is_finite());
+        }
+    }
+    let foreign_stream = CudaStream::new().unwrap();
+    let foreign_runtime =
+        Arc::new(Runtime::builder().with_device(runtime.device()).with_stream(foreign_stream).build().unwrap());
+    let foreign = CuvsResources::for_runtime(foreign_runtime).unwrap();
+    assert_eq!(CagraIndex::build(&foreign, &matrix, build).unwrap_err().kind(), ErrorKind::InvalidInput);
+    index.close().unwrap();
+}
+
+#[test]
+fn cagra_owns_a_padded_copy_for_unaligned_device_rows() {
+    let (runtime, resources, _reservation) = resources();
+    let rows = 512;
+    let dimensions = 7;
+    let points = (0..rows)
+        .flat_map(|row| (0..dimensions).map(move |dim| (row == dim) as u8 as f32 + row as f32 * 0.01))
+        .collect::<Vec<_>>();
+    let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
+    let dataset = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let mut build = CagraIndexParams::new(DistanceMetric::L2Expanded);
+    build.graph_degree = 16;
+    build.intermediate_graph_degree = 32;
+    let index = CagraIndex::build(&resources, &dataset, build).unwrap();
+    let query = DeviceBuffer::from_slice(&resources, &points[0..dimensions]).unwrap();
+    let queries = query.as_validated_matrix(&resources, 1, dimensions).unwrap();
+    let mut neighbors = DeviceBuffer::<i64>::new(&resources, 1).unwrap();
+    let mut distances = DeviceBuffer::<f32>::new(&resources, 1).unwrap();
+    index.search_into(&queries, 1, CagraSearchParams::default(), &mut neighbors, &mut distances).unwrap();
+    assert_eq!(i64_to_host(&runtime, neighbors), [0]);
+    assert!(f32_to_host(&runtime, distances)[0] < 1e-4);
+    index.close().unwrap();
+}
+
+#[test]
+fn cagra_failed_build_releases_query_domain_allocations() {
+    let (_runtime, resources, reservation) = resources_with_limit(64 * 1024);
+    let rows = 512;
+    let dimensions = 8;
+    let points = (0..rows * dimensions).map(|value| (value % 113) as f32 * 0.1).collect::<Vec<_>>();
+    let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
+    let dataset = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let main_before = reservation.usage().unwrap().current_bytes;
+    let pool_before = resources._coverage.usage().unwrap()[0].current_bytes;
+    let mut params = CagraIndexParams::new(DistanceMetric::L2Expanded);
+    params.graph_degree = 16;
+    params.intermediate_graph_degree = 32;
+    let error = CagraIndex::build(&resources, &dataset, params).unwrap_err();
+    assert!(error.to_string().contains("out_of_memory"), "{error}");
+    assert_eq!(reservation.usage().unwrap().current_bytes, main_before);
+    assert_eq!(resources._coverage.usage().unwrap()[0].current_bytes, pool_before);
 }
 
 #[test]

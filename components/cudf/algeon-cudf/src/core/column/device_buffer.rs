@@ -347,6 +347,16 @@ impl DeviceBuffer {
             .map_err(|error| error.reanchor("device_buffer::fill_int64_where_float32_infinite"))
     }
 
+    /// Replace each Int64 equal to `from` with `to` and set its paired Float32 to positive infinity.
+    pub fn replace_int64_value_and_set_paired_float32_infinite(
+        &mut self,
+        paired_values: &mut Self,
+        from: i64,
+        to: i64,
+    ) -> Result<()> {
+        validation::replace_int64_value_and_set_paired_float32_infinite(self, paired_values, from, to)
+    }
+
     /// Require finite Float32 values where paired Int64 values differ from `excluded_value`.
     pub fn validate_finite_float32_unless_int64_equals(&self, paired_values: &Self, excluded_value: i64) -> Result<()> {
         validation::validate_finite_float32_unless_int64_equals(self, paired_values, excluded_value)

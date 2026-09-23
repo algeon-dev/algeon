@@ -3,10 +3,11 @@ use std::{collections::BTreeMap, sync::Arc};
 use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{Series, frame::dataframe::GpuRecordBatch};
 use cuvs::{
-    BruteForceIndex, CuvsResources, DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams,
-    IvfFlatSearchParams, IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric,
-    KMeansModel, KMeansParams, MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver,
-    ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
+    BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchAlgo, CagraSearchParams, CuvsResources,
+    DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams,
+    IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel,
+    KMeansParams, MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor,
+    fit_transform_owned, pairwise_distance_into, select_k_into,
 };
 
 use super::assembly::{
@@ -20,8 +21,9 @@ use crate::{
     },
     plan::{
         CuvsDenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
-        VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-        VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorTopKParams,
+        VectorCagraBuildAlgo, VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit,
+        VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
+        VectorRelationBinding, VectorTopKParams,
     },
 };
 
@@ -41,7 +43,7 @@ pub(in crate::exec) fn execute_vector_algorithm(
     // the immutable context grant for the boundary: the live member makes
     // cuVS's device-current temporaries domain-accounted before resources are
     // constructed, and remains attached through all cuVS calls below.
-    let _domain_token = context
+    let domain_token = context
         .attempt_allocation_domain_id()
         .map(|_| {
             let budget_bytes = context.bounded_device_budget_bytes().ok_or_else(|| {
@@ -68,6 +70,14 @@ pub(in crate::exec) fn execute_vector_algorithm(
             .with_fact("node_id", node_id)
             .with_fact("algorithm", node.spec.algorithm.as_str())
     })?;
+    // The pool guard remains live through native index destruction and output assembly.
+    let _pool_coverage = resources
+        .stream_pool_coverage(domain_token.as_ref().map(cudf::ExecutionBudgetToken::stream_reservation))
+        .map_err(|error| {
+            cuvs_query_error(EXECUTE_OPERATION, "failed to cover cuVS stream pool allocations", error)
+                .with_fact("node_id", node_id)
+                .with_fact("algorithm", node.spec.algorithm.as_str())
+        })?;
     let native_version = cuvs_sys::validate_runtime_version().map_err(|error| {
         QueryError::new(
             QueryErrorCode::CudfDependencyFailure,
@@ -209,6 +219,60 @@ pub(in crate::exec) fn execute_vector_algorithm(
                                 .map(|_| ())
                         },
                         "failed to execute IVF-PQ kNN search",
+                    )
+                },
+            },
+            inputs,
+            &resources,
+            native_version,
+        ),
+        VectorAlgorithmParams::Cagra(params) => execute_knn(
+            context,
+            plan,
+            node_id,
+            KnnExecutionOptions {
+                dataset: &params.dataset,
+                queries: &params.queries,
+                k: params.k,
+                metric: params.metric,
+                algorithm: VectorAlgorithm::Cagra,
+                n_lists: None,
+                missing_neighbor: Some(i64::MAX),
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
+                                   queries: &ValidatedDeviceTensor<'_>,
+                                   output_rows| {
+                    let mut build = CagraIndexParams::new(distance_metric(params.metric));
+                    build.graph_degree = params.graph_degree as usize;
+                    build.intermediate_graph_degree = params.intermediate_graph_degree as usize;
+                    build.build_algo = match params.build_algo {
+                        VectorCagraBuildAlgo::IvfPq => CagraBuildAlgo::IvfPq,
+                        VectorCagraBuildAlgo::NnDescent => CagraBuildAlgo::NnDescent,
+                    };
+                    let search = CagraSearchParams {
+                        itopk_size: params.itopk_size as usize,
+                        search_width: params.search_width as usize,
+                        max_iterations: params.max_iterations as usize,
+                        search_algo: match params.search_algo {
+                            VectorCagraSearchAlgo::Auto => CagraSearchAlgo::Auto,
+                            VectorCagraSearchAlgo::SingleCta => CagraSearchAlgo::SingleCta,
+                            VectorCagraSearchAlgo::MultiCta => CagraSearchAlgo::MultiCta,
+                            VectorCagraSearchAlgo::MultiKernel => CagraSearchAlgo::MultiKernel,
+                        },
+                    };
+                    run_knn_native(
+                        context,
+                        node_id,
+                        VectorAlgorithm::Cagra,
+                        &resources,
+                        native_version,
+                        dataset,
+                        queries,
+                        output_rows,
+                        || CagraIndex::build(&resources, dataset, build),
+                        |index, neighbors, distances| {
+                            index.search_into(queries, params.k, search, neighbors, distances).map(|_| ())
+                        },
+                        "failed to execute CAGRA kNN search",
                     )
                 },
             },
@@ -1872,9 +1936,13 @@ fn size_overflow(node_id: NodeId, resource: &'static str) -> QueryError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
 
     use arrow::datatypes::{DataType, Field, Schema};
+    use cudf::{QueryMemoryDomainOptions, Runtime};
 
     use super::*;
     use crate::{
@@ -1882,9 +1950,67 @@ mod tests {
             PlanNode, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorPcaParams, VectorRowIdBinding,
             vector_pca_output_schema,
         },
-        runtime::ExecutionCancellation,
+        runtime::{ExecutionCancellation, MemoryControlPolicy},
         source::{GpuResidentSource, SourceNode},
     };
+
+    #[test]
+    fn cancellation_after_real_ivf_flat_build_releases_index_allocations() {
+        static NEXT_DOMAIN: AtomicU64 = AtomicU64::new(0xCA_0000);
+        let runtime = Arc::new(Runtime::new().expect("GPU runtime"));
+        let domain_id = NEXT_DOMAIN.fetch_add(1, Ordering::Relaxed);
+        let limit = 256 * 1024 * 1024;
+        let domain = runtime
+            .device_memory_manager()
+            .unwrap()
+            .query_memory_domain(domain_id, QueryMemoryDomainOptions::new(limit))
+            .expect("query domain");
+        let reservation = domain.reserve_stream(runtime.stream(), domain_id, limit).expect("stream reservation");
+        let resources = CuvsResources::for_runtime(Arc::clone(&runtime)).expect("cuVS resources");
+        let coverage = resources.stream_pool_coverage(Some(&reservation)).expect("RAFT pool coverage");
+        let points = (0..256).map(|value| (value % 37) as f32).collect::<Vec<_>>();
+        let dataset = DeviceBuffer::from_slice(&resources, &points).expect("dataset allocation");
+        let tensor = dataset.as_validated_matrix(&resources, 64, 4).expect("validated dataset");
+        let cancellation = ExecutionCancellation::new();
+        let context = ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Unbounded)
+            .with_cancellation(cancellation.clone())
+            .build()
+            .expect("execution context");
+        let main_before = reservation.usage().unwrap().current_bytes;
+        let pool_before = coverage.usage().unwrap().iter().map(|usage| usage.current_bytes).collect::<Vec<_>>();
+        let mut params = IvfFlatIndexParams::new(DistanceMetric::L2Expanded, 2);
+        params.kmeans_n_iters = 2;
+        let mut builder = QueryPlanBuilder::new();
+        let node_id = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            "dataset",
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Float32, false)])),
+        )));
+        let error = run_knn_native(
+            &context,
+            node_id,
+            VectorAlgorithm::IvfFlat,
+            &resources,
+            cuvs_sys::validate_runtime_version().unwrap(),
+            &tensor,
+            &tensor,
+            1,
+            || {
+                let index = IvfFlatIndex::build(&resources, &tensor, params)?;
+                assert!(reservation.usage().unwrap().current_bytes > main_before);
+                cancellation.cancel();
+                Ok(index)
+            },
+            |_, _, _| panic!("cancelled build must not search"),
+            "IVF-Flat search failed",
+        )
+        .expect_err("after-build cancellation checkpoint");
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.operation(), "query_engine.vector_algorithm.after_index_build");
+        assert_eq!(reservation.usage().unwrap().current_bytes, main_before);
+        assert_eq!(coverage.usage().unwrap().iter().map(|usage| usage.current_bytes).collect::<Vec<_>>(), pool_before,);
+    }
 
     #[test]
     fn direct_enabled_execution_observes_pre_cancel_before_resources_or_inputs() {

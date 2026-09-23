@@ -11,9 +11,10 @@ use std::{
 use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 use algeon_datafusion::{
     cuvs_sql::{
-        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION, CUVS_KMEANS_FUNCTION,
-        CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsAlgoExec,
-        CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationRole, cuvs_options_json_schema,
+        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
+        CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,
+        CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationRole,
+        cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -69,6 +70,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
             CUVS_BRUTE_FORCE_KNN_FUNCTION,
             CUVS_IVF_FLAT_FUNCTION,
             CUVS_IVF_PQ_FUNCTION,
+            CUVS_CAGRA_FUNCTION,
             CUVS_PAIRWISE_DISTANCE_FUNCTION,
             CUVS_TOP_K_FUNCTION,
             CUVS_KMEANS_FUNCTION,
@@ -122,6 +124,12 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     assert_eq!(pq["properties"]["pq_bits"]["default"], 8);
     assert_eq!(pq["properties"]["codebook_kind"]["enum"], serde_json::json!(["per_subspace", "per_cluster"]));
     assert_eq!(pq["properties"]["codebook_kind"]["default"], "per_subspace");
+
+    let cagra = cuvs_options_json_schema(CuvsOperation::Cagra);
+    assert_eq!(cagra["required"], serde_json::json!(["dataset", "queries", "k", "metric"]));
+    assert_eq!(cagra["properties"]["build_algo"]["enum"], serde_json::json!(["ivf_pq", "nn_descent"]));
+    assert_eq!(cagra["properties"]["itopk_size"]["default"], 64);
+    assert_eq!(cagra["properties"]["metric"]["enum"], serde_json::json!(["l2_expanded", "inner_product", "cosine"]));
 
     let pca = cuvs_options_json_schema(CuvsOperation::Pca);
     assert_eq!(pca["properties"]["solver"]["default"], "cov_eig_dq");
@@ -419,6 +427,27 @@ async fn root_relation_binding_validation_delegates_to_canonical_registry() {
     let options: serde_json::Value = serde_json::from_str(node.validated_options().canonical_json()).unwrap();
     assert_eq!(options["input"]["id"], "id");
     assert_eq!(options["input"]["vector"]["columns"], serde_json::json!(["d0", "d1"]));
+}
+
+#[tokio::test]
+async fn cagra_sql_binds_relations_and_canonical_search_options() {
+    let ctx = cuvs_context();
+    let sql = format!(
+        "SELECT * FROM {CUVS_CAGRA_FUNCTION}(\
+             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'l2_expanded', \
+             graph_degree => 2, intermediate_graph_degree => 3, itopk_size => 16)"
+    );
+    let plan = logical_plan(&ctx, &sql).await;
+    let node = find_cuvs_node(&plan).expect("CAGRA logical extension");
+    assert_eq!(node.operation(), CuvsOperation::Cagra);
+    assert_eq!(node.inputs().len(), 2);
+    let options: serde_json::Value = serde_json::from_str(node.validated_options().canonical_json()).unwrap();
+    assert_eq!(options["build_algo"], "ivf_pq");
+    assert_eq!(options["search_algo"], "auto");
+    let physical = ctx.state().create_physical_plan(&plan).await.expect("CAGRA physical plan");
+    assert!(find_cuvs_exec(physical.as_ref()).is_some());
 }
 
 #[tokio::test]
@@ -1050,37 +1079,58 @@ async fn bounded_execution_defers_child_execution_until_the_stream_is_polled() {
 async fn execution_rejects_a_disabled_cuvs_feature_before_any_child_executes() {
     let ctx =
         fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
-    let sql = format!(
-        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
-             dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
-             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
-             k => 1, metric => 'cosine')"
-    );
-    let logical = logical_plan(&ctx, &sql).await;
-    let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
-    let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
-    let execute_count = Arc::new(AtomicUsize::new(0));
-    let children = exec
-        .children()
-        .into_iter()
-        .map(|child| {
-            Arc::new(ExecuteCountingExec { input: Arc::clone(child), execute_count: Arc::clone(&execute_count) })
-                as Arc<dyn ExecutionPlan>
-        })
-        .collect();
-    let rebound = Arc::new(exec.clone())
-        .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
-        .expect("rebind counting children");
-    let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
-        Ok(_) => panic!("disabled cuVS feature must reject"),
-        Err(error) => error,
-    };
-    let typed = error.find_algeon_error().expect("structured cuVS feature-disabled error");
-    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.facts().get("reason"), Some("required_feature_disabled"));
-    assert_eq!(typed.facts().get("required_feature"), Some("cuvs"));
-    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "feature rejection must precede child execution");
+    for (function, args) in [
+        (
+            CUVS_BRUTE_FORCE_KNN_FUNCTION,
+            "dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), k => 1, metric => 'cosine'",
+        ),
+        (
+            CUVS_IVF_FLAT_FUNCTION,
+            "dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), k => 1, metric => 'l2_expanded', n_lists => 1, n_probes => 1",
+        ),
+        (
+            CUVS_IVF_PQ_FUNCTION,
+            "dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), k => 1, metric => 'l2_expanded', n_lists => 1, n_probes => 1, pq_dim => 2",
+        ),
+        (
+            CUVS_CAGRA_FUNCTION,
+            "dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), k => 1, metric => 'l2_expanded', graph_degree => 2, intermediate_graph_degree => 3",
+        ),
+        (
+            CUVS_PAIRWISE_DISTANCE_FUNCTION,
+            "x => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), y => (SELECT query_id AS id, d0, d1 FROM query_vectors), metric => 'l2_expanded'",
+        ),
+        (CUVS_TOP_K_FUNCTION, "input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), k => 1, select => 'max'"),
+        (CUVS_KMEANS_FUNCTION, "input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), n_clusters => 1"),
+        (CUVS_PCA_FUNCTION, "input => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), n_components => 1"),
+    ] {
+        let sql = format!("SELECT * FROM {function}({args})");
+        let logical = logical_plan(&ctx, &sql).await;
+        let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
+        let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+        let execute_count = Arc::new(AtomicUsize::new(0));
+        let children = exec
+            .children()
+            .into_iter()
+            .map(|child| {
+                Arc::new(ExecuteCountingExec { input: Arc::clone(child), execute_count: Arc::clone(&execute_count) })
+                    as Arc<dyn ExecutionPlan>
+            })
+            .collect();
+        let rebound = Arc::new(exec.clone())
+            .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .expect("rebind counting children");
+        let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
+            Ok(_) => panic!("disabled cuVS feature must reject"),
+            Err(error) => error,
+        };
+        let typed = error.find_algeon_error().expect("structured cuVS feature-disabled error");
+        assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+        assert_eq!(typed.facts().get("reason"), Some("required_feature_disabled"));
+        assert_eq!(typed.facts().get("required_feature"), Some("cuvs"));
+        assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+        assert_eq!(execute_count.load(Ordering::SeqCst), 0, "feature rejection must precede child execution");
+    }
 }
 
 #[cfg(feature = "cugraph")]

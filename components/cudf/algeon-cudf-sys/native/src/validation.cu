@@ -13,6 +13,7 @@
 #include <cuda/iterator>
 #include <cuda/std/cmath>
 #include <cuda/std/functional>
+#include <cuda/std/limits>
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
@@ -53,6 +54,19 @@ __global__ void int64_buffer_fill_where_float32_infinite(int64_t* values,
 {
   auto const index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (index < element_count && cuda::std::isinf(paired_values[index])) { values[index] = fill_value; }
+}
+
+__global__ void int64_float32_buffer_replace_value_and_set_paired_infinite(int64_t* values,
+                                                                            float* paired_values,
+                                                                            std::size_t element_count,
+                                                                            int64_t from,
+                                                                            int64_t to)
+{
+  auto const index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < element_count && values[index] == from) {
+    values[index]        = to;
+    paired_values[index] = cuda::std::numeric_limits<float>::infinity();
+  }
 }
 
 struct float32_buffer_non_finite_unless_int64_equals_transform {
@@ -256,6 +270,36 @@ cudf_status_t cudf_int64_buffer_fill_where_float32_infinite_ex(int64_t* values,
       constexpr std::size_t threads = 256;
       auto const blocks = static_cast<std::uint32_t>((element_count + threads - 1) / threads);
       int64_buffer_fill_where_float32_infinite<<<blocks, threads, 0, exec->stream.value()>>>(values, paired_values, element_count, fill_value);
+      CUDF_CUDA_TRY(cudaGetLastError());
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_int64_float32_buffer_replace_value_and_set_paired_infinite_ex(int64_t* values,
+                                                                                 float* paired_values,
+                                                                                 std::size_t element_count,
+                                                                                 int64_t from,
+                                                                                 int64_t to,
+                                                                                 cudf_exec_options_t const* options)
+{
+  if ((values == nullptr || paired_values == nullptr) && element_count != 0) {
+    set_error("input is null");
+    return CUDF_ERROR_NULL;
+  }
+  auto const size_status = validate_raw_element_count(element_count);
+  if (size_status != CUDF_SUCCESS) { return size_status; }
+  CUDF_RUST_TRY
+  {
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+    if (element_count != 0) {
+      constexpr std::size_t threads = 256;
+      auto const blocks = static_cast<std::uint32_t>((element_count + threads - 1) / threads);
+      int64_float32_buffer_replace_value_and_set_paired_infinite<<<blocks, threads, 0, exec->stream.value()>>>(
+        values, paired_values, element_count, from, to);
       CUDF_CUDA_TRY(cudaGetLastError());
     }
     return CUDF_SUCCESS;

@@ -13,10 +13,10 @@ use crate::{
     expr::Expr,
     plan::{
         CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOptionKind, CuvsVectorElementType, NodeId, PlanNode,
-        ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorDistanceMetric,
-        VectorKMeansInit, VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema,
-        vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
-        vector_top_k_output_schema,
+        ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorCagraBuildAlgo,
+        VectorCagraSearchAlgo, VectorDistanceMetric, VectorKMeansInit, VectorRelationBinding, VectorRowIdBinding,
+        vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
+        vector_pca_output_schema, vector_top_k_output_schema,
     },
 };
 
@@ -304,6 +304,48 @@ pub fn validate_vector_algorithm_node(
                 return Err(vector_algorithm_error("cosine IVF-PQ requires at least two dimensions")
                     .with_fact("node_id", node_id)
                     .with_fact("reason", "insufficient_feature_dimension"));
+            }
+            vector_knn_output_schema(queries.id_type, dataset.id_type)
+        },
+        VectorAlgorithmParams::Cagra(params) => {
+            if params.k == 0
+                || params.graph_degree == 0
+                || params.intermediate_graph_degree <= params.graph_degree
+                || u64::from(params.itopk_size) < params.k as u64
+                || params.search_width == 0
+                || params.metric == VectorDistanceMetric::L2SqrtExpanded
+                || (params.metric == VectorDistanceMetric::CosineExpanded
+                    && params.build_algo == VectorCagraBuildAlgo::NnDescent)
+                || (params.search_algo == VectorCagraSearchAlgo::SingleCta && params.itopk_size > 1024)
+            {
+                return Err(vector_algorithm_error("invalid CAGRA build or search parameters")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "invalid_cagra_parameters"));
+            }
+            validate_registry_maximum(CuvsOperation::Cagra, "k", params.k as u64, node_id)?;
+            let dataset = validate_vector_relation_binding(
+                CuvsOperation::Cagra,
+                "dataset",
+                &params.dataset,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            let queries = validate_vector_relation_binding(
+                CuvsOperation::Cagra,
+                "queries",
+                &params.queries,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
+            if let (Some(first), Some(second)) = (dataset.dimension, queries.dimension)
+                && first != second
+            {
+                return Err(vector_algorithm_error("CAGRA dataset and query dimensions must match")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "feature_dimension_mismatch"));
             }
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },

@@ -25,7 +25,7 @@ const OPERATIONS_DIR = join(DOCS_DIR, 'operations');
 // These presentation families are documentation navigation only. They do not
 // alter SQL names or introduce an execution API family.
 const FAMILIES = {
-  vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn', 'cuvs_ivf_flat', 'cuvs_ivf_pq'] },
+  vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn', 'cuvs_ivf_flat', 'cuvs_ivf_pq', 'cuvs_cagra'] },
   distances_and_selection: { label: 'Distances and Selection', functions: ['cuvs_pairwise_distance', 'cuvs_top_k'] },
   clustering: { label: 'Clustering', functions: ['cuvs_kmeans'] },
   dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuvs_pca'] },

@@ -70,6 +70,41 @@ async fn native_required_accepts_a_raw_cugraph_function_root() {
 }
 
 #[tokio::test]
+async fn cagra_sql_executes_with_admitted_pool_coverage() {
+    let (backend, ctx) = cuvs_bounded_context();
+    let rows = 512;
+    let fields = std::iter::once(Field::new("id", DataType::Int64, false))
+        .chain((0..8).map(|dim| Field::new(format!("d{dim}"), DataType::Float32, false)))
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    let mut columns: Vec<ArrayRef> = vec![Arc::new(Int64Array::from_iter_values(0..rows))];
+    columns.extend((0..8).map(|dim| {
+        Arc::new(Float32Array::from_iter_values(
+            (0..rows).map(move |row| if row % 8 == dim { 4.0 + row as f32 * 0.01 } else { row as f32 * 0.001 }),
+        )) as ArrayRef
+    }));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+    ctx.register_table("cagra_vectors", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    let relations = "dataset => (SELECT * FROM cagra_vectors), \
+                     queries => (SELECT * FROM cagra_vectors WHERE id = 7)";
+    let exact =
+        format!("SELECT neighbor_id, distance FROM cuvs_brute_force_knn({relations}, k => 1, metric => 'l2_expanded')");
+    let cagra = format!(
+        "SELECT neighbor_id, distance FROM cuvs_cagra({relations}, k => 1, metric => 'l2_expanded', \
+         graph_degree => 16, intermediate_graph_degree => 32)"
+    );
+    let exact = collect(plan_sql(&ctx, &exact).await, ctx.task_ctx()).await.expect("exact oracle");
+    let actual = collect(plan_sql(&ctx, &cagra).await, ctx.task_ctx()).await.expect("CAGRA SQL");
+    assert_eq!(actual.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(
+        actual[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0),
+        exact[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
+    );
+    assert!(actual[0].column(1).as_any().downcast_ref::<Float32Array>().unwrap().value(0).abs() < 1e-4);
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
 async fn ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);

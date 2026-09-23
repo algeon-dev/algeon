@@ -6,9 +6,10 @@ use query_engine::{
     expr::Expr as NativeExpr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind,
-        VectorIvfPqParams, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams,
-        VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
+        VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo,
+        VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit,
+        VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
+        VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -151,6 +152,38 @@ pub(super) fn lower_cuvs_query_plan(
             };
             VectorAlgorithmParams::IvfPq(params)
         },
+        CuvsOperation::Cagra => {
+            let metric = match value_str(operation, &canonical, "metric")? {
+                "l2_expanded" => VectorDistanceMetric::L2Expanded,
+                "inner_product" => VectorDistanceMetric::InnerProduct,
+                "cosine" => VectorDistanceMetric::CosineExpanded,
+                _ => unreachable!("canonical CAGRA metric is registry validated"),
+            };
+            let mut params = VectorCagraParams::new(
+                relations[0].clone(),
+                relations[1].clone(),
+                value_usize(operation, &canonical, "k")?,
+                metric,
+            );
+            params.graph_degree = value_u32(operation, &canonical, "graph_degree")?;
+            params.intermediate_graph_degree = value_u32(operation, &canonical, "intermediate_graph_degree")?;
+            params.build_algo = match value_str(operation, &canonical, "build_algo")? {
+                "ivf_pq" => VectorCagraBuildAlgo::IvfPq,
+                "nn_descent" => VectorCagraBuildAlgo::NnDescent,
+                _ => unreachable!("canonical CAGRA build algorithm is registry validated"),
+            };
+            params.itopk_size = value_u32(operation, &canonical, "itopk_size")?;
+            params.search_width = value_u32(operation, &canonical, "search_width")?;
+            params.max_iterations = value_u32(operation, &canonical, "max_iterations")?;
+            params.search_algo = match value_str(operation, &canonical, "search_algo")? {
+                "auto" => VectorCagraSearchAlgo::Auto,
+                "single_cta" => VectorCagraSearchAlgo::SingleCta,
+                "multi_cta" => VectorCagraSearchAlgo::MultiCta,
+                "multi_kernel" => VectorCagraSearchAlgo::MultiKernel,
+                _ => unreachable!("canonical CAGRA search algorithm is registry validated"),
+            };
+            VectorAlgorithmParams::Cagra(params)
+        },
         CuvsOperation::PairwiseDistance => VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
             x: relations[0].clone(),
             y: relations[1].clone(),
@@ -204,6 +237,7 @@ pub(super) fn lower_cuvs_query_plan(
         CuvsOperation::BruteForceKnn => VectorAlgorithm::BruteForceKnn,
         CuvsOperation::IvfFlat => VectorAlgorithm::IvfFlat,
         CuvsOperation::IvfPq => VectorAlgorithm::IvfPq,
+        CuvsOperation::Cagra => VectorAlgorithm::Cagra,
         CuvsOperation::PairwiseDistance => VectorAlgorithm::PairwiseDistance,
         CuvsOperation::TopK => VectorAlgorithm::TopK,
         CuvsOperation::KMeans => VectorAlgorithm::KMeans,

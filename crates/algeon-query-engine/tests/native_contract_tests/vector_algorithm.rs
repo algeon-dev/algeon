@@ -29,16 +29,18 @@ fn canonical_cuvs_registry_exposes_all_operations_and_exact_output_contracts() {
             CuvsOperation::BruteForceKnn,
             CuvsOperation::IvfFlat,
             CuvsOperation::IvfPq,
+            CuvsOperation::Cagra,
             CuvsOperation::PairwiseDistance,
             CuvsOperation::TopK,
             CuvsOperation::KMeans,
             CuvsOperation::Pca
         ]
     );
-    assert_eq!(CUVS_OPERATION_REGISTRY.len(), 7);
+    assert_eq!(CUVS_OPERATION_REGISTRY.len(), 8);
     assert_eq!(CuvsOperation::BruteForceKnn.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
     assert_eq!(CuvsOperation::IvfFlat.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
     assert_eq!(CuvsOperation::IvfPq.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
+    assert_eq!(CuvsOperation::Cagra.descriptor().output_contract, CuvsOutputContract::KnnNeighbors);
     assert_eq!(CuvsOperation::PairwiseDistance.descriptor().output_contract, CuvsOutputContract::PairwiseDistances);
     assert_eq!(CuvsOperation::TopK.descriptor().output_contract, CuvsOutputContract::TopKValues);
     assert_eq!(CuvsOperation::KMeans.descriptor().output_contract, CuvsOutputContract::KMeansAssignments);

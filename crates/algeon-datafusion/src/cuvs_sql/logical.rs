@@ -146,7 +146,11 @@ fn validate_input_schemas(
     }
     if matches!(
         operation,
-        CuvsOperation::BruteForceKnn | CuvsOperation::IvfFlat | CuvsOperation::IvfPq | CuvsOperation::PairwiseDistance
+        CuvsOperation::BruteForceKnn
+            | CuvsOperation::IvfFlat
+            | CuvsOperation::IvfPq
+            | CuvsOperation::Cagra
+            | CuvsOperation::PairwiseDistance
     ) && let [Some(first), Some(second)] = dimensions.as_slice()
         && first != second
     {
@@ -317,17 +321,25 @@ fn validate_known_cardinalities(
                 }
             }
         },
-        CuvsOperation::IvfFlat | CuvsOperation::IvfPq => {
+        CuvsOperation::IvfFlat | CuvsOperation::IvfPq | CuvsOperation::Cagra => {
             if let Some(dataset_rows) = known_row_count(&inputs[0]) {
                 let k = options.knn_k().expect("validated IVF-Flat options contain k") as usize;
                 let canonical: serde_json::Value =
                     serde_json::from_str(options.canonical_json()).expect("canonical cuVS options");
-                let n_lists = canonical["n_lists"].as_u64().expect("validated IVF-Flat n_lists") as usize;
-                if dataset_rows == 0 || k > dataset_rows || n_lists > dataset_rows {
+                let degree = if operation == CuvsOperation::Cagra {
+                    canonical["intermediate_graph_degree"].as_u64().expect("validated graph degree") as usize
+                } else {
+                    canonical["n_lists"].as_u64().expect("validated IVF n_lists") as usize
+                };
+                if dataset_rows == 0
+                    || k > dataset_rows
+                    || degree >= dataset_rows && operation == CuvsOperation::Cagra
+                    || degree > dataset_rows
+                {
                     return Err(invalid_call(
                         operation,
                         "invalid_dataset_cardinality",
-                        "IVF dataset must be non-empty, with k and n_lists no greater than its row count",
+                        "ANN dataset must be non-empty; k must not exceed rows and graph degrees must be less than rows",
                     ));
                 }
             }

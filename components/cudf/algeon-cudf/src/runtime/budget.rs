@@ -316,6 +316,11 @@ impl ExecutionBudgetToken {
         self.lease.stream()
     }
 
+    /// Borrow the stream reservation that enforces this token's allocation limit.
+    pub fn stream_reservation(&self) -> &StreamReservationLease {
+        &self.lease
+    }
+
     /// Snapshot reservation usage counters.
     pub fn reservation_usage(&self) -> Result<ReservationUsage> {
         self.lease.usage()
