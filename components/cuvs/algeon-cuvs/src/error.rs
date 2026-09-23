@@ -6,7 +6,7 @@ use std::{
 };
 
 use cudf::interop::contract::{InteropError, InteropErrorKind};
-use cuvs_sys::cuvsError_t;
+use cuvs_sys::{cuvsError_t, cuvsErrorKind_t};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -305,6 +305,7 @@ pub(crate) fn check_cuvs(status: cuvsError_t, operation: &'static str) -> Result
         return Ok(());
     }
 
+    let kind = unsafe { cuvs_sys::cuvsGetLastErrorKind() };
     let message = unsafe {
         let ptr = cuvs_sys::cuvsGetLastErrorText();
         if ptr.is_null() {
@@ -314,13 +315,28 @@ pub(crate) fn check_cuvs(status: cuvsError_t, operation: &'static str) -> Result
         }
     };
 
-    Err(native_error(status, operation, message))
+    Err(native_error(status, kind, operation, message))
 }
 
-fn native_error(status: cuvsError_t, operation: &'static str, message: impl Into<String>) -> Error {
-    Error::new(ErrorKind::Unexpected, operation)
-        .with_message(message)
-        .with_context("native_status", format!("{status:?}"))
+fn native_error(
+    status: cuvsError_t,
+    native_kind: cuvsErrorKind_t,
+    operation: &'static str,
+    message: impl Into<String>,
+) -> Error {
+    let kind = match native_kind {
+        cuvsErrorKind_t::CUVS_ERROR_KIND_DEVICE_OUT_OF_MEMORY => ErrorKind::OutOfMemory,
+        // OutOfMemory projects to DeviceAllocationFailed, so host OOM remains a temporary dependency failure.
+        cuvsErrorKind_t::CUVS_ERROR_KIND_HOST_OUT_OF_MEMORY => ErrorKind::Unexpected,
+        cuvsErrorKind_t::CUVS_ERROR_KIND_NONE | cuvsErrorKind_t::CUVS_ERROR_KIND_UNKNOWN => ErrorKind::Unexpected,
+    };
+    let error = Error::new(kind, operation).with_message(message).with_context("native_status", format!("{status:?}"));
+    match native_kind {
+        cuvsErrorKind_t::CUVS_ERROR_KIND_DEVICE_OUT_OF_MEMORY | cuvsErrorKind_t::CUVS_ERROR_KIND_HOST_OUT_OF_MEMORY => {
+            error.set_temporary()
+        },
+        cuvsErrorKind_t::CUVS_ERROR_KIND_NONE | cuvsErrorKind_t::CUVS_ERROR_KIND_UNKNOWN => error,
+    }
 }
 
 #[cfg(test)]
@@ -330,9 +346,23 @@ mod tests {
     #[test]
     fn native_message_text_never_changes_error_kind() {
         for message in ["out of memory", "invalid argument", "unsupported dtype", "arbitrary localized native text"] {
-            let error = native_error(cuvsError_t::CUVS_ERROR, "test", message);
+            let error =
+                native_error(cuvsError_t::CUVS_ERROR, cuvsErrorKind_t::CUVS_ERROR_KIND_UNKNOWN, "test", message);
             assert_eq!(error.kind(), ErrorKind::Unexpected);
             assert_eq!(error.message(), message);
+        }
+    }
+
+    #[test]
+    fn native_error_kind_classifies_allocations_without_parsing_text() {
+        for (native_kind, kind, status) in [
+            (cuvsErrorKind_t::CUVS_ERROR_KIND_DEVICE_OUT_OF_MEMORY, ErrorKind::OutOfMemory, ErrorStatus::Temporary),
+            (cuvsErrorKind_t::CUVS_ERROR_KIND_HOST_OUT_OF_MEMORY, ErrorKind::Unexpected, ErrorStatus::Temporary),
+            (cuvsErrorKind_t::CUVS_ERROR_KIND_NONE, ErrorKind::Unexpected, ErrorStatus::Permanent),
+            (cuvsErrorKind_t::CUVS_ERROR_KIND_UNKNOWN, ErrorKind::Unexpected, ErrorStatus::Permanent),
+        ] {
+            let error = native_error(cuvsError_t::CUVS_ERROR, native_kind, "test", "not an allocation message");
+            assert_eq!((error.kind(), error.status()), (kind, status));
         }
     }
 }

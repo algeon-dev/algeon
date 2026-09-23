@@ -750,7 +750,7 @@ fn cagra_failed_build_releases_query_domain_allocations() {
     params.graph_degree = 16;
     params.intermediate_graph_degree = 32;
     let error = CagraIndex::build(&resources, &dataset, params).unwrap_err();
-    assert!(error.to_string().contains("out_of_memory"), "{error}");
+    assert_eq!(error.kind(), ErrorKind::OutOfMemory, "{error}");
     assert_eq!(reservation.usage().unwrap().current_bytes, main_before);
     assert_eq!(resources._coverage.usage().unwrap()[0].current_bytes, pool_before);
 }

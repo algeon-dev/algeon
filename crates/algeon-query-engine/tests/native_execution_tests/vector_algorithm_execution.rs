@@ -387,9 +387,8 @@ fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
         Err(error) => error,
         Ok(_) => panic!("CAGRA build must exceed the query cap"),
     };
-    assert_eq!(error.code(), QueryErrorCode::CudfDependencyFailure, "{error:?}");
+    assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed, "{error:?}");
     assert_eq!(error.fact_value("cuvs_operation"), Some("CagraIndex::build"));
-    assert!(error.fact_value("cuvs_message").unwrap().contains("out_of_memory"));
     assert!(
         metrics.plan_task_mappings().iter().any(|mapping| mapping.operator_kind.as_deref() == Some("vector_algorithm"))
     );

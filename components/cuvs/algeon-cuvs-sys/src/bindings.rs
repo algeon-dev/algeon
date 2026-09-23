@@ -146,6 +146,19 @@ pub enum cuvsError_t {
     CUVS_ERROR = 0,
     CUVS_SUCCESS = 1,
 }
+#[repr(u32)]
+#[doc = " @brief The kind of error from a C API call that passed through the exception boundary."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum cuvsErrorKind_t {
+    CUVS_ERROR_KIND_NONE = 0,
+    CUVS_ERROR_KIND_UNKNOWN = 1,
+    CUVS_ERROR_KIND_DEVICE_OUT_OF_MEMORY = 2,
+    CUVS_ERROR_KIND_HOST_OUT_OF_MEMORY = 3,
+}
+unsafe extern "C" {
+    #[doc = " @brief Returns the calling thread's error kind for the most recent C API call that\n         passed through the exception boundary. Returns CUVS_ERROR_KIND_NONE after success."]
+    pub fn cuvsGetLastErrorKind() -> cuvsErrorKind_t;
+}
 unsafe extern "C" {
     #[doc = " @brief Returns a string describing the last seen error on this thread, or\n         NULL if the last function succeeded."]
     pub fn cuvsGetLastErrorText() -> *const ::std::os::raw::c_char;
