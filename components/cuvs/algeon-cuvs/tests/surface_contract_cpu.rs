@@ -1,12 +1,19 @@
-use static_assertions::assert_not_impl_any;
+use static_assertions::{assert_impl_all, assert_not_impl_any};
 
 assert_not_impl_any!(cuvs::CuvsResources: Send, Sync);
 assert_not_impl_any!(cuvs::BruteForceIndex<'static>: Send, Sync);
-assert_not_impl_any!(cuvs::KMeansModel: Send, Sync);
-assert_not_impl_any!(cuvs::IvfFlatIndex: Send, Sync);
-assert_not_impl_any!(cuvs::IvfPqIndex: Send, Sync);
+assert_not_impl_any!(cuvs::KMeansModel<f32>: Send, Sync);
+assert_not_impl_any!(cuvs::IvfFlatIndex<f32>: Send, Sync);
+assert_not_impl_any!(cuvs::IvfPqIndex<f32>: Send, Sync);
 assert_not_impl_any!(cuvs::PreparedTensorLease<'static, 'static, 'static, f32>: Send, Sync);
-assert_not_impl_any!(cuvs::PreparedValidatedTensorLease<'static, 'static, 'static>: Send, Sync);
+assert_not_impl_any!(cuvs::PreparedValidatedTensorLease<'static, 'static, 'static, f32>: Send, Sync);
+assert_impl_all!(f32: cuvs::CagraElement, cuvs::IvfElement, cuvs::PairwiseElement, cuvs::KMeansElement);
+assert_impl_all!(f64: cuvs::PairwiseElement, cuvs::KMeansElement);
+assert_impl_all!(i8: cuvs::CagraElement, cuvs::IvfElement);
+assert_impl_all!(u8: cuvs::CagraElement, cuvs::IvfElement);
+assert_not_impl_any!(f64: cuvs::CagraElement, cuvs::IvfElement);
+assert_not_impl_any!(i8: cuvs::PairwiseElement, cuvs::KMeansElement);
+assert_not_impl_any!(u8: cuvs::PairwiseElement, cuvs::KMeansElement);
 
 #[test]
 fn kmeans_safe_layer_uses_only_the_pinned_calls() {
@@ -58,6 +65,7 @@ fn ivf_flat_uses_pinned_calls_and_validates_sentinel_aware_outputs() {
 #[test]
 fn ivf_pq_uses_pinned_calls_and_validates_sentinel_aware_outputs() {
     let source = include_str!("../src/ivf_pq.rs");
+    assert!(source.contains("integer IVF-PQ cosine returns distances on the native integer score scale"));
     for required in [
         "cuvsIvfPqBuild(",
         "cuvsIvfPqSearch(",
@@ -76,7 +84,7 @@ fn ivf_pq_uses_pinned_calls_and_validates_sentinel_aware_outputs() {
 #[test]
 fn kmeans_revalidates_native_centroids_before_model_construction() {
     let source = include_str!("../src/kmeans.rs");
-    assert!(source.contains("centroids.validate_native_output_finite(resources, operation)?"));
+    assert!(source.contains("centroids.validate_native_output(resources, operation)?"));
     assert!(!source.contains("mark_native_output_finite"));
 }
 

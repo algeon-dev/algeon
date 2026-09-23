@@ -207,6 +207,12 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("query_features", query_dimension));
             }
             validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
+            validate_element_metric(
+                CuvsOperation::BruteForceKnn,
+                dataset.element_type,
+                metric_name(params.metric),
+                node_id,
+            )?;
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
         VectorAlgorithmParams::IvfFlat(params) => {
@@ -255,6 +261,7 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("node_id", node_id)
                     .with_fact("reason", "insufficient_feature_dimension"));
             }
+            validate_element_metric(CuvsOperation::IvfFlat, dataset.element_type, metric_name(params.metric), node_id)?;
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
         VectorAlgorithmParams::IvfPq(params) => {
@@ -305,6 +312,7 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("node_id", node_id)
                     .with_fact("reason", "insufficient_feature_dimension"));
             }
+            validate_element_metric(CuvsOperation::IvfPq, dataset.element_type, metric_name(params.metric), node_id)?;
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
         VectorAlgorithmParams::Cagra(params) => {
@@ -347,6 +355,7 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("node_id", node_id)
                     .with_fact("reason", "feature_dimension_mismatch"));
             }
+            validate_element_metric(CuvsOperation::Cagra, dataset.element_type, metric_name(params.metric), node_id)?;
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
         VectorAlgorithmParams::PairwiseDistance(params) => {
@@ -376,7 +385,20 @@ pub fn validate_vector_algorithm_node(
                     .with_fact("x_dimension", x_dimension)
                     .with_fact("y_dimension", y_dimension));
             }
-            vector_pairwise_distance_output_schema(x.id_type, y.id_type)
+            validate_element_metric(
+                CuvsOperation::PairwiseDistance,
+                x.element_type,
+                metric_name(params.metric),
+                node_id,
+            )?;
+            vector_pairwise_distance_output_schema(
+                x.id_type,
+                y.id_type,
+                match x.element_type {
+                    CuvsVectorElementType::Float64 => DataType::Float64,
+                    _ => DataType::Float32,
+                },
+            )
         },
         VectorAlgorithmParams::TopK(params) => {
             if params.k == 0 {
@@ -467,6 +489,7 @@ pub fn validate_vector_algorithm_node(
                 },
                 (_, None) => {},
             }
+            validate_element_metric(CuvsOperation::KMeans, input.element_type, params.metric.as_str(), node_id)?;
             vector_kmeans_output_schema(input.id_type)
         },
         VectorAlgorithmParams::Pca(params) => {
@@ -589,13 +612,38 @@ fn validate_matching_element_types(
     Ok(())
 }
 
+fn metric_name(metric: VectorDistanceMetric) -> &'static str {
+    match metric {
+        VectorDistanceMetric::CosineExpanded => "cosine",
+        _ => metric.as_str(),
+    }
+}
+
+fn validate_element_metric(
+    operation: CuvsOperation,
+    element: CuvsVectorElementType,
+    metric: &str,
+    node_id: NodeId,
+) -> Result<()> {
+    let support = operation.descriptor().element_support(element).expect("validated element");
+    if !support.metrics.contains(&metric) {
+        return Err(vector_algorithm_error("metric is not supported for this vector element type")
+            .with_fact("node_id", node_id)
+            .with_fact("reason", "unsupported_vector_element_metric")
+            .with_fact("element", element.as_str())
+            .with_fact("metric", metric)
+            .with_fact("supported_metrics", support.metrics.join(", ")));
+    }
+    Ok(())
+}
+
 fn validate_vector_element_support(
     operation: CuvsOperation,
     role: &'static str,
     relation: &VectorRelationValidation,
     node_id: NodeId,
 ) -> Result<()> {
-    if !operation.descriptor().vector_element_support.contains(&relation.element_type) {
+    if operation.descriptor().element_support(relation.element_type).is_none() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "query_engine.vector_algorithm.validate",
@@ -611,7 +659,7 @@ fn validate_vector_element_support(
                 .descriptor()
                 .vector_element_support
                 .iter()
-                .map(|element| element.as_str())
+                .map(|support| support.element.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
         ));
@@ -831,7 +879,7 @@ mod tests {
     use crate::{
         plan::{
             QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorDistanceMetric,
-            VectorKMeansParams, VectorPcaParams, VectorTopKParams,
+            VectorIvfPqParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorTopKParams,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -869,31 +917,69 @@ mod tests {
         let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed element types");
         assert_eq!(error.fact_value("reason"), Some("unsupported_feature_type"));
         assert_eq!(error.fact_value("data_type"), Some("Float64"));
+    }
 
+    #[test]
+    fn pairwise_cross_binding_element_mismatch_is_rejected() {
+        let float32_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("x", DataType::Float32, false),
+        ]));
+        let float64_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("x", DataType::Float64, false),
+        ]));
         let mut builder = QueryPlanBuilder::new();
-        let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", float32_schema)));
-        let centroids =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("centroids", float64_schema)));
-        let params =
-            VectorKMeansParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]), 1)
-                .with_initial_centroids(VectorRelationBinding::new_vector_column(
-                    centroids,
-                    VectorRowIdBinding::RowIndex,
-                    "embedding",
-                ));
+        let x = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", float32_schema)));
+        let y = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("y", float64_schema)));
+        let params = VectorPairwiseDistanceParams {
+            x: VectorRelationBinding::new(x, VectorRowIdBinding::column("id"), ["x"]),
+            y: VectorRelationBinding::new(y, VectorRowIdBinding::column("id"), ["x"]),
+            metric: VectorDistanceMetric::L2Expanded,
+        };
         let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::KMeans,
-            VectorAlgorithmParams::KMeans(params),
-            vector_kmeans_output_schema(DataType::Int64),
+            VectorAlgorithm::PairwiseDistance,
+            VectorAlgorithmParams::PairwiseDistance(params),
+            vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64, DataType::Float32),
         ));
         let plan = builder.finish_with_host_sink(root);
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
-        let error =
-            validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed centroid element type");
-        assert_eq!(error.fact_value("reason"), Some("unsupported_feature_type"));
-        assert_eq!(error.fact_value("relation_role"), Some("initial_centroids"));
+        let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed pairwise elements");
+        assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
+    }
+
+    #[test]
+    fn integer_ivf_pq_cosine_is_rejected_by_ir_validation() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("x", DataType::Int8, false),
+            Field::new("y", DataType::Int8, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let dataset =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&schema))));
+        let queries = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", schema)));
+        let params = VectorIvfPqParams::new(
+            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x", "y"]),
+            VectorRelationBinding::new(queries, VectorRowIdBinding::column("id"), ["x", "y"]),
+            1,
+            VectorDistanceMetric::CosineExpanded,
+            20,
+        );
+        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+            VectorAlgorithm::IvfPq,
+            VectorAlgorithmParams::IvfPq(params),
+            vector_knn_output_schema(DataType::Int64, DataType::Int64),
+        ));
+        let plan = builder.finish_with_host_sink(root);
+        let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
+            panic!("vector root")
+        };
+        let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("integer cosine");
+        assert_eq!(error.fact_value("reason"), Some("unsupported_vector_element_metric"));
+        assert_eq!(error.fact_value("supported_metrics"), Some("l2_expanded, l2_sqrt_expanded, inner_product"));
     }
 
     #[test]

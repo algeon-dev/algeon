@@ -3312,6 +3312,13 @@ unsafe extern "C" {
         out_non_finite_count: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Count NaN and infinite values in one exact raw FLOAT64 device-buffer range."]
+    pub fn cudf_float64_buffer_non_finite_count_ex(
+        input: *const f64,
+        element_count: usize,
+        out_non_finite_count: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Count values outside [min_inclusive, max_exclusive) in one exact raw INT64\n device-buffer range on the explicit execution stream."]
     pub fn cudf_int64_buffer_out_of_range_count_ex(
         input: *const i64,

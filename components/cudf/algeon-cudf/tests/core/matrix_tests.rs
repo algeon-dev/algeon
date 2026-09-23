@@ -51,7 +51,7 @@ fn row_major_pack_interleaves_columns_on_target_runtime() {
     assert_eq!(matrix.as_column().data_type().unwrap().id(), TypeId::Float32);
     assert_eq!(matrix.as_column().to_vec::<f32>().unwrap(), vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0]);
 
-    let validated = matrix.validate_finite().unwrap();
+    let validated = matrix.validate().unwrap();
     assert_eq!(validated.shape(), matrix.shape());
     assert_eq!(validated.layout(), matrix.layout());
     assert!(!validated.as_ptr().unwrap().is_null());
@@ -90,7 +90,7 @@ fn numeric_pack_layouts_round_trip<T: CudfType + PartialEq + std::fmt::Debug>(fi
         assert_eq!(nested.element(), T::TYPE_ID);
         assert_eq!(nested.as_column().to_vec::<T>().unwrap(), *expected);
         boundary::reset_boundary_observation_for_test();
-        let validated = nested.validate_finite().unwrap();
+        let validated = nested.validate().unwrap();
         if matches!(T::TYPE_ID, TypeId::Int8 | TypeId::UInt8) {
             assert!(boundary::last_boundary_observation_for_test().is_none());
         }
@@ -132,7 +132,7 @@ fn float64_finite_validation_rejects_nan_and_infinity() {
     for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let column = runtime.column_from_slice(&[1.0f64, invalid]).unwrap();
         let matrix = runtime.pack_flat_column(&column, 1, 2, DenseMatrixLayout::ColumnMajor).unwrap();
-        let error = matrix.validate_finite().unwrap_err();
+        let error = matrix.validate().unwrap_err();
         assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
         assert_eq!(error.detail_value("non_finite_count"), Some("1"));
         assert_eq!(
@@ -142,7 +142,7 @@ fn float64_finite_validation_rejects_nan_and_infinity() {
     }
     let finite = runtime.column_from_slice(&[1.5f64, -4.0]).unwrap();
     let matrix = runtime.pack_columns(&[&finite], DenseMatrixLayout::RowMajor).unwrap();
-    let validated = matrix.validate_finite().unwrap();
+    let validated = matrix.validate().unwrap();
     assert_eq!(validated.observation().unwrap().memory.downloaded_bytes, Some(4));
 }
 
@@ -261,10 +261,10 @@ fn finite_validation_rejects_nan_and_both_infinities() {
         let column = runtime.column_from_slice(&[1.0f32, invalid, 3.0]).unwrap();
         let matrix = runtime.pack_columns(&[&column], DenseMatrixLayout::RowMajor).unwrap();
 
-        let error = matrix.validate_finite().expect_err("non-finite matrix input must be rejected");
+        let error = matrix.validate().expect_err("non-finite matrix input must be rejected");
 
         assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
-        assert_eq!(error.operation(), "packed_matrix::validate_finite");
+        assert_eq!(error.operation(), "packed_matrix::validate");
         assert_eq!(
             error.fact_value(FactKeyName::ValidationReason),
             Some(&FactValue::Str("non_finite_vector_value".into()))
@@ -292,7 +292,7 @@ fn finite_validation_covers_multi_column_gpu_packed_output() {
     let second = runtime.column_from_slice(&[f32::INFINITY, f32::NEG_INFINITY]).unwrap();
     let matrix = runtime.pack_columns(&[&first, &second], DenseMatrixLayout::ColumnMajor).unwrap();
 
-    let error = matrix.validate_finite().expect_err("all packed columns must participate in finite validation");
+    let error = matrix.validate().expect_err("all packed columns must participate in finite validation");
 
     assert_eq!(error.detail_value("non_finite_count"), Some("2"));
     assert_eq!(error.detail_value("validated_values"), Some("4"));
@@ -303,7 +303,7 @@ fn finite_validation_accepts_empty_matrix_with_bounded_scalar_proof() {
     let empty = runtime.column_from_slice::<f32>(&[]).unwrap();
     let matrix = runtime.pack_columns(&[&empty], DenseMatrixLayout::RowMajor).unwrap();
 
-    let validated = matrix.validate_finite().unwrap();
+    let validated = matrix.validate().unwrap();
 
     assert_eq!(validated.len(), 0);
     assert!(validated.is_empty());
@@ -322,7 +322,7 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     reset_exec_observation();
     boundary::reset_boundary_observation_for_test();
     arrow::reset_arrow_host_interop_observation_for_test();
-    let validated = matrix.validate_finite().unwrap();
+    let validated = matrix.validate().unwrap();
 
     assert_eq!(validated.len(), matrix.len());
     assert_eq!(validated.binding_id(), matrix.binding_id());

@@ -311,6 +311,13 @@ impl DeviceBuffer {
         Ok(ValidatedFloat32DeviceBuffer { buffer: self, proof })
     }
 
+    /// Require finite Float64 values across this entire allocation on its retained binding.
+    pub fn validate_finite_float64(&self) -> Result<()> {
+        validation::validate_finite_float64_buffer(self)
+            .map(|_| ())
+            .map_err(|error| error.reanchor("device_buffer::validate_finite_float64"))
+    }
+
     /// Validate this entire allocation as aligned Int64 values in
     /// `[min_inclusive, max_exclusive)` and return a borrowing proof on the
     /// exact retained execution binding.

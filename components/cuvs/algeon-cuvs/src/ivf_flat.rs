@@ -1,9 +1,10 @@
-use std::{ptr, ptr::NonNull};
+use std::{marker::PhantomData, ptr, ptr::NonNull};
 
 use crate::{
     brute_force::{DistanceMetric, KnnSearchOutput, matrix_layout, validate_matrix_binding},
     device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
+    elements::IvfElement,
     error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero},
     params_handle::ParamsHandle,
     resources::CuvsResources,
@@ -35,18 +36,19 @@ impl Default for IvfFlatSearchParams {
 }
 
 /// Query-local owned IVF-Flat index. Native build copies the indexed vectors.
-pub struct IvfFlatIndex {
+pub struct IvfFlatIndex<T: IvfElement> {
     raw: Option<NonNull<cuvs_sys::cuvsIvfFlatIndex>>,
     resources: CuvsResources,
     rows: usize,
     columns: usize,
     n_lists: u32,
+    _element: PhantomData<T>,
 }
 
-impl IvfFlatIndex {
+impl<T: IvfElement> IvfFlatIndex<T> {
     pub fn build(
         resources: &CuvsResources,
-        dataset: &ValidatedDeviceTensor<'_>,
+        dataset: &ValidatedDeviceTensor<'_, T>,
         params: IvfFlatIndexParams,
     ) -> Result<Self> {
         let operation = "IvfFlatIndex::build";
@@ -108,14 +110,21 @@ impl IvfFlatIndex {
                 }
                 return Err(error);
             }
-            Ok(Self { raw: Some(raw), resources: resources.retain(), rows, columns, n_lists: params.n_lists })
+            Ok(Self {
+                raw: Some(raw),
+                resources: resources.retain(),
+                rows,
+                columns,
+                n_lists: params.n_lists,
+                _element: PhantomData,
+            })
         })
     }
 
     /// Search outputs are `[queries.rows(), k]` row-major. Missing neighbors have ordinal `i64::MAX`.
     pub fn search_into(
         &self,
-        queries: &ValidatedDeviceTensor<'_>,
+        queries: &ValidatedDeviceTensor<'_, T>,
         k: usize,
         params: IvfFlatSearchParams,
         neighbors: &mut DeviceBuffer<i64>,
@@ -221,13 +230,13 @@ impl IvfFlatIndex {
     }
 }
 
-impl Drop for IvfFlatIndex {
+impl<T: IvfElement> Drop for IvfFlatIndex<T> {
     fn drop(&mut self) {
         let _ = self.close_inner("IvfFlatIndex::drop");
     }
 }
 
-impl std::fmt::Debug for IvfFlatIndex {
+impl<T: IvfElement> std::fmt::Debug for IvfFlatIndex<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("IvfFlatIndex")

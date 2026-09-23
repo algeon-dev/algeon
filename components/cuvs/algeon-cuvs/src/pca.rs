@@ -1,7 +1,7 @@
 use std::{ptr, ptr::NonNull};
 
 use crate::{
-    device::{DeviceBuffer, DeviceTensorMut, MatrixLayout, OwnedFloat32Matrix},
+    device::{DeviceBuffer, DeviceTensorMut, MatrixLayout, OwnedMatrix},
     dlpack::DlpackTensor,
     error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero},
     resources::CuvsResources,
@@ -319,12 +319,12 @@ fn validate_input_dimensions(rows: usize, columns: usize, n_components: usize, o
 /// to cast a shared const device pointer into a mutable pointer.
 pub fn fit_transform_owned(
     resources: &CuvsResources,
-    input: &mut OwnedFloat32Matrix,
+    input: &mut OwnedMatrix<f32>,
     params: &PcaParams,
     outputs: &mut PcaOutputBuffers,
 ) -> Result<PcaFitTransform> {
     let operation = "pca::fit_transform_owned";
-    if !input.is_finite_validated() {
+    if !input.is_input_validated() {
         return Err(invalid_input(operation, "PCA input must carry finite-input validation"));
     }
     if input.layout() != MatrixLayout::ColumnMajor {

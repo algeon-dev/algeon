@@ -40,9 +40,10 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector element types
 
-| Supported element type |
-| --- |
-| `Float32` |
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` |
+| `Float64` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` |
 
 ## Arguments and options
 
@@ -56,11 +57,11 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 | Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance metric; inner_product is a similarity where larger is closer. |
+| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance metric; inner_product is a similarity where larger is closer. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Float64: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
 
 ### Vector binding shapes
 
-Each relation subquery must project a non-null `id` field followed by either one or more non-null feature fields of a supported element type (`Float32`) or one non-null list vector field named `vector`.
+Each relation subquery must project a non-null `id` field followed by either one or more non-null feature fields of a supported element type (`Float32`, `Float64`) or one non-null list vector field named `vector`.
 
 For wide vectors, the projection order defines the feature dimensions. A list vector relation must contain no feature field beside `id` and `vector`.
 
@@ -72,7 +73,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 | `x_id` | `same_as_x.id` | no | Logical ID copied from the x relation. |
 | `y_ordinal` | `UInt64` | no | Zero-based physical ordinal of the evaluated y row; it disambiguates duplicate y IDs. |
 | `y_id` | `same_as_y.id` | no | Logical ID copied from the y relation. |
-| `distance` | `Float32` | no | Metric value for this x and y row pair; smaller is closer for distance metrics, while inner_product is a similarity where larger is closer. |
+| `distance` | `same_as_x.vector_element` | no | Float32 for Float32 input, Float64 for Float64 input. Smaller is closer for distance metrics; inner_product prefers larger values. |
 
 **Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 

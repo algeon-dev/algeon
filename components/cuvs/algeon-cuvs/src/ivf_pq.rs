@@ -1,10 +1,13 @@
-use std::{ptr, ptr::NonNull};
+use std::{marker::PhantomData, ptr, ptr::NonNull};
+
+use cudf::TypeId;
 
 use crate::{
     brute_force::{DistanceMetric, KnnSearchOutput, matrix_layout, validate_matrix_binding},
     device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
-    error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero},
+    elements::IvfElement,
+    error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero, unsupported},
     params_handle::ParamsHandle,
     resources::CuvsResources,
 };
@@ -52,19 +55,20 @@ impl Default for IvfPqSearchParams {
 }
 
 /// Query-local owned IVF-PQ index. Native build copies the indexed vectors.
-pub struct IvfPqIndex {
+pub struct IvfPqIndex<T: IvfElement> {
     raw: Option<NonNull<cuvs_sys::cuvsIvfPqIndex>>,
     resources: CuvsResources,
     rows: usize,
     columns: usize,
     n_lists: u32,
     metric: DistanceMetric,
+    _element: PhantomData<T>,
 }
 
-impl IvfPqIndex {
+impl<T: IvfElement> IvfPqIndex<T> {
     pub fn build(
         resources: &CuvsResources,
-        dataset: &ValidatedDeviceTensor<'_>,
+        dataset: &ValidatedDeviceTensor<'_, T>,
         params: IvfPqIndexParams,
     ) -> Result<Self> {
         let operation = "IvfPqIndex::build";
@@ -100,6 +104,15 @@ impl IvfPqIndex {
         }
         if params.metric == DistanceMetric::CosineExpanded && columns < 2 {
             return Err(invalid_input(operation, "cosine IVF-PQ requires at least two dimensions"));
+        }
+        // ivf_pq_search.cuh:658-665 skips integer cosine score rescaling.
+        if params.metric == DistanceMetric::CosineExpanded && T::TYPE_ID != TypeId::Float32 {
+            return Err(unsupported(
+                operation,
+                "integer IVF-PQ cosine returns distances on the native integer score scale",
+            )
+            .with_context("element", format!("{:?}", T::TYPE_ID))
+            .with_context("metric", "CosineExpanded"));
         }
         resources.with_native(operation, |native| {
             let mut config = ParamsHandle::new(
@@ -149,6 +162,7 @@ impl IvfPqIndex {
                 columns,
                 n_lists: params.n_lists,
                 metric: params.metric,
+                _element: PhantomData,
             })
         })
     }
@@ -156,7 +170,7 @@ impl IvfPqIndex {
     /// Outputs are `[queries.rows(), k]` row-major. Missing neighbors have ordinal `i64::MAX`.
     pub fn search_into(
         &self,
-        queries: &ValidatedDeviceTensor<'_>,
+        queries: &ValidatedDeviceTensor<'_, T>,
         k: usize,
         params: IvfPqSearchParams,
         neighbors: &mut DeviceBuffer<i64>,
@@ -264,13 +278,13 @@ impl IvfPqIndex {
     }
 }
 
-impl Drop for IvfPqIndex {
+impl<T: IvfElement> Drop for IvfPqIndex<T> {
     fn drop(&mut self) {
         let _ = self.close_inner("IvfPqIndex::drop");
     }
 }
 
-impl std::fmt::Debug for IvfPqIndex {
+impl<T: IvfElement> std::fmt::Debug for IvfPqIndex<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("IvfPqIndex")

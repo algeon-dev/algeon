@@ -38,7 +38,7 @@ fn fit_and_transform_preserve_the_two_dimensional_embedding_shape() {
     let values = runtime.column_from_device_buffer(buffer, host.len(), TypeId::Float32).expect("training column");
     let packed =
         runtime.pack_flat_column(&values, rows, columns, DenseMatrixLayout::RowMajor).expect("pack training matrix");
-    let validated = packed.validate_finite().expect("finite training matrix");
+    let validated = packed.validate().expect("finite training matrix");
     let input = DeviceMatrix::from_validated(&validated).expect("device matrix");
     let mut owned =
         OwnedFloat32Matrix::new(&resources, rows, columns, MatrixLayout::RowMajor).expect("owned training allocation");

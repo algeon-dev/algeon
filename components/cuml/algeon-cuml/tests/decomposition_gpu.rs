@@ -75,7 +75,7 @@ fn pca_transform_preserves_borrowed_matrix_bits() {
     let first = runtime.column_from_slice(&[0.1_f32, 0.3, 0.7, 1.1, 1.7, 2.3, 2.9, 3.1]).expect("first feature");
     let second = runtime.column_from_slice(&[0.2_f32, 0.4, 0.8, 1.2, 1.8, 2.4, 2.8, 3.2]).expect("second feature");
     let packed = runtime.pack_columns(&[&first, &second], DenseMatrixLayout::ColumnMajor).expect("column-major input");
-    let validated = packed.validate_finite().expect("finite input");
+    let validated = packed.validate().expect("finite input");
     let matrix = DeviceMatrix::from_validated(&validated).expect("borrowed matrix");
     let mut owned = copy_packed_input(&resources, &validated);
     let model = PcaModel::fit(&resources, &mut owned, PcaParams::new(1)).expect("PCA fit");
@@ -98,7 +98,7 @@ fn pca_and_truncated_svd_fit_transform_and_transform_rank_one_data() {
     let b = runtime.column_from_slice(&x.map(|v| v * 2.0)).expect("column b");
     let c = runtime.column_from_slice(&x.map(|v| -v)).expect("column c");
     let packed = runtime.pack_columns(&[&a, &b, &c], DenseMatrixLayout::ColumnMajor).expect("column-major matrix");
-    let packed = packed.validate_finite().expect("finite matrix");
+    let packed = packed.validate().expect("finite matrix");
     let matrix = DeviceMatrix::from_validated(&packed).expect("matrix view");
 
     let mut pca_input = copy_packed_input(&resources, &packed);
@@ -140,7 +140,7 @@ fn pca_and_truncated_svd_fit_transform_and_transform_rank_one_data() {
     let pca_latent_columns = [&pca_latent_column];
     let pca_latent_packed =
         runtime.pack_columns(&pca_latent_columns, DenseMatrixLayout::ColumnMajor).expect("pack PCA latent output");
-    let pca_latent = pca_latent_packed.validate_finite().expect("finite PCA latent matrix");
+    let pca_latent = pca_latent_packed.validate().expect("finite PCA latent matrix");
     let pca_latent_matrix = DeviceMatrix::from_validated(&pca_latent).expect("PCA latent matrix");
     let pca_reconstructed = pca.inverse_transform(&resources, &pca_latent_matrix).expect("PCA inverse_transform");
     assert_close(
@@ -157,7 +157,7 @@ fn pca_and_truncated_svd_fit_transform_and_transform_rank_one_data() {
     let tsvd_latent_columns = [&tsvd_latent_column];
     let tsvd_latent_packed =
         runtime.pack_columns(&tsvd_latent_columns, DenseMatrixLayout::ColumnMajor).expect("pack TSVD latent output");
-    let tsvd_latent = tsvd_latent_packed.validate_finite().expect("finite TSVD latent matrix");
+    let tsvd_latent = tsvd_latent_packed.validate().expect("finite TSVD latent matrix");
     let tsvd_latent_matrix = DeviceMatrix::from_validated(&tsvd_latent).expect("TSVD latent matrix");
     let tsvd_reconstructed = tsvd.inverse_transform(&resources, &tsvd_latent_matrix).expect("TSVD inverse_transform");
     assert_close(

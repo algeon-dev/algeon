@@ -33,8 +33,9 @@ struct column_non_finite_count_transform {
   }
 };
 
-struct float32_buffer_non_finite_count_transform {
-  float const* input;
+template <typename T>
+struct buffer_non_finite_count_transform {
+  T const* input;
 
   __device__ int32_t operator()(cudf::size_type index) const
   {
@@ -214,9 +215,35 @@ cudf_status_t cudf_float32_buffer_non_finite_count_ex(float const* input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto const transform = float32_buffer_non_finite_count_transform{input};
+    auto const transform = buffer_non_finite_count_transform<float>{input};
     *out_non_finite_count =
       count_invalid_values(static_cast<cudf::size_type>(element_count), transform, *exec);
+    cudf_record_synchronized_stream(exec->stream);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_float64_buffer_non_finite_count_ex(double const* input,
+                                                      std::size_t element_count,
+                                                      int32_t* out_non_finite_count,
+                                                      cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_non_finite_count, "out_non_finite_count is null");
+  *out_non_finite_count = 0;
+  if (input == nullptr && element_count != 0) {
+    set_error("input is null");
+    return CUDF_ERROR_NULL;
+  }
+  auto const size_status = validate_raw_element_count(element_count);
+  if (size_status != CUDF_SUCCESS) { return size_status; }
+  CUDF_RUST_TRY
+  {
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+    auto const transform = buffer_non_finite_count_transform<double>{input};
+    *out_non_finite_count = count_invalid_values(static_cast<cudf::size_type>(element_count), transform, *exec);
     cudf_record_synchronized_stream(exec->stream);
     return CUDF_SUCCESS;
   }

@@ -10,7 +10,7 @@ use crate::{
 /// and zero-based positions. Equal-value selection at the k boundary is unspecified.
 pub fn select_k_into(
     resources: &CuvsResources,
-    values: &ValidatedDeviceTensor<'_>,
+    values: &ValidatedDeviceTensor<'_, f32>,
     k: usize,
     select_min: bool,
     out_values: &mut DeviceBuffer<f32>,

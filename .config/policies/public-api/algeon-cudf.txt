@@ -250,6 +250,7 @@ pub fn cudf::core::DeviceBuffer::replace_int64_value_and_set_paired_float32_infi
 pub fn cudf::core::DeviceBuffer::size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::core::DeviceBuffer::validate_finite_float32(&self) -> cudf::core::error::Result<cudf::core::ValidatedFloat32DeviceBuffer<'_>>
 pub fn cudf::core::DeviceBuffer::validate_finite_float32_unless_int64_equals(&self, &Self, i64) -> cudf::core::error::Result<()>
+pub fn cudf::core::DeviceBuffer::validate_finite_float64(&self) -> cudf::core::error::Result<()>
 pub fn cudf::core::DeviceBuffer::validate_int64_range(&self, i64, i64) -> cudf::core::error::Result<cudf::core::ValidatedInt64DeviceBufferRange<'_>>
 pub fn cudf::core::DeviceBuffer::validate_int64_range_or_sentinel(&self, i64, i64, i64) -> cudf::core::error::Result<()>
 impl core::marker::Send for cudf::core::DeviceBuffer
@@ -1448,6 +1449,7 @@ pub fn cudf::core::DeviceBuffer::replace_int64_value_and_set_paired_float32_infi
 pub fn cudf::core::DeviceBuffer::size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::core::DeviceBuffer::validate_finite_float32(&self) -> cudf::core::error::Result<cudf::core::ValidatedFloat32DeviceBuffer<'_>>
 pub fn cudf::core::DeviceBuffer::validate_finite_float32_unless_int64_equals(&self, &Self, i64) -> cudf::core::error::Result<()>
+pub fn cudf::core::DeviceBuffer::validate_finite_float64(&self) -> cudf::core::error::Result<()>
 pub fn cudf::core::DeviceBuffer::validate_int64_range(&self, i64, i64) -> cudf::core::error::Result<cudf::core::ValidatedInt64DeviceBufferRange<'_>>
 pub fn cudf::core::DeviceBuffer::validate_int64_range_or_sentinel(&self, i64, i64, i64) -> cudf::core::error::Result<()>
 impl core::marker::Send for cudf::core::DeviceBuffer
@@ -6801,7 +6803,7 @@ pub fn cudf::PackedMatrix::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::PackedMatrix::row_stride_elements(&self) -> usize
 pub fn cudf::PackedMatrix::rows(&self) -> usize
 pub fn cudf::PackedMatrix::shape(&self) -> [usize; 2]
-pub fn cudf::PackedMatrix::validate_finite(&self) -> cudf::core::error::Result<cudf::ValidatedPackedMatrix<'_>>
+pub fn cudf::PackedMatrix::validate(&self) -> cudf::core::error::Result<cudf::ValidatedPackedMatrix<'_>>
 impl core::fmt::Debug for cudf::PackedMatrix
 pub fn cudf::PackedMatrix::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cudf::runtime::QueryExecutionContext<'a>
@@ -8353,7 +8355,7 @@ pub fn cudf::PackedMatrix::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::PackedMatrix::row_stride_elements(&self) -> usize
 pub fn cudf::PackedMatrix::rows(&self) -> usize
 pub fn cudf::PackedMatrix::shape(&self) -> [usize; 2]
-pub fn cudf::PackedMatrix::validate_finite(&self) -> cudf::core::error::Result<cudf::ValidatedPackedMatrix<'_>>
+pub fn cudf::PackedMatrix::validate(&self) -> cudf::core::error::Result<cudf::ValidatedPackedMatrix<'_>>
 impl core::fmt::Debug for cudf::PackedMatrix
 pub fn cudf::PackedMatrix::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cudf::ParquetSourceReadPreflight

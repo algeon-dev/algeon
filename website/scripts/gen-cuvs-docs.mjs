@@ -96,6 +96,12 @@ function loadSpecs() {
           spec.relation_roles.some(role => JSON.stringify(role.fields?.features?.element_types) !== JSON.stringify(elements))) {
         throw new Error(`${file}: vector element types must be identical across relation roles`);
       }
+      const support = spec.relation_roles[0]?.fields?.features?.element_metric_support;
+      if (!Array.isArray(support) || JSON.stringify(support.map(entry => entry.element)) !== JSON.stringify(elements) ||
+          support.some(entry => !Array.isArray(entry.metrics)) ||
+          spec.relation_roles.some(role => JSON.stringify(role.fields?.features?.element_metric_support) !== JSON.stringify(support))) {
+        throw new Error(`${file}: vector element/metric support must match across relation roles`);
+      }
       if (!Array.isArray(spec.argument_descriptions) || !Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) {
         throw new Error(`${file}: descriptor arrays have an invalid shape`);
       }
@@ -167,7 +173,9 @@ function renderInputs(spec) {
     '',
     '### Vector element types',
     '',
-    table(['Supported element type'], vectorElementTypes(spec).map(element => [code(element)])),
+    table(['Element type', 'Valid metrics'], spec.relation_roles[0].fields.features.element_metric_support.map(support => [
+      code(support.element), support.metrics.length ? support.metrics.map(code).join(', ') : 'Not applicable',
+    ])),
   ].join('\n');
 }
 
@@ -334,6 +342,25 @@ function renderCheatsheet(specs) {
   ].join('\n');
 }
 
+function renderDtypeSupport(specs) {
+  const elements = ['Float32', 'Float64', 'Int8', 'UInt8'];
+  return [
+    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
+    '',
+    '## Vector element and metric support by function',
+    '',
+    'Each cell lists valid `metric` values for that input element. Yes means the element is supported without a `metric` option; No means the element is unsupported.',
+    '',
+    table(['Function', ...elements], specs.map(spec => {
+      const support = spec.relation_roles[0].fields.features.element_metric_support;
+      return [code(spec.function_name), ...elements.map(element => {
+        const entry = support.find(candidate => candidate.element === element);
+        return !entry ? 'No' : entry.metrics.length ? entry.metrics.map(code).join(', ') : 'Yes';
+      })];
+    })),
+  ].join('\n');
+}
+
 function main() {
   const specs = loadSpecs();
   const names = new Set(specs.map(spec => spec.function_name));
@@ -352,6 +379,7 @@ function main() {
   }
   for (const spec of specs) write(join(FUNCTIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
+  write(join(DOCS_DIR, '_vector-element-support.mdx'), renderDtypeSupport(specs));
   console.log(`Wrote ${specs.length} generated cuVS function pages and cheatsheet.`);
 }
 

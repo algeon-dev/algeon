@@ -84,9 +84,36 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     assert_eq!(CuvsOperation::KMeans.descriptor().relation_roles, [CuvsRelationRole::Input]);
     assert_eq!(CuvsRelationRole::X.as_str(), "x");
     assert_eq!(CuvsRelationRole::Y.as_str(), "y");
-    for descriptor in CUVS_OPERATION_REGISTRY {
-        assert_eq!(descriptor.vector_element_support, &[CuvsVectorElementType::Float32]);
+    let expected = [
+        &[CuvsVectorElementType::Float32][..],
+        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Int8, CuvsVectorElementType::UInt8],
+        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Int8, CuvsVectorElementType::UInt8],
+        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Int8, CuvsVectorElementType::UInt8],
+        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Float64],
+        &[CuvsVectorElementType::Float32],
+        &[CuvsVectorElementType::Float32, CuvsVectorElementType::Float64],
+        &[CuvsVectorElementType::Float32],
+    ];
+    for (descriptor, expected) in CUVS_OPERATION_REGISTRY.iter().zip(expected) {
+        assert_eq!(
+            descriptor.vector_element_support.iter().map(|support| support.element).collect::<Vec<_>>(),
+            expected
+        );
+        let metric_option = descriptor.option("metric");
+        for support in descriptor.vector_element_support {
+            if let Some(option) = metric_option {
+                let CuvsOptionKind::Enum { values, .. } = option.kind else { panic!("metric must be an enum") };
+                assert!(!support.metrics.is_empty());
+                assert!(support.metrics.iter().all(|metric| values.contains(metric)));
+            } else {
+                assert!(support.metrics.is_empty());
+            }
+        }
     }
+    assert_eq!(
+        CuvsOperation::IvfPq.descriptor().element_support(CuvsVectorElementType::Int8).unwrap().metrics,
+        ["l2_expanded", "l2_sqrt_expanded", "inner_product"]
+    );
 
     let knn = cuvs_options_json_schema(CuvsOperation::BruteForceKnn);
     assert_eq!(knn["additionalProperties"], false);
@@ -193,9 +220,11 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         for option in descriptor.options.iter().filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
         {
             assert_eq!(
-                options_schema["properties"][option.name]["description"], option.description,
+                options_schema["properties"][option.name]["description"],
+                descriptor.options_json_schema()["properties"][option.name]["description"],
                 "{} option {} must retain the canonical description",
-                descriptor.sql_function_name, option.name
+                descriptor.sql_function_name,
+                option.name
             );
         }
         let roles =
@@ -218,9 +247,25 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         }
         for role in roles.as_array().unwrap() {
             assert_eq!(
+                role["fields"]["features"]["element_metric_support"],
+                serde_json::json!(
+                    descriptor
+                        .vector_element_support
+                        .iter()
+                        .map(|support| serde_json::json!({
+                            "element": support.element.as_str(), "metrics": support.metrics,
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            assert_eq!(
                 role["fields"]["features"]["element_types"],
                 serde_json::json!(
-                    descriptor.vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>()
+                    descriptor
+                        .vector_element_support
+                        .iter()
+                        .map(|support| support.element.as_str())
+                        .collect::<Vec<_>>()
                 ),
             );
         }
@@ -279,8 +324,11 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         for relation_role in descriptor.relation_roles {
             assert!(page.contains(&format!("`{}`", relation_role.as_str())), "{}", page_path.display());
         }
-        for element in descriptor.vector_element_support {
-            assert!(page.contains(&format!("| `{}` |", element.as_str())), "{}", page_path.display());
+        for support in descriptor.vector_element_support {
+            assert!(page.contains(&format!("| `{}` |", support.element.as_str())), "{}", page_path.display());
+            if let Some(metric) = support.metrics.first() {
+                assert!(page.contains(&format!("`{metric}`")), "{}", page_path.display());
+            }
         }
         for option in descriptor.options.iter().filter(|option| !matches!(option.kind, CuvsOptionKind::RelationBinding))
         {
@@ -291,6 +339,30 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             assert!(page.contains(&format!("`{}`", field.name)), "{}", page_path.display());
             assert!(page.contains(&mdx_table_text(field.description)), "{}", page_path.display());
         }
+    }
+    let partial = fs::read_to_string(repository.join("website/docs/cuvs/_vector-element-support.mdx")).unwrap();
+    for descriptor in CUVS_OPERATION_REGISTRY {
+        let row =
+            partial.lines().find(|line| line.starts_with(&format!("| `{}` |", descriptor.sql_function_name))).unwrap();
+        let cells = [
+            CuvsVectorElementType::Float32,
+            CuvsVectorElementType::Float64,
+            CuvsVectorElementType::Int8,
+            CuvsVectorElementType::UInt8,
+        ]
+        .map(|element| {
+            descriptor.element_support(element).map_or_else(
+                || "No".to_string(),
+                |support| {
+                    if support.metrics.is_empty() {
+                        "Yes".to_string()
+                    } else {
+                        support.metrics.iter().map(|metric| format!("`{metric}`")).collect::<Vec<_>>().join(", ")
+                    }
+                },
+            )
+        });
+        assert_eq!(row, format!("| `{}` | {} |", descriptor.sql_function_name, cells.join(" | ")));
     }
 }
 
@@ -327,8 +399,16 @@ async fn sql_output_schemas_equal_canonical_native_output_schemas() {
     )
     .await;
     let pairwise = find_cuvs_node(&pairwise).unwrap();
-    let expected = vector_pairwise_distance_output_schema(DataType::Int64, DataType::Utf8);
+    let expected = vector_pairwise_distance_output_schema(DataType::Int64, DataType::Utf8, DataType::Float32);
     assert_eq!(pairwise.schema().as_ref(), &DFSchema::try_from(expected.as_ref().clone()).unwrap());
+    let pairwise_f64 = logical_plan(&ctx, &format!(
+        "SELECT * FROM {CUVS_PAIRWISE_DISTANCE_FUNCTION}(\
+         x => (SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM dataset_vectors), \
+         y => (SELECT query_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM query_vectors), metric => 'l2_expanded')"
+    )).await;
+    let pairwise_f64 = find_cuvs_node(&pairwise_f64).unwrap();
+    let expected_f64 = vector_pairwise_distance_output_schema(DataType::Int64, DataType::Utf8, DataType::Float64);
+    assert_eq!(pairwise_f64.schema().as_ref(), &DFSchema::try_from(expected_f64.as_ref().clone()).unwrap());
 
     let top_k = logical_plan(
         &ctx,
@@ -879,7 +959,7 @@ async fn unsupported_vector_elements_report_the_operation_support_subset() {
         "SELECT id, vector FROM float64_list_vectors",
     ];
     for input in cases {
-        let sql = format!("SELECT * FROM {CUVS_KMEANS_FUNCTION}(input => ({input}), n_clusters => 1)");
+        let sql = format!("SELECT * FROM {CUVS_TOP_K_FUNCTION}(input => ({input}), k => 1, select => 'min')");
         let error = ctx.state().create_logical_plan(&sql).await.expect_err(&sql);
         let typed = error.find_algeon_error().expect("structured unsupported vector element error");
         assert_eq!(typed.code(), ErrorCode::UnsupportedType, "{sql}: {typed:?}");
@@ -892,6 +972,34 @@ async fn unsupported_vector_elements_report_the_operation_support_subset() {
 async fn local_validation_rejects_schema_dimension_option_and_empty_input_contracts() {
     let ctx = cuvs_context();
     let cases = [
+        (
+            format!(
+                "SELECT * FROM {CUVS_PAIRWISE_DISTANCE_FUNCTION}(\
+                     x => (SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, d1 FROM dataset_vectors), \
+                     y => (SELECT query_id AS id, d0, d1 FROM query_vectors), metric => 'l2_expanded')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("vector_element_type_mismatch"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_PAIRWISE_DISTANCE_FUNCTION}(\
+                     x => (SELECT item_id AS id, CAST(d0 AS DOUBLE) AS d0, CAST(d1 AS DOUBLE) AS d1 FROM dataset_vectors), \
+                     y => (SELECT query_id AS id, d0, d1 FROM query_vectors), metric => 'l2_expanded')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("vector_element_type_mismatch"),
+        ),
+        (
+            format!(
+                "SELECT * FROM {CUVS_IVF_PQ_FUNCTION}(\
+                     dataset => (SELECT item_id AS id, CAST(d0 AS TINYINT) AS d0, CAST(d1 AS TINYINT) AS d1 FROM dataset_vectors), \
+                     queries => (SELECT query_id AS id, CAST(d0 AS TINYINT) AS d0, CAST(d1 AS TINYINT) AS d1 FROM query_vectors), \
+                     k => 1, n_lists => 1, n_probes => 1, metric => 'cosine')"
+            ),
+            ErrorCode::InvalidRequest,
+            Some("unsupported_vector_element_metric"),
+        ),
         (
             format!(
                 "SELECT * FROM {CUVS_KMEANS_FUNCTION}(\

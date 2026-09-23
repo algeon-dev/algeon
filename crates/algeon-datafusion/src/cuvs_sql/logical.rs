@@ -40,9 +40,9 @@ impl CuvsLogicalNode {
             ));
         }
         let options = validate_options(operation, options_json)?;
-        let dimensions = validate_input_schemas(operation, &inputs, &options)?;
+        let (dimensions, element) = validate_input_schemas(operation, &inputs, &options)?;
         validate_known_cardinalities(operation, &inputs, &options)?;
-        let schema = derive_output_schema(operation, &inputs, &options, &dimensions)?;
+        let schema = derive_output_schema(operation, &inputs, &options, &dimensions, element)?;
         Ok(Self { operation, inputs, options, schema })
     }
 
@@ -130,8 +130,9 @@ fn validate_input_schemas(
     operation: CuvsOperation,
     inputs: &[LogicalPlan],
     options: &CuvsValidatedOptions,
-) -> Result<Vec<Option<usize>>> {
+) -> Result<(Vec<Option<usize>>, CuvsVectorElementType)> {
     let mut dimensions = Vec::with_capacity(inputs.len());
+    let mut elements = Vec::with_capacity(inputs.len());
     for ((input, role), binding) in
         inputs.iter().zip(operation.descriptor().relation_roles.iter().copied()).zip(options.bindings())
     {
@@ -142,7 +143,39 @@ fn validate_input_schemas(
                 "cuVS options binding order does not match the relation arguments",
             ));
         }
-        dimensions.push(validate_relation_binding(operation, input.schema(), binding)?);
+        let (dimension, element) = validate_relation_binding(operation, input.schema(), binding)?;
+        dimensions.push(dimension);
+        elements.push(element);
+    }
+    if elements.len() == 2 && elements[0] != elements[1] {
+        return Err(invalid_call(
+            operation,
+            "vector_element_type_mismatch",
+            format!(
+                "{} element {} does not match {} element {}",
+                operation.descriptor().relation_roles[0].as_str(),
+                elements[0].as_str(),
+                operation.descriptor().relation_roles[1].as_str(),
+                elements[1].as_str()
+            ),
+        ));
+    }
+    let element = elements[0];
+    let canonical: serde_json::Value = serde_json::from_str(options.canonical_json()).expect("canonical cuVS options");
+    if let Some(metric) = canonical.get("metric").and_then(serde_json::Value::as_str) {
+        let supported = operation.descriptor().element_support(element).expect("validated element");
+        if !supported.metrics.contains(&metric) {
+            return Err(invalid_call(
+                operation,
+                "unsupported_vector_element_metric",
+                format!(
+                    "{} {} does not support metric '{metric}'; valid metrics: {}",
+                    operation.descriptor().sql_function_name,
+                    element.as_str(),
+                    supported.metrics.join(", ")
+                ),
+            ));
+        }
     }
     if matches!(
         operation,
@@ -194,14 +227,14 @@ fn validate_input_schemas(
             "cuVS PCA requires at least two input feature columns",
         ));
     }
-    Ok(dimensions)
+    Ok((dimensions, element))
 }
 
 fn validate_relation_binding(
     operation: CuvsOperation,
     schema: &DFSchema,
     binding: &CuvsVectorRelationBinding,
-) -> Result<Option<usize>> {
+) -> Result<(Option<usize>, CuvsVectorElementType)> {
     let role = binding.relation_role().as_str();
     let id = resolve_field(operation, schema, role, binding.id())?;
     if id.is_nullable() {
@@ -223,11 +256,22 @@ fn validate_relation_binding(
 
     match binding.vector() {
         CuvsDenseVectorBinding::Columns(columns) => {
+            let mut element = None;
             for column in columns {
                 let field = resolve_field(operation, schema, role, column)?;
-                require_supported_vector_element(operation, role, column, field)?;
+                let current = require_supported_vector_element(operation, role, column, field)?;
+                if element.is_some_and(|element| element != current) {
+                    return Err(invalid_call(
+                        operation,
+                        "vector_element_type_mismatch",
+                        format!(
+                            "cuVS {role} feature field '{column}' must have the same element type as the other feature fields"
+                        ),
+                    ));
+                }
+                element = Some(current);
             }
-            Ok(Some(columns.len()))
+            Ok((Some(columns.len()), element.expect("validated non-empty columns")))
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
             let field = resolve_field(operation, schema, role, column)?;
@@ -240,12 +284,12 @@ fn validate_relation_binding(
             }
             match field.data_type() {
                 DataType::FixedSizeList(element, dimension) if *dimension > 0 => {
-                    require_supported_vector_element(operation, role, column, element)?;
-                    Ok(Some(*dimension as usize))
+                    let element = require_supported_vector_element(operation, role, column, element)?;
+                    Ok((Some(*dimension as usize), element))
                 },
                 DataType::List(element) | DataType::LargeList(element) => {
-                    require_supported_vector_element(operation, role, column, element)?;
-                    Ok(None)
+                    let element = require_supported_vector_element(operation, role, column, element)?;
+                    Ok((None, element))
                 },
                 actual => Err(unsupported_type(
                     operation,
@@ -272,7 +316,13 @@ fn resolve_field<'a>(
 }
 
 fn supported_vector_elements(operation: CuvsOperation) -> String {
-    operation.descriptor().vector_element_support.iter().map(|element| element.as_str()).collect::<Vec<_>>().join(", ")
+    operation
+        .descriptor()
+        .vector_element_support
+        .iter()
+        .map(|support| support.element.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn require_supported_vector_element(
@@ -280,7 +330,7 @@ fn require_supported_vector_element(
     role: &'static str,
     name: &str,
     field: &FieldRef,
-) -> Result<()> {
+) -> Result<CuvsVectorElementType> {
     if field.is_nullable() {
         return Err(invalid_call(
             operation,
@@ -288,12 +338,12 @@ fn require_supported_vector_element(
             format!("cuVS {role} feature field '{name}' must be non-nullable"),
         ));
     }
-    if CuvsVectorElementType::from_data_type(field.data_type())
-        .is_none_or(|element| !operation.descriptor().vector_element_support.contains(&element))
-    {
-        return Err(unsupported_type(operation, role, name, field.data_type(), supported_vector_elements(operation)));
-    }
-    Ok(())
+    let element = CuvsVectorElementType::from_data_type(field.data_type())
+        .filter(|element| operation.descriptor().element_support(*element).is_some())
+        .ok_or_else(|| {
+            unsupported_type(operation, role, name, field.data_type(), supported_vector_elements(operation))
+        })?;
+    Ok(element)
 }
 
 fn validate_known_cardinalities(
@@ -407,6 +457,7 @@ fn derive_output_schema(
     inputs: &[LogicalPlan],
     options: &CuvsValidatedOptions,
     dimensions: &[Option<usize>],
+    element: CuvsVectorElementType,
 ) -> Result<DFSchemaRef> {
     let schema = match operation.descriptor().output_contract {
         CuvsOutputContract::KnnNeighbors => {
@@ -417,6 +468,10 @@ fn derive_output_schema(
         CuvsOutputContract::PairwiseDistances => vector_pairwise_distance_output_schema(
             output_id_field(inputs[0].schema(), options.bindings()[0].id(), "x_id")?.data_type().clone(),
             output_id_field(inputs[1].schema(), options.bindings()[1].id(), "y_id")?.data_type().clone(),
+            match element {
+                CuvsVectorElementType::Float64 => DataType::Float64,
+                _ => DataType::Float32,
+            },
         ),
         CuvsOutputContract::TopKValues => vector_top_k_output_schema(
             output_id_field(inputs[0].schema(), options.bindings()[0].id(), "id")?.data_type().clone(),

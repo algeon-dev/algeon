@@ -21,6 +21,7 @@ use crate::{
 
 const FINITE_FLOAT32_OPERATION: &str = "validation::validate_finite_float32";
 const FINITE_FLOAT32_BUFFER_OPERATION: &str = "validation::validate_finite_float32_buffer";
+const FINITE_FLOAT64_BUFFER_OPERATION: &str = "validation::validate_finite_float64_buffer";
 const FINITE_FLOAT64_OPERATION: &str = "validation::validate_finite_float64";
 const INT64_BUFFER_RANGE_OPERATION: &str = "validation::validate_int64_buffer_range";
 
@@ -182,6 +183,54 @@ pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<Fi
         .with_detail("remedy", "replace or reject NaN and infinite values before GPU consumer execution"));
     }
 
+    Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement, observation })
+}
+
+pub(crate) fn validate_finite_float64_buffer(buffer: &DeviceBuffer) -> Result<FiniteValidationProof> {
+    let validated_values = exact_buffer_element_count(buffer, mem::size_of::<f64>(), FINITE_FLOAT64_BUFFER_OPERATION)?;
+    let input = buffer.as_ptr().map_err(|error| error.reanchor(FINITE_FLOAT64_BUFFER_OPERATION))? as *const f64;
+    let execution = buffer.execution_domain().enter_execution()?;
+    let mut non_finite_count = 0i32;
+    error::check_status_in_with_details(
+        unsafe {
+            cudf_sys::cudf_float64_buffer_non_finite_count_ex(
+                input,
+                validated_values,
+                &mut non_finite_count,
+                execution.options(),
+            )
+        },
+        FINITE_FLOAT64_BUFFER_OPERATION,
+        [
+            ("validated_values", validated_values.to_string()),
+            ("validation_evidence", "bounded_control_scalar".to_string()),
+        ],
+    )?;
+    let (placement, observation) = buffer_validation_observation(buffer, validated_values);
+    let non_finite_count = usize::try_from(non_finite_count).map_err(|_| {
+        Error::new_with(
+            ErrorCode::ForeignInvariantViolation,
+            FINITE_FLOAT64_BUFFER_OPERATION,
+            "finite-value validation returned a negative invalid-value count",
+        )
+        .with_detail("raw_non_finite_count", non_finite_count.to_string())
+    })?;
+    if non_finite_count != 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            FINITE_FLOAT64_BUFFER_OPERATION,
+            "Float64 device buffer contains values that are not finite",
+        )
+        .with_fact(FACT_VALIDATION_REASON, "non_finite_vector_value")
+        .with_fact(FACT_EXECUTION_BINDING_ID, buffer.binding_id().get())
+        .with_fact(FACT_VALIDATION_DEVICE, DeviceIdFact(placement.device.ordinal_raw()))
+        .with_fact(FACT_VALIDATION_STREAM, placement.stream_debug)
+        .with_fact(FACT_CONTROL_PLANE_SCALAR_BYTES, mem::size_of::<i32>())
+        .with_detail("non_finite_count", non_finite_count.to_string())
+        .with_detail("validated_values", validated_values.to_string())
+        .with_detail("validation_evidence", "bounded_control_scalar")
+        .with_detail("remedy", "replace or reject NaN and infinite values before GPU consumer execution"));
+    }
     Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement, observation })
 }
 

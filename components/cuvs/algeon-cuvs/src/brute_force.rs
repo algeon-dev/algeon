@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, ptr, ptr::NonNull};
 
 use crate::{
-    device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
+    device::{DeviceBuffer, DeviceElement, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
     error::{Result, check_cuvs, invalid_input, invalid_state, require_nonzero},
     resources::CuvsResources,
@@ -51,7 +51,7 @@ impl<'data> BruteForceIndex<'data> {
     /// returned.
     pub fn build(
         resources: &CuvsResources,
-        dataset: &ValidatedDeviceTensor<'data>,
+        dataset: &ValidatedDeviceTensor<'data, f32>,
         metric: DistanceMetric,
     ) -> Result<Self> {
         let operation = "BruteForceIndex::build";
@@ -89,7 +89,7 @@ impl<'data> BruteForceIndex<'data> {
     /// neighbor index lies in `0..rows()` and every distance is finite.
     pub fn search_into(
         &self,
-        queries: &ValidatedDeviceTensor<'_>,
+        queries: &ValidatedDeviceTensor<'_, f32>,
         k: usize,
         neighbors: &mut DeviceBuffer<i64>,
         distances: &mut DeviceBuffer<f32>,
@@ -199,9 +199,9 @@ impl std::fmt::Debug for BruteForceIndex<'_> {
     }
 }
 
-pub(crate) fn validate_matrix_binding(
+pub(crate) fn validate_matrix_binding<T: DeviceElement>(
     resources: &CuvsResources,
-    matrix: &ValidatedDeviceTensor<'_>,
+    matrix: &ValidatedDeviceTensor<'_, T>,
     operation: &'static str,
 ) -> Result<()> {
     resources.validate_exact_binding(operation)?;
@@ -220,7 +220,10 @@ pub(crate) fn validate_matrix_binding(
     Ok(())
 }
 
-pub(crate) fn matrix_layout(matrix: &ValidatedDeviceTensor<'_>, operation: &'static str) -> Result<MatrixLayout> {
+pub(crate) fn matrix_layout<T: DeviceElement>(
+    matrix: &ValidatedDeviceTensor<'_, T>,
+    operation: &'static str,
+) -> Result<MatrixLayout> {
     let rows = matrix.rows()? as i64;
     let columns = matrix.columns()? as i64;
     match matrix.strides() {

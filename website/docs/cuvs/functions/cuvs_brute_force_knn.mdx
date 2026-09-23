@@ -40,9 +40,9 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 ### Vector element types
 
-| Supported element type |
-| --- |
-| `Float32` |
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | `l2_expanded`, `l2_sqrt_expanded`, `cosine`, `inner_product` |
 
 ## Arguments and options
 
@@ -58,7 +58,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
 | `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
+| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
 
 ### Vector binding shapes
 

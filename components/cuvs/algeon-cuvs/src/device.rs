@@ -1,7 +1,7 @@
 use std::{ffi::c_void, fmt, marker::PhantomData, mem, ptr::NonNull, sync::Arc};
 
 use cudf::{
-    CudfType, DenseMatrixLayout, PackedMatrix, Runtime, TypeId, ValidatedPackedMatrix,
+    CudfType, DenseMatrixLayout, PackedMatrix, Runtime, ValidatedPackedMatrix,
     core::{Column, DeviceBuffer as CudfDeviceBuffer},
     interop::contract::TypeId as InteropTypeId,
     runtime::ExecutionBindingId,
@@ -14,7 +14,7 @@ use crate::{
 
 /// Element type of a cuVS device buffer or tensor.
 ///
-/// Implemented for `f32`, `i32`, and `i64`. The set is closed: the supertrait
+/// Implemented for `f32`, `f64`, `i8`, `u8`, `i32`, and `i64`. The set is closed: the supertrait
 /// [`CudfType`] is sealed, so downstream crates cannot implement it for their
 /// own types, and the orphan rule prevents them from implementing this trait
 /// for other foreign types.
@@ -30,10 +30,13 @@ pub trait DeviceElement: CudfType + Copy + 'static {
 
     /// Returns whether host values are valid native cuVS input.
     ///
-    /// `f32` requires every value to be finite; the integer implementations
-    /// accept every value.
+    /// Floating elements require finite values; integer elements accept every value.
     fn valid_native_input(_values: &[Self]) -> bool {
         true
+    }
+
+    fn validate_native_buffer(_buffer: &CudfDeviceBuffer, _operation: &'static str) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -45,6 +48,38 @@ impl DeviceElement for f32 {
     fn valid_native_input(values: &[Self]) -> bool {
         values.iter().all(|value| value.is_finite())
     }
+
+    fn validate_native_buffer(buffer: &CudfDeviceBuffer, operation: &'static str) -> Result<()> {
+        buffer.validate_finite_float32().map_err(|error| from_cudf(operation, error))?;
+        Ok(())
+    }
+}
+
+impl DeviceElement for f64 {
+    const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLFloat as u8;
+    const DLPACK_BITS: u8 = 64;
+    const INTEROP_TYPE: InteropTypeId = InteropTypeId::Float64;
+
+    fn valid_native_input(values: &[Self]) -> bool {
+        values.iter().all(|value| value.is_finite())
+    }
+
+    fn validate_native_buffer(buffer: &CudfDeviceBuffer, operation: &'static str) -> Result<()> {
+        buffer.validate_finite_float64().map_err(|error| from_cudf(operation, error))?;
+        Ok(())
+    }
+}
+
+impl DeviceElement for i8 {
+    const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLInt as u8;
+    const DLPACK_BITS: u8 = 8;
+    const INTEROP_TYPE: InteropTypeId = InteropTypeId::Int8;
+}
+
+impl DeviceElement for u8 {
+    const DLPACK_CODE: u8 = cuvs_sys::DLDataTypeCode::kDLUInt as u8;
+    const DLPACK_BITS: u8 = 8;
+    const INTEROP_TYPE: InteropTypeId = InteropTypeId::UInt8;
 }
 
 impl DeviceElement for i32 {
@@ -108,7 +143,7 @@ impl<T: DeviceElement> DeviceBuffer<T> {
         let operation = "DeviceBuffer::from_slice";
         require_nonzero(values.len(), operation, "values.len")?;
         if !T::valid_native_input(values) {
-            return Err(invalid_input(operation, "Float32 native inputs must contain only finite values"));
+            return Err(invalid_input(operation, "floating native inputs must contain only finite values"));
         }
         let runtime = Arc::clone(resources.runtime());
         let inner = runtime.device_buffer_from_host_data(values).map_err(|error| from_cudf(operation, error))?;
@@ -137,6 +172,35 @@ impl<T: DeviceElement> DeviceBuffer<T> {
 
     pub(crate) fn native_input_validated(&self) -> bool {
         self.native_input_validated
+    }
+
+    pub(crate) fn validate_native_input(&mut self, operation: &'static str) -> Result<()> {
+        T::validate_native_buffer(&self.inner, operation)?;
+        self.native_input_validated = true;
+        Ok(())
+    }
+
+    pub fn as_validated_tensor<'a>(
+        &'a self,
+        resources: &CuvsResources,
+        shape: &[usize],
+        strides: Option<&[usize]>,
+        byte_offset: usize,
+    ) -> Result<ValidatedDeviceTensor<'a, T>> {
+        let operation = "DeviceBuffer::as_validated_tensor";
+        if !self.native_input_validated {
+            return Err(invalid_input(operation, "device buffer has not passed input validation"));
+        }
+        self.as_tensor(resources, shape, strides, byte_offset).map(ValidatedDeviceTensor::new)
+    }
+
+    pub fn as_validated_matrix(
+        &self,
+        resources: &CuvsResources,
+        rows: usize,
+        columns: usize,
+    ) -> Result<ValidatedDeviceTensor<'_, T>> {
+        self.as_validated_tensor(resources, &[rows, columns], None, 0)
     }
 
     pub fn as_tensor<'a>(
@@ -230,54 +294,6 @@ impl DeviceBuffer<f32> {
             .validate_finite_float32_unless_int64_equals(neighbors.inner(), sentinel)
             .map_err(|error| from_cudf(operation, error))
     }
-
-    pub(crate) fn validate_native_input(&mut self, operation: &'static str) -> Result<()> {
-        let (validated_len, validated_binding, validated_device) = {
-            let proof = self.inner.validate_finite_float32().map_err(|error| from_cudf(operation, error))?;
-            (proof.len(), proof.binding_id(), proof.placement().device)
-        };
-        if validated_len != self.len {
-            return Err(invalid_input(
-                operation,
-                format!("finite validation covered {validated_len} values, expected {}", self.len),
-            ));
-        }
-        if validated_binding != self.binding_id() {
-            return Err(invalid_input(operation, "finite validation used a different execution binding")
-                .with_context("validated_binding_id", validated_binding)
-                .with_context("buffer_binding_id", self.binding_id()));
-        }
-        if validated_device != self.inner.device() {
-            return Err(invalid_input(operation, "finite validation used a different CUDA device")
-                .with_context("validated_device", validated_device.ordinal())
-                .with_context("buffer_device", self.inner.device().ordinal()));
-        }
-        self.native_input_validated = true;
-        Ok(())
-    }
-
-    pub fn as_validated_tensor<'a>(
-        &'a self,
-        resources: &CuvsResources,
-        shape: &[usize],
-        strides: Option<&[usize]>,
-        byte_offset: usize,
-    ) -> Result<ValidatedDeviceTensor<'a>> {
-        let operation = "DeviceBuffer::as_validated_tensor";
-        if !self.native_input_validated {
-            return Err(invalid_input(operation, "device buffer has not passed finite-input validation"));
-        }
-        self.as_tensor(resources, shape, strides, byte_offset).map(ValidatedDeviceTensor::new)
-    }
-
-    pub fn as_validated_matrix(
-        &self,
-        resources: &CuvsResources,
-        rows: usize,
-        columns: usize,
-    ) -> Result<ValidatedDeviceTensor<'_>> {
-        self.as_validated_tensor(resources, &[rows, columns], None, 0)
-    }
 }
 
 impl DeviceBuffer<i64> {
@@ -337,50 +353,52 @@ impl<T: DeviceElement> fmt::Debug for DeviceBuffer<T> {
     }
 }
 
-enum Float32MatrixStorage {
-    Buffer(DeviceBuffer<f32>),
+enum MatrixStorage<T: DeviceElement> {
+    Buffer(DeviceBuffer<T>),
     Packed(PackedMatrix),
 }
 
-/// An owned contiguous Float32 matrix on one exact cudf execution binding.
+/// An owned contiguous numeric matrix on one exact cudf execution binding.
 ///
 /// The packed variant consumes a cudf-owned packed matrix. Because the owner
 /// is exclusive, `as_tensor_mut` can safely expose the
 /// allocation to native algorithms that update their input without mutating
 /// any source cudf columns used to create the pack.
-pub struct OwnedFloat32Matrix {
-    storage: Float32MatrixStorage,
+pub struct OwnedMatrix<T: DeviceElement> {
+    storage: MatrixStorage<T>,
     rows: usize,
     columns: usize,
     layout: MatrixLayout,
-    finite_validated: bool,
+    input_validated: bool,
 }
 
-impl OwnedFloat32Matrix {
+impl<T: DeviceElement> OwnedMatrix<T> {
     pub fn new(resources: &CuvsResources, rows: usize, columns: usize, layout: MatrixLayout) -> Result<Self> {
-        let operation = "OwnedFloat32Matrix::new";
+        let operation = "OwnedMatrix::new";
         require_nonzero(rows, operation, "rows")?;
         require_nonzero(columns, operation, "columns")?;
         let len = rows
             .checked_mul(columns)
             .ok_or_else(|| invalid_input(operation, "matrix element count overflowed usize"))?;
         Ok(Self {
-            storage: Float32MatrixStorage::Buffer(DeviceBuffer::new(resources, len)?),
+            storage: MatrixStorage::Buffer(DeviceBuffer::new(resources, len)?),
             rows,
             columns,
             layout,
-            finite_validated: false,
+            input_validated: false,
         })
     }
 
-    pub(crate) fn from_finite_checked_packed(resources: &CuvsResources, matrix: PackedMatrix) -> Result<Self> {
-        let operation = "OwnedFloat32Matrix::from_finite_checked_packed";
+    pub fn from_packed(resources: &CuvsResources, matrix: PackedMatrix) -> Result<Self> {
+        let operation = "OwnedMatrix::from_packed";
         resources.validate_exact_binding(operation)?;
-        if matrix.element() != TypeId::Float32 {
-            return Err(invalid_input(operation, "cuVS owned Float32 matrix requires Float32 packed values"));
+        if matrix.element() != T::TYPE_ID {
+            return Err(invalid_input(operation, "packed matrix element does not match requested cuVS element")
+                .with_context("packed_element", format!("{:?}", matrix.element()))
+                .with_context("requested_element", format!("{:?}", T::TYPE_ID)));
         }
         let (rows, columns, layout) = {
-            let validated = matrix.validate_finite().map_err(|error| from_cudf(operation, error))?;
+            let validated = matrix.validate().map_err(|error| from_cudf(operation, error))?;
             require_nonzero(validated.rows(), operation, "rows")?;
             require_nonzero(validated.columns(), operation, "columns")?;
             if validated.binding_id() != resources.binding_id() {
@@ -398,12 +416,12 @@ impl OwnedFloat32Matrix {
             }
             (validated.rows(), validated.columns(), validated.layout().into())
         };
-        Ok(Self { storage: Float32MatrixStorage::Packed(matrix), rows, columns, layout, finite_validated: true })
+        Ok(Self { storage: MatrixStorage::Packed(matrix), rows, columns, layout, input_validated: true })
     }
 
     pub(crate) fn from_buffer(
         resources: &CuvsResources,
-        buffer: DeviceBuffer<f32>,
+        buffer: DeviceBuffer<T>,
         rows: usize,
         columns: usize,
         layout: MatrixLayout,
@@ -420,8 +438,8 @@ impl OwnedFloat32Matrix {
             ));
         }
         ensure_buffer_binding(resources, buffer.inner(), operation)?;
-        let finite_validated = buffer.native_input_validated();
-        Ok(Self { storage: Float32MatrixStorage::Buffer(buffer), rows, columns, layout, finite_validated })
+        let input_validated = buffer.native_input_validated();
+        Ok(Self { storage: MatrixStorage::Buffer(buffer), rows, columns, layout, input_validated })
     }
 
     pub fn rows(&self) -> usize {
@@ -438,48 +456,48 @@ impl OwnedFloat32Matrix {
 
     pub fn binding_id(&self) -> ExecutionBindingId {
         match &self.storage {
-            Float32MatrixStorage::Buffer(buffer) => buffer.binding_id(),
-            Float32MatrixStorage::Packed(matrix) => matrix.binding_id(),
+            MatrixStorage::Buffer(buffer) => buffer.binding_id(),
+            MatrixStorage::Packed(matrix) => matrix.binding_id(),
         }
     }
 
-    pub fn is_finite_validated(&self) -> bool {
-        self.finite_validated
+    pub fn is_input_validated(&self) -> bool {
+        self.input_validated
     }
 
-    pub fn as_validated_tensor<'a>(&'a self, resources: &CuvsResources) -> Result<ValidatedDeviceTensor<'a>> {
-        let operation = "OwnedFloat32Matrix::as_validated_tensor";
-        if !self.finite_validated {
-            return Err(invalid_input(operation, "owned matrix has not passed finite-input validation"));
+    pub fn as_validated_tensor<'a>(&'a self, resources: &CuvsResources) -> Result<ValidatedDeviceTensor<'a, T>> {
+        let operation = "OwnedMatrix::as_validated_tensor";
+        if !self.input_validated {
+            return Err(invalid_input(operation, "owned matrix has not passed input validation"));
         }
         self.as_tensor(resources).map(ValidatedDeviceTensor::new)
     }
 
-    pub(crate) fn as_tensor<'a>(&'a self, resources: &CuvsResources) -> Result<DeviceTensor<'a, f32>> {
-        let operation = "OwnedFloat32Matrix::as_tensor";
+    pub(crate) fn as_tensor<'a>(&'a self, resources: &CuvsResources) -> Result<DeviceTensor<'a, T>> {
+        let operation = "OwnedMatrix::as_tensor";
         self.validate_binding(resources, operation)?;
         let data = match &self.storage {
-            Float32MatrixStorage::Buffer(buffer) => {
+            MatrixStorage::Buffer(buffer) => {
                 buffer.inner().as_ptr().map_err(|error| from_cudf(operation, error))? as *mut c_void
             },
-            Float32MatrixStorage::Packed(matrix) => {
+            MatrixStorage::Packed(matrix) => {
                 matrix.as_column().device_data_ptr().map_err(|error| from_cudf(operation, error))? as *mut c_void
             },
         };
         self.tensor_from_ptr(data, operation)
     }
 
-    pub(crate) fn as_tensor_mut<'a>(&'a mut self, resources: &CuvsResources) -> Result<DeviceTensorMut<'a, f32>> {
-        let operation = "OwnedFloat32Matrix::as_tensor_mut";
+    pub(crate) fn as_tensor_mut<'a>(&'a mut self, resources: &CuvsResources) -> Result<DeviceTensorMut<'a, T>> {
+        let operation = "OwnedMatrix::as_tensor_mut";
         self.validate_binding(resources, operation)?;
-        self.finite_validated = false;
+        self.input_validated = false;
         let data = match &mut self.storage {
-            Float32MatrixStorage::Buffer(buffer) => {
+            MatrixStorage::Buffer(buffer) => {
                 buffer.inner_mut().as_mut_ptr().map_err(|error| from_cudf(operation, error))?
             },
             // The packed matrix is exclusively owned by `self`; no safe API
             // can retain an alias after it was moved into this owner.
-            Float32MatrixStorage::Packed(matrix) => {
+            MatrixStorage::Packed(matrix) => {
                 matrix.as_column().device_data_ptr().map_err(|error| from_cudf(operation, error))? as *mut c_void
             },
         };
@@ -496,34 +514,30 @@ impl OwnedFloat32Matrix {
         )
     }
 
-    pub(crate) fn validate_native_output_finite(
-        &mut self,
-        resources: &CuvsResources,
-        operation: &'static str,
-    ) -> Result<()> {
+    pub(crate) fn validate_native_output(&mut self, resources: &CuvsResources, operation: &'static str) -> Result<()> {
         self.validate_binding(resources, operation)?;
         match &mut self.storage {
-            Float32MatrixStorage::Buffer(buffer) => buffer.validate_native_input(operation)?,
-            Float32MatrixStorage::Packed(matrix) => {
-                let proof = matrix.validate_finite().map_err(|error| from_cudf(operation, error))?;
+            MatrixStorage::Buffer(buffer) => buffer.validate_native_input(operation)?,
+            MatrixStorage::Packed(matrix) => {
+                let proof = matrix.validate().map_err(|error| from_cudf(operation, error))?;
                 if proof.len() != self.rows * self.columns {
                     return Err(invalid_input(
                         operation,
                         format!(
-                            "finite validation covered {} values, expected {}",
+                            "output validation covered {} values, expected {}",
                             proof.len(),
                             self.rows * self.columns
                         ),
                     ));
                 }
                 if proof.binding_id() != resources.binding_id() {
-                    return Err(invalid_input(operation, "finite validation used a different execution binding")
+                    return Err(invalid_input(operation, "output validation used a different execution binding")
                         .with_context("validated_binding_id", proof.binding_id())
                         .with_context("resource_binding_id", resources.binding_id()));
                 }
             },
         }
-        self.finite_validated = true;
+        self.input_validated = true;
         Ok(())
     }
 
@@ -538,7 +552,7 @@ impl OwnedFloat32Matrix {
     }
 
     fn byte_len(&self) -> usize {
-        self.rows * self.columns * mem::size_of::<f32>()
+        self.rows * self.columns * mem::size_of::<T>()
     }
 
     fn strides(&self) -> Option<[usize; 2]> {
@@ -548,7 +562,7 @@ impl OwnedFloat32Matrix {
         }
     }
 
-    fn tensor_from_ptr<'a>(&'a self, data: *mut c_void, operation: &'static str) -> Result<DeviceTensor<'a, f32>> {
+    fn tensor_from_ptr<'a>(&'a self, data: *mut c_void, operation: &'static str) -> Result<DeviceTensor<'a, T>> {
         let strides = self.strides();
         DeviceTensor::from_parts(
             data,
@@ -564,16 +578,16 @@ impl OwnedFloat32Matrix {
 
     fn device_ordinal(&self) -> i32 {
         match &self.storage {
-            Float32MatrixStorage::Buffer(buffer) => buffer.inner().device().ordinal() as i32,
-            Float32MatrixStorage::Packed(matrix) => matrix.placement().device.ordinal() as i32,
+            MatrixStorage::Buffer(buffer) => buffer.inner().device().ordinal() as i32,
+            MatrixStorage::Packed(matrix) => matrix.placement().device.ordinal() as i32,
         }
     }
 }
 
-impl fmt::Debug for OwnedFloat32Matrix {
+impl<T: DeviceElement> fmt::Debug for OwnedMatrix<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("OwnedFloat32Matrix")
+            .debug_struct("OwnedMatrix")
             .field("rows", &self.rows)
             .field("columns", &self.columns)
             .field("layout", &self.layout)
@@ -692,17 +706,19 @@ impl<T: DeviceElement> DeviceTensor<'_, T> {
     }
 }
 
-/// A read-only Float32 tensor carrying a finite-input proof.
-pub struct ValidatedDeviceTensor<'a> {
-    inner: DeviceTensor<'a, f32>,
+/// A read-only tensor with finite-scanned floating values or validated integer shape.
+pub struct ValidatedDeviceTensor<'a, T: DeviceElement> {
+    inner: DeviceTensor<'a, T>,
 }
 
-impl<'a> ValidatedDeviceTensor<'a> {
+impl<'a, T: DeviceElement> ValidatedDeviceTensor<'a, T> {
     pub fn from_packed(resources: &CuvsResources, matrix: &'a ValidatedPackedMatrix<'_>) -> Result<Self> {
         let operation = "ValidatedDeviceTensor::from_packed";
         resources.validate_exact_binding(operation)?;
-        if matrix.element() != TypeId::Float32 {
-            return Err(invalid_input(operation, "cuVS validated tensor requires Float32 packed values"));
+        if matrix.element() != T::TYPE_ID {
+            return Err(invalid_input(operation, "packed matrix element does not match requested cuVS element")
+                .with_context("packed_element", format!("{:?}", matrix.element()))
+                .with_context("requested_element", format!("{:?}", T::TYPE_ID)));
         }
         if matrix.binding_id() != resources.binding_id() {
             return Err(invalid_input(
@@ -727,7 +743,7 @@ impl<'a> ValidatedDeviceTensor<'a> {
             resources.device().ordinal() as i32,
             &[matrix.rows(), matrix.columns()],
             strides.as_ref().map(<[usize; 2]>::as_slice),
-            matrix.len() * mem::size_of::<f32>(),
+            matrix.len() * mem::size_of::<T>(),
             0,
             matrix.binding_id(),
             operation,
@@ -735,11 +751,11 @@ impl<'a> ValidatedDeviceTensor<'a> {
         .map(Self::new)
     }
 
-    pub(crate) fn new(inner: DeviceTensor<'a, f32>) -> Self {
+    pub(crate) fn new(inner: DeviceTensor<'a, T>) -> Self {
         Self { inner }
     }
 
-    pub(crate) fn as_tensor(&self) -> &DeviceTensor<'a, f32> {
+    pub(crate) fn as_tensor(&self) -> &DeviceTensor<'a, T> {
         &self.inner
     }
 
@@ -768,7 +784,7 @@ impl<'a> ValidatedDeviceTensor<'a> {
     }
 }
 
-impl fmt::Debug for ValidatedDeviceTensor<'_> {
+impl<T: DeviceElement> fmt::Debug for ValidatedDeviceTensor<'_, T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_tuple("ValidatedDeviceTensor").field(&self.inner).finish()
     }
@@ -978,15 +994,27 @@ mod tests {
     fn native_output_validation_rejects_non_finite_buffer_before_restoring_proof() {
         let (runtime, resources) = resources();
         let inner = runtime.device_buffer_from_host_data(&[f32::INFINITY]).expect("raw native output");
-        let buffer = DeviceBuffer { inner, runtime, len: 1, native_input_validated: false, _element: PhantomData };
+        let buffer =
+            DeviceBuffer::<f32> { inner, runtime, len: 1, native_input_validated: false, _element: PhantomData };
         let mut matrix =
-            OwnedFloat32Matrix::from_buffer(&resources, buffer, 1, 1, MatrixLayout::RowMajor, "test").expect("matrix");
+            OwnedMatrix::from_buffer(&resources, buffer, 1, 1, MatrixLayout::RowMajor, "test").expect("matrix");
 
         let error = matrix
-            .validate_native_output_finite(&resources, "test")
+            .validate_native_output(&resources, "test")
             .expect_err("non-finite native output must not restore the finite-input proof");
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        assert!(!matrix.is_finite_validated());
+        assert!(!matrix.is_input_validated());
+    }
+
+    #[test]
+    fn float64_native_output_rejects_non_finite_values() {
+        let (runtime, _resources) = resources();
+        let inner = runtime.device_buffer_from_host_data(&[f64::NAN]).expect("raw native output");
+        let mut buffer =
+            DeviceBuffer::<f64> { inner, runtime, len: 1, native_input_validated: false, _element: PhantomData };
+        let error = buffer.validate_native_input("test").expect_err("non-finite Float64 output must be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(!buffer.native_input_validated());
     }
 
     #[test]

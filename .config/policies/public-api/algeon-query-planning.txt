@@ -2555,8 +2555,9 @@ pub query_planning::plan::CuvsOperationDescriptor::relation_roles: &'static [que
 pub query_planning::plan::CuvsOperationDescriptor::sql_function_name: &'static str
 pub query_planning::plan::CuvsOperationDescriptor::summary: &'static str
 pub query_planning::plan::CuvsOperationDescriptor::use_this_when: &'static str
-pub query_planning::plan::CuvsOperationDescriptor::vector_element_support: &'static [query_planning::plan::CuvsVectorElementType]
+pub query_planning::plan::CuvsOperationDescriptor::vector_element_support: &'static [query_planning::plan::CuvsVectorElementSupport]
 impl query_planning::plan::CuvsOperationDescriptor
+pub fn query_planning::plan::CuvsOperationDescriptor::element_support(&self, query_planning::plan::CuvsVectorElementType) -> core::option::Option<&query_planning::plan::CuvsVectorElementSupport>
 pub fn query_planning::plan::CuvsOperationDescriptor::option(&self, &str) -> core::option::Option<&'static query_planning::plan::CuvsOptionDefinition>
 pub fn query_planning::plan::CuvsOperationDescriptor::options_json_schema(&self) -> serde_json::value::Value
 pub struct query_planning::plan::CuvsOptionDefinition
@@ -2575,6 +2576,9 @@ pub query_planning::plan::CuvsOutputFieldDefinition::description: &'static str
 pub query_planning::plan::CuvsOutputFieldDefinition::name: &'static str
 pub query_planning::plan::CuvsOutputFieldDefinition::nullable: bool
 pub query_planning::plan::CuvsOutputFieldDefinition::repeats: core::option::Option<&'static str>
+pub struct query_planning::plan::CuvsVectorElementSupport
+pub query_planning::plan::CuvsVectorElementSupport::element: query_planning::plan::CuvsVectorElementType
+pub query_planning::plan::CuvsVectorElementSupport::metrics: &'static [&'static str]
 pub struct query_planning::plan::EdgeNormalizeNode
 pub query_planning::plan::EdgeNormalizeNode::input: query_planning::plan::NodeId
 pub query_planning::plan::EdgeNormalizeNode::spec: query_planning::plan::EdgeNormalizeSpec
@@ -3156,7 +3160,7 @@ pub fn query_planning::plan::planned_resident_graph_key(&query_planning::plan::G
 pub fn query_planning::plan::stable_graph_result_schema(query_planning::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_kmeans_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_knn_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
-pub fn query_planning::plan::vector_pairwise_distance_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::vector_pairwise_distance_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_pca_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_top_k_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub mod query_planning::source
