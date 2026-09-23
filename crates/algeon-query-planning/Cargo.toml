@@ -16,7 +16,6 @@ categories = ["database"]
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
-features = ["cugraph"]
 
 # The package carries the `algeon-` prefix for crates.io; the library identity
 # stays bare so `use query_planning::…` and the public API snapshots do not move.
@@ -25,10 +24,6 @@ name = "query_planning"
 
 [features]
 default = []
-# cuGraph-owned facts (allocation provenance, resident-cache peaks) are carried
-# as planning-defined types, so this flag gates the contract without linking the
-# component.
-cugraph = []
 test-hooks = []
 
 [lints]

@@ -76,10 +76,7 @@ pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAn
 
 /// Reason reported when the pipeline graph cannot be constructed at all.
 ///
-/// This covers both operator kinds the compiler never implemented (today:
-/// vector algorithms, which the generic executor owns) and structurally
-/// invalid graphs; callers consult the plan shape to tell a coverage gap from
-/// a broken plan.
+/// The error facts preserve the failed construction contract.
 pub(crate) const COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE: &str = "compiled_pipeline_graph_not_constructible";
 
 fn compile_rejection_projection(reason: &'static str, error: &QueryError) -> CapabilityRejectionProjection {
@@ -464,9 +461,12 @@ fn build_tasks(
                 );
             },
             PlanNode::VectorAlgorithm(_) => {
-                return Err(invalid("vector algorithm nodes are not supported by the compiled pipeline")
-                    .with_fact("node_id", node_id)
-                    .with_fact("operator", "vector_algorithm"));
+                let task = single_task(task_ids, *node_id)?;
+                tasks.push(
+                    PipelineTask::for_plan_node(task, PipelineTaskKind::VectorAlgorithm, *node_id)
+                        .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
+                        .with_output_resources(vec![output]),
+                );
             },
             PlanNode::EdgeNormalize(_) => {
                 let task = single_task(task_ids, *node_id)?;

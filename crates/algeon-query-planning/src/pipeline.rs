@@ -13,7 +13,7 @@ mod shadow;
 mod validate;
 
 pub use compile::compile_pipeline;
-pub(crate) use compile::{COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE, PipelineCompilation, compile_pipeline_outcome};
+pub(crate) use compile::{PipelineCompilation, compile_pipeline_outcome};
 pub use model::{
     AcceptedInputForm, AggregateExecutionStage, CompiledPipeline, OrderingScope, PipelineBarrier, PipelineBarrierId,
     PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,

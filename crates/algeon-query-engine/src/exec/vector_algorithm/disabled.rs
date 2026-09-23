@@ -1,12 +1,5 @@
 use crate::exec::*;
 
-pub(in crate::exec) fn execute_vector_algorithm(
-    node_id: NodeId,
-    node: &crate::plan::VectorAlgorithmNode,
-) -> Result<GpuDataFrame> {
-    Err(vector_algorithm_execution_unavailable(node_id, node))
-}
-
 pub(in crate::exec) fn vector_algorithm_execution_unavailable(
     node_id: NodeId,
     node: &crate::plan::VectorAlgorithmNode,
@@ -19,7 +12,7 @@ pub(in crate::exec) fn vector_algorithm_execution_unavailable(
     .with_fact("node_id", node_id)
     .with_fact("operator", "vector_algorithm")
     .with_fact("algorithm", node.spec.algorithm.as_str())
-    .with_fact("reason", "cuvs_feature_disabled")
+    .with_fact("reason", "required_feature_disabled")
     .with_fact("required_feature", "cuvs")
     .with_fact("host_fallback", "disabled")
 }

@@ -375,9 +375,9 @@ fn is_fused_topk_sort(task: &PipelineTask) -> bool {
 /// Whether a task must run inline on the coordinator instead of a lane.
 ///
 /// Join build/probe/materialize own the reusable build artifact and its
-/// finalization across tasks; graph and edge-normalize keep their existing
-/// stream/MR/handle affinity and run as serial tasks coexisting with other
-/// independent lane work until their component owners prove safe overlap.
+/// finalization across tasks; graph, vector, and edge-normalize retain their
+/// runtime stream and memory-resource bindings on the coordinator until their
+/// component owners prove safe overlap.
 /// All other lane-family task kinds are lane-safe: they own only private
 /// inputs, workspace, and outputs.
 fn is_coordinator_only_task_kind(kind: PipelineTaskKind) -> bool {
@@ -387,6 +387,7 @@ fn is_coordinator_only_task_kind(kind: PipelineTaskKind) -> bool {
             | PipelineTaskKind::JoinProbe
             | PipelineTaskKind::JoinMaterialize
             | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::VectorAlgorithm
             | PipelineTaskKind::EdgeNormalize
     )
 }

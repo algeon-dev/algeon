@@ -735,7 +735,6 @@ impl QueryError {
     /// This is an explicit overwrite path owned by the cuGraph boundary: the
     /// mirrored fact always tracks the typed field, so a second call replaces
     /// both together instead of recording a collision.
-    #[cfg(any(feature = "cugraph", feature = "test-hooks", test))]
     #[must_use]
     #[doc(hidden)]
     pub fn with_cugraph_allocation_source(mut self, source: CugraphAllocationSource) -> Self {
@@ -753,7 +752,6 @@ impl QueryError {
     /// Retains an exact high-water mark from a completed resident-graph cache
     /// scope. This is an internal typed sideband, deliberately distinct from
     /// error facts so consumers cannot mistake diagnostic text for a peak.
-    #[cfg(feature = "cugraph")]
     #[must_use]
     #[doc(hidden)]
     pub fn with_graph_cache_scope_peak_bytes(mut self, peak_bytes: u64) -> Self {
@@ -764,7 +762,6 @@ impl QueryError {
     /// Returns the exact resident-cache scope high-water carried from a graph
     /// execution error only after that scope completed its fence and health
     /// proof.
-    #[cfg(feature = "cugraph")]
     #[doc(hidden)]
     pub const fn graph_cache_scope_peak_bytes(&self) -> Option<u64> {
         self.0.graph_cache_scope_peak_bytes
@@ -966,7 +963,6 @@ mod tests {
         assert_eq!(redact_uri_tokens("  spaced   message  "), "spaced message");
     }
 
-    #[cfg(feature = "cugraph")]
     #[test]
     fn graph_cache_scope_peak_is_a_typed_sideband_not_an_error_fact() {
         let error = QueryError::new(

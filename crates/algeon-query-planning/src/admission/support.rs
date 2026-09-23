@@ -157,6 +157,7 @@ pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> b
                     | PipelineTaskKind::Union
                     | PipelineTaskKind::EdgeNormalize
                     | PipelineTaskKind::GraphAlgorithm
+                    | PipelineTaskKind::VectorAlgorithm
                     | PipelineTaskKind::SinkMaterialize
             )
         })
@@ -206,6 +207,7 @@ fn unsupported_shared_resident_producer(pipeline: &CompiledPipeline) -> Option<(
                 | PipelineTaskKind::Limit
                 | PipelineTaskKind::JoinMaterialize
                 | PipelineTaskKind::Union
+                | PipelineTaskKind::VectorAlgorithm
         ))
         .then(|| (task.id(), task.kind()))
     })
@@ -227,6 +229,7 @@ fn computed_shared_resident_producer_tasks(pipeline: &CompiledPipeline) -> Vec<&
                     | PipelineTaskKind::Limit
                     | PipelineTaskKind::JoinMaterialize
                     | PipelineTaskKind::Union
+                    | PipelineTaskKind::VectorAlgorithm
             )
             .then_some(task)
         })
@@ -347,7 +350,7 @@ fn stage_task_outside_sink_path<'a>(
         }
 
         !(sink_path.contains(&task.id())
-            || task_feeds_modeled_join_input_or_shared_branch(pipeline, task.id())
+            || task_feeds_modeled_input_or_shared_branch(pipeline, task.id())
             || (stage_task_kind_can_feed_sink_path_union(task.kind())
                 && task_feeds_sink_path_union(pipeline, task.id(), sink_path)))
     })
@@ -365,7 +368,7 @@ fn stage_task_kind_can_feed_sink_path_union(kind: PipelineTaskKind) -> bool {
     )
 }
 
-fn task_feeds_modeled_join_input_or_shared_branch(pipeline: &CompiledPipeline, task: PipelineTaskId) -> bool {
+fn task_feeds_modeled_input_or_shared_branch(pipeline: &CompiledPipeline, task: PipelineTaskId) -> bool {
     let mut pending = vec![task];
     let mut visited = BTreeSet::new();
 
@@ -378,7 +381,14 @@ fn task_feeds_modeled_join_input_or_shared_branch(pipeline: &CompiledPipeline, t
             match edge.kind() {
                 PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => return true,
                 PipelineEdgeKind::SharedResidentProducer => return true,
-                PipelineEdgeKind::ResidentFrame => pending.push(edge.to()),
+                PipelineEdgeKind::ResidentFrame => {
+                    if pipeline.tasks().iter().any(|consumer| {
+                        consumer.id() == edge.to() && consumer.kind() == PipelineTaskKind::VectorAlgorithm
+                    }) {
+                        return true;
+                    }
+                    pending.push(edge.to());
+                },
                 PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => {},
             }
         }

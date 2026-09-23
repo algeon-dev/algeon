@@ -350,7 +350,6 @@ def assert_manifest_contract() -> None:
     assert engine["features"]["cugraph"] == [
         "dep:cugraph",
         "dep:cugraph-sys",
-        "query-planning/cugraph",
         "query-runtime/cugraph",
     ]
     # cuVS is used by the engine alone. Neither planning nor runtime has a
@@ -360,8 +359,10 @@ def assert_manifest_contract() -> None:
     assert engine["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys"]
     planning = load_manifest("crates/algeon-query-planning/Cargo.toml")
     assert "cuvs" not in planning["features"]
+    assert "cugraph" not in planning["features"]
     assert "cuvs" not in planning.get("dependencies", {})
     runtime = load_manifest("crates/algeon-query-runtime/Cargo.toml")
+    assert runtime["features"]["cugraph"] == ["dep:cugraph"]
     assert "cuvs" not in runtime["features"]
     assert engine["dependencies"]["cuvs"]["optional"] is True
     assert engine["dependencies"]["cuvs-sys"]["optional"] is True
