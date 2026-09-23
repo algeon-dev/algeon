@@ -12,6 +12,10 @@ typedef struct cudf_reservation_handle_state* cudf_reservation_handle;
 /// Opaque handle to one query-scoped reservation arena.
 typedef struct cudf_reservation_arena_handle_state* cudf_reservation_arena_handle;
 
+cudf_status_t cudf_memory_manager_route_current_resource_raw(cudf_memory_manager_handle manager,
+                                                              void* raw_stream,
+                                                              cudf_memory_resource_handle resource,
+                                                              cudf_current_resource_route_handle* out);
 cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle manager,
                                                      cudf_stream_handle stream,
                                                      uint64_t reservation_id,
@@ -27,6 +31,12 @@ cudf_status_t cudf_memory_manager_attach_reservation_to_arena(cudf_memory_manage
                                                               uint64_t reservation_id,
                                                               size_t limit_bytes,
                                                               cudf_reservation_handle* out);
+cudf_status_t cudf_memory_manager_attach_reservation_to_arena_raw(cudf_memory_manager_handle manager,
+                                                                  void* raw_stream,
+                                                                  cudf_reservation_arena_handle arena,
+                                                                  uint64_t reservation_id,
+                                                                  size_t limit_bytes,
+                                                                  cudf_reservation_handle* out);
 cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
                                      cudf_memory_resource_usage_t* out);
 cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation, size_t limit_bytes);

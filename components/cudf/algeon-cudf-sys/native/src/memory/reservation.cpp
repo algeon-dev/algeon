@@ -633,6 +633,85 @@ cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_han
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_memory_manager_route_current_resource_raw(
+  cudf_memory_manager_handle manager,
+  void* raw_stream,
+  cudf_memory_resource_handle resource,
+  cudf_current_resource_route_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_NULL_CHECK(raw_stream, "raw stream is null");
+  CUDF_RUST_NULL_CHECK(resource, "memory resource is null");
+  if (reinterpret_cast<uintptr_t>(raw_stream) <= 2) {
+    set_error("raw stream must not be a CUDA default stream");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    int stream_device = -1;
+    auto const cuda_status = cudaStreamGetDevice(reinterpret_cast<cudaStream_t>(raw_stream), &stream_device);
+    if (cuda_status != cudaSuccess) {
+      set_error(cudaGetErrorString(cuda_status));
+      return CUDF_ERROR_CUDA;
+    }
+    if (stream_device != manager_state->device) {
+      set_error("raw current-resource route requires stream and memory manager to be on the same CUDA device");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto& resource_state = memory_resource_state_from_handle(resource);
+    if (resource_state.owner == nullptr || resource_state.owner->mr == nullptr) {
+      set_error("current-resource route target memory resource is not live");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (resource_state.owner->device != manager_state->device) {
+      set_error("current-resource route requires target resource and memory manager to be on the same CUDA device");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    cudf_device_guard guard;
+    cudf_status_t const guard_status = guard.activate(manager_state->device);
+    if (guard_status != CUDF_SUCCESS) { return guard_status; }
+    if (!manager_state->current_resource_installed ||
+        cudf_rust_rmm_current_device_resource_is(manager_state->owner->mr.get()) == 0) {
+      manager_state->current_resource_integrity_lost = true;
+      set_error("memory manager's permanent current resource is no longer installed");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    std::string attach_error;
+    bool const routes_to_manager_upstream = resource_state.current_resource_route_uses_manager_upstream;
+    if (routes_to_manager_upstream && resource_state.owner.get() != manager_state->owner.get()) {
+      set_error("current-resource route declares manager-upstream ownership for a different resource owner");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto route = adaptor->attach_current_resource_route(
+      rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)},
+      resource_state.owner,
+      routes_to_manager_upstream,
+      attach_error);
+    if (route == nullptr) {
+      set_error(attach_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto state     = std::make_unique<current_resource_route_handle_state>();
+    state->manager = std::move(manager_state);
+    state->route   = std::move(route);
+    *out           = reinterpret_cast<cudf_current_resource_route_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_current_resource_route_destroy(cudf_current_resource_route_handle route)
 {
   CUDF_RUST_NULL_CHECK(route, "current-resource route is null");
@@ -756,6 +835,64 @@ cudf_status_t cudf_memory_manager_attach_reservation_to_arena(cudf_memory_manage
     state->manager     = std::move(manager_state);
     state->reservation = std::move(reservation);
     *out               = reinterpret_cast<cudf_reservation_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_attach_reservation_to_arena_raw(cudf_memory_manager_handle manager,
+                                                                  void* raw_stream,
+                                                                  cudf_reservation_arena_handle arena,
+                                                                  uint64_t reservation_id,
+                                                                  size_t limit_bytes,
+                                                                  cudf_reservation_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_NULL_CHECK(raw_stream, "raw stream is null");
+  CUDF_RUST_NULL_CHECK(arena, "arena is null");
+  if (reinterpret_cast<uintptr_t>(raw_stream) <= 2) {
+    set_error("raw stream must not be a CUDA default stream");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto& arena_state = *reinterpret_cast<reservation_arena_handle_state*>(arena);
+    if (arena_state.manager.get() != manager_state.get()) {
+      set_error("reservation arena belongs to a different memory manager");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    int stream_device = -1;
+    auto const cuda_status = cudaStreamGetDevice(reinterpret_cast<cudaStream_t>(raw_stream), &stream_device);
+    if (cuda_status != cudaSuccess) {
+      set_error(cudaGetErrorString(cuda_status));
+      return CUDF_ERROR_CUDA;
+    }
+    if (stream_device != manager_state->device) {
+      set_error("raw stream reservation requires stream and memory manager to be on the same CUDA device");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    std::string attach_error;
+    auto reservation = adaptor->attach(rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)},
+                                       reservation_id,
+                                       limit_bytes,
+                                       arena_state.arena,
+                                       attach_error);
+    if (reservation == nullptr) {
+      set_error(attach_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto state = std::make_unique<reservation_handle_state>();
+    state->manager = std::move(manager_state);
+    state->reservation = std::move(reservation);
+    *out = reinterpret_cast<cudf_reservation_handle>(state.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

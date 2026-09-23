@@ -44,6 +44,20 @@ pub struct StreamReservationLease {
     pub(super) manager: DeviceMemoryManager,
 }
 
+/// Reservation attachment to a caller-owned raw CUDA stream.
+///
+/// Drop this lease before destroying the stream. The raw stream is borrowed and
+/// is never synchronized or destroyed by this value.
+#[derive(Debug)]
+pub struct RawStreamReservationLease {
+    pub(super) reservation: Arc<ReservationHandle>,
+    pub(super) resource: Option<DeviceMemoryResource>,
+    pub(super) _query_domain: Option<QueryMemoryDomain>,
+    pub(super) _arena: Option<ReservationArena>,
+    pub(super) raw_stream: *mut std::ffi::c_void,
+    pub(super) manager: DeviceMemoryManager,
+}
+
 /// Query-scoped parent reservation shared by stream-bound member leases.
 ///
 /// Dropping the final handle prevents new members from attaching. Existing
@@ -376,6 +390,39 @@ impl QueryMemoryDomain {
     }
 }
 
+impl RawStreamReservationLease {
+    /// Raw CUDA stream borrowed by this attachment.
+    pub fn raw_stream(&self) -> *mut std::ffi::c_void {
+        self.raw_stream
+    }
+
+    /// Snapshot usage counters for this reservation.
+    pub fn usage(&self) -> Result<ReservationUsage> {
+        let _guard = DeviceGuard::new(self.manager.device())?;
+        let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_reservation_usage(self.reservation.raw(), &mut usage) },
+            "memory::raw_stream_reservation_lease::usage",
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Resize this reservation's hard live-byte limit.
+    pub fn resize(&self, limit_bytes: usize) -> Result<()> {
+        let _guard = DeviceGuard::new(self.manager.device())?;
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw(), limit_bytes) },
+            "memory::raw_stream_reservation_lease::resize",
+            [("device", self.manager.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
+        )
+    }
+
+    /// Device-level memory resource to use for explicit execution options.
+    pub fn memory_resource(&self) -> &DeviceMemoryResource {
+        self.resource.as_ref().unwrap_or_else(|| self.manager.resource())
+    }
+}
+
 impl StreamReservationLease {
     /// Manager that owns the reservation-aware device resource.
     pub fn manager(&self) -> &DeviceMemoryManager {
@@ -421,6 +468,97 @@ impl StreamReservationLease {
             "memory::stream_reservation_lease::resize",
             [("device", self.manager.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
         )
+    }
+
+    /// Attach a sibling raw CUDA stream to the same query domain or reservation arena.
+    ///
+    /// `raw_stream` must be a live non-default CUDA stream on the manager device.
+    /// Drop the returned lease before destroying that stream.
+    ///
+    /// # Safety
+    /// `raw_stream` must refer to a live, non-default CUDA stream on the manager's device.
+    /// Keep it alive until the returned lease has been dropped.
+    pub unsafe fn attach_sibling_raw_stream(
+        &self,
+        raw_stream: *mut std::ffi::c_void,
+        reservation_id: u64,
+        limit_bytes: usize,
+    ) -> Result<RawStreamReservationLease> {
+        let _guard = DeviceGuard::new(self.manager.device())?;
+        if self._query_domain.is_none() && self.arena.is_none() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::UnsupportedOperation,
+                "memory::stream_reservation_lease::attach_sibling_raw_stream",
+                "a standalone stream reservation has no shared query domain or arena",
+            ));
+        }
+        if raw_stream.is_null() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvalidArgument,
+                "memory::stream_reservation_lease::attach_sibling_raw_stream",
+                "raw CUDA stream is null",
+            ));
+        }
+        let mut raw_reservation = ptr::null_mut();
+        let mut raw_resource = ptr::null_mut();
+        let status = if let Some(domain) = &self._query_domain {
+            unsafe {
+                cudf_sys::cudf_query_memory_domain_attach_raw_stream(
+                    domain.handle.raw(),
+                    raw_stream,
+                    reservation_id,
+                    limit_bytes,
+                    &mut raw_reservation,
+                    &mut raw_resource,
+                )
+            }
+        } else {
+            unsafe {
+                cudf_sys::cudf_memory_manager_attach_reservation_to_arena_raw(
+                    self.manager.raw_handle(),
+                    raw_stream,
+                    self.arena.as_ref().unwrap().handle.raw(),
+                    reservation_id,
+                    limit_bytes,
+                    &mut raw_reservation,
+                )
+            }
+        };
+        let reservation = NonNull::new(raw_reservation)
+            .map(|raw| ReservationHandle { raw: Some(raw), device: self.manager.device() });
+        let resource = NonNull::new(raw_resource).map(|raw| DeviceMemoryResource {
+            handle: Arc::new(DeviceMemoryResourceHandle {
+                raw: Some(raw),
+                device: self.manager.device(),
+                retirement_streams: None,
+                _failure_callbacks: Vec::new(),
+            }),
+        });
+        error::check_status_in_with_details(
+            status,
+            "memory::stream_reservation_lease::attach_sibling_raw_stream",
+            [
+                ("device", self.manager.device().ordinal().to_string()),
+                ("reservation_id", reservation_id.to_string()),
+                ("limit_bytes", limit_bytes.to_string()),
+            ],
+        )?;
+        let reservation = reservation.ok_or_else(|| {
+            error::require_non_null(
+                raw_reservation,
+                "memory::stream_reservation_lease::attach_sibling_raw_stream",
+                "stream reservation",
+            )
+            .unwrap_err()
+        })?;
+        Ok(RawStreamReservationLease {
+            manager: self.manager.clone(),
+            raw_stream,
+            reservation: Arc::new(reservation),
+            resource,
+            _query_domain: self._query_domain.clone(),
+            _arena: self.arena.clone(),
+        })
     }
 
     /// Borrow this lease as per-operation execution overrides.

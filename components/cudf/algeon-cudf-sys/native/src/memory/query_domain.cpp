@@ -1024,6 +1024,63 @@ cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_ha
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_query_memory_domain_attach_raw_stream(cudf_query_memory_domain_handle domain,
+                                                         void* raw_stream,
+                                                         uint64_t reservation_id,
+                                                         size_t limit_bytes,
+                                                         cudf_reservation_handle* out,
+                                                         cudf_memory_resource_handle* out_resource)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  CUDF_RUST_NULL_CHECK(out_resource, "out_resource is null");
+  *out = nullptr;
+  *out_resource = nullptr;
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_NULL_CHECK(raw_stream, "raw stream is null");
+  if (reinterpret_cast<uintptr_t>(raw_stream) <= 2) {
+    set_error("raw stream must not be a CUDA default stream");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+  CUDF_RUST_TRY
+  {
+    auto& domain_state = *reinterpret_cast<query_domain_handle_state*>(domain);
+    int stream_device = -1;
+    auto const cuda_status = cudaStreamGetDevice(reinterpret_cast<cudaStream_t>(raw_stream), &stream_device);
+    if (cuda_status != cudaSuccess) {
+      set_error(cudaGetErrorString(cuda_status));
+      return CUDF_ERROR_CUDA;
+    }
+    if (stream_device != domain_state.manager->device) {
+      set_error("query memory domain requires raw stream and domain manager to be on the same CUDA device");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = domain_state.manager->owner->reservation_adaptor;
+    std::string attach_error;
+    auto member = adaptor->attach_query_domain(domain_state.domain,
+                                               rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(raw_stream)},
+                                               reservation_id,
+                                               limit_bytes,
+                                               attach_error);
+    if (member == nullptr) {
+      set_error(attach_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    try {
+      auto resource_state = make_query_domain_member_resource_handle(domain_state.manager, member);
+      auto state = std::make_unique<reservation_handle_state>();
+      state->manager = domain_state.manager;
+      state->query_domain_member = member;
+      *out_resource = reinterpret_cast<cudf_memory_resource_handle>(resource_state.release());
+      *out = reinterpret_cast<cudf_reservation_handle>(state.release());
+    } catch (...) {
+      adaptor->detach_query_domain_member(member);
+      throw;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle domain,
                                              cudf_memory_resource_usage_t* out)
 {

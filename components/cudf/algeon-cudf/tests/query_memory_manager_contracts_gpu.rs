@@ -446,6 +446,81 @@ fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_rese
 }
 
 #[test]
+fn raw_stream_sibling_reservation_accounts_and_detaches_before_stream_destruction() {
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let arena = manager.reservation_arena(30_901, 4 * 1024 * 1024).unwrap();
+    let sibling = arena.reserve_stream(runtime.stream(), 30_902, 4 * 1024 * 1024).unwrap();
+    let mut stream_handle = std::ptr::null_mut();
+    assert_eq!(unsafe { cudf_sys::cudf_stream_create(&mut stream_handle) }, cudf_sys::CUDF_SUCCESS);
+    let mut raw_stream = std::ptr::null_mut();
+    assert_eq!(unsafe { cudf_sys::cudf_stream_raw(stream_handle, &mut raw_stream) }, cudf_sys::CUDF_SUCCESS);
+
+    // SAFETY: the borrowed stream remains live until both attachments are dropped.
+    let lease = unsafe { sibling.attach_sibling_raw_stream(raw_stream, 30_903, 4 * 1024 * 1024) }.unwrap();
+    assert!(lease.usage().unwrap().attached);
+    assert_eq!(lease.usage().unwrap().reservation_id, 30_903);
+    drop(lease);
+    // SAFETY: the borrowed stream is still live and is dropped after this attachment.
+    let reattached = unsafe { sibling.attach_sibling_raw_stream(raw_stream, 30_904, 4 * 1024 * 1024) }.unwrap();
+    assert_eq!(reattached.usage().unwrap().reservation_id, 30_904);
+    drop(reattached);
+    assert_eq!(unsafe { cudf_sys::cudf_stream_destroy(stream_handle) }, cudf_sys::CUDF_SUCCESS);
+}
+
+#[test]
+fn raw_current_resource_route_accounts_and_detaches_before_stream_reuse() {
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let target = manager.resource().as_borrowed_sys();
+    let mut stream_handle = std::ptr::null_mut();
+    assert_eq!(unsafe { cudf_sys::cudf_stream_create(&mut stream_handle) }, cudf_sys::CUDF_SUCCESS);
+    let mut raw_stream = std::ptr::null_mut();
+    assert_eq!(unsafe { cudf_sys::cudf_stream_raw(stream_handle, &mut raw_stream) }, cudf_sys::CUDF_SUCCESS);
+
+    // SAFETY: raw_stream remains live until every route using it is dropped.
+    let route = unsafe { manager.route_current_resource_raw(raw_stream, manager.resource()) }.unwrap();
+    let other_resource = DeviceMemoryResource::cuda_async_on(runtime.device(), None, None).unwrap();
+    // SAFETY: raw_stream remains live, while the first route remains attached.
+    assert!(unsafe { manager.route_current_resource_raw(raw_stream, &other_resource) }.is_err());
+    let mut ptr = std::ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            test_support::cudf_test_memory_resource_allocate(target.as_raw(), stream_handle, 4096, 256, &mut ptr)
+        },
+        cudf_sys::CUDF_SUCCESS
+    );
+    assert!(!ptr.is_null());
+    drop(route);
+
+    let mut rejected_ptr = std::ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            test_support::cudf_test_memory_resource_allocate(
+                target.as_raw(),
+                stream_handle,
+                4096,
+                256,
+                &mut rejected_ptr,
+            )
+        },
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION
+    );
+    assert!(rejected_ptr.is_null());
+    assert_eq!(
+        unsafe { test_support::cudf_test_memory_resource_deallocate(target.as_raw(), stream_handle, ptr, 4096, 256) },
+        cudf_sys::CUDF_SUCCESS
+    );
+
+    // SAFETY: the stream remains live and the preceding route has detached.
+    let reused = unsafe { manager.route_current_resource_raw(raw_stream, manager.resource()) }.unwrap();
+    drop(reused);
+    assert_eq!(unsafe { cudf_sys::cudf_stream_destroy(stream_handle) }, cudf_sys::CUDF_SUCCESS);
+}
+
+#[test]
 fn reservation_arena_enforces_query_cap_across_streams() {
     let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();

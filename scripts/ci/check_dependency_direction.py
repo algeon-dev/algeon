@@ -22,6 +22,8 @@ COMPONENT_PACKAGES = (
     "algeon-cugraph-sys",
     "algeon-cuvs",
     "algeon-cuvs-sys",
+    "algeon-cuml",
+    "algeon-cuml-sys",
 )
 DATAFUSION_PACKAGE_PREFIX = "datafusion"
 
@@ -33,7 +35,7 @@ DATAFUSION_PACKAGE_PREFIX = "datafusion"
 # subject, so an optional dependency cannot hide behind a feature flag either.
 PLANNING_FORBIDDEN_PACKAGES = frozenset(COMPONENT_PACKAGES) | {RUNTIME_PACKAGE, EXECUTION_PACKAGE}
 NATIVE_SYS_SUFFIX = "-sys"
-NATIVE_PACKAGE_MARKERS = ("cudf", "cugraph", "cuvs", "cuda", "rmm", "nvml", "rapids")
+NATIVE_PACKAGE_MARKERS = ("cudf", "cugraph", "cuvs", "cuml", "cuda", "rmm", "nvml", "rapids")
 
 class ContractError(ValueError):
     pass

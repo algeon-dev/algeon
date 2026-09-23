@@ -10,7 +10,7 @@ git_configure() {
   git -C "$1" config user.name 'Native Source Policy Test'
 }
 
-for component in cudf cugraph cuvs; do
+for component in cudf cugraph cuml cuvs; do
   origin="${test_root}/${component}-origin"
   git init -q "${origin}"
   git_configure "${origin}"
@@ -26,7 +26,7 @@ mkdir -p "${repo}/scripts/ci"
 cp "${source_script}" "${repo}/scripts/ci/check_native_sources.sh"
 git -C "${repo}" add scripts/ci/check_native_sources.sh
 git -C "${repo}" commit -qm policy
-for component in cudf cugraph cuvs; do
+for component in cudf cugraph cuml cuvs; do
   git -C "${repo}" -c protocol.file.allow=always submodule add -q \
     "${test_root}/${component}-origin" "components/${component}/${component}"
 done

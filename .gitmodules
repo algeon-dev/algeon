@@ -7,3 +7,6 @@
 [submodule "components/cuvs/cuvs"]
 	path = components/cuvs/cuvs
 	url = https://github.com/rapidsai/cuvs.git
+[submodule "components/cuml/cuml"]
+	path = components/cuml/cuml
+	url = https://github.com/rapidsai/cuml.git

@@ -63,6 +63,8 @@ packages.extend([
     ("algeon-cugraph-sys", case_root / "components/cugraph/algeon-cugraph-sys"),
     ("algeon-cuvs", case_root / "components/cuvs/algeon-cuvs"),
     ("algeon-cuvs-sys", case_root / "components/cuvs/algeon-cuvs-sys"),
+    ("algeon-cuml", case_root / "components/cuml/algeon-cuml"),
+    ("algeon-cuml-sys", case_root / "components/cuml/algeon-cuml-sys"),
     ("helper-crate", case_root / "helpers/helper-crate"),
 ])
 ids = {name: f"path+file:///{name}#0.1.0" for name, _ in packages}
@@ -250,7 +252,7 @@ run_case missing-layers 1 "required workspace packages are missing" clean "" "" 
 run_case graph-planning-runtime 1 "planning -> runtime" clean algeon-query-planning algeon-query-runtime
 run_case graph-planning-engine 1 "planning -> engine-exec" clean algeon-query-planning algeon-query-engine
 run_case graph-runtime-engine 1 "runtime -> engine-exec" clean algeon-query-runtime algeon-query-engine
-for component in algeon-cudf algeon-cudf-sys algeon-cugraph algeon-cugraph-sys algeon-cuvs algeon-cuvs-sys; do
+for component in algeon-cudf algeon-cudf-sys algeon-cugraph algeon-cugraph-sys algeon-cuvs algeon-cuvs-sys algeon-cuml algeon-cuml-sys; do
   run_case "graph-${component}-engine" 1 "component -> engine" clean "${component}" algeon-query-engine
 done
 

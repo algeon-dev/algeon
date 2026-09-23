@@ -109,7 +109,7 @@ policy_scripts() {
 
 checked_bindings() {
   local component status=0
-  for component in cudf cugraph cuvs; do
+  for component in cudf cugraph cuvs cuml; do
     bash scripts/dev/bindings.sh "${component}" --check || status=1
   done
   return "${status}"
@@ -121,7 +121,7 @@ doctests() {
   # absolute native library directories.
   local native="${ROOT}/target/native"
   NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh "${GPU_LOCK}" \
-    env "LD_LIBRARY_PATH=${native}/cudf-install/lib:${native}/cuvs-install/lib:${native}/cugraph-install/lib:${native}/cugraph-build${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    env "LD_LIBRARY_PATH=${native}/cudf-install/lib:${native}/cuvs-install/lib:${native}/cugraph-install/lib:${native}/cuml-install/lib:${native}/cugraph-build${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
     cargo test --workspace --all-features --doc --no-fail-fast
 }
 
@@ -135,6 +135,7 @@ FEATURE_ISOLATION_SHARDS=(
   "algeon-datafusion workloads datafusion-facade-consumer algeon-interop"
   "algeon-query-runtime algeon-query-planning"
   "algeon-query-engine algeon-cudf algeon-cudf-sys algeon-build-support"
+  "algeon-cuml algeon-cuml-sys"
   "iceberg-catalog algeon-server algeon-cugraph-sys"
   "examples bench algeon-cugraph algeon-cuvs algeon-cuvs-sys"
 )

@@ -68,12 +68,13 @@ immutable grants, cache, observation, and metrics belong in
 `crates/algeon-query-runtime`; native execution composition and facade
 compatibility belong in `crates/algeon-query-engine`.
 
-- `cudf`, `cugraph`, and `cuvs` are members of the root workspace. Every
+- `cudf`, `cugraph`, `cuvs`, and `cuml` are members of the root workspace. Every
   published package carries an `algeon-` prefix, because the bare RAPIDS names
   are taken on crates.io (`cudf`/`cudf-sys` by a third party, `cuvs`/`cuvs-sys`
   by NVIDIA's rapidsai/cuvs). `[workspace.dependencies]` maps each one through
   a `package = "algeon-…"` alias under its bare key, so Rust imports stay
-  `cudf`, `cugraph`, and `cuvs`, and `dep:` feature strings keep resolving.
+  `cudf`, `cugraph`, `cuvs`, and `cuml`, and `dep:` feature strings keep
+  resolving.
   Directory names match package names; refer to layers by their bare alias.
   Every renamed crate pins `[lib] name` explicitly: without it Cargo derives the
   library name from the package name, so a rename silently moves `use
@@ -85,7 +86,8 @@ compatibility belong in `crates/algeon-query-engine`.
   holds the allowlist and fails closed.
 - Native sources are the root-registered submodules at
   `components/cudf/cudf`, `components/cugraph/cugraph`, and
-  `components/cuvs/cuvs`; native defaults live under `target/native/`.
+  `components/cuvs/cuvs`, and `components/cuml/cuml`; native defaults live
+  under `target/native/`.
 - The root `.gitmodules`, `Cargo.lock`, workspace, and `scripts/check_all.sh`
   are the only source registry, lockfile, workspace, and full validation gate.
 - Default members are the adapter, `workloads`, and `query-engine`.

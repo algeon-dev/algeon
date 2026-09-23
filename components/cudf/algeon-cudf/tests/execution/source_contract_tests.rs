@@ -75,6 +75,8 @@ const SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX: &[(&str, &str)] = &[
 ];
 
 const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
+    ("cudf_memory_manager_attach_reservation_to_arena_raw", "reservation attachment lifecycle and accounting"),
+    ("cudf_query_memory_domain_attach_raw_stream", "reservation attachment lifecycle and accounting"),
     ("cudf_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_aggregation_create_count", "descriptor-only aggregation factory"),
     ("cudf_aggregation_create_std", "descriptor-only aggregation factory"),
@@ -196,6 +198,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_memory_manager_pool_usage", "metadata-only device memory-manager async-pool accounting"),
     ("cudf_memory_manager_resource", "runtime device memory-manager lifecycle"),
     ("cudf_memory_manager_route_current_resource", "runtime current-resource routing lifecycle"),
+    ("cudf_memory_manager_route_current_resource_raw", "runtime current-resource routing lifecycle"),
     ("cudf_memory_manager_trim_to", "runtime device memory-manager async-pool trim hook"),
     ("cudf_query_memory_domain_attach_stream", "runtime query-memory-domain member lifecycle"),
     ("cudf_query_memory_domain_destroy", "runtime query-memory-domain lifecycle"),

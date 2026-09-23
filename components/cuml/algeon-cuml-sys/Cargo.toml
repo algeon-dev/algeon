@@ -1,0 +1,50 @@
+[package]
+name = "algeon-cuml-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = ["crates-io"]
+links = "cuml_rust"
+description = "Low-level FFI bindings to NVIDIA cuML"
+license-file = "../../../LICENSE"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/algeon-cuml-sys"
+readme = "../README.md"
+categories = ["api-bindings", "external-ffi-bindings"]
+keywords = ["cuml", "cuda", "ffi", "gpu", "rapids"]
+build = "build.rs"
+autotests = false
+
+[package.metadata.bindgen-cli]
+version = "0.73.2"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[lints]
+workspace = true
+
+[lib]
+name = "cuml_sys"
+
+[features]
+default = []
+test-hooks = []
+
+[build-dependencies]
+cmake.workspace = true
+rapids-build-support.workspace = true
+
+[[test]]
+name = "abi_contract_cpu"
+path = "tests/abi_contract_cpu.rs"
+
+[[test]]
+name = "build_script_contract_cpu"
+path = "tests/build_script_contract_cpu.rs"
+
+[[test]]
+name = "native_abi_contract_gpu"
+path = "tests/native_abi_contract_gpu.rs"

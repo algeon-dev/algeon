@@ -19,6 +19,8 @@ members = [
   "components/cugraph/algeon-cugraph-sys",
   "components/cuvs/algeon-cuvs",
   "components/cuvs/algeon-cuvs-sys",
+  "components/cuml/algeon-cuml",
+  "components/cuml/algeon-cuml-sys",
 ]
 default-members = [
   "crates/algeon-datafusion",
@@ -95,6 +97,8 @@ cugraph = { package = "algeon-cugraph", path = "components/cugraph/algeon-cugrap
 cugraph-sys = { package = "algeon-cugraph-sys", path = "components/cugraph/algeon-cugraph-sys", version = "=0.1.0" }
 cuvs = { package = "algeon-cuvs", path = "components/cuvs/algeon-cuvs", version = "=0.1.0" }
 cuvs-sys = { package = "algeon-cuvs-sys", path = "components/cuvs/algeon-cuvs-sys", version = "=0.1.0" }
+cuml = { package = "algeon-cuml", path = "components/cuml/algeon-cuml", version = "=0.1.0" }
+cuml-sys = { package = "algeon-cuml-sys", path = "components/cuml/algeon-cuml-sys", version = "=0.1.0" }
 rapids-build-support = { package = "algeon-build-support", path = "components/algeon-build-support", version = "=0.1.0" }
 rapids-interop = { package = "algeon-interop", path = "components/algeon-interop", version = "=0.1.0" }
 ahash = "0.8"
