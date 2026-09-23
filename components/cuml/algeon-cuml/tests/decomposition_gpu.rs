@@ -56,7 +56,7 @@ fn output_column(runtime: &Runtime, buffer: &DeviceBuffer<f32>) -> Column {
     }
 }
 
-fn copy_packed_input(resources: &CumlResources, packed: &cudf::ValidatedPackedFloat32Matrix<'_>) -> OwnedFloat32Matrix {
+fn copy_packed_input(resources: &CumlResources, packed: &cudf::ValidatedPackedMatrix<'_>) -> OwnedFloat32Matrix {
     let mut input =
         OwnedFloat32Matrix::new(resources, packed.rows(), packed.columns(), cuml::MatrixLayout::ColumnMajor)
             .expect("owned input allocation");
@@ -74,8 +74,7 @@ fn pca_transform_preserves_borrowed_matrix_bits() {
     let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
     let first = runtime.column_from_slice(&[0.1_f32, 0.3, 0.7, 1.1, 1.7, 2.3, 2.9, 3.1]).expect("first feature");
     let second = runtime.column_from_slice(&[0.2_f32, 0.4, 0.8, 1.2, 1.8, 2.4, 2.8, 3.2]).expect("second feature");
-    let packed =
-        runtime.pack_float32_columns(&[&first, &second], DenseMatrixLayout::ColumnMajor).expect("column-major input");
+    let packed = runtime.pack_columns(&[&first, &second], DenseMatrixLayout::ColumnMajor).expect("column-major input");
     let validated = packed.validate_finite().expect("finite input");
     let matrix = DeviceMatrix::from_validated(&validated).expect("borrowed matrix");
     let mut owned = copy_packed_input(&resources, &validated);
@@ -98,8 +97,7 @@ fn pca_and_truncated_svd_fit_transform_and_transform_rank_one_data() {
     let a = runtime.column_from_slice(&x).expect("column a");
     let b = runtime.column_from_slice(&x.map(|v| v * 2.0)).expect("column b");
     let c = runtime.column_from_slice(&x.map(|v| -v)).expect("column c");
-    let packed =
-        runtime.pack_float32_columns(&[&a, &b, &c], DenseMatrixLayout::ColumnMajor).expect("column-major matrix");
+    let packed = runtime.pack_columns(&[&a, &b, &c], DenseMatrixLayout::ColumnMajor).expect("column-major matrix");
     let packed = packed.validate_finite().expect("finite matrix");
     let matrix = DeviceMatrix::from_validated(&packed).expect("matrix view");
 
@@ -140,9 +138,8 @@ fn pca_and_truncated_svd_fit_transform_and_transform_rank_one_data() {
     let pca_transformed = pca.transform(&resources, &matrix).expect("PCA transform for inverse");
     let pca_latent_column = output_column(&runtime, &pca_transformed);
     let pca_latent_columns = [&pca_latent_column];
-    let pca_latent_packed = runtime
-        .pack_float32_columns(&pca_latent_columns, DenseMatrixLayout::ColumnMajor)
-        .expect("pack PCA latent output");
+    let pca_latent_packed =
+        runtime.pack_columns(&pca_latent_columns, DenseMatrixLayout::ColumnMajor).expect("pack PCA latent output");
     let pca_latent = pca_latent_packed.validate_finite().expect("finite PCA latent matrix");
     let pca_latent_matrix = DeviceMatrix::from_validated(&pca_latent).expect("PCA latent matrix");
     let pca_reconstructed = pca.inverse_transform(&resources, &pca_latent_matrix).expect("PCA inverse_transform");
@@ -158,9 +155,8 @@ fn pca_and_truncated_svd_fit_transform_and_transform_rank_one_data() {
     let tsvd_transformed = tsvd.transform(&resources, &matrix).expect("TSVD transform for inverse");
     let tsvd_latent_column = output_column(&runtime, &tsvd_transformed);
     let tsvd_latent_columns = [&tsvd_latent_column];
-    let tsvd_latent_packed = runtime
-        .pack_float32_columns(&tsvd_latent_columns, DenseMatrixLayout::ColumnMajor)
-        .expect("pack TSVD latent output");
+    let tsvd_latent_packed =
+        runtime.pack_columns(&tsvd_latent_columns, DenseMatrixLayout::ColumnMajor).expect("pack TSVD latent output");
     let tsvd_latent = tsvd_latent_packed.validate_finite().expect("finite TSVD latent matrix");
     let tsvd_latent_matrix = DeviceMatrix::from_validated(&tsvd_latent).expect("TSVD latent matrix");
     let tsvd_reconstructed = tsvd.inverse_transform(&resources, &tsvd_latent_matrix).expect("TSVD inverse_transform");

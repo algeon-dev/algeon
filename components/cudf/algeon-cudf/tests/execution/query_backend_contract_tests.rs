@@ -1550,14 +1550,14 @@ fn fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices() {
     assert!(testing::boundary::last_boundary_observation_for_test().is_none());
 }
 
-fn fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root() {
+fn fixed_size_list_export_retains_proof_binding_range_and_lease_root() {
     let runtime = sample_runtime();
     let gpu = fixed_size_list_float32_gpu_batch(
         &runtime,
         vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
     );
 
-    let validated = gpu.try_prepare_fixed_size_list_float32_export(0).unwrap();
+    let validated = gpu.try_prepare_fixed_size_list_export(0).unwrap();
 
     assert_eq!(validated.field_index(), 0);
     assert_eq!(validated.dimension(), 2);
@@ -1569,7 +1569,7 @@ fn fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root() {
     let observation = validated.structural_observation().unwrap();
     assert_eq!(observation.kind, BoundaryKind::BoundedControlScalar);
     assert_eq!(observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
-    let finite_observation = validated.finite_observation();
+    let finite_observation = validated.finite_observation().unwrap();
     assert_eq!(finite_observation.kind, BoundaryKind::BoundedControlScalar);
     assert_eq!(finite_observation.rows, validated.child_len());
     assert_eq!(finite_observation.columns, 1);
@@ -1598,7 +1598,7 @@ fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime()
     );
     let sliced_frame = full.frame().slice(1, 2).unwrap();
     let sliced = GpuRecordBatch::new(sliced_frame, Arc::clone(full.schema())).unwrap();
-    let validated = sliced.try_prepare_fixed_size_list_float32_export(0).unwrap();
+    let validated = sliced.try_prepare_fixed_size_list_export(0).unwrap();
 
     let stats = stats_memory_resource();
     let target_runtime = Runtime::builder().with_memory_resource(stats.clone()).build().unwrap();
@@ -1636,13 +1636,13 @@ fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime()
     assert_eq!(packed.into_column().to_vec::<f32>().unwrap(), vec![3.0, 4.0, 5.0, 6.0]);
 }
 
-fn fixed_size_list_float32_export_rejects_non_finite_active_child_values() {
+fn fixed_size_list_export_rejects_non_finite_active_child_values() {
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let runtime = sample_runtime();
         let gpu = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), Some(invalid), Some(3.0), Some(4.0)]);
 
         let error = gpu
-            .try_prepare_fixed_size_list_float32_export(0)
+            .try_prepare_fixed_size_list_export(0)
             .expect_err("proof-bearing FixedSizeList export must reject non-finite child values");
 
         assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
@@ -1674,14 +1674,14 @@ fn fixed_size_list_float32_finite_validation_covers_only_the_active_child_range(
     let frame = DataFrame::from_record_batch(&runtime, &host).unwrap().slice(1, 1).unwrap();
     let gpu = GpuRecordBatch::new(frame, schema).unwrap();
 
-    let validated = gpu.try_prepare_fixed_size_list_float32_export(0).unwrap();
+    let validated = gpu.try_prepare_fixed_size_list_export(0).unwrap();
 
     assert_eq!(validated.rows(), 1);
     assert_eq!(validated.child_len(), 2);
-    assert_eq!(validated.finite_observation().rows, 2);
+    assert_eq!(validated.finite_observation().unwrap().rows, 2);
 }
 
-fn fixed_size_list_float32_export_rejects_detached_foreign_proof_identity() {
+fn fixed_size_list_export_rejects_detached_foreign_proof_identity() {
     let runtime = sample_runtime();
     let producer = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)]);
     let foreign_proof_owner =
@@ -1698,19 +1698,18 @@ fn fixed_size_list_float32_export_rejects_detached_foreign_proof_identity() {
     assert_eq!(error.detail_value("reason"), Some("fixed_size_list_proof_identity_mismatch"));
 }
 
-fn fixed_size_list_float32_export_rejects_null_child_values() {
+fn fixed_size_list_export_rejects_null_child_values() {
     let runtime = sample_runtime();
     let gpu = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), None, Some(3.0), Some(4.0)]);
 
-    let error = gpu
-        .try_prepare_fixed_size_list_float32_export(0)
-        .expect_err("dense vector export must reject nullable child values");
+    let error =
+        gpu.try_prepare_fixed_size_list_export(0).expect_err("dense vector export must reject nullable child values");
 
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
     assert_eq!(error.detail_value("reason"), Some("null_vector_value"));
 }
 
-fn fixed_size_list_float32_export_rejects_null_vector_rows() {
+fn fixed_size_list_export_rejects_null_vector_rows() {
     let runtime = sample_runtime();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let fixed = FixedSizeListArray::new(
@@ -1724,9 +1723,8 @@ fn fixed_size_list_float32_export_rejects_null_vector_rows() {
     let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
     let gpu = GpuRecordBatch::new(frame, schema).unwrap();
 
-    let error = gpu
-        .try_prepare_fixed_size_list_float32_export(0)
-        .expect_err("dense vector export must reject null vector rows");
+    let error =
+        gpu.try_prepare_fixed_size_list_export(0).expect_err("dense vector export must reject null vector rows");
 
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
     assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
@@ -1741,7 +1739,7 @@ fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root()
         None,
     );
 
-    let validated = gpu.try_prepare_uniform_list_float32_export(0).unwrap();
+    let validated = gpu.try_prepare_uniform_list_export(0).unwrap();
 
     assert_eq!(validated.field_index(), 0);
     assert_eq!(validated.dimension(), 2);
@@ -1755,7 +1753,7 @@ fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root()
     assert_eq!(offsets_observation.rows, 3);
     assert_eq!(offsets_observation.columns, 2);
     assert_eq!(offsets_observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
-    let finite_observation = validated.finite_observation();
+    let finite_observation = validated.finite_observation().unwrap();
     assert_eq!(finite_observation.kind, BoundaryKind::BoundedControlScalar);
     assert_eq!(finite_observation.rows, 6);
     assert_eq!(finite_observation.columns, 1);
@@ -1782,7 +1780,7 @@ fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
     );
     let sliced_frame = full.frame().slice(1, 2).unwrap();
     let sliced = GpuRecordBatch::new(sliced_frame, Arc::clone(full.schema())).unwrap();
-    let validated = sliced.try_prepare_uniform_list_float32_export(0).unwrap();
+    let validated = sliced.try_prepare_uniform_list_export(0).unwrap();
 
     let stats = stats_memory_resource();
     let target_runtime = Runtime::builder().with_memory_resource(stats.clone()).build().unwrap();
@@ -1802,13 +1800,13 @@ fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
     assert_eq!(packed.into_column().to_vec::<f32>().unwrap(), vec![3.0, 5.0, 4.0, 6.0]);
 }
 
-fn uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable() {
+fn uniform_list_export_fails_closed_when_empty_dimension_is_unavailable() {
     let runtime = sample_runtime();
     let gpu = uniform_list_float32_gpu_batch(&runtime, vec![0], vec![], None);
 
     testing::boundary::reset_boundary_observation_for_test();
     let error = gpu
-        .try_prepare_uniform_list_float32_export(0)
+        .try_prepare_uniform_list_export(0)
         .expect_err("empty variable-width List cannot prove a positive dimension");
 
     assert_eq!(error.code(), ErrorCode::EmptyInput);
@@ -1819,11 +1817,11 @@ fn uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable(
     assert!(testing::boundary::last_boundary_observation_for_test().is_none());
 }
 
-fn uniform_list_float32_export_rejects_zero_width_and_ragged_rows() {
+fn uniform_list_export_rejects_zero_width_and_ragged_rows() {
     let runtime = sample_runtime();
     let zero_width = uniform_list_float32_gpu_batch(&runtime, vec![0, 0, 0], vec![], None);
     let error = zero_width
-        .try_prepare_uniform_list_float32_export(0)
+        .try_prepare_uniform_list_export(0)
         .expect_err("zero-width rows cannot establish a positive vector dimension");
     assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
     assert_eq!(
@@ -1838,7 +1836,7 @@ fn uniform_list_float32_export_rejects_zero_width_and_ragged_rows() {
         None,
     );
     let error = ragged
-        .try_prepare_uniform_list_float32_export(0)
+        .try_prepare_uniform_list_export(0)
         .expect_err("ragged rows cannot establish one uniform vector dimension");
     assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(
@@ -1849,7 +1847,7 @@ fn uniform_list_float32_export_rejects_zero_width_and_ragged_rows() {
     assert_eq!(error.detail_value("maximum_row_width"), Some("3"));
 }
 
-fn uniform_list_float32_export_rejects_root_and_child_nulls() {
+fn uniform_list_export_rejects_root_and_child_nulls() {
     let runtime = sample_runtime();
     let root_null = uniform_list_float32_gpu_batch(
         &runtime,
@@ -1857,22 +1855,20 @@ fn uniform_list_float32_export_rejects_root_and_child_nulls() {
         vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
         Some(vec![true, false]),
     );
-    let error = root_null
-        .try_prepare_uniform_list_float32_export(0)
-        .expect_err("dense vector export must reject null list rows");
+    let error =
+        root_null.try_prepare_uniform_list_export(0).expect_err("dense vector export must reject null list rows");
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
     assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
 
     let child_null =
         uniform_list_float32_gpu_batch(&runtime, vec![0, 2, 4], vec![Some(1.0), None, Some(3.0), Some(4.0)], None);
-    let error = child_null
-        .try_prepare_uniform_list_float32_export(0)
-        .expect_err("dense vector export must reject null child values");
+    let error =
+        child_null.try_prepare_uniform_list_export(0).expect_err("dense vector export must reject null child values");
     assert_eq!(error.code(), ErrorCode::NullUnexpected);
     assert_eq!(error.detail_value("reason"), Some("null_vector_value"));
 }
 
-fn uniform_list_float32_export_rejects_non_finite_active_child_values() {
+fn uniform_list_export_rejects_non_finite_active_child_values() {
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let runtime = sample_runtime();
         let gpu = uniform_list_float32_gpu_batch(
@@ -1883,7 +1879,7 @@ fn uniform_list_float32_export_rejects_non_finite_active_child_values() {
         );
 
         let error = gpu
-            .try_prepare_uniform_list_float32_export(0)
+            .try_prepare_uniform_list_export(0)
             .expect_err("uniform-list proof must reject non-finite active child values");
 
         assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
@@ -1901,7 +1897,7 @@ fn uniform_list_float32_export_rejects_non_finite_active_child_values() {
     }
 }
 
-fn uniform_list_float32_export_covers_only_the_sliced_active_child_range() {
+fn uniform_list_export_covers_only_the_sliced_active_child_range() {
     let runtime = sample_runtime();
     let full = uniform_list_float32_gpu_batch(
         &runtime,
@@ -1912,16 +1908,16 @@ fn uniform_list_float32_export_covers_only_the_sliced_active_child_range() {
     let frame = full.frame().slice(1, 2).unwrap();
     let sliced = GpuRecordBatch::new(frame, Arc::clone(full.schema())).unwrap();
 
-    let validated = sliced.try_prepare_uniform_list_float32_export(0).unwrap();
+    let validated = sliced.try_prepare_uniform_list_export(0).unwrap();
 
     assert_eq!(validated.rows(), 2);
     assert_eq!(validated.dimension(), 2);
     assert_eq!(validated.child_len(), 4);
     assert_eq!(validated.offsets_observation().rows, 2);
-    assert_eq!(validated.finite_observation().rows, 4);
+    assert_eq!(validated.finite_observation().unwrap().rows, 4);
 }
 
-fn uniform_list_float32_export_rejects_foreign_offset_proof_identity() {
+fn uniform_list_export_rejects_foreign_offset_proof_identity() {
     let runtime = sample_runtime();
     let producer =
         uniform_list_float32_gpu_batch(&runtime, vec![0, 2, 4], vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)], None);
@@ -2406,33 +2402,27 @@ fn query_backend_contract_tests_cases() {
             fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices,
         ),
         (
-            "fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root",
-            fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root,
+            "fixed_size_list_export_retains_proof_binding_range_and_lease_root",
+            fixed_size_list_export_retains_proof_binding_range_and_lease_root,
         ),
         (
             "fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime",
             fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime,
         ),
         (
-            "fixed_size_list_float32_export_rejects_non_finite_active_child_values",
-            fixed_size_list_float32_export_rejects_non_finite_active_child_values,
+            "fixed_size_list_export_rejects_non_finite_active_child_values",
+            fixed_size_list_export_rejects_non_finite_active_child_values,
         ),
         (
             "fixed_size_list_float32_finite_validation_covers_only_the_active_child_range",
             fixed_size_list_float32_finite_validation_covers_only_the_active_child_range,
         ),
         (
-            "fixed_size_list_float32_export_rejects_detached_foreign_proof_identity",
-            fixed_size_list_float32_export_rejects_detached_foreign_proof_identity,
+            "fixed_size_list_export_rejects_detached_foreign_proof_identity",
+            fixed_size_list_export_rejects_detached_foreign_proof_identity,
         ),
-        (
-            "fixed_size_list_float32_export_rejects_null_child_values",
-            fixed_size_list_float32_export_rejects_null_child_values,
-        ),
-        (
-            "fixed_size_list_float32_export_rejects_null_vector_rows",
-            fixed_size_list_float32_export_rejects_null_vector_rows,
-        ),
+        ("fixed_size_list_export_rejects_null_child_values", fixed_size_list_export_rejects_null_child_values),
+        ("fixed_size_list_export_rejects_null_vector_rows", fixed_size_list_export_rejects_null_vector_rows),
         (
             "uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root",
             uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root,
@@ -2442,28 +2432,25 @@ fn query_backend_contract_tests_cases() {
             uniform_list_direct_pack_reorders_active_child_with_one_target_allocation,
         ),
         (
-            "uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable",
-            uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable,
+            "uniform_list_export_fails_closed_when_empty_dimension_is_unavailable",
+            uniform_list_export_fails_closed_when_empty_dimension_is_unavailable,
         ),
         (
-            "uniform_list_float32_export_rejects_zero_width_and_ragged_rows",
-            uniform_list_float32_export_rejects_zero_width_and_ragged_rows,
+            "uniform_list_export_rejects_zero_width_and_ragged_rows",
+            uniform_list_export_rejects_zero_width_and_ragged_rows,
+        ),
+        ("uniform_list_export_rejects_root_and_child_nulls", uniform_list_export_rejects_root_and_child_nulls),
+        (
+            "uniform_list_export_rejects_non_finite_active_child_values",
+            uniform_list_export_rejects_non_finite_active_child_values,
         ),
         (
-            "uniform_list_float32_export_rejects_root_and_child_nulls",
-            uniform_list_float32_export_rejects_root_and_child_nulls,
+            "uniform_list_export_covers_only_the_sliced_active_child_range",
+            uniform_list_export_covers_only_the_sliced_active_child_range,
         ),
         (
-            "uniform_list_float32_export_rejects_non_finite_active_child_values",
-            uniform_list_float32_export_rejects_non_finite_active_child_values,
-        ),
-        (
-            "uniform_list_float32_export_covers_only_the_sliced_active_child_range",
-            uniform_list_float32_export_covers_only_the_sliced_active_child_range,
-        ),
-        (
-            "uniform_list_float32_export_rejects_foreign_offset_proof_identity",
-            uniform_list_float32_export_rejects_foreign_offset_proof_identity,
+            "uniform_list_export_rejects_foreign_offset_proof_identity",
+            uniform_list_export_rejects_foreign_offset_proof_identity,
         ),
         (
             "host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_width",

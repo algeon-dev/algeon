@@ -21,32 +21,33 @@ cudf_status_t cudf_interleave_columns_ex(cudf_column_view_handle const* columns,
                                          cudf_exec_options_t const* options,
                                          cudf_column_handle* out);
 
-/// Copy a flat, non-null Float32 column into a contiguous dense matrix order.
+/// Copy a flat, non-null FLOAT32, FLOAT64, INT8, or UINT8 column into a dense matrix order.
 ///
 /// The input holds exactly `rows * columns` row-major values. `column_major`
 /// selects whether the returned flat column keeps that row-major order (`0`)
 /// or rearranges it into contiguous column-major order (`1`). All work uses
 /// the explicit stream and memory resource carried by `options`.
-cudf_status_t cudf_pack_flat_float32_matrix_ex(cudf_column_view_handle input,
+cudf_status_t cudf_pack_flat_matrix_ex(cudf_column_view_handle input,
                                                int32_t rows,
                                                int32_t columns,
                                                int32_t column_major,
                                                cudf_exec_options_t const* options,
                                                cudf_column_handle* out);
 
-/// Copy a borrowed device-resident Float32 span into a dense matrix order.
+/// Copy a borrowed device-resident numeric span into a dense matrix order.
 ///
-/// `input` points at exactly `rows * columns` row-major Float32 values on the
+/// `input` points at exactly `rows * columns` row-major values of `element` on the
 /// CUDA device selected by `options`. The caller retains the source allocation
 /// and must keep it alive until work enqueued on `options->stream` completes.
 /// The returned column performs exactly one output allocation and one payload
 /// copy/reorder on the explicit stream and memory resource.
-cudf_status_t cudf_pack_borrowed_float32_matrix_ex(void const* input,
-                                                   int32_t rows,
-                                                   int32_t columns,
-                                                   int32_t column_major,
-                                                   cudf_exec_options_t const* options,
-                                                   cudf_column_handle* out);
+cudf_status_t cudf_pack_borrowed_matrix_ex(void const* input,
+                                           int32_t element,
+                                           int32_t rows,
+                                           int32_t columns,
+                                           int32_t column_major,
+                                           cudf_exec_options_t const* options,
+                                           cudf_column_handle* out);
 
 #ifdef __cplusplus
 }

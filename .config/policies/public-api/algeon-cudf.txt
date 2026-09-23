@@ -2193,8 +2193,8 @@ pub fn cudf::frame::dataframe::GpuRecordBatch::placement(&self) -> cudf::Executi
 pub fn cudf::frame::dataframe::GpuRecordBatch::schema(&self) -> &arrow_schema::schema::SchemaRef
 pub fn cudf::frame::dataframe::GpuRecordBatch::to_host_record_batch(&self) -> cudf::core::error::Result<arrow_array::record_batch::RecordBatch>
 pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_device_arrow_export(&self) -> cudf::core::error::Result<cudf::interop::arrow_device::DeviceArrowTableExport>
-pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_fixed_size_list_float32_export(&self, usize) -> cudf::core::error::Result<cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>>
-pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_uniform_list_float32_export(&self, usize) -> cudf::core::error::Result<cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>>
+pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_fixed_size_list_export(&self, usize) -> cudf::core::error::Result<cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>>
+pub fn cudf::frame::dataframe::GpuRecordBatch::try_prepare_uniform_list_export(&self, usize) -> cudf::core::error::Result<cudf::frame::dataframe::ValidatedUniformListExport<'_>>
 impl cudf::frame::dataframe::GpuRecordBatch
 pub fn cudf::frame::dataframe::GpuRecordBatch::into_host_batch_cursor(self, cudf::frame::dataframe::HostBatchCursorConfig) -> cudf::core::error::Result<cudf::frame::dataframe::HostBatchCursor>
 impl core::fmt::Debug for cudf::frame::dataframe::GpuRecordBatch
@@ -2321,46 +2321,48 @@ pub struct cudf::frame::dataframe::PreparedHostBatch
 impl cudf::frame::dataframe::PreparedHostBatch
 pub fn cudf::frame::dataframe::PreparedHostBatch::estimated_materialization_bytes(&self) -> usize
 pub fn cudf::frame::dataframe::PreparedHostBatch::num_rows(&self) -> usize
-pub struct cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'a>
-impl cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::child_byte_offset(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::child_column_id(&self) -> rapids_interop::types::ColumnId
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::child_len(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::child_offset(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::child_values_binding(&self) -> &rapids_interop::types::BufferBinding<'_>
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::child_values_buffer_id(&self) -> rapids_interop::types::BufferId
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::copy_active_child_into_runtime(&self, &cudf::Runtime) -> cudf::core::error::Result<cudf::core::Column>
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::dimension(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::export(&self) -> &rapids_interop::prepared::PreparedColumnExport<'_>
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::field_index(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::finite_observation(&self) -> cudf::BoundaryObservation
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::pack_active_child_into_runtime(&self, &cudf::Runtime, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedFloat32Matrix>
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::root_column_id(&self) -> rapids_interop::types::ColumnId
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::rows(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedFixedSizeListFloat32Export<'_>::structural_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
-pub struct cudf::frame::dataframe::ValidatedUniformListFloat32Export<'a>
-impl cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::child_byte_offset(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::child_column_id(&self) -> rapids_interop::types::ColumnId
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::child_len(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::child_offset(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::child_values_binding(&self) -> &rapids_interop::types::BufferBinding<'_>
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::child_values_buffer_id(&self) -> rapids_interop::types::BufferId
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::copy_active_child_into_runtime(&self, &cudf::Runtime) -> cudf::core::error::Result<cudf::core::Column>
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::dimension(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::export(&self) -> &rapids_interop::prepared::PreparedColumnExport<'_>
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::field_index(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::finite_observation(&self) -> cudf::BoundaryObservation
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::offsets_buffer_id(&self) -> rapids_interop::types::BufferId
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::offsets_observation(&self) -> cudf::BoundaryObservation
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::pack_active_child_into_runtime(&self, &cudf::Runtime, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedFloat32Matrix>
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::root_column_id(&self) -> rapids_interop::types::ColumnId
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::root_offset(&self) -> usize
-pub fn cudf::frame::dataframe::ValidatedUniformListFloat32Export<'_>::rows(&self) -> usize
+pub struct cudf::frame::dataframe::ValidatedFixedSizeListExport<'a>
+impl cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::child_byte_offset(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::child_column_id(&self) -> rapids_interop::types::ColumnId
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::child_len(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::child_offset(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::child_values_binding(&self) -> &rapids_interop::types::BufferBinding<'_>
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::child_values_buffer_id(&self) -> rapids_interop::types::BufferId
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::copy_active_child_into_runtime(&self, &cudf::Runtime) -> cudf::core::error::Result<cudf::core::Column>
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::dimension(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::element(&self) -> cudf::core::types::TypeId
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::export(&self) -> &rapids_interop::prepared::PreparedColumnExport<'_>
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::field_index(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::finite_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::pack_active_child_into_runtime(&self, &cudf::Runtime, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::root_column_id(&self) -> rapids_interop::types::ColumnId
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::rows(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedFixedSizeListExport<'_>::structural_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
+pub struct cudf::frame::dataframe::ValidatedUniformListExport<'a>
+impl cudf::frame::dataframe::ValidatedUniformListExport<'_>
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::child_byte_offset(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::child_column_id(&self) -> rapids_interop::types::ColumnId
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::child_len(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::child_offset(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::child_values_binding(&self) -> &rapids_interop::types::BufferBinding<'_>
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::child_values_buffer_id(&self) -> rapids_interop::types::BufferId
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::copy_active_child_into_runtime(&self, &cudf::Runtime) -> cudf::core::error::Result<cudf::core::Column>
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::dimension(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::element(&self) -> cudf::core::types::TypeId
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::export(&self) -> &rapids_interop::prepared::PreparedColumnExport<'_>
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::field_index(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::finite_observation(&self) -> core::option::Option<cudf::BoundaryObservation>
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::offsets_buffer_id(&self) -> rapids_interop::types::BufferId
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::offsets_observation(&self) -> cudf::BoundaryObservation
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::pack_active_child_into_runtime(&self, &cudf::Runtime, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::root_column_id(&self) -> rapids_interop::types::ColumnId
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::root_offset(&self) -> usize
+pub fn cudf::frame::dataframe::ValidatedUniformListExport<'_>::rows(&self) -> usize
 pub mod cudf::frame::factorization
 pub enum cudf::frame::factorization::DictionaryKeyOrder
 pub cudf::frame::factorization::DictionaryKeyOrder::FirstSeen
@@ -6784,23 +6786,24 @@ pub cudf::runtime::ExecutionPlacement::device: cudf::runtime::device::DeviceId
 pub cudf::runtime::ExecutionPlacement::memory_resource_debug: usize
 pub cudf::runtime::ExecutionPlacement::stream_debug: usize
 pub cudf::runtime::ExecutionPlacement::workflow_id: u64
-pub struct cudf::runtime::PackedFloat32Matrix
-impl cudf::PackedFloat32Matrix
-pub fn cudf::PackedFloat32Matrix::as_column(&self) -> &cudf::core::Column
-pub fn cudf::PackedFloat32Matrix::binding_id(&self) -> cudf::runtime::ExecutionBindingId
-pub fn cudf::PackedFloat32Matrix::column_stride_elements(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::columns(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::into_column(self) -> cudf::core::Column
-pub fn cudf::PackedFloat32Matrix::is_empty(&self) -> bool
-pub fn cudf::PackedFloat32Matrix::layout(&self) -> cudf::DenseMatrixLayout
-pub fn cudf::PackedFloat32Matrix::len(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::PackedFloat32Matrix::row_stride_elements(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::rows(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::shape(&self) -> [usize; 2]
-pub fn cudf::PackedFloat32Matrix::validate_finite(&self) -> cudf::core::error::Result<cudf::ValidatedPackedFloat32Matrix<'_>>
-impl core::fmt::Debug for cudf::PackedFloat32Matrix
-pub fn cudf::PackedFloat32Matrix::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cudf::runtime::PackedMatrix
+impl cudf::PackedMatrix
+pub fn cudf::PackedMatrix::as_column(&self) -> &cudf::core::Column
+pub fn cudf::PackedMatrix::binding_id(&self) -> cudf::runtime::ExecutionBindingId
+pub fn cudf::PackedMatrix::column_stride_elements(&self) -> usize
+pub fn cudf::PackedMatrix::columns(&self) -> usize
+pub fn cudf::PackedMatrix::element(&self) -> cudf::core::types::TypeId
+pub fn cudf::PackedMatrix::into_column(self) -> cudf::core::Column
+pub fn cudf::PackedMatrix::is_empty(&self) -> bool
+pub fn cudf::PackedMatrix::layout(&self) -> cudf::DenseMatrixLayout
+pub fn cudf::PackedMatrix::len(&self) -> usize
+pub fn cudf::PackedMatrix::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::PackedMatrix::row_stride_elements(&self) -> usize
+pub fn cudf::PackedMatrix::rows(&self) -> usize
+pub fn cudf::PackedMatrix::shape(&self) -> [usize; 2]
+pub fn cudf::PackedMatrix::validate_finite(&self) -> cudf::core::error::Result<cudf::ValidatedPackedMatrix<'_>>
+impl core::fmt::Debug for cudf::PackedMatrix
+pub fn cudf::PackedMatrix::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cudf::runtime::QueryExecutionContext<'a>
 impl<'a> cudf::QueryExecutionContext<'a>
 pub fn cudf::QueryExecutionContext<'a>::device(&self) -> cudf::runtime::device::DeviceId
@@ -6898,8 +6901,8 @@ impl cudf::Runtime
 pub fn cudf::Runtime::dataframe_from_record_batch(&self, &arrow_array::record_batch::RecordBatch) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::Runtime::dataframe_from_record_batches(&self, &[arrow_array::record_batch::RecordBatch]) -> cudf::core::error::Result<cudf::DataFrame>
 impl cudf::Runtime
-pub fn cudf::Runtime::pack_flat_float32_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedFloat32Matrix>
-pub fn cudf::Runtime::pack_float32_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedFloat32Matrix>
+pub fn cudf::Runtime::pack_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
+pub fn cudf::Runtime::pack_flat_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 impl cudf::Runtime
 pub fn cudf::Runtime::query_execution(&self) -> cudf::QueryExecutionContext<'_>
 impl core::fmt::Debug for cudf::Runtime
@@ -6930,22 +6933,23 @@ pub struct cudf::runtime::RuntimeLeaseAnchor
 impl cudf::RuntimeLeaseAnchor
 pub fn cudf::RuntimeLeaseAnchor::affinity_id(&self) -> cudf::RuntimeAffinityId
 pub fn cudf::RuntimeLeaseAnchor::is_current(&self) -> bool
-pub struct cudf::runtime::ValidatedPackedFloat32Matrix<'a>
-impl cudf::ValidatedPackedFloat32Matrix<'_>
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::as_ptr(&self) -> cudf::core::error::Result<*const core::ffi::c_void>
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::column_stride_elements(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::columns(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::is_empty(&self) -> bool
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::layout(&self) -> cudf::DenseMatrixLayout
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::len(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::observation(&self) -> cudf::BoundaryObservation
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::row_stride_elements(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::rows(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::shape(&self) -> [usize; 2]
-impl core::fmt::Debug for cudf::ValidatedPackedFloat32Matrix<'_>
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cudf::runtime::ValidatedPackedMatrix<'a>
+impl cudf::ValidatedPackedMatrix<'_>
+pub fn cudf::ValidatedPackedMatrix<'_>::as_ptr(&self) -> cudf::core::error::Result<*const core::ffi::c_void>
+pub fn cudf::ValidatedPackedMatrix<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
+pub fn cudf::ValidatedPackedMatrix<'_>::column_stride_elements(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::columns(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::element(&self) -> cudf::core::types::TypeId
+pub fn cudf::ValidatedPackedMatrix<'_>::is_empty(&self) -> bool
+pub fn cudf::ValidatedPackedMatrix<'_>::layout(&self) -> cudf::DenseMatrixLayout
+pub fn cudf::ValidatedPackedMatrix<'_>::len(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::observation(&self) -> core::option::Option<cudf::BoundaryObservation>
+pub fn cudf::ValidatedPackedMatrix<'_>::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::ValidatedPackedMatrix<'_>::row_stride_elements(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::rows(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::shape(&self) -> [usize; 2]
+impl core::fmt::Debug for cudf::ValidatedPackedMatrix<'_>
+pub fn cudf::ValidatedPackedMatrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const cudf::runtime::MAX_BINDING_EXTENSION_SLOTS_PER_BINDING: usize
 pub trait cudf::runtime::BoundaryObserver: core::marker::Send + core::marker::Sync + 'static
 pub fn cudf::runtime::BoundaryObserver::observe(&self, cudf::BoundaryObservation)
@@ -8334,23 +8338,24 @@ pub fn cudf::MergeOptions::suffix_right(&self) -> &str
 pub fn cudf::MergeOptions::suffixes(self, &str, &str) -> Self
 impl core::default::Default for cudf::MergeOptions
 pub fn cudf::MergeOptions::default() -> Self
-pub struct cudf::PackedFloat32Matrix
-impl cudf::PackedFloat32Matrix
-pub fn cudf::PackedFloat32Matrix::as_column(&self) -> &cudf::core::Column
-pub fn cudf::PackedFloat32Matrix::binding_id(&self) -> cudf::runtime::ExecutionBindingId
-pub fn cudf::PackedFloat32Matrix::column_stride_elements(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::columns(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::into_column(self) -> cudf::core::Column
-pub fn cudf::PackedFloat32Matrix::is_empty(&self) -> bool
-pub fn cudf::PackedFloat32Matrix::layout(&self) -> cudf::DenseMatrixLayout
-pub fn cudf::PackedFloat32Matrix::len(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::PackedFloat32Matrix::row_stride_elements(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::rows(&self) -> usize
-pub fn cudf::PackedFloat32Matrix::shape(&self) -> [usize; 2]
-pub fn cudf::PackedFloat32Matrix::validate_finite(&self) -> cudf::core::error::Result<cudf::ValidatedPackedFloat32Matrix<'_>>
-impl core::fmt::Debug for cudf::PackedFloat32Matrix
-pub fn cudf::PackedFloat32Matrix::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cudf::PackedMatrix
+impl cudf::PackedMatrix
+pub fn cudf::PackedMatrix::as_column(&self) -> &cudf::core::Column
+pub fn cudf::PackedMatrix::binding_id(&self) -> cudf::runtime::ExecutionBindingId
+pub fn cudf::PackedMatrix::column_stride_elements(&self) -> usize
+pub fn cudf::PackedMatrix::columns(&self) -> usize
+pub fn cudf::PackedMatrix::element(&self) -> cudf::core::types::TypeId
+pub fn cudf::PackedMatrix::into_column(self) -> cudf::core::Column
+pub fn cudf::PackedMatrix::is_empty(&self) -> bool
+pub fn cudf::PackedMatrix::layout(&self) -> cudf::DenseMatrixLayout
+pub fn cudf::PackedMatrix::len(&self) -> usize
+pub fn cudf::PackedMatrix::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::PackedMatrix::row_stride_elements(&self) -> usize
+pub fn cudf::PackedMatrix::rows(&self) -> usize
+pub fn cudf::PackedMatrix::shape(&self) -> [usize; 2]
+pub fn cudf::PackedMatrix::validate_finite(&self) -> cudf::core::error::Result<cudf::ValidatedPackedMatrix<'_>>
+impl core::fmt::Debug for cudf::PackedMatrix
+pub fn cudf::PackedMatrix::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cudf::ParquetSourceReadPreflight
 impl cudf::ParquetSourceReadPreflight
 pub fn cudf::ParquetSourceReadPreflight::required_budget_bytes(&self) -> usize
@@ -8574,8 +8579,8 @@ impl cudf::Runtime
 pub fn cudf::Runtime::dataframe_from_record_batch(&self, &arrow_array::record_batch::RecordBatch) -> cudf::core::error::Result<cudf::DataFrame>
 pub fn cudf::Runtime::dataframe_from_record_batches(&self, &[arrow_array::record_batch::RecordBatch]) -> cudf::core::error::Result<cudf::DataFrame>
 impl cudf::Runtime
-pub fn cudf::Runtime::pack_flat_float32_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedFloat32Matrix>
-pub fn cudf::Runtime::pack_float32_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedFloat32Matrix>
+pub fn cudf::Runtime::pack_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
+pub fn cudf::Runtime::pack_flat_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 impl cudf::Runtime
 pub fn cudf::Runtime::query_execution(&self) -> cudf::QueryExecutionContext<'_>
 impl core::fmt::Debug for cudf::Runtime
@@ -9560,22 +9565,23 @@ pub fn cudf::ops::strings::StringSliceOptions::new(core::option::Option<i32>, co
 pub fn cudf::ops::strings::StringSliceOptions::with_step(self, i32) -> Self
 impl core::default::Default for cudf::ops::strings::StringSliceOptions
 pub fn cudf::ops::strings::StringSliceOptions::default() -> Self
-pub struct cudf::ValidatedPackedFloat32Matrix<'a>
-impl cudf::ValidatedPackedFloat32Matrix<'_>
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::as_ptr(&self) -> cudf::core::error::Result<*const core::ffi::c_void>
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::column_stride_elements(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::columns(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::is_empty(&self) -> bool
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::layout(&self) -> cudf::DenseMatrixLayout
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::len(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::observation(&self) -> cudf::BoundaryObservation
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::placement(&self) -> cudf::ExecutionPlacement
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::row_stride_elements(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::rows(&self) -> usize
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::shape(&self) -> [usize; 2]
-impl core::fmt::Debug for cudf::ValidatedPackedFloat32Matrix<'_>
-pub fn cudf::ValidatedPackedFloat32Matrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cudf::ValidatedPackedMatrix<'a>
+impl cudf::ValidatedPackedMatrix<'_>
+pub fn cudf::ValidatedPackedMatrix<'_>::as_ptr(&self) -> cudf::core::error::Result<*const core::ffi::c_void>
+pub fn cudf::ValidatedPackedMatrix<'_>::binding_id(&self) -> cudf::runtime::ExecutionBindingId
+pub fn cudf::ValidatedPackedMatrix<'_>::column_stride_elements(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::columns(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::element(&self) -> cudf::core::types::TypeId
+pub fn cudf::ValidatedPackedMatrix<'_>::is_empty(&self) -> bool
+pub fn cudf::ValidatedPackedMatrix<'_>::layout(&self) -> cudf::DenseMatrixLayout
+pub fn cudf::ValidatedPackedMatrix<'_>::len(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::observation(&self) -> core::option::Option<cudf::BoundaryObservation>
+pub fn cudf::ValidatedPackedMatrix<'_>::placement(&self) -> cudf::ExecutionPlacement
+pub fn cudf::ValidatedPackedMatrix<'_>::row_stride_elements(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::rows(&self) -> usize
+pub fn cudf::ValidatedPackedMatrix<'_>::shape(&self) -> [usize; 2]
+impl core::fmt::Debug for cudf::ValidatedPackedMatrix<'_>
+pub fn cudf::ValidatedPackedMatrix<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT: &str
 pub trait cudf::BoundaryObserver: core::marker::Send + core::marker::Sync + 'static
 pub fn cudf::BoundaryObserver::observe(&self, cudf::BoundaryObservation)

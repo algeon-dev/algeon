@@ -13,8 +13,9 @@
 #include <memory>
 
 namespace {
-__global__ void matrix_pack_column_major(float* output,
-                                         float const* input,
+template <typename T>
+__global__ void matrix_pack_column_major(T* output,
+                                         T const* input,
                                          std::uint64_t element_count,
                                          std::uint64_t rows,
                                          std::uint64_t columns)
@@ -26,18 +27,55 @@ __global__ void matrix_pack_column_major(float* output,
   output[index]     = input[row * columns + column];
 }
 
-cudf_status_t pack_borrowed_float32_matrix(const float* input,
-                                            int32_t rows,
-                                            int32_t columns,
-                                            int32_t column_major,
-                                            cudf_exec_options_t const* options,
-                                            cudf_column_handle* out)
+bool supported_matrix_type(cudf::type_id type)
+{
+  return type == cudf::type_id::FLOAT32 || type == cudf::type_id::FLOAT64 ||
+         type == cudf::type_id::INT8 || type == cudf::type_id::UINT8;
+}
+
+template <typename T>
+void copy_matrix(cudf::column& output,
+                 void const* input,
+                 cudf::size_type element_count,
+                 int32_t rows,
+                 int32_t columns,
+                 int32_t column_major,
+                 rmm::cuda_stream_view stream)
+{
+  auto* output_data = output.mutable_view().data<T>();
+  if (column_major == 0) {
+    CUDF_CUDA_TRY(cudaMemcpyAsync(output_data,
+                                  input,
+                                  static_cast<std::size_t>(element_count) * sizeof(T),
+                                  cudaMemcpyDeviceToDevice,
+                                  stream.value()));
+  } else {
+    constexpr int32_t threads = 256;
+    auto const count = static_cast<std::uint64_t>(element_count);
+    auto const blocks = static_cast<std::uint32_t>((count + threads - 1) / threads);
+    matrix_pack_column_major<<<blocks, threads, 0, stream.value()>>>(
+      output_data, static_cast<T const*>(input), count, rows, columns);
+    CUDF_CUDA_TRY(cudaGetLastError());
+  }
+}
+
+cudf_status_t pack_borrowed_matrix(void const* input,
+                                   cudf::type_id element,
+                                   int32_t rows,
+                                   int32_t columns,
+                                   int32_t column_major,
+                                   cudf_exec_options_t const* options,
+                                   cudf_column_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
+  if (!supported_matrix_type(element)) {
+    set_error("matrix element must be FLOAT32, FLOAT64, INT8, or UINT8");
+    return CUDF_ERROR_TYPE;
+  }
   if (rows <= 0 || columns <= 0) {
-    set_error("flat Float32 matrix rows and columns must both be positive");
+    set_error("flat matrix rows and columns must both be positive");
     return CUDF_ERROR_INVALID_OPERATION;
   }
   if (column_major != 0 && column_major != 1) {
@@ -49,38 +87,33 @@ cudf_status_t pack_borrowed_float32_matrix(const float* input,
   {
     auto const expected = static_cast<int64_t>(rows) * static_cast<int64_t>(columns);
     if (expected > static_cast<int64_t>(std::numeric_limits<cudf::size_type>::max())) {
-      set_error("flat Float32 input length must fit cudf size_type");
+      set_error("flat matrix input length must fit cudf size_type");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    auto exec = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto const element_count = static_cast<cudf::size_type>(expected);
-    auto output = cudf::make_fixed_width_column(cudf::data_type{cudf::type_id::FLOAT32},
+    auto output = cudf::make_fixed_width_column(cudf::data_type{element},
                                                 element_count,
                                                 cudf::mask_state::UNALLOCATED,
                                                 exec->stream,
                                                 *exec->mr);
-    auto* output_data        = output->mutable_view().data<float>();
-    auto const payload_bytes = static_cast<std::size_t>(element_count) * sizeof(float);
-    if (column_major == 0) {
-      CUDF_CUDA_TRY(cudaMemcpyAsync(
-        output_data, input, payload_bytes, cudaMemcpyDeviceToDevice, exec->stream.value()));
-    } else {
-      constexpr int32_t threads      = 256;
-      auto const element_count_u64 = static_cast<std::uint64_t>(element_count);
-      auto const blocks            = static_cast<std::uint32_t>((element_count_u64 + threads - 1) / threads);
-      matrix_pack_column_major<<<blocks, threads, 0, exec->stream.value()>>>(
-        output_data,
-        input,
-        element_count_u64,
-        static_cast<std::uint64_t>(rows),
-        static_cast<std::uint64_t>(columns));
-      CUDF_CUDA_TRY(cudaGetLastError());
+    switch (element) {
+      case cudf::type_id::FLOAT32:
+        copy_matrix<float>(*output, input, element_count, rows, columns, column_major, exec->stream);
+        break;
+      case cudf::type_id::FLOAT64:
+        copy_matrix<double>(*output, input, element_count, rows, columns, column_major, exec->stream);
+        break;
+      case cudf::type_id::INT8:
+      case cudf::type_id::UINT8:
+        copy_matrix<std::uint8_t>(*output, input, element_count, rows, columns, column_major, exec->stream);
+        break;
+      default: break;
     }
-
     *out = cudf_release_column_handle(std::move(output), cudf_capture_exec_provenance(*exec));
     return CUDF_SUCCESS;
   }
@@ -89,18 +122,18 @@ cudf_status_t pack_borrowed_float32_matrix(const float* input,
 }  // namespace
 
 extern "C" {
-cudf_status_t cudf_pack_flat_float32_matrix_ex(cudf_column_view_handle input,
-                                                int32_t rows,
-                                                int32_t columns,
-                                                int32_t column_major,
-                                                cudf_exec_options_t const* options,
-                                                cudf_column_handle* out)
+cudf_status_t cudf_pack_flat_matrix_ex(cudf_column_view_handle input,
+                                       int32_t rows,
+                                       int32_t columns,
+                                       int32_t column_major,
+                                       cudf_exec_options_t const* options,
+                                       cudf_column_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   if (rows <= 0 || columns <= 0) {
-    set_error("flat Float32 matrix rows and columns must both be positive");
+    set_error("flat matrix rows and columns must both be positive");
     return CUDF_ERROR_INVALID_OPERATION;
   }
   if (column_major != 0 && column_major != 1) {
@@ -111,8 +144,8 @@ cudf_status_t cudf_pack_flat_float32_matrix_ex(cudf_column_view_handle input,
   CUDF_RUST_TRY
   {
     auto const* view = reinterpret_cast<cudf::column_view const*>(input);
-    if (view->type().id() != cudf::type_id::FLOAT32) {
-      set_error("flat matrix packing requires FLOAT32 input");
+    if (!supported_matrix_type(view->type().id())) {
+      set_error("matrix element must be FLOAT32, FLOAT64, INT8, or UINT8");
       return CUDF_ERROR_TYPE;
     }
     if (view->null_count() != 0) {
@@ -122,23 +155,24 @@ cudf_status_t cudf_pack_flat_float32_matrix_ex(cudf_column_view_handle input,
     auto const expected = static_cast<int64_t>(rows) * static_cast<int64_t>(columns);
     if (expected > static_cast<int64_t>(std::numeric_limits<cudf::size_type>::max()) ||
         static_cast<int64_t>(view->size()) != expected) {
-      set_error("flat Float32 input length must equal rows times columns");
+      set_error("flat matrix input length must equal rows times columns");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-
-    return pack_borrowed_float32_matrix(view->data<float>(), rows, columns, column_major, options, out);
+    auto const* active_input = static_cast<std::uint8_t const*>(view->head()) +
+                               static_cast<std::size_t>(view->offset()) * cudf::size_of(view->type());
+    return pack_borrowed_matrix(active_input, view->type().id(), rows, columns, column_major, options, out);
   }
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_pack_borrowed_float32_matrix_ex(const void* input,
-                                                    int32_t rows,
-                                                    int32_t columns,
-                                                    int32_t column_major,
-                                                    cudf_exec_options_t const* options,
-                                                    cudf_column_handle* out)
+cudf_status_t cudf_pack_borrowed_matrix_ex(void const* input,
+                                           int32_t element,
+                                           int32_t rows,
+                                           int32_t columns,
+                                           int32_t column_major,
+                                           cudf_exec_options_t const* options,
+                                           cudf_column_handle* out)
 {
-  return pack_borrowed_float32_matrix(
-    static_cast<float const*>(input), rows, columns, column_major, options, out);
+  return pack_borrowed_matrix(input, static_cast<cudf::type_id>(element), rows, columns, column_major, options, out);
 }
 }  // extern "C"

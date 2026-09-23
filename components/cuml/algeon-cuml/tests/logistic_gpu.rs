@@ -12,9 +12,8 @@ fn logistic_regression_fit_and_predict_binary_and_multiclass() {
     let x1 = x0.map(|value| value * 0.5);
     let first = runtime.column_from_slice(&x0).expect("feature column");
     let second = runtime.column_from_slice(&x1).expect("feature column");
-    let packed = runtime
-        .pack_float32_columns(&[&first, &second], DenseMatrixLayout::ColumnMajor)
-        .expect("column-major feature matrix");
+    let packed =
+        runtime.pack_columns(&[&first, &second], DenseMatrixLayout::ColumnMajor).expect("column-major feature matrix");
     let packed = packed.validate_finite().expect("finite feature matrix");
     let input = DeviceMatrix::from_validated(&packed).expect("matrix view");
     let binary = cudf::Series::from_column(runtime.column_from_slice(&[0_i32, 0, 0, 0, 1, 1, 1, 1]).expect("labels"))

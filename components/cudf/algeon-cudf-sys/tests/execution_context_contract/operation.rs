@@ -796,15 +796,17 @@ fn finite_column_validation_passes_a_device_view_by_value_to_the_gpu_transform()
         "the device transform must own a column_device_view value rather than a host pointer"
     );
     assert!(VALIDATION_CU.contains("input.is_null(index)"));
-    assert!(VALIDATION_CU.contains("input.element<float>(index)"));
-    assert!(
-        VALIDATION_CU.contains("column_non_finite_count_transform{*device_view}"),
-        "the device transform must copy the device view into its kernel argument"
-    );
-    assert!(
-        !VALIDATION_CU.contains("column_non_finite_count_transform{device_view.get()}"),
-        "the device transform must not dereference a host-owned device-view pointer on the GPU"
-    );
+    assert!(VALIDATION_CU.contains("input.element<T>(index)"));
+    for element in ["float", "double"] {
+        assert!(
+            VALIDATION_CU.contains(&format!("column_non_finite_count_transform<{element}>{{*device_view}}")),
+            "the {element} device transform must copy the device view into its kernel argument"
+        );
+        assert!(
+            !VALIDATION_CU.contains(&format!("column_non_finite_count_transform<{element}>{{device_view.get()}}")),
+            "the {element} device transform must not dereference a host-owned device-view pointer on the GPU"
+        );
+    }
 }
 
 #[test]

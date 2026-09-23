@@ -13,8 +13,7 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
     let rows = 48;
     let features = (0..rows).map(|i| i as f32 - 24.0).collect::<Vec<_>>();
     let flat = runtime.column_from_slice(&features).expect("flat features");
-    let packed =
-        runtime.pack_flat_float32_column(&flat, rows, 1, DenseMatrixLayout::RowMajor).expect("row-major matrix");
+    let packed = runtime.pack_flat_column(&flat, rows, 1, DenseMatrixLayout::RowMajor).expect("row-major matrix");
     let packed = packed.validate_finite().expect("finite inputs");
     let input = DeviceMatrix::from_validated(&packed).expect("device matrix");
     let labels = features.iter().map(|x| i32::from(*x >= 0.0)).collect::<Vec<_>>();
@@ -97,7 +96,7 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
     assert_eq!(wrong_reservation.code(), cuml::ErrorCode::ReservationCoverageMissing);
     let other_flat = other_runtime.column_from_slice(&features).expect("second flat features");
     let other_packed = other_runtime
-        .pack_flat_float32_column(&other_flat, rows, 1, DenseMatrixLayout::RowMajor)
+        .pack_flat_column(&other_flat, rows, 1, DenseMatrixLayout::RowMajor)
         .expect("second row-major matrix");
     let other_packed = other_packed.validate_finite().expect("second finite inputs");
     let other_input = DeviceMatrix::from_validated(&other_packed).expect("second device matrix");
@@ -114,8 +113,7 @@ fn training_pool_allocation_failure_retains_query_limit_attribution() {
     let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
     let values = (0..128).map(|i| i as f32 - 64.0).collect::<Vec<_>>();
     let flat = runtime.column_from_slice(&values).expect("feature column");
-    let packed =
-        runtime.pack_flat_float32_column(&flat, values.len(), 1, DenseMatrixLayout::RowMajor).expect("packed input");
+    let packed = runtime.pack_flat_column(&flat, values.len(), 1, DenseMatrixLayout::RowMajor).expect("packed input");
     let input = packed.validate_finite().expect("finite input");
     let input = DeviceMatrix::from_validated(&input).expect("device matrix");
     let labels = values.iter().map(|v| i32::from(*v >= 0.0)).collect::<Vec<_>>();
@@ -151,7 +149,7 @@ fn predict_rejects_column_major_and_fit_rejects_nonfinite_target() {
     let runtime = Arc::new(Runtime::new().expect("runtime"));
     let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
     let first = runtime.column_from_slice(&[-3.0_f32, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0]).expect("feature");
-    let packed = runtime.pack_float32_columns(&[&first], DenseMatrixLayout::ColumnMajor).expect("column-major inputs");
+    let packed = runtime.pack_columns(&[&first], DenseMatrixLayout::ColumnMajor).expect("column-major inputs");
     let packed = packed.validate_finite().expect("finite inputs");
     let input = DeviceMatrix::from_validated(&packed).expect("device matrix");
     let labels = cudf::Series::from_column(runtime.column_from_slice(&[0_i32, 0, 0, 0, 1, 1, 1, 1]).expect("labels"))

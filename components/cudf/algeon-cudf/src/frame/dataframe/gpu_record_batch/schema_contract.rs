@@ -16,8 +16,8 @@ use arrow::{
 
 use super::{
     super::DataFrame,
-    list_float32_export::FixedSizeListStructuralProof,
-    list_float32_validation::{validate_fixed_size_list_offsets, validate_list_schema_contract},
+    list_export::FixedSizeListStructuralProof,
+    list_validation::{validate_fixed_size_list_offsets, validate_list_schema_contract},
 };
 use crate::{
     core::{

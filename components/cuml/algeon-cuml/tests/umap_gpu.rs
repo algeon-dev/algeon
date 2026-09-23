@@ -36,9 +36,8 @@ fn fit_and_transform_preserve_the_two_dimensional_embedding_shape() {
     let host: Vec<f32> = (0..rows * columns).map(|i| ((i * 17 % 29) as f32) / 11.0).collect();
     let buffer = runtime.device_buffer_from_host_data(&host).expect("upload training data");
     let values = runtime.column_from_device_buffer(buffer, host.len(), TypeId::Float32).expect("training column");
-    let packed = runtime
-        .pack_flat_float32_column(&values, rows, columns, DenseMatrixLayout::RowMajor)
-        .expect("pack training matrix");
+    let packed =
+        runtime.pack_flat_column(&values, rows, columns, DenseMatrixLayout::RowMajor).expect("pack training matrix");
     let validated = packed.validate_finite().expect("finite training matrix");
     let input = DeviceMatrix::from_validated(&validated).expect("device matrix");
     let mut owned =

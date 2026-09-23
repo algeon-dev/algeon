@@ -56,7 +56,8 @@ pub use device_health::{
 };
 pub use event::CudaEvent;
 pub use execution_context::ExecutionOverrides;
-pub use matrix::{DenseMatrixLayout, PackedFloat32Matrix, ValidatedPackedFloat32Matrix};
+pub(crate) use matrix::matrix_element_bytes;
+pub use matrix::{DenseMatrixLayout, PackedMatrix, ValidatedPackedMatrix};
 pub use owner::{Runtime, RuntimeBuilder, StreamDependencyOutcome};
 pub use placement::ExecutionPlacement;
 pub use profiler::{cuda_profiler_start, cuda_profiler_stop};

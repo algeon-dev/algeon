@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
-use cudf::{Series, frame::dataframe::GpuRecordBatch};
+use cudf::{Series, TypeId, frame::dataframe::GpuRecordBatch};
 use cuvs::{
     BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchAlgo, CagraSearchParams, CuvsResources,
     DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams,
@@ -1204,7 +1204,7 @@ fn with_relation_tensor<T>(
                     return Err(error);
                 },
             };
-            let validated = match batch.try_prepare_fixed_size_list_float32_export(field_index).map_err(|error| {
+            let validated = match batch.try_prepare_fixed_size_list_export(field_index).map_err(|error| {
                 cudf_query_error(
                     PACK_OPERATION,
                     "failed to prove the FixedSizeList vector child range and finite values",
@@ -1220,6 +1220,7 @@ fn with_relation_tensor<T>(
                     return Err(error);
                 },
             };
+            require_float32_vector(validated.element(), node_id, algorithm, role)?;
             let lease = match resources.activate_validated_fixed_size_list_tensor(&validated).map_err(|error| {
                 cuvs_query_error(PACK_OPERATION, "failed to activate the validated FixedSizeList tensor", error)
                     .with_fact("node_id", node_id)
@@ -1380,7 +1381,7 @@ fn with_owned_relation_matrix<T>(
                     return Err(error);
                 },
             };
-            let validated = match batch.try_prepare_fixed_size_list_float32_export(field_index).map_err(|error| {
+            let validated = match batch.try_prepare_fixed_size_list_export(field_index).map_err(|error| {
                 cudf_query_error(
                     PACK_OPERATION,
                     "failed to prove the FixedSizeList vector child range and finite values",
@@ -1396,6 +1397,7 @@ fn with_owned_relation_matrix<T>(
                     return Err(error);
                 },
             };
+            require_float32_vector(validated.element(), node_id, algorithm, role)?;
             match resources.pack_validated_fixed_size_list_float32(&validated, layout).map_err(|error| {
                 cuvs_query_error(
                     PACK_OPERATION,
@@ -1443,12 +1445,13 @@ fn with_uniform_list_relation_tensor<T>(
             .with_fact("column", column)
     })?;
     let field_index = uniform_list_field_index(input_schema, column, node_id, role)?;
-    let validated = batch.try_prepare_uniform_list_float32_export(field_index).map_err(|error| {
+    let validated = batch.try_prepare_uniform_list_export(field_index).map_err(|error| {
         cudf_query_error(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
             .with_fact("column", column)
     })?;
+    require_float32_vector(validated.element(), node_id, algorithm, role)?;
     let rows = validated.rows();
     let dimension = validated.dimension();
     let input_bytes = input.device_allocated_size_bytes()?;
@@ -1524,12 +1527,13 @@ fn with_owned_uniform_list_relation_matrix<T>(
             .with_fact("column", column)
     })?;
     let field_index = uniform_list_field_index(input_schema, column, node_id, role)?;
-    let validated = batch.try_prepare_uniform_list_float32_export(field_index).map_err(|error| {
+    let validated = batch.try_prepare_uniform_list_export(field_index).map_err(|error| {
         cudf_query_error(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
             .with_fact("column", column)
     })?;
+    require_float32_vector(validated.element(), node_id, algorithm, role)?;
     let rows = validated.rows();
     let dimension = validated.dimension();
     let input_bytes = input.device_allocated_size_bytes()?;
@@ -1607,6 +1611,23 @@ fn uniform_list_field_index(
         .with_fact("column", column)
         .with_fact("reason", "missing_feature_column")
     })
+}
+
+fn require_float32_vector(
+    element: TypeId,
+    node_id: NodeId,
+    algorithm: VectorAlgorithm,
+    role: &'static str,
+) -> Result<()> {
+    if element == TypeId::Float32 {
+        return Ok(());
+    }
+    Err(QueryError::new(QueryErrorCode::UnsupportedType, PACK_OPERATION, "cuVS requires Float32 vector elements")
+        .with_fact("node_id", node_id)
+        .with_fact("algorithm", algorithm.as_str())
+        .with_fact("relation_role", role)
+        .with_fact("element", element.name())
+        .with_fact("reason", "unsupported_feature_type"))
 }
 
 fn tensor_dimension(

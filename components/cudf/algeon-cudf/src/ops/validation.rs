@@ -21,23 +21,24 @@ use crate::{
 
 const FINITE_FLOAT32_OPERATION: &str = "validation::validate_finite_float32";
 const FINITE_FLOAT32_BUFFER_OPERATION: &str = "validation::validate_finite_float32_buffer";
+const FINITE_FLOAT64_OPERATION: &str = "validation::validate_finite_float64";
 const INT64_BUFFER_RANGE_OPERATION: &str = "validation::validate_int64_buffer_range";
 
-/// Successful proof that one Float32 payload contains only finite values.
+/// Successful proof that one Float32 or Float64 payload contains only finite values.
 ///
 /// The proof is bound to the exact retained execution binding that performed
 /// the device reduction. `observation()` exposes the bounded control-scalar
 /// boundary separately from bulk Arrow host materialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FiniteFloat32ValidationProof {
+pub(crate) struct FiniteValidationProof {
     validated_values: usize,
     binding_id: ExecutionBindingId,
     placement: ExecutionPlacement,
     observation: BoundaryObservation,
 }
 
-impl FiniteFloat32ValidationProof {
-    /// Number of Float32 values covered by this proof.
+impl FiniteValidationProof {
+    /// Number of floating values covered by this proof.
     pub(crate) fn validated_values(self) -> usize {
         self.validated_values
     }
@@ -134,7 +135,7 @@ fn buffer_validation_observation(
     (placement, observation)
 }
 
-pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<FiniteFloat32ValidationProof> {
+pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<FiniteValidationProof> {
     let validated_values = exact_buffer_element_count(buffer, mem::size_of::<f32>(), FINITE_FLOAT32_BUFFER_OPERATION)?;
     let input = buffer.as_ptr().map_err(|error| error.reanchor(FINITE_FLOAT32_BUFFER_OPERATION))? as *const f32;
     let execution = buffer.execution_domain().enter_execution()?;
@@ -181,7 +182,7 @@ pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<Fi
         .with_detail("remedy", "replace or reject NaN and infinite values before GPU consumer execution"));
     }
 
-    Ok(FiniteFloat32ValidationProof { validated_values, binding_id: buffer.binding_id(), placement, observation })
+    Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement, observation })
 }
 
 pub(crate) fn validate_int64_buffer_range(
@@ -466,28 +467,40 @@ fn validate_float32_type(input: &ColumnView<'_>) -> Result<()> {
 /// Null, NaN, positive infinity, and negative infinity are rejected. The
 /// input payload remains device-resident; only one `i32` invalid-count scalar
 /// is made host-visible before this function returns.
-pub(crate) fn validate_finite_float32(input: &ColumnView<'_>) -> Result<FiniteFloat32ValidationProof> {
+pub(crate) fn validate_finite_float32(input: &ColumnView<'_>) -> Result<FiniteValidationProof> {
     validate_float32_type(input)?;
     let execution =
         ResolvedExecution::unary(input.execution_domain(), &ExecutionOverrides::new(), FINITE_FLOAT32_OPERATION)?;
-    validate_finite_float32_with_exec(
+    validate_finite_with_exec(
         input,
         execution.output_domain(),
         execution.exec_options(),
         FINITE_FLOAT32_OPERATION,
+        TypeId::Float32,
     )
 }
 
-fn validate_finite_float32_with_exec(
+fn validate_finite_with_exec(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
     exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
-) -> Result<FiniteFloat32ValidationProof> {
+    element: TypeId,
+) -> Result<FiniteValidationProof> {
     let validated_values = input.len().map_err(|error| error.reanchor(operation))?;
     let mut non_finite_count = 0i32;
     error::check_status_in_with_details(
-        unsafe { cudf_sys::cudf_float32_non_finite_count_ex(input.raw_handle(), &mut non_finite_count, exec_options) },
+        unsafe {
+            match element {
+                TypeId::Float32 => {
+                    cudf_sys::cudf_float32_non_finite_count_ex(input.raw_handle(), &mut non_finite_count, exec_options)
+                },
+                TypeId::Float64 => {
+                    cudf_sys::cudf_float64_non_finite_count_ex(input.raw_handle(), &mut non_finite_count, exec_options)
+                },
+                _ => unreachable!("finite validation is restricted to floating elements"),
+            }
+        },
         operation,
         [
             ("validated_values", validated_values.to_string()),
@@ -514,7 +527,7 @@ fn validate_finite_float32_with_exec(
         return Err(Error::new_with(
             ErrorCode::ValueOutOfRange,
             operation,
-            "Float32 input contains values that are not finite",
+            format!("{element} input contains values that are not finite"),
         )
         .with_fact(FACT_VALIDATION_REASON, "non_finite_vector_value")
         .with_fact(FACT_EXECUTION_BINDING_ID, output_domain.binding_id().get())
@@ -527,17 +540,35 @@ fn validate_finite_float32_with_exec(
         .with_detail("remedy", "replace or reject null, NaN, and infinite values before GPU consumer execution"));
     }
 
-    Ok(FiniteFloat32ValidationProof {
-        validated_values,
-        binding_id: output_domain.binding_id(),
-        placement,
-        observation,
-    })
+    Ok(FiniteValidationProof { validated_values, binding_id: output_domain.binding_id(), placement, observation })
+}
+
+/// Validate a Float64 column with the same bounded control-scalar evidence as Float32.
+pub(crate) fn validate_finite_float64(input: &ColumnView<'_>) -> Result<FiniteValidationProof> {
+    let actual = input.data_type().map_err(|error| error.reanchor(FINITE_FLOAT64_OPERATION))?.id();
+    if actual != TypeId::Float64 {
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            FINITE_FLOAT64_OPERATION,
+            "finite-value validation requires a Float64 column",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, actual)
+        .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Float64));
+    }
+    let execution =
+        ResolvedExecution::unary(input.execution_domain(), &ExecutionOverrides::new(), FINITE_FLOAT64_OPERATION)?;
+    validate_finite_with_exec(
+        input,
+        execution.output_domain(),
+        execution.exec_options(),
+        FINITE_FLOAT64_OPERATION,
+        TypeId::Float64,
+    )
 }
 
 impl Column {
     /// Validate that every value in this Float32 column is finite.
-    pub(crate) fn validate_finite_float32(&self) -> Result<FiniteFloat32ValidationProof> {
+    pub(crate) fn validate_finite_float32(&self) -> Result<FiniteValidationProof> {
         let view = self.view().map_err(|error| error.reanchor(FINITE_FLOAT32_OPERATION))?;
         validate_finite_float32(&view)
     }

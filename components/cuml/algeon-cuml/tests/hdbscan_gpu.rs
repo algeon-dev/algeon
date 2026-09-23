@@ -22,8 +22,7 @@ fn fit_finds_three_clusters_and_marks_outlier_as_noise() {
     let rows = host.len() / 2;
     let buffer = runtime.device_buffer_from_host_data(&host).expect("upload training data");
     let values = runtime.column_from_device_buffer(buffer, host.len(), TypeId::Float32).expect("training column");
-    let packed =
-        runtime.pack_flat_float32_column(&values, rows, 2, DenseMatrixLayout::RowMajor).expect("pack training matrix");
+    let packed = runtime.pack_flat_column(&values, rows, 2, DenseMatrixLayout::RowMajor).expect("pack training matrix");
     let validated = packed.validate_finite().expect("finite training matrix");
     let input = DeviceMatrix::from_validated(&validated).expect("device matrix");
     let output = HdbscanFit::fit(

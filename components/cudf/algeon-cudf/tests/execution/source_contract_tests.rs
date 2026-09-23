@@ -42,7 +42,7 @@ const PARTITIONING_RS: &str = include_str!("../../src/ops/partitioning.rs");
 const REPLACE_RS: &str = include_str!("../../src/ops/replace.rs");
 const REDUCTION_RS: &str = include_str!("../../src/ops/reduction.rs");
 const SEARCH_RS: &str = include_str!("../../src/ops/search.rs");
-const GPU_RECORD_BATCH_RS: &str = include_str!("../../src/frame/dataframe/gpu_record_batch/list_float32_validation.rs");
+const GPU_RECORD_BATCH_RS: &str = include_str!("../../src/frame/dataframe/gpu_record_batch/list_validation.rs");
 const DATAFRAME_ROW_OPS_RS: &str = include_str!("../../src/frame/dataframe/row_ops.rs");
 const EXECUTION_DOMAIN_RS: &str = include_str!("../../src/runtime/execution_domain.rs");
 const EXPR_RS: &str = include_str!("../../src/ops/expr.rs");
@@ -345,16 +345,12 @@ fn finite_float32_validation_publishes_only_bounded_control_scalar_evidence() {
 }
 
 fn packed_float32_consumer_pointer_requires_finite_validation_gate() {
-    let raw_matrix =
-        function_region(MATRIX_RS, "impl PackedFloat32Matrix", "/// A packed Float32 matrix whose complete payload");
-    let validated_matrix = function_region(
-        MATRIX_RS,
-        "impl ValidatedPackedFloat32Matrix<'_>",
-        "impl fmt::Debug for ValidatedPackedFloat32Matrix<'_>",
-    );
+    let raw_matrix = function_region(MATRIX_RS, "impl PackedMatrix", "/// A packed matrix whose floating payload");
+    let validated_matrix =
+        function_region(MATRIX_RS, "impl ValidatedPackedMatrix<'_>", "impl fmt::Debug for ValidatedPackedMatrix<'_>");
 
     assert!(
-        raw_matrix.contains("Result<ValidatedPackedFloat32Matrix<'_>>"),
+        raw_matrix.contains("Result<ValidatedPackedMatrix<'_>>"),
         "raw packed matrices must produce the borrowing validated wrapper"
     );
     assert!(!raw_matrix.contains("pub fn as_ptr"), "raw packed matrices must not expose the consumer pointer");

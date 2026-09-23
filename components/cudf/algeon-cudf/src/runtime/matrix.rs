@@ -1,4 +1,4 @@
-//! Runtime-owned dense matrix packing for fixed-width Float32 columns.
+//! Runtime-owned dense matrix packing for supported fixed-width numeric columns.
 
 use std::{ffi::c_void, fmt, sync::Arc};
 
@@ -16,13 +16,29 @@ use crate::{
         types::TypeId,
     },
     ops::{
-        concatenate::concatenate_columns_with_exec, reshape::interleave_columns_with_exec,
-        validation::FiniteFloat32ValidationProof,
+        concatenate::concatenate_columns_with_exec,
+        reshape::interleave_columns_with_exec,
+        validation::{FiniteValidationProof, validate_finite_float64},
     },
 };
 
-const PACK_OPERATION: &str = "runtime::pack_float32_columns";
-const PACK_FLAT_OPERATION: &str = "runtime::pack_flat_float32_column";
+const PACK_OPERATION: &str = "runtime::pack_columns";
+const PACK_FLAT_OPERATION: &str = "runtime::pack_flat_column";
+
+pub(crate) fn matrix_element_bytes(element: TypeId, operation: &'static str) -> Result<usize> {
+    match element {
+        TypeId::Float32 => Ok(4),
+        TypeId::Float64 => Ok(8),
+        TypeId::Int8 | TypeId::UInt8 => Ok(1),
+        _ => Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "matrix element must be Float32, Float64, Int8, or UInt8",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, element)
+        .with_detail("supported_elements", "Float32, Float64, Int8, UInt8")),
+    }
+}
 
 /// Physical layout of a packed dense matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,20 +49,21 @@ pub enum DenseMatrixLayout {
     ColumnMajor,
 }
 
-/// A contiguous Float32 matrix owned by a cudf runtime execution domain.
+/// A contiguous supported numeric matrix owned by a cudf runtime execution domain.
 ///
 /// The underlying [`Column`] retains the exact CUDA device, stream, and memory
 /// resource that produced the packed allocation. The matrix exposes only a
 /// const device pointer; algorithms that need writable output should allocate
 /// a [`crate::core::DeviceBuffer`] from the caller's [`Runtime`].
-pub struct PackedFloat32Matrix {
+pub struct PackedMatrix {
     values: Column,
+    element: TypeId,
     rows: usize,
     columns: usize,
     layout: DenseMatrixLayout,
 }
 
-impl PackedFloat32Matrix {
+impl PackedMatrix {
     /// Logical matrix shape as `[rows, columns]`.
     pub fn shape(&self) -> [usize; 2] {
         [self.rows, self.columns]
@@ -62,7 +79,7 @@ impl PackedFloat32Matrix {
         self.columns
     }
 
-    /// Number of packed Float32 elements.
+    /// Number of packed elements.
     pub fn len(&self) -> usize {
         self.rows * self.columns
     }
@@ -72,12 +89,17 @@ impl PackedFloat32Matrix {
         self.len() == 0
     }
 
+    /// Element type retained by this matrix.
+    pub fn element(&self) -> TypeId {
+        self.element
+    }
+
     /// Physical matrix layout.
     pub fn layout(&self) -> DenseMatrixLayout {
         self.layout
     }
 
-    /// Stride, in Float32 elements, between adjacent logical rows.
+    /// Stride, in elements, between adjacent logical rows.
     pub fn row_stride_elements(&self) -> usize {
         match self.layout {
             DenseMatrixLayout::RowMajor => self.columns,
@@ -85,7 +107,7 @@ impl PackedFloat32Matrix {
         }
     }
 
-    /// Stride, in Float32 elements, between adjacent logical columns.
+    /// Stride, in elements, between adjacent logical columns.
     pub fn column_stride_elements(&self) -> usize {
         match self.layout {
             DenseMatrixLayout::RowMajor => 1,
@@ -93,12 +115,12 @@ impl PackedFloat32Matrix {
         }
     }
 
-    /// Borrow the owned flat Float32 column.
+    /// Borrow the owned flat numeric column.
     pub fn as_column(&self) -> &Column {
         &self.values
     }
 
-    /// Consume the matrix and return its owned flat Float32 column.
+    /// Consume the matrix and return its owned flat numeric column.
     pub fn into_column(self) -> Column {
         self.values
     }
@@ -114,30 +136,34 @@ impl PackedFloat32Matrix {
         self.values.execution_domain().binding_id()
     }
 
-    /// Validate that every packed matrix value is finite before handing the
-    /// device pointer to a downstream GPU consumer.
-    pub fn validate_finite(&self) -> Result<ValidatedPackedFloat32Matrix<'_>> {
-        let proof = self
-            .values
-            .validate_finite_float32()
-            .map_err(|error| error.reanchor("packed_float32_matrix::validate_finite"))?;
-        Ok(ValidatedPackedFloat32Matrix { matrix: self, proof })
+    /// Validate floating values for finiteness, or retain integer shape and binding facts.
+    pub fn validate_finite(&self) -> Result<ValidatedPackedMatrix<'_>> {
+        let proof = match self.element {
+            TypeId::Float32 => Some(self.values.validate_finite_float32()),
+            TypeId::Float64 => Some(validate_finite_float64(
+                &self.values.view().map_err(|error| error.reanchor("packed_matrix::validate_finite"))?,
+            )),
+            TypeId::Int8 | TypeId::UInt8 => None,
+            _ => unreachable!("packed matrix element is checked at construction"),
+        };
+        let proof = proof.transpose().map_err(|error| error.reanchor("packed_matrix::validate_finite"))?;
+        Ok(ValidatedPackedMatrix { matrix: self, proof })
     }
 }
 
-/// A packed Float32 matrix whose complete payload was proven finite on its
-/// retained execution stream.
+/// A packed matrix whose floating payload was proven finite on its
+/// retained execution stream. Integer payloads have no finite scan.
 ///
 /// This borrowing gate is the only matrix surface that exposes the device
 /// pointer used by downstream GPU consumers. The borrow keeps the validated
 /// allocation alive and prevents the proof from being detached from a
 /// different packed matrix.
-pub struct ValidatedPackedFloat32Matrix<'a> {
-    matrix: &'a PackedFloat32Matrix,
-    proof: FiniteFloat32ValidationProof,
+pub struct ValidatedPackedMatrix<'a> {
+    matrix: &'a PackedMatrix,
+    proof: Option<FiniteValidationProof>,
 }
 
-impl ValidatedPackedFloat32Matrix<'_> {
+impl ValidatedPackedMatrix<'_> {
     /// Logical matrix shape as `[rows, columns]`.
     pub fn shape(&self) -> [usize; 2] {
         self.matrix.shape()
@@ -153,9 +179,9 @@ impl ValidatedPackedFloat32Matrix<'_> {
         self.matrix.columns()
     }
 
-    /// Number of validated Float32 elements.
+    /// Number of validated elements.
     pub fn len(&self) -> usize {
-        self.proof.validated_values()
+        self.matrix.len()
     }
 
     /// Whether the validated allocation contains zero elements.
@@ -163,46 +189,51 @@ impl ValidatedPackedFloat32Matrix<'_> {
         self.len() == 0
     }
 
+    /// Validated matrix element type.
+    pub fn element(&self) -> TypeId {
+        self.matrix.element()
+    }
+
     /// Physical matrix layout.
     pub fn layout(&self) -> DenseMatrixLayout {
         self.matrix.layout()
     }
 
-    /// Stride, in Float32 elements, between adjacent logical rows.
+    /// Stride, in elements, between adjacent logical rows.
     pub fn row_stride_elements(&self) -> usize {
         self.matrix.row_stride_elements()
     }
 
-    /// Stride, in Float32 elements, between adjacent logical columns.
+    /// Stride, in elements, between adjacent logical columns.
     pub fn column_stride_elements(&self) -> usize {
         self.matrix.column_stride_elements()
     }
 
-    /// Read-only pointer to the finite packed device allocation.
+    /// Read-only pointer to the validated packed device allocation.
     pub fn as_ptr(&self) -> Result<*const c_void> {
-        self.matrix.values.device_data_ptr().map_err(|error| error.reanchor("validated_packed_float32_matrix::as_ptr"))
+        self.matrix.values.device_data_ptr().map_err(|error| error.reanchor("validated_packed_matrix::as_ptr"))
     }
 
-    /// Exact stream/memory-resource binding used for finite validation.
+    /// Exact retained stream/memory-resource binding.
     pub fn binding_id(&self) -> ExecutionBindingId {
-        self.proof.binding_id()
+        self.matrix.binding_id()
     }
 
     /// Execution placement associated with the validated payload.
     pub fn placement(&self) -> ExecutionPlacement {
-        self.proof.placement()
+        self.matrix.placement()
     }
 
-    /// Bounded control-scalar transfer observation from finite validation.
-    pub fn observation(&self) -> BoundaryObservation {
-        self.proof.observation()
+    /// Bounded control-scalar evidence for floating values; integer values have no finite scan.
+    pub fn observation(&self) -> Option<BoundaryObservation> {
+        self.proof.map(FiniteValidationProof::observation)
     }
 }
 
-impl fmt::Debug for ValidatedPackedFloat32Matrix<'_> {
+impl fmt::Debug for ValidatedPackedMatrix<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ValidatedPackedFloat32Matrix")
+            .debug_struct("ValidatedPackedMatrix")
             .field("rows", &self.rows())
             .field("columns", &self.columns())
             .field("layout", &self.layout())
@@ -211,10 +242,10 @@ impl fmt::Debug for ValidatedPackedFloat32Matrix<'_> {
     }
 }
 
-impl fmt::Debug for PackedFloat32Matrix {
+impl fmt::Debug for PackedMatrix {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PackedFloat32Matrix")
+            .debug_struct("PackedMatrix")
             .field("rows", &self.rows)
             .field("columns", &self.columns)
             .field("layout", &self.layout)
@@ -253,7 +284,7 @@ fn checked_matrix_element_count_in(rows: usize, columns: usize, operation: &'sta
     Ok(elements)
 }
 
-fn validate_float32_columns(columns: &[&Column]) -> Result<(usize, usize)> {
+fn validate_columns(columns: &[&Column]) -> Result<(usize, usize, TypeId)> {
     let Some(first) = columns.first() else {
         return Err(Error::new_with(
             ErrorCode::EmptyInput,
@@ -262,21 +293,24 @@ fn validate_float32_columns(columns: &[&Column]) -> Result<(usize, usize)> {
         )
         .with_detail("resource", "input_columns")
         .with_detail("reason", "empty_input")
-        .with_detail("remedy", "provide at least one non-null Float32 column"));
+        .with_detail("remedy", "provide at least one non-null supported numeric column"));
     };
 
     let expected_rows = first.len().map_err(|error| error.reanchor(PACK_OPERATION))?;
+    let element = first.data_type().map_err(|error| error.reanchor(PACK_OPERATION))?.id();
+    matrix_element_bytes(element, PACK_OPERATION).map_err(|error| error.with_fact(FACT_COLUMN_INDEX, 0usize))?;
     for (column_index, column) in columns.iter().enumerate() {
         let actual_type = column.data_type().map_err(|error| error.reanchor(PACK_OPERATION))?.id();
-        if actual_type != TypeId::Float32 {
+        if actual_type != element {
             return Err(Error::new_with(
                 ErrorCode::TypeMismatch,
                 PACK_OPERATION,
-                "dense matrix packing requires Float32 input columns",
+                "dense matrix input columns must have the same supported element type",
             )
             .with_fact(FACT_COLUMN_INDEX, column_index)
             .with_fact(FACT_LEFT_TYPE_ID, actual_type)
-            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Float32));
+            .with_fact(FACT_RIGHT_TYPE_ID, element)
+            .with_detail("supported_elements", "Float32, Float64, Int8, UInt8"));
         }
 
         let actual_rows = column.len().map_err(|error| error.reanchor(PACK_OPERATION))?;
@@ -306,44 +340,46 @@ fn validate_float32_columns(columns: &[&Column]) -> Result<(usize, usize)> {
     }
 
     checked_matrix_element_count(expected_rows, columns.len())?;
-    Ok((expected_rows, columns.len()))
+    Ok((expected_rows, columns.len(), element))
 }
 
 impl Runtime {
-    /// Copy one borrowed device-resident row-major Float32 span into a packed
+    /// Copy one borrowed device-resident row-major numeric span into a packed
     /// matrix on this runtime's exact execution domain.
     ///
     /// # Safety
     ///
-    /// `values` must address at least `rows * columns` readable Float32 values
+    /// `values` must address at least `rows * columns` readable values of `element`
     /// on this runtime's CUDA device. Prior writes must be ordered before this
     /// runtime's stream, and the allocation must remain alive until the stream
     /// completes the enqueued copy.
-    pub(crate) unsafe fn pack_borrowed_flat_float32_device_values(
+    pub(crate) unsafe fn pack_borrowed_flat_device_values(
         &self,
         values: *const c_void,
         input_domain: &Arc<ExecutionDomain>,
+        element: TypeId,
         rows: usize,
         columns: usize,
         layout: DenseMatrixLayout,
         operation: &'static str,
-    ) -> Result<PackedFloat32Matrix> {
+    ) -> Result<PackedMatrix> {
         if rows == 0 || columns == 0 {
             return Err(Error::new_with(
                 ErrorCode::EmptyInput,
                 operation,
-                "flat Float32 matrix packing requires positive rows and columns",
+                "flat matrix packing requires positive rows and columns",
             )
             .with_detail("rows", rows.to_string())
             .with_detail("columns", columns.to_string())
             .with_detail("reason", "non_positive_matrix_shape"));
         }
         checked_matrix_element_count_in(rows, columns, operation)?;
+        matrix_element_bytes(element, operation)?;
         if values.is_null() {
             return Err(Error::new_with(
                 ErrorCode::InvariantViolation,
                 operation,
-                "borrowed Float32 matrix values pointer must not be null",
+                "borrowed matrix values pointer must not be null",
             )
             .with_detail("reason", "null_borrowed_matrix_values"));
         }
@@ -359,10 +395,11 @@ impl Runtime {
         error::check_status_in(
             // SAFETY: the caller supplies the documented device pointer,
             // ordering, and lifetime guarantees; shape validation above
-            // bounds the exact Float32 span consumed by the native call.
+            // bounds the exact element span consumed by the native call.
             unsafe {
-                cudf_sys::cudf_pack_borrowed_float32_matrix_ex(
+                cudf_sys::cudf_pack_borrowed_matrix_ex(
                     values,
+                    element.to_raw() as i32,
                     rows_i32,
                     columns_i32,
                     i32::from(matches!(layout, DenseMatrixLayout::ColumnMajor)),
@@ -379,17 +416,17 @@ impl Runtime {
         // `execution` drops after the consuming call and records the reverse
         // completion fence. Cross-stream input deallocation is therefore
         // ordered after the copy without synchronizing the host.
-        Ok(PackedFloat32Matrix { values, rows, columns, layout })
+        Ok(PackedMatrix { values, element, rows, columns, layout })
     }
 
-    /// Pack equal-length, non-null Float32 columns into a contiguous matrix on
-    /// this runtime's exact device, stream, and memory-resource binding.
+    /// Pack equal-length, non-null columns of one supported element type.
+    /// The output retains this runtime's exact device, stream, and memory-resource binding.
     ///
     /// Inputs may originate from other streams on the same device; the
     /// runtime inserts device-side ordering in both directions. Cross-device
     /// inputs are rejected before launching the pack operation.
-    pub fn pack_float32_columns(&self, columns: &[&Column], layout: DenseMatrixLayout) -> Result<PackedFloat32Matrix> {
-        let (rows, column_count) = validate_float32_columns(columns)?;
+    pub fn pack_columns(&self, columns: &[&Column], layout: DenseMatrixLayout) -> Result<PackedMatrix> {
+        let (rows, column_count, element) = validate_columns(columns)?;
         let views = columns
             .iter()
             .map(|column| column.view().map_err(|error| error.reanchor(PACK_OPERATION)))
@@ -410,28 +447,28 @@ impl Runtime {
         }
         .map_err(|error| error.reanchor(PACK_OPERATION))?;
 
-        Ok(PackedFloat32Matrix { values, rows, columns: column_count, layout })
+        Ok(PackedMatrix { values, element, rows, columns: column_count, layout })
     }
 
-    /// Pack one flat, non-null Float32 column whose values describe a
+    /// Pack one flat, non-null numeric column whose values describe a
     /// row-major `[rows, columns]` matrix into the requested dense layout.
     ///
-    /// This is the nested-vector counterpart to [`pack_float32_columns`](Self::pack_float32_columns): it retains
+    /// This is the nested-vector counterpart to [`pack_columns`](Self::pack_columns): it retains
     /// the runtime's exact device, stream, and memory-resource provenance and
     /// performs any row-major to column-major rearrangement entirely on that
     /// stream. It never exposes or copies vector payloads through host memory.
-    pub fn pack_flat_float32_column(
+    pub fn pack_flat_column(
         &self,
         values: &Column,
         rows: usize,
         columns: usize,
         layout: DenseMatrixLayout,
-    ) -> Result<PackedFloat32Matrix> {
+    ) -> Result<PackedMatrix> {
         if rows == 0 || columns == 0 {
             return Err(Error::new_with(
                 ErrorCode::EmptyInput,
                 PACK_FLAT_OPERATION,
-                "flat Float32 matrix packing requires positive rows and columns",
+                "flat matrix packing requires positive rows and columns",
             )
             .with_detail("rows", rows.to_string())
             .with_detail("columns", columns.to_string())
@@ -439,21 +476,14 @@ impl Runtime {
         }
         let expected_len = checked_matrix_element_count_in(rows, columns, PACK_FLAT_OPERATION)?;
         let data_type = values.data_type().map_err(|error| error.reanchor(PACK_FLAT_OPERATION))?;
-        if data_type.id() != TypeId::Float32 {
-            return Err(Error::new_with(
-                ErrorCode::TypeMismatch,
-                PACK_FLAT_OPERATION,
-                "flat matrix packing requires a Float32 value column",
-            )
-            .with_fact(FACT_LEFT_TYPE_ID, data_type.id())
-            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Float32));
-        }
+        let element = data_type.id();
+        matrix_element_bytes(element, PACK_FLAT_OPERATION)?;
         let null_count = values.null_count().map_err(|error| error.reanchor(PACK_FLAT_OPERATION))?;
         if null_count != 0 {
             return Err(Error::new_with(
                 ErrorCode::NullUnexpected,
                 PACK_FLAT_OPERATION,
-                "flat matrix packing requires non-null Float32 values",
+                "flat matrix packing requires non-null values",
             )
             .with_detail("null_count", null_count.to_string())
             .with_detail("reason", "nullable_flat_matrix_values"));
@@ -487,7 +517,7 @@ impl Runtime {
         let mut out = std::ptr::null_mut();
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_pack_flat_float32_matrix_ex(
+                cudf_sys::cudf_pack_flat_matrix_ex(
                     view.raw_handle(),
                     rows_i32,
                     columns_i32,
@@ -502,7 +532,7 @@ impl Runtime {
         // produced on the exact retained output execution domain.
         let values = unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
             .map_err(|error| error.reanchor(PACK_FLAT_OPERATION))?;
-        Ok(PackedFloat32Matrix { values, rows, columns, layout })
+        Ok(PackedMatrix { values, element, rows, columns, layout })
     }
 }
 

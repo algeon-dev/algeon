@@ -1,4 +1,4 @@
-//! List-of-Float32 export proofs, contracts, and child pack helpers.
+//! List-of-numeric export proofs, contracts, and child pack helpers.
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
@@ -15,10 +15,10 @@ use crate::{
         types::TypeId,
     },
     interop::cuda_stream_handle,
-    ops::validation::FiniteFloat32ValidationProof,
+    ops::validation::FiniteValidationProof,
     runtime::{
-        BoundaryObservation, DenseMatrixLayout, ExecutionBindingId, ExecutionPlacement, PackedFloat32Matrix, Runtime,
-        execution_domain::ExecutionDomain,
+        BoundaryObservation, DenseMatrixLayout, ExecutionBindingId, ExecutionPlacement, PackedMatrix, Runtime,
+        execution_domain::ExecutionDomain, matrix_element_bytes,
     },
 };
 
@@ -26,6 +26,7 @@ use crate::{
 pub(super) struct FixedSizeListStructuralProof {
     pub(super) field_index: usize,
     pub(super) dimension: i32,
+    pub(super) element: TypeId,
     pub(super) rows: usize,
     pub(super) child_offset: usize,
     pub(super) child_len: usize,
@@ -36,9 +37,10 @@ pub(super) struct FixedSizeListStructuralProof {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UniformListFloat32Proof {
+pub(super) struct UniformListProof {
     pub(super) field_index: usize,
     pub(super) dimension: usize,
+    pub(super) element: TypeId,
     pub(super) rows: usize,
     pub(super) root_offset: usize,
     pub(super) child_offset: usize,
@@ -49,7 +51,7 @@ pub(super) struct UniformListFloat32Proof {
     pub(super) offsets_observation: BoundaryObservation,
 }
 
-impl UniformListFloat32Proof {
+impl UniformListProof {
     pub(super) fn matches_producer(self, producer: &Arc<Column>) -> bool {
         self.producer_column_identity == Arc::as_ptr(producer) as usize
             && self.binding_id == producer.execution_domain().binding_id()
@@ -58,9 +60,10 @@ impl UniformListFloat32Proof {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ListFloat32ExportContract {
+pub(super) struct ListExportContract {
     pub(super) field_index: usize,
     pub(super) dimension: usize,
+    pub(super) element: TypeId,
     pub(super) rows: usize,
     pub(super) root_offset: Option<usize>,
     pub(super) child_offset: usize,
@@ -68,11 +71,12 @@ pub(super) struct ListFloat32ExportContract {
     pub(super) placement: ExecutionPlacement,
 }
 
-impl From<FixedSizeListStructuralProof> for ListFloat32ExportContract {
+impl From<FixedSizeListStructuralProof> for ListExportContract {
     fn from(proof: FixedSizeListStructuralProof) -> Self {
         Self {
             field_index: proof.field_index,
             dimension: proof.dimension as usize,
+            element: proof.element,
             rows: proof.rows,
             root_offset: None,
             child_offset: proof.child_offset,
@@ -82,11 +86,12 @@ impl From<FixedSizeListStructuralProof> for ListFloat32ExportContract {
     }
 }
 
-impl From<UniformListFloat32Proof> for ListFloat32ExportContract {
-    fn from(proof: UniformListFloat32Proof) -> Self {
+impl From<UniformListProof> for ListExportContract {
+    fn from(proof: UniformListProof) -> Self {
         Self {
             field_index: proof.field_index,
             dimension: proof.dimension,
+            element: proof.element,
             rows: proof.rows,
             root_offset: Some(proof.root_offset),
             child_offset: proof.child_offset,
@@ -111,26 +116,26 @@ impl FixedSizeListStructuralProof {
     }
 }
 
-/// A device prepared export whose active `LIST<Float32>` range is proven to
-/// have one fixed-size child span per row and only finite child values.
+/// A device prepared export with a proven fixed-size, non-null active child range.
+/// Float32 and Float64 children are finite-validated; Int8 and UInt8 have no finite scan.
 ///
 /// The witness retains the ordinary [`PreparedColumnExport`] lease root while
 /// binding the structural proof to the exact producer column, execution
 /// binding, and active child range. Consumers must still activate and complete
 /// the prepared export's read lease before using the child values buffer.
 #[derive(Debug)]
-pub struct ValidatedFixedSizeListFloat32Export<'a> {
+pub struct ValidatedFixedSizeListExport<'a> {
     pub(super) export: PreparedColumnExport<'a>,
     pub(super) producer_domain: RetainedProducerDomain,
     pub(super) proof: FixedSizeListStructuralProof,
-    pub(super) finite_proof: FiniteFloat32ValidationProof,
+    pub(super) finite_proof: Option<FiniteValidationProof>,
     pub(super) root_column_id: ColumnId,
     pub(super) child_column_id: ColumnId,
     pub(super) child_values_buffer_id: BufferId,
 }
 
 #[derive(Debug)]
-pub(super) struct ListFloat32ExportParts<'a> {
+pub(super) struct ListExportParts<'a> {
     pub(super) export: PreparedColumnExport<'a>,
     pub(super) root_column_id: ColumnId,
     pub(super) offsets_buffer_id: BufferId,
@@ -138,28 +143,32 @@ pub(super) struct ListFloat32ExportParts<'a> {
     pub(super) child_values_buffer_id: BufferId,
 }
 
-/// A device prepared export whose active variable-width `List<Float32>` range
-/// was proven to have one uniform positive dimension and only finite values.
+/// A device prepared export with a proven uniform, positive list dimension.
+/// Floating children are finite-validated; integer children have no finite scan.
 ///
 /// The proof is bound to the exact retained producer, root offset, semantic
 /// offsets/child identities, active child range, execution binding, and
 /// readiness stream. The ordinary prepared-export lease root remains
 /// retained and must be activated before a consumer reads the child buffer.
 #[derive(Debug)]
-pub struct ValidatedUniformListFloat32Export<'a> {
+pub struct ValidatedUniformListExport<'a> {
     pub(super) export: PreparedColumnExport<'a>,
     pub(super) producer_domain: RetainedProducerDomain,
-    pub(super) proof: UniformListFloat32Proof,
-    pub(super) finite_proof: FiniteFloat32ValidationProof,
+    pub(super) proof: UniformListProof,
+    pub(super) finite_proof: Option<FiniteValidationProof>,
     pub(super) root_column_id: ColumnId,
     pub(super) offsets_buffer_id: BufferId,
     pub(super) child_column_id: ColumnId,
     pub(super) child_values_buffer_id: BufferId,
 }
 
-impl ValidatedUniformListFloat32Export<'_> {
+impl ValidatedUniformListExport<'_> {
     pub fn export(&self) -> &PreparedColumnExport<'_> {
         &self.export
+    }
+
+    pub fn element(&self) -> TypeId {
+        self.proof.element
     }
 
     pub fn field_index(&self) -> usize {
@@ -183,27 +192,29 @@ impl ValidatedUniformListFloat32Export<'_> {
     }
 
     pub fn child_len(&self) -> usize {
-        self.finite_proof.validated_values()
+        self.proof.child_len
     }
 
     pub fn child_byte_offset(&self) -> usize {
-        self.proof.child_offset * std::mem::size_of::<f32>()
+        self.proof.child_offset
+            * matrix_element_bytes(self.proof.element, "validated_list::child_byte_offset").expect("validated element")
     }
 
     pub fn binding_id(&self) -> ExecutionBindingId {
-        self.finite_proof.binding_id()
+        self.proof.binding_id
     }
 
     pub fn placement(&self) -> ExecutionPlacement {
-        self.finite_proof.placement()
+        self.proof.placement
     }
 
     pub fn offsets_observation(&self) -> BoundaryObservation {
         self.proof.offsets_observation
     }
 
-    pub fn finite_observation(&self) -> BoundaryObservation {
-        self.finite_proof.observation()
+    /// Finite-scan evidence for floating children; `None` for integer children.
+    pub fn finite_observation(&self) -> Option<BoundaryObservation> {
+        self.finite_proof.map(FiniteValidationProof::observation)
     }
 
     pub fn root_column_id(&self) -> ColumnId {
@@ -230,20 +241,21 @@ impl ValidatedUniformListFloat32Export<'_> {
             .expect("validated uniform-list child binding must remain present")
     }
 
-    /// Copy the exact proof-covered Float32 child range into an owned column
+    /// Copy the exact proof-covered numeric child range into an owned column
     /// on `runtime` without materializing vector payloads on the host.
     ///
     /// This is the owned-packing path for consumers such as mutable PCA input.
     /// Callers that only need a read-only tensor should instead activate the
     /// retained prepared export directly.
     pub fn copy_active_child_into_runtime(&self, runtime: &Runtime) -> Result<Column> {
-        copy_validated_list_float32_child_into_runtime(
+        copy_validated_list_child_into_runtime(
             self.export(),
             self.rows(),
             self.dimension(),
             self.child_len(),
+            self.element(),
             runtime,
-            "dataframe::ValidatedUniformListFloat32Export::copy_active_child_into_runtime",
+            "dataframe::ValidatedUniformListExport::copy_active_child_into_runtime",
         )
     }
 
@@ -251,14 +263,10 @@ impl ValidatedUniformListFloat32Export<'_> {
     /// allocation on `runtime`.
     ///
     /// Unlike composing [`copy_active_child_into_runtime`](Self::copy_active_child_into_runtime)
-    /// with [`Runtime::pack_flat_float32_column`], this activates the retained
+    /// with [`Runtime::pack_flat_column`], this activates the retained
     /// prepared read once and performs only the final payload copy/reorder.
-    pub fn pack_active_child_into_runtime(
-        &self,
-        runtime: &Runtime,
-        layout: DenseMatrixLayout,
-    ) -> Result<PackedFloat32Matrix> {
-        pack_validated_list_float32_child_into_runtime(
+    pub fn pack_active_child_into_runtime(&self, runtime: &Runtime, layout: DenseMatrixLayout) -> Result<PackedMatrix> {
+        pack_validated_list_child_into_runtime(
             self.export(),
             &self.producer_domain.0,
             self.child_values_binding(),
@@ -266,17 +274,22 @@ impl ValidatedUniformListFloat32Export<'_> {
             self.rows(),
             self.dimension(),
             self.child_len(),
+            self.element(),
             runtime,
             layout,
-            "dataframe::ValidatedUniformListFloat32Export::pack_active_child_into_runtime",
+            "dataframe::ValidatedUniformListExport::pack_active_child_into_runtime",
         )
     }
 }
 
-impl ValidatedFixedSizeListFloat32Export<'_> {
+impl ValidatedFixedSizeListExport<'_> {
     /// The retained producer-rooted export used to activate read access.
     pub fn export(&self) -> &PreparedColumnExport<'_> {
         &self.export
+    }
+
+    pub fn element(&self) -> TypeId {
+        self.proof.element
     }
 
     /// Positional field index in the retained [`GpuRecordBatch`](super::GpuRecordBatch) schema.
@@ -284,7 +297,7 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
         self.proof.field_index
     }
 
-    /// Number of Float32 values in every logical list row.
+    /// Number of values in every logical list row.
     pub fn dimension(&self) -> usize {
         self.proof.dimension as usize
     }
@@ -294,29 +307,30 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
         self.proof.rows
     }
 
-    /// Active child offset in Float32 elements from the values binding base.
+    /// Active child offset in elements from the values binding base.
     pub fn child_offset(&self) -> usize {
         self.proof.child_offset
     }
 
-    /// Number of active Float32 child values.
+    /// Number of active numeric child values.
     pub fn child_len(&self) -> usize {
-        self.finite_proof.validated_values()
+        self.proof.child_len
     }
 
     /// Active child byte offset from the values binding base.
     pub fn child_byte_offset(&self) -> usize {
-        self.proof.child_offset * std::mem::size_of::<f32>()
+        self.proof.child_offset
+            * matrix_element_bytes(self.proof.element, "validated_list::child_byte_offset").expect("validated element")
     }
 
     /// Exact producer stream/memory-resource binding covered by the proof.
     pub fn binding_id(&self) -> ExecutionBindingId {
-        self.finite_proof.binding_id()
+        self.proof.binding_id
     }
 
     /// Exact producer placement covered by the proof.
     pub fn placement(&self) -> ExecutionPlacement {
-        self.finite_proof.placement()
+        self.proof.placement
     }
 
     /// Bounded control-scalar evidence used to build the structural proof.
@@ -325,10 +339,9 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
         self.proof.observation
     }
 
-    /// Bounded control-scalar evidence that the exact active Float32 child
-    /// range contains only finite values.
-    pub fn finite_observation(&self) -> BoundaryObservation {
-        self.finite_proof.observation()
+    /// Finite-scan evidence for floating children; `None` for integer children.
+    pub fn finite_observation(&self) -> Option<BoundaryObservation> {
+        self.finite_proof.map(FiniteValidationProof::observation)
     }
 
     /// Semantic root list-column identity retained by the prepared export.
@@ -336,17 +349,17 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
         self.root_column_id
     }
 
-    /// Semantic Float32 child-column identity retained by the prepared export.
+    /// Semantic numeric child-column identity retained by the prepared export.
     pub fn child_column_id(&self) -> ColumnId {
         self.child_column_id
     }
 
-    /// Symbolic binding identity for the child Float32 values allocation.
+    /// Symbolic binding identity for the child values allocation.
     pub fn child_values_buffer_id(&self) -> BufferId {
         self.child_values_buffer_id
     }
 
-    /// Child values binding covered by this structural and finite witness.
+    /// Child values binding covered by this structural and optional finite witness.
     pub fn child_values_binding(&self) -> &BufferBinding<'_> {
         self.export
             .bindings()
@@ -355,20 +368,21 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
             .expect("validated fixed-size-list child binding must remain present")
     }
 
-    /// Copy the exact proof-covered Float32 child range into an owned column
+    /// Copy the exact proof-covered numeric child range into an owned column
     /// on `runtime` without materializing vector payloads on the host.
     ///
     /// This is the owned-packing path for consumers such as mutable PCA input.
     /// Callers that only need a read-only tensor should instead activate the
     /// retained prepared export directly.
     pub fn copy_active_child_into_runtime(&self, runtime: &Runtime) -> Result<Column> {
-        copy_validated_list_float32_child_into_runtime(
+        copy_validated_list_child_into_runtime(
             self.export(),
             self.rows(),
             self.dimension(),
             self.child_len(),
+            self.element(),
             runtime,
-            "dataframe::ValidatedFixedSizeListFloat32Export::copy_active_child_into_runtime",
+            "dataframe::ValidatedFixedSizeListExport::copy_active_child_into_runtime",
         )
     }
 
@@ -376,14 +390,10 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
     /// allocation on `runtime`.
     ///
     /// Unlike composing [`copy_active_child_into_runtime`](Self::copy_active_child_into_runtime)
-    /// with [`Runtime::pack_flat_float32_column`], this activates the retained
+    /// with [`Runtime::pack_flat_column`], this activates the retained
     /// prepared read once and performs only the final payload copy/reorder.
-    pub fn pack_active_child_into_runtime(
-        &self,
-        runtime: &Runtime,
-        layout: DenseMatrixLayout,
-    ) -> Result<PackedFloat32Matrix> {
-        pack_validated_list_float32_child_into_runtime(
+    pub fn pack_active_child_into_runtime(&self, runtime: &Runtime, layout: DenseMatrixLayout) -> Result<PackedMatrix> {
+        pack_validated_list_child_into_runtime(
             self.export(),
             &self.producer_domain.0,
             self.child_values_binding(),
@@ -391,14 +401,16 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
             self.rows(),
             self.dimension(),
             self.child_len(),
+            self.element(),
             runtime,
             layout,
-            "dataframe::ValidatedFixedSizeListFloat32Export::pack_active_child_into_runtime",
+            "dataframe::ValidatedFixedSizeListExport::pack_active_child_into_runtime",
         )
     }
 }
 
-fn pack_validated_list_float32_child_into_runtime(
+#[expect(clippy::too_many_arguments, reason = "proof, retained lease, and destination binding are separate contracts")]
+fn pack_validated_list_child_into_runtime(
     export: &PreparedColumnExport<'_>,
     producer_domain: &Arc<ExecutionDomain>,
     child_values: &BufferBinding<'_>,
@@ -406,10 +418,11 @@ fn pack_validated_list_float32_child_into_runtime(
     rows: usize,
     dimension: usize,
     child_len: usize,
+    element: TypeId,
     runtime: &Runtime,
     layout: DenseMatrixLayout,
     operation: &'static str,
-) -> Result<PackedFloat32Matrix> {
+) -> Result<PackedMatrix> {
     let expected_child_len = rows.checked_mul(dimension).ok_or_else(|| {
         Error::new_with(ErrorCode::SizeOverflow, operation, "validated list matrix shape overflowed usize")
             .with_detail("rows", rows.to_string())
@@ -428,7 +441,7 @@ fn pack_validated_list_float32_child_into_runtime(
         .with_detail("reason", "validated_list_matrix_shape_mismatch"));
     }
 
-    let child_bytes = child_len.checked_mul(std::mem::size_of::<f32>()).ok_or_else(|| {
+    let child_bytes = child_len.checked_mul(matrix_element_bytes(element, operation)?).ok_or_else(|| {
         Error::new_with(ErrorCode::SizeOverflow, operation, "validated list child byte length overflowed usize")
             .with_detail("validated_child_len", child_len.to_string())
             .with_detail("reason", "validated_list_child_byte_length_overflow")
@@ -480,9 +493,10 @@ fn pack_validated_list_float32_child_into_runtime(
     // retained device allocation. The active lease orders producer writes
     // before `runtime` and retains the allocation through completion below.
     let packed = unsafe {
-        runtime.pack_borrowed_flat_float32_device_values(
+        runtime.pack_borrowed_flat_device_values(
             child_address as *const std::ffi::c_void,
             producer_domain,
+            element,
             rows,
             dimension,
             layout,
@@ -497,11 +511,12 @@ fn pack_validated_list_float32_child_into_runtime(
     Ok(packed)
 }
 
-fn copy_validated_list_float32_child_into_runtime(
+fn copy_validated_list_child_into_runtime(
     export: &PreparedColumnExport<'_>,
     rows: usize,
     dimension: usize,
     child_len: usize,
+    element: TypeId,
     runtime: &Runtime,
     operation: &'static str,
 ) -> Result<Column> {
@@ -531,10 +546,10 @@ fn copy_validated_list_float32_child_into_runtime(
         .list_sliced_child()
         .map_err(|error| error.reanchor(operation))?;
     let child_type = child.data_type().map_err(|error| error.reanchor(operation))?;
-    if child_type.id() != TypeId::Float32 {
+    if child_type.id() != element {
         return Err(error::invariant_violation(
             operation,
-            "validated list import did not retain its Float32 child dtype",
+            "validated list import did not retain its proven child dtype",
         )
         .with_detail("actual_child_type", format!("{:?}", child_type.id()))
         .with_detail("reason", "validated_list_child_type_mismatch"));
@@ -550,11 +565,8 @@ fn copy_validated_list_float32_child_into_runtime(
         .with_detail("reason", "validated_list_child_range_mismatch"));
     }
     if child.null_count().map_err(|error| error.reanchor(operation))? != 0 {
-        return Err(error::invariant_violation(
-            operation,
-            "validated list import introduced null Float32 child values",
-        )
-        .with_detail("reason", "validated_list_child_null_mismatch"));
+        return Err(error::invariant_violation(operation, "validated list import introduced null child values")
+            .with_detail("reason", "validated_list_child_null_mismatch"));
     }
     copy_view_to_owned(&child).map_err(|error| error.reanchor(operation))
 }

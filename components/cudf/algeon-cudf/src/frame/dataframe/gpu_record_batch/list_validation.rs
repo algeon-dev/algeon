@@ -1,4 +1,4 @@
-//! List schema and offset validators for Float32 export proofs.
+//! List schema and offset validators for numeric export proofs.
 use std::{cell::Cell, sync::Arc};
 
 use arrow::datatypes::FieldRef;
@@ -6,9 +6,7 @@ use rapids_interop::{BufferId, ColumnId, ColumnLayout, PhysicalValidity, Prepare
 
 use super::{
     super::DataFrame,
-    list_float32_export::{
-        FixedSizeListStructuralProof, ListFloat32ExportContract, ListFloat32ExportParts, UniformListFloat32Proof,
-    },
+    list_export::{FixedSizeListStructuralProof, ListExportContract, ListExportParts, UniformListProof},
 };
 use crate::{
     core::{
@@ -28,7 +26,10 @@ use crate::{
         reduction::{self, ReduceAgg},
         unary,
     },
-    runtime::{BoundaryKind, BoundaryObservation, QueryMemoryObservation, record_boundary_observation_in_domain},
+    runtime::{
+        BoundaryKind, BoundaryObservation, QueryMemoryObservation, matrix_element_bytes,
+        record_boundary_observation_in_domain,
+    },
 };
 
 thread_local! {
@@ -91,6 +92,12 @@ pub(super) fn validate_fixed_size_list_offsets(
     operation: &'static str,
 ) -> Result<FixedSizeListStructuralProof> {
     let expected_dimension = fixed_size_list_expected_dimension(dimension, field_name, field_index, operation)?;
+    let element = view
+        .list_sliced_child()
+        .map_err(|error| error.reanchor(operation))?
+        .data_type()
+        .map_err(|error| error.reanchor(operation))?
+        .id();
 
     let (rows, child_offset, child_len, expected_child_len) =
         fixed_size_list_active_child_span(view, expected_dimension, field_name, field_index, operation)?;
@@ -113,6 +120,7 @@ pub(super) fn validate_fixed_size_list_offsets(
         return Ok(record_fixed_size_list_structural_proof(
             field_index,
             dimension,
+            element,
             rows,
             child_offset,
             child_len,
@@ -142,6 +150,7 @@ pub(super) fn validate_fixed_size_list_offsets(
     Ok(record_fixed_size_list_structural_proof(
         field_index,
         dimension,
+        element,
         rows,
         child_offset,
         child_len,
@@ -346,12 +355,12 @@ fn fixed_size_list_width_bounds(
     Ok((minimum, maximum, observation))
 }
 
-pub(super) fn validate_uniform_list_float32_offsets(
+pub(super) fn validate_uniform_list_offsets(
     view: &ColumnView<'_>,
     producer: &Arc<Column>,
     field_index: usize,
     operation: &'static str,
-) -> Result<UniformListFloat32Proof> {
+) -> Result<UniformListProof> {
     let rows = view.len().map_err(|error| error.reanchor_if_needed(operation))?;
     if rows == 0 {
         return Err(Error::new_with(
@@ -419,9 +428,15 @@ pub(super) fn validate_uniform_list_float32_offsets(
 
     let (child_offset, child_len) = uniform_list_active_child_span(view, rows, dimension, field_index, operation)?;
 
-    Ok(UniformListFloat32Proof {
+    Ok(UniformListProof {
         field_index,
         dimension,
+        element: view
+            .list_sliced_child()
+            .map_err(|error| error.reanchor(operation))?
+            .data_type()
+            .map_err(|error| error.reanchor(operation))?
+            .id(),
         rows,
         root_offset,
         child_offset,
@@ -568,6 +583,7 @@ fn uniform_list_active_child_span(
 fn record_fixed_size_list_structural_proof(
     field_index: usize,
     dimension: i32,
+    element: TypeId,
     rows: usize,
     child_offset: usize,
     child_len: usize,
@@ -578,6 +594,7 @@ fn record_fixed_size_list_structural_proof(
     FixedSizeListStructuralProof {
         field_index,
         dimension,
+        element,
         rows,
         child_offset,
         child_len,
@@ -637,6 +654,7 @@ pub(super) fn rebind_fixed_size_list_structural_proof(
     Ok(FixedSizeListStructuralProof {
         field_index: proof.field_index,
         dimension: proof.dimension,
+        element: proof.element,
         rows,
         child_offset,
         child_len,
@@ -647,16 +665,16 @@ pub(super) fn rebind_fixed_size_list_structural_proof(
     })
 }
 
-pub(super) fn validate_list_float32_export<'a>(
+pub(super) fn validate_list_export<'a>(
     export: PreparedColumnExport<'a>,
-    contract: ListFloat32ExportContract,
+    contract: ListExportContract,
     operation: &'static str,
-) -> Result<ListFloat32ExportParts<'a>> {
-    let (offsets_buffer_id, child_column_id) = check_list_float32_export_root(&export, &contract, operation)?;
-    let child_values_buffer_id = check_list_float32_export_child(&export, &contract, child_column_id, operation)?;
-    check_list_float32_export_child_values(&export, &contract, child_values_buffer_id, operation)?;
+) -> Result<ListExportParts<'a>> {
+    let (offsets_buffer_id, child_column_id) = check_list_export_root(&export, &contract, operation)?;
+    let child_values_buffer_id = check_list_export_child(&export, &contract, child_column_id, operation)?;
+    check_list_export_child_values(&export, &contract, child_values_buffer_id, operation)?;
 
-    Ok(ListFloat32ExportParts {
+    Ok(ListExportParts {
         root_column_id: export.column().id(),
         offsets_buffer_id,
         child_column_id,
@@ -665,8 +683,8 @@ pub(super) fn validate_list_float32_export<'a>(
     })
 }
 
-fn list_float32_export_contract_error(
-    contract: &ListFloat32ExportContract,
+fn list_export_contract_error(
+    contract: &ListExportContract,
     operation: &'static str,
     message: &'static str,
     reason: &'static str,
@@ -682,18 +700,18 @@ fn list_float32_export_contract_error(
     .with_detail("dimension", contract.dimension.to_string())
 }
 
-fn check_list_float32_export_root(
+fn check_list_export_root(
     export: &PreparedColumnExport<'_>,
-    contract: &ListFloat32ExportContract,
+    contract: &ListExportContract,
     operation: &'static str,
 ) -> Result<(BufferId, ColumnId)> {
     let root = export.column();
     if root.data_type().id() != rapids_interop::TypeId::List || root.len() != contract.rows {
-        return Err(list_float32_export_contract_error(
+        return Err(list_export_contract_error(
             contract,
             operation,
             "prepared export root does not match the validated List<Float32> row contract",
-            "list_float32_export_root_mismatch",
+            "list_export_root_mismatch",
         )
         .with_detail("root_type", format!("{:?}", root.data_type().id()))
         .with_detail("root_rows", root.len().to_string())
@@ -702,11 +720,11 @@ fn check_list_float32_export_root(
     if let Some(root_offset) = contract.root_offset
         && root.offset() != root_offset
     {
-        return Err(list_float32_export_contract_error(
+        return Err(list_export_contract_error(
             contract,
             operation,
             "prepared list export root offset differs from the proven active range",
-            "list_float32_export_root_offset_mismatch",
+            "list_export_root_offset_mismatch",
         )
         .with_detail("proof_root_offset", root_offset.to_string())
         .with_detail("export_root_offset", root.offset().to_string()));
@@ -724,7 +742,7 @@ fn check_list_float32_export_root(
     let (offsets_buffer_id, child_column_id) = match root.layout() {
         ColumnLayout::List { offsets, child } => (*offsets, *child),
         _ => {
-            return Err(list_float32_export_contract_error(
+            return Err(list_export_contract_error(
                 contract,
                 operation,
                 "prepared export root does not retain a list layout",
@@ -733,7 +751,7 @@ fn check_list_float32_export_root(
         },
     };
     if !export.bindings().iter().any(|binding| binding.id() == offsets_buffer_id) {
-        return Err(list_float32_export_contract_error(
+        return Err(list_export_contract_error(
             contract,
             operation,
             "prepared List<Float32> export lost its offsets binding",
@@ -743,31 +761,45 @@ fn check_list_float32_export_root(
     Ok((offsets_buffer_id, child_column_id))
 }
 
-fn check_list_float32_export_child(
+fn check_list_export_child(
     export: &PreparedColumnExport<'_>,
-    contract: &ListFloat32ExportContract,
+    contract: &ListExportContract,
     child_column_id: ColumnId,
     operation: &'static str,
 ) -> Result<BufferId> {
     let child = export.semantic_columns().iter().find(|column| column.id() == child_column_id).ok_or_else(|| {
-        list_float32_export_contract_error(
+        list_export_contract_error(
             contract,
             operation,
             "prepared List<Float32> export lost its semantic child column",
             "list_float32_child_column_missing",
         )
     })?;
-    if child.data_type().id() != rapids_interop::TypeId::Float32 {
-        return Err(list_float32_export_contract_error(
+    let expected = match contract.element {
+        TypeId::Float32 => rapids_interop::TypeId::Float32,
+        TypeId::Float64 => rapids_interop::TypeId::Float64,
+        TypeId::Int8 => rapids_interop::TypeId::Int8,
+        TypeId::UInt8 => rapids_interop::TypeId::UInt8,
+        _ => {
+            return Err(list_export_contract_error(
+                contract,
+                operation,
+                "unsupported list child type",
+                "unsupported_list_child_type",
+            ));
+        },
+    };
+    if child.data_type().id() != expected {
+        return Err(list_export_contract_error(
             contract,
             operation,
-            "prepared list child is not Float32",
+            "prepared list child differs from proven element",
             "list_float32_child_type_mismatch",
         )
         .with_detail("child_type", format!("{:?}", child.data_type().id())));
     }
     if child.len() != contract.child_len || child.offset() != contract.child_offset {
-        return Err(list_float32_export_contract_error(
+        return Err(list_export_contract_error(
             contract,
             operation,
             "prepared List<Float32> child active range differs from the structural proof",
@@ -790,7 +822,7 @@ fn check_list_float32_export_child(
     let child_values_buffer_id = match child.layout() {
         ColumnLayout::FixedWidth { values } => *values,
         _ => {
-            return Err(list_float32_export_contract_error(
+            return Err(list_export_contract_error(
                 contract,
                 operation,
                 "prepared List<Float32> child is not fixed-width",
@@ -801,15 +833,15 @@ fn check_list_float32_export_child(
     Ok(child_values_buffer_id)
 }
 
-fn check_list_float32_export_child_values(
+fn check_list_export_child_values(
     export: &PreparedColumnExport<'_>,
-    contract: &ListFloat32ExportContract,
+    contract: &ListExportContract,
     child_values_buffer_id: BufferId,
     operation: &'static str,
 ) -> Result<()> {
     let child_values =
         export.bindings().iter().find(|binding| binding.id() == child_values_buffer_id).ok_or_else(|| {
-            list_float32_export_contract_error(
+            list_export_contract_error(
                 contract,
                 operation,
                 "prepared List<Float32> export lost its child values binding",
@@ -819,9 +851,9 @@ fn check_list_float32_export_child_values(
     let required_child_bytes = contract
         .child_offset
         .checked_add(contract.child_len)
-        .and_then(|elements| elements.checked_mul(std::mem::size_of::<f32>()))
+        .and_then(|elements| elements.checked_mul(matrix_element_bytes(contract.element, operation).ok()?))
         .ok_or_else(|| {
-            list_float32_export_contract_error(
+            list_export_contract_error(
                 contract,
                 operation,
                 "validated List<Float32> child byte range overflowed usize",
@@ -829,7 +861,7 @@ fn check_list_float32_export_child_values(
             )
         })?;
     if child_values.bytes().byte_len() < required_child_bytes {
-        return Err(list_float32_export_contract_error(
+        return Err(list_export_contract_error(
             contract,
             operation,
             "prepared List<Float32> child values binding is smaller than the proven active range",
@@ -844,7 +876,7 @@ fn check_list_float32_export_child_values(
         child_values.placement(),
         rapids_interop::Placement::CudaDevice { device } if *device == expected_device
     ) {
-        return Err(list_float32_export_contract_error(
+        return Err(list_export_contract_error(
             contract,
             operation,
             "prepared List<Float32> child values binding is not on the proven CUDA device",
@@ -855,11 +887,11 @@ fn check_list_float32_export_child_values(
         ProducerReadiness::DeviceStreamOrdered { stream }
             if stream.device() == expected_device && stream.as_raw() as usize == contract.placement.stream_debug => {},
         _ => {
-            return Err(list_float32_export_contract_error(
+            return Err(list_export_contract_error(
                 contract,
                 operation,
                 "prepared List<Float32> export readiness differs from the proven execution stream",
-                "list_float32_export_readiness_mismatch",
+                "list_export_readiness_mismatch",
             ));
         },
     }

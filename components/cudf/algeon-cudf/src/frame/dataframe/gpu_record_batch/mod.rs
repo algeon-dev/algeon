@@ -8,7 +8,11 @@ use arrow::{
 
 use super::DataFrame;
 use crate::{
-    core::error::{self, Error, ErrorCode, Result},
+    core::{
+        column::ColumnView,
+        error::{self, Error, ErrorCode, Result},
+        types::TypeId,
+    },
     interop::{
         arrow_device::DeviceArrowTableExport,
         arrow_host::{ArrowHostSchema, estimate_arrow_host_record_batch_memory_bytes},
@@ -18,20 +22,43 @@ use crate::{
 };
 
 mod host_batch_cursor;
-mod list_float32_export;
-mod list_float32_validation;
+mod list_export;
+mod list_validation;
 mod schema_contract;
 
 pub use host_batch_cursor::{HostBatchCursor, HostBatchCursorConfig, PreparedHostBatch};
-use list_float32_export::{FixedSizeListStructuralProof, UniformListFloat32Proof};
-pub use list_float32_export::{ValidatedFixedSizeListFloat32Export, ValidatedUniformListFloat32Export};
-pub(crate) use list_float32_validation::{
+use list_export::{FixedSizeListStructuralProof, UniformListProof};
+pub use list_export::{ValidatedFixedSizeListExport, ValidatedUniformListExport};
+pub(crate) use list_validation::{
     fixed_size_list_structural_proof_build_count_for_test, reset_fixed_size_list_structural_proof_build_count_for_test,
 };
-use list_float32_validation::{
-    rebind_fixed_size_list_structural_proof, validate_list_float32_export, validate_uniform_list_float32_offsets,
-};
+use list_validation::{rebind_fixed_size_list_structural_proof, validate_list_export, validate_uniform_list_offsets};
 use schema_contract::{record_batch_with_schema_contract, validate_frame_schema};
+
+fn validate_list_child_finite(
+    child: &ColumnView<'_>,
+    element: TypeId,
+    operation: &'static str,
+) -> Result<Option<validation::FiniteValidationProof>> {
+    let actual = child.data_type().map_err(|error| error.reanchor(operation))?.id();
+    if actual != element {
+        return Err(Error::new_with(ErrorCode::TypeMismatch, operation, "list child differs from structural proof")
+            .with_detail("actual_element", actual.name())
+            .with_detail("proof_element", element.name()));
+    }
+    match element {
+        TypeId::Float32 => validation::validate_finite_float32(child).map(Some),
+        TypeId::Float64 => validation::validate_finite_float64(child).map(Some),
+        TypeId::Int8 | TypeId::UInt8 => Ok(None),
+        _ => Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "list child must be Float32, Float64, Int8, or UInt8",
+        )
+        .with_detail("supported_elements", "Float32, Float64, Int8, UInt8")),
+    }
+    .map_err(|error| error.reanchor(operation))
+}
 
 pub(super) struct RetainedProducerDomain(pub(super) Arc<ExecutionDomain>);
 
@@ -133,7 +160,7 @@ impl GpuRecordBatch {
         self.frame.placement()
     }
 
-    /// Prepare a zero-copy device export for one `FixedSizeList<Float32>`
+    /// Prepare a zero-copy device export for one `FixedSizeList<numeric>`
     /// field whose complete active range was structurally validated when this
     /// batch was created and finite-validated immediately before export.
     ///
@@ -143,31 +170,28 @@ impl GpuRecordBatch {
     /// because a dense vector consumer cannot represent them. Read access
     /// still requires activation through
     /// [`PreparedColumnExport::try_activate_read_lease`](rapids_interop::PreparedColumnExport::try_activate_read_lease).
-    pub fn try_prepare_fixed_size_list_float32_export(
-        &self,
-        field_index: usize,
-    ) -> Result<ValidatedFixedSizeListFloat32Export<'_>> {
+    pub fn try_prepare_fixed_size_list_export(&self, field_index: usize) -> Result<ValidatedFixedSizeListExport<'_>> {
         let proof =
             self.fixed_size_list_proofs.iter().find(|proof| proof.field_index == field_index).copied().ok_or_else(
                 || {
                     Error::new_with(
                         ErrorCode::UnsupportedDtype,
-                        "dataframe::GpuRecordBatch::try_prepare_fixed_size_list_float32_export",
+                        "dataframe::GpuRecordBatch::try_prepare_fixed_size_list_export",
                         "requested field is not a validated FixedSizeList",
                     )
                     .with_detail("field_index", field_index.to_string())
                     .with_detail("reason", "fixed_size_list_structural_proof_unavailable")
                 },
             )?;
-        self.try_prepare_fixed_size_list_float32_export_with_proof(field_index, proof)
+        self.try_prepare_fixed_size_list_export_with_proof(field_index, proof)
     }
 
-    fn try_prepare_fixed_size_list_float32_export_with_proof(
+    fn try_prepare_fixed_size_list_export_with_proof(
         &self,
         field_index: usize,
         proof: FixedSizeListStructuralProof,
-    ) -> Result<ValidatedFixedSizeListFloat32Export<'_>> {
-        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_fixed_size_list_float32_export";
+    ) -> Result<ValidatedFixedSizeListExport<'_>> {
+        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_fixed_size_list_export";
         let (_, producer) = self.frame.columns_map().get_index(field_index).ok_or_else(|| {
             Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "fixed-size-list field index is out of bounds")
                 .with_detail("field_index", field_index.to_string())
@@ -190,30 +214,37 @@ impl GpuRecordBatch {
             .try_prepare_device_column_export()
             .map_err(|error| error::from_interop_in(error, OPERATION))?
             .with_retained_owner_arc(Arc::clone(producer));
-        let parts = validate_list_float32_export(export, proof.into(), OPERATION)?;
+        let parts = validate_list_export(export, proof.into(), OPERATION)?;
         let child = producer
             .view()
             .map_err(|error| error.reanchor(OPERATION))?
             .list_sliced_child()
             .map_err(|error| error.reanchor(OPERATION))?;
-        let finite_proof = validation::validate_finite_float32(&child).map_err(|error| error.reanchor(OPERATION))?;
-        if finite_proof.validated_values() != proof.child_len
-            || finite_proof.binding_id() != proof.binding_id
-            || finite_proof.placement() != proof.placement
-        {
+        let finite_proof = validate_list_child_finite(&child, proof.element, OPERATION)?;
+        if finite_proof.is_some_and(|finite_proof| {
+            finite_proof.validated_values() != proof.child_len
+                || finite_proof.binding_id() != proof.binding_id
+                || finite_proof.placement() != proof.placement
+        }) {
             return Err(error::invariant_violation(
                 OPERATION,
                 "FixedSizeList finite-value proof does not cover the structurally proven child range",
             )
             .with_detail("field_index", field_index.to_string())
             .with_detail("structural_child_len", proof.child_len.to_string())
-            .with_detail("finite_validated_values", finite_proof.validated_values().to_string())
+            .with_detail(
+                "finite_validated_values",
+                finite_proof.map(|proof| proof.validated_values()).unwrap_or(0).to_string(),
+            )
             .with_detail("structural_binding_id", proof.binding_id.to_string())
-            .with_detail("finite_binding_id", finite_proof.binding_id().to_string())
+            .with_detail(
+                "finite_binding_id",
+                finite_proof.map(|proof| proof.binding_id().to_string()).unwrap_or_default(),
+            )
             .with_detail("reason", "fixed_size_list_finite_proof_mismatch"));
         }
 
-        Ok(ValidatedFixedSizeListFloat32Export {
+        Ok(ValidatedFixedSizeListExport {
             export: parts.export,
             producer_domain: RetainedProducerDomain(Arc::clone(producer.execution_domain())),
             proof,
@@ -225,7 +256,7 @@ impl GpuRecordBatch {
     }
 
     /// Prepare a zero-copy device export for a variable-width Arrow
-    /// `List<Float32>` or `LargeList<Float32>` field whose active rows all
+    /// `List<numeric>` or `LargeList<numeric>` field whose active rows all
     /// have one uniform positive dimension.
     ///
     /// The dimension is derived from device-reduced active offset deltas; it
@@ -234,27 +265,27 @@ impl GpuRecordBatch {
     /// Root/child nulls, non-monotonic or ragged offsets, zero-width rows, and
     /// non-finite child values are rejected before the proof-bearing witness
     /// is returned.
-    pub fn try_prepare_uniform_list_float32_export(
-        &self,
-        field_index: usize,
-    ) -> Result<ValidatedUniformListFloat32Export<'_>> {
-        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_uniform_list_float32_export";
+    pub fn try_prepare_uniform_list_export(&self, field_index: usize) -> Result<ValidatedUniformListExport<'_>> {
+        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_uniform_list_export";
         let field = self.schema.fields().get(field_index).ok_or_else(|| {
             Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "list field index is out of bounds")
                 .with_detail("field_index", field_index.to_string())
                 .with_detail("field_count", self.schema.fields().len().to_string())
         })?;
-        let float32_child = match field.data_type() {
+        let supported_child = match field.data_type() {
             ArrowDataType::List(child) | ArrowDataType::LargeList(child) => {
-                matches!(child.data_type(), ArrowDataType::Float32)
+                matches!(
+                    child.data_type(),
+                    ArrowDataType::Float32 | ArrowDataType::Float64 | ArrowDataType::Int8 | ArrowDataType::UInt8
+                )
             },
             _ => false,
         };
-        if !float32_child {
+        if !supported_child {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
                 OPERATION,
-                "uniform list export requires a variable-width List<Float32> schema field",
+                "uniform list export requires a variable-width list of Float32, Float64, Int8, or UInt8",
             )
             .with_detail("field_index", field_index.to_string())
             .with_detail("arrow_type", format!("{:?}", field.data_type()))
@@ -267,16 +298,16 @@ impl GpuRecordBatch {
                 .with_detail("column_count", self.frame.num_columns().to_string())
         })?;
         let view = producer.view().map_err(|error| error.reanchor(OPERATION))?;
-        let proof = validate_uniform_list_float32_offsets(&view, producer, field_index, OPERATION)?;
-        self.try_prepare_uniform_list_float32_export_with_proof(field_index, proof)
+        let proof = validate_uniform_list_offsets(&view, producer, field_index, OPERATION)?;
+        self.try_prepare_uniform_list_export_with_proof(field_index, proof)
     }
 
-    fn try_prepare_uniform_list_float32_export_with_proof(
+    fn try_prepare_uniform_list_export_with_proof(
         &self,
         field_index: usize,
-        proof: UniformListFloat32Proof,
-    ) -> Result<ValidatedUniformListFloat32Export<'_>> {
-        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_uniform_list_float32_export";
+        proof: UniformListProof,
+    ) -> Result<ValidatedUniformListExport<'_>> {
+        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_uniform_list_export";
         let (_, producer) = self.frame.columns_map().get_index(field_index).ok_or_else(|| {
             Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "list producer index is out of bounds")
                 .with_detail("field_index", field_index.to_string())
@@ -299,30 +330,37 @@ impl GpuRecordBatch {
             .try_prepare_device_column_export()
             .map_err(|error| error::from_interop_in(error, OPERATION))?
             .with_retained_owner_arc(Arc::clone(producer));
-        let parts = validate_list_float32_export(export, proof.into(), OPERATION)?;
+        let parts = validate_list_export(export, proof.into(), OPERATION)?;
         let child = producer
             .view()
             .map_err(|error| error.reanchor(OPERATION))?
             .list_sliced_child()
             .map_err(|error| error.reanchor(OPERATION))?;
-        let finite_proof = validation::validate_finite_float32(&child).map_err(|error| error.reanchor(OPERATION))?;
-        if finite_proof.validated_values() != proof.child_len
-            || finite_proof.binding_id() != proof.binding_id
-            || finite_proof.placement() != proof.placement
-        {
+        let finite_proof = validate_list_child_finite(&child, proof.element, OPERATION)?;
+        if finite_proof.is_some_and(|finite_proof| {
+            finite_proof.validated_values() != proof.child_len
+                || finite_proof.binding_id() != proof.binding_id
+                || finite_proof.placement() != proof.placement
+        }) {
             return Err(error::invariant_violation(
                 OPERATION,
                 "uniform-list finite proof does not cover the offset-proven active child range",
             )
             .with_detail("field_index", field_index.to_string())
             .with_detail("offset_proof_child_len", proof.child_len.to_string())
-            .with_detail("finite_validated_values", finite_proof.validated_values().to_string())
+            .with_detail(
+                "finite_validated_values",
+                finite_proof.map(|proof| proof.validated_values()).unwrap_or(0).to_string(),
+            )
             .with_detail("offset_proof_binding_id", proof.binding_id.to_string())
-            .with_detail("finite_binding_id", finite_proof.binding_id().to_string())
+            .with_detail(
+                "finite_binding_id",
+                finite_proof.map(|proof| proof.binding_id().to_string()).unwrap_or_default(),
+            )
             .with_detail("reason", "uniform_list_finite_proof_mismatch"));
         }
 
-        Ok(ValidatedUniformListFloat32Export {
+        Ok(ValidatedUniformListExport {
             export: parts.export,
             producer_domain: RetainedProducerDomain(Arc::clone(producer.execution_domain())),
             proof,
@@ -345,8 +383,8 @@ impl GpuRecordBatch {
                 .with_detail("field_index", field_index.to_string())
         })?;
         let view = producer.view().map_err(|error| error.reanchor(OPERATION))?;
-        let proof = validate_uniform_list_float32_offsets(&view, producer, field_index, OPERATION)?;
-        self.try_prepare_uniform_list_float32_export_with_proof(field_index, proof).map(drop)
+        let proof = validate_uniform_list_offsets(&view, producer, field_index, OPERATION)?;
+        self.try_prepare_uniform_list_export_with_proof(field_index, proof).map(drop)
     }
 
     pub(crate) fn trigger_fixed_size_list_proof_identity_mismatch_for_test(
@@ -366,7 +404,7 @@ impl GpuRecordBatch {
                 "proof owner does not contain the requested FixedSizeList proof",
             )
         })?;
-        self.try_prepare_fixed_size_list_float32_export_with_proof(field_index, proof).map(drop)
+        self.try_prepare_fixed_size_list_export_with_proof(field_index, proof).map(drop)
     }
 
     /// Materialize this GPU batch as a host Arrow RecordBatch.
