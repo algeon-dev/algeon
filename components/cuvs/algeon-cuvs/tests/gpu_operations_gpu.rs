@@ -27,9 +27,9 @@ use cudf::{
     runtime::stream::CudaStream,
 };
 use cuvs::{
-    BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, KMeansInit, KMeansMetric, KMeansModel,
-    KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams, ValidatedDeviceTensor, fit_transform_owned,
-    pairwise_distance_into, select_k_into,
+    BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, IvfFlatIndex, IvfFlatIndexParams,
+    IvfFlatSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout, PcaOutputBuffers,
+    PcaParams, ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
 };
 
 #[derive(Debug)]
@@ -409,6 +409,80 @@ fn brute_force_search_writes_caller_owned_device_buffers() {
     assert!(neighbors.iter().all(|neighbor| (0..10).contains(neighbor)));
     assert!(distances.iter().all(|distance| distance.is_finite()));
     assert_eq!(&neighbors[..3], &[0, 1, 2]);
+}
+
+#[test]
+fn ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed() {
+    let (runtime, resources, _reservation) = resources();
+    let data = DeviceBuffer::from_slice(
+        &resources,
+        &[
+            1.0_f32, 0.0, 1.1, 0.2, 0.9, 0.4, 0.0, 1.0, 0.2, 0.9, 0.4, 0.8, -1.0, 0.0, -0.9, 0.2, -0.8, 0.4, 0.0, -1.0,
+            0.2, -0.9, 0.4, -0.8,
+        ],
+    )
+    .unwrap();
+    let queries = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.05, 0.05, 1.0, -1.0, 0.05]).unwrap();
+    let matrix = data.as_validated_matrix(&resources, 12, 2).unwrap();
+    let query_matrix = queries.as_validated_matrix(&resources, 3, 2).unwrap();
+    for metric in [
+        DistanceMetric::L2Expanded,
+        DistanceMetric::L2SqrtExpanded,
+        DistanceMetric::InnerProduct,
+        DistanceMetric::CosineExpanded,
+    ] {
+        let brute = BruteForceIndex::build(&resources, &matrix, metric).unwrap();
+        let mut oracle_ids = DeviceBuffer::<i64>::new(&resources, 9).unwrap();
+        let mut oracle_distances = DeviceBuffer::<f32>::new(&resources, 9).unwrap();
+        brute.search_into(&query_matrix, 3, &mut oracle_ids, &mut oracle_distances).unwrap();
+        let oracle_ids = i64_to_host(&runtime, oracle_ids);
+        let oracle_distances = f32_to_host(&runtime, oracle_distances);
+        brute.close().unwrap();
+
+        let index = IvfFlatIndex::build(&resources, &matrix, IvfFlatIndexParams::new(metric, 3)).unwrap();
+        let mut ids = DeviceBuffer::<i64>::new(&resources, 9).unwrap();
+        let mut distances = DeviceBuffer::<f32>::new(&resources, 9).unwrap();
+        index.search_into(&query_matrix, 3, IvfFlatSearchParams { n_probes: 3 }, &mut ids, &mut distances).unwrap();
+        assert_eq!(i64_to_host(&runtime, ids), oracle_ids, "metric {metric:?} recall@3");
+        for (actual, expected) in f32_to_host(&runtime, distances).iter().zip(oracle_distances.iter()) {
+            assert!((actual - expected).abs() < 1e-3, "metric {metric:?}: {actual} != {expected}");
+        }
+        index.close().unwrap();
+    }
+}
+
+#[test]
+fn ivf_flat_marks_unprobed_slots_and_rejects_foreign_bindings() {
+    let (runtime, resources, _reservation) = resources();
+    let data = DeviceBuffer::from_slice(
+        &resources,
+        &[1.0_f32, 0.0, 1.1, 0.0, 1.2, 0.0, 10.0, 0.0, 10.1, 0.0, 10.2, 0.0, 20.0, 0.0, 20.1, 0.0, 20.2, 0.0],
+    )
+    .unwrap();
+    let queries = DeviceBuffer::from_slice(&resources, &[1.0_f32, 0.0]).unwrap();
+    let matrix = data.as_validated_matrix(&resources, 9, 2).unwrap();
+    let query_matrix = queries.as_validated_matrix(&resources, 1, 2).unwrap();
+    let index =
+        IvfFlatIndex::build(&resources, &matrix, IvfFlatIndexParams::new(DistanceMetric::L2Expanded, 3)).unwrap();
+    let mut ids = DeviceBuffer::<i64>::new(&resources, 8).unwrap();
+    let mut distances = DeviceBuffer::<f32>::new(&resources, 8).unwrap();
+    index.search_into(&query_matrix, 8, IvfFlatSearchParams { n_probes: 1 }, &mut ids, &mut distances).unwrap();
+    let ids = i64_to_host(&runtime, ids);
+    let distances = f32_to_host(&runtime, distances);
+    assert!(ids.contains(&i64::MAX), "one probed list cannot contain eight of nine rows");
+    assert!(ids.iter().zip(distances.iter()).all(|(id, distance)| *id == i64::MAX || distance.is_finite()));
+    assert!(ids.iter().zip(distances.iter()).any(|(id, distance)| *id == i64::MAX && distance.is_infinite()));
+    let foreign_stream = CudaStream::new().unwrap();
+    let foreign_runtime =
+        Arc::new(Runtime::builder().with_device(runtime.device()).with_stream(foreign_stream).build().unwrap());
+    let foreign_resources = CuvsResources::for_runtime(foreign_runtime).unwrap();
+    assert_eq!(
+        IvfFlatIndex::build(&foreign_resources, &matrix, IvfFlatIndexParams::new(DistanceMetric::L2Expanded, 3))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidInput
+    );
+    index.close().unwrap();
 }
 
 #[test]

@@ -513,6 +513,7 @@ pub fn algeon_datafusion::cugraph_sql::stable_result_schema(algeon_datafusion::c
 pub mod algeon_datafusion::cuvs_sql
 pub use algeon_datafusion::cuvs_sql::CUVS_BRUTE_FORCE_KNN_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_ID_TYPES
+pub use algeon_datafusion::cuvs_sql::CUVS_IVF_FLAT_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_KMEANS_FUNCTION
 pub use algeon_datafusion::cuvs_sql::CUVS_OPERATION_REGISTRY
 pub use algeon_datafusion::cuvs_sql::CUVS_PAIRWISE_DISTANCE_FUNCTION

@@ -70,6 +70,38 @@ async fn native_required_accepts_a_raw_cugraph_function_root() {
 }
 
 #[tokio::test]
+async fn ivf_flat_sql_matches_exact_search_and_omits_missing_neighbors() {
+    let (backend, ctx) = cuvs_bounded_context();
+    register_tables(&ctx);
+    let exact = "SELECT query_id, neighbor_id, rank FROM cuvs_brute_force_knn(\
+        dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+        queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+        k => 2, metric => 'l2_expanded') ORDER BY query_ordinal, rank";
+    let approximate = "SELECT query_id, neighbor_id, rank FROM cuvs_ivf_flat(\
+        dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+        queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+        k => 2, metric => 'l2_expanded', n_lists => 2, n_probes => 2) ORDER BY query_ordinal, rank";
+    let exact = collect(plan_sql(&ctx, exact).await, ctx.task_ctx()).await.expect("exact oracle");
+    let actual = collect(plan_sql(&ctx, approximate).await, ctx.task_ctx()).await.expect("IVF-Flat SQL");
+    let exact = &exact[0];
+    let actual = &actual[0];
+    assert_eq!(actual.num_rows(), 2, "n_probes = n_lists gives recall@2 = 1");
+    for column in 0..3 {
+        assert_eq!(format!("{:?}", actual.column(column)), format!("{:?}", exact.column(column)));
+    }
+    let partial = "SELECT query_ordinal, rank, neighbor_id FROM cuvs_ivf_flat(\
+        dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+        queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+        k => 4, metric => 'l2_expanded', n_lists => 2, n_probes => 1) ORDER BY query_ordinal, rank";
+    let partial = collect(plan_sql(&ctx, partial).await, ctx.task_ctx()).await.expect("IVF-Flat sentinel omission");
+    let rows: usize = partial.iter().map(RecordBatch::num_rows).sum();
+    assert!((1..4).contains(&rows), "a single list has fewer than four of four dataset rows");
+    let ranks = partial[0].column(1).as_any().downcast_ref::<UInt32Array>().unwrap();
+    assert_eq!(ranks.values().as_ref(), &(1..=rows as u32).collect::<Vec<_>>());
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
 async fn pairwise_and_top_k_sql_produce_ranked_device_results() {
     let (backend, ctx) = cuvs_bounded_context();
     register_tables(&ctx);

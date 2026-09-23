@@ -12,9 +12,10 @@ use query_engine::{
     expr::Expr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPairwiseDistanceParams,
-        VectorPcaParams, VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema,
-        vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansParams,
+        VectorPairwiseDistanceParams, VectorPcaParams, VectorRelationBinding, VectorRowIdBinding,
+        vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
+        vector_pca_output_schema,
     },
     runtime::{
         ExecutionContext, MemoryControlPolicy,
@@ -127,6 +128,89 @@ fn exact_knn_executes_gpu_resident_with_deterministic_ids_and_observed_stages() 
     assert!(task_mappings.iter().any(|mapping| mapping.operator_kind.as_deref() == Some("vector_algorithm")));
     assert!(task_mappings.iter().any(|mapping| mapping.operator_kind.as_deref() == Some("unary")));
     admitted.finish();
+}
+
+#[test]
+fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
+    let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
+    let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
+    let dataset_batch = RecordBatch::try_new(
+        Arc::clone(&dataset_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5])),
+            Arc::new(Float32Array::from(vec![0.0, 0.1, 0.2, 10.0, 10.1, 10.2])),
+        ],
+    )
+    .unwrap();
+    let query_batch = RecordBatch::try_new(
+        Arc::clone(&query_schema),
+        vec![Arc::new(Int64Array::from(vec![99])), Arc::new(Float32Array::from(vec![0.0]))],
+    )
+    .unwrap();
+    for (k, n_lists, n_probes, reason) in
+        [(5, 2, 1, None), (1, 7, 1, Some("n_lists_exceeds_dataset_rows")), (7, 2, 1, Some("k_exceeds_dataset_rows"))]
+    {
+        let mut builder = QueryPlanBuilder::new();
+        let dataset =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&dataset_schema))));
+        let queries =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&query_schema))));
+        let mut params = VectorIvfFlatParams::new(
+            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x"]),
+            k,
+            VectorDistanceMetric::L2Expanded,
+            n_lists,
+        );
+        params.n_probes = n_probes;
+        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+            VectorAlgorithm::IvfFlat,
+            VectorAlgorithmParams::IvfFlat(params),
+            vector_knn_output_schema(DataType::Int64, DataType::Int64),
+        ));
+        let plan = builder.finish_with_host_sink(root);
+        let context = backend_context();
+        let admitted = context.admit_plan(&plan).expect("IVF-Flat plan admission");
+        let runtime = Arc::new(admitted.runtime().unwrap());
+        let mut gpu_inputs = GpuResidentInputMap::new();
+        for (name, schema, batch) in
+            [("dataset", &dataset_schema, &dataset_batch), ("queries", &query_schema, &query_batch)]
+        {
+            gpu_inputs.insert(
+                name.into(),
+                GpuResultHandle::new(
+                    &admitted,
+                    GpuDataFrame::new(DataFrame::from_record_batch(&runtime, batch).unwrap()),
+                    Arc::clone(schema),
+                )
+                .unwrap(),
+            );
+        }
+        let (result, _, _) = execute_query_plan_direct(
+            admitted.context.context(),
+            QueryExecutionRequest::new(&plan).with_gpu_inputs(&gpu_inputs),
+        )
+        .into_parts();
+        match reason {
+            Some(reason) => {
+                let error = match result {
+                    Ok(_) => panic!("invalid evaluated dataset cardinality"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.fact_value("reason"), Some(reason));
+            },
+            None => {
+                let QueryOutput::HostArrow(batch) = result.expect("IVF-Flat execution") else { panic!("host result") };
+                assert!((1..5).contains(&batch.num_rows()));
+                let ranks = batch.column(4).as_any().downcast_ref::<UInt32Array>().unwrap();
+                assert_eq!(ranks.values().as_ref(), &(1..=batch.num_rows() as u32).collect::<Vec<_>>());
+            },
+        }
+        drop(gpu_inputs);
+        drop(runtime);
+        assert_attempt_domain_released(&admitted);
+        admitted.finish();
+    }
 }
 
 #[test]

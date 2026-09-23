@@ -11,9 +11,9 @@ use std::{
 use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 use algeon_datafusion::{
     cuvs_sql::{
-        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION,
-        CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode, CuvsOperation, CuvsOptionKind,
-        CuvsRelationRole, cuvs_options_json_schema,
+        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY,
+        CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode,
+        CuvsOperation, CuvsOptionKind, CuvsRelationRole, cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -67,6 +67,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         names,
         [
             CUVS_BRUTE_FORCE_KNN_FUNCTION,
+            CUVS_IVF_FLAT_FUNCTION,
             CUVS_PAIRWISE_DISTANCE_FUNCTION,
             CUVS_TOP_K_FUNCTION,
             CUVS_KMEANS_FUNCTION,
@@ -96,6 +97,16 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         CUVS_ID_TYPES,
         &[CuvsIdType::Int32, CuvsIdType::Int64, CuvsIdType::Utf8, CuvsIdType::LargeUtf8, CuvsIdType::Utf8View,]
     );
+
+    let ivf = cuvs_options_json_schema(CuvsOperation::IvfFlat);
+    assert_eq!(ivf["required"], serde_json::json!(["dataset", "queries", "k", "metric", "n_lists"]));
+    assert_eq!(ivf["properties"]["n_lists"]["minimum"], 1);
+    assert_eq!(ivf["properties"]["n_probes"]["default"], 20);
+    assert_eq!(ivf["properties"]["kmeans_n_iters"]["default"], 20);
+    assert_eq!(ivf["properties"]["kmeans_trainset_fraction"]["exclusiveMinimum"], 0);
+    assert_eq!(ivf["properties"]["kmeans_trainset_fraction"]["maximum"], 1);
+    assert_eq!(ivf["properties"]["kmeans_trainset_fraction"]["default"], 0.5);
+    assert_eq!(ivf["properties"]["metric"]["enum"], knn["properties"]["metric"]["enum"]);
 
     let pca = cuvs_options_json_schema(CuvsOperation::Pca);
     assert_eq!(pca["properties"]["solver"]["default"], "cov_eig_dq");

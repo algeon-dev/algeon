@@ -162,6 +162,25 @@ fn int64_device_buffer_range_proof_rejects_empty_interval_before_execution() {
     assert_eq!(error.detail_value("reason"), Some("invalid_validation_range"));
 }
 
+fn missing_neighbor_normalization_rejects_invalid_indices_and_non_finite_valid_distances() {
+    let rt = Runtime::new().unwrap();
+    let mut neighbors = rt.device_buffer_from_host_data(&[0_i64, 0, 2]).unwrap();
+    let distances = rt.device_buffer_from_host_data(&[0.0_f32, f32::INFINITY, 1.0]).unwrap();
+    neighbors.normalize_missing_neighbor_indices(&distances, i64::MAX).unwrap();
+    neighbors.validate_int64_range_or_sentinel(0, 3, i64::MAX).unwrap();
+    distances.validate_finite_float32_for_valid_neighbors(&neighbors, i64::MAX).unwrap();
+    let neighbors = rt.column_from_device_buffer(neighbors, 3, TypeId::Int64).unwrap().to_vec::<i64>().unwrap();
+    assert_eq!(neighbors, [0, i64::MAX, 2]);
+
+    let invalid = rt.device_buffer_from_host_data(&[-1_i64, 3, i64::MAX]).unwrap();
+    let error = invalid.validate_int64_range_or_sentinel(0, 3, i64::MAX).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    let distances = rt.device_buffer_from_host_data(&[0.0_f32, f32::NAN, f32::INFINITY]).unwrap();
+    let valid = rt.device_buffer_from_host_data(&[0_i64, 1, i64::MAX]).unwrap();
+    let error = distances.validate_finite_float32_for_valid_neighbors(&valid, i64::MAX).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+}
+
 fn from_host_data_creates_correct_size() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[1, 2, 3];
@@ -501,6 +520,10 @@ fn device_buffer_tests_cases() {
         (
             "int64_device_buffer_range_proof_rejects_empty_interval_before_execution",
             int64_device_buffer_range_proof_rejects_empty_interval_before_execution,
+        ),
+        (
+            "missing_neighbor_normalization_rejects_invalid_indices_and_non_finite_valid_distances",
+            missing_neighbor_normalization_rejects_invalid_indices_and_non_finite_valid_distances,
         ),
         ("from_host_data_creates_correct_size", from_host_data_creates_correct_size),
         ("from_host_data_empty_slice", from_host_data_empty_slice),

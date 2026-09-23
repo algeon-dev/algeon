@@ -5,6 +5,7 @@ mod brute_force;
 mod device;
 mod dlpack;
 mod error;
+mod ivf_flat;
 mod kmeans;
 mod pairwise;
 mod pca;
@@ -17,6 +18,7 @@ pub use device::{
     DeviceBuffer, DeviceElement, DeviceTensor, DeviceTensorMut, MatrixLayout, OwnedFloat32Matrix, ValidatedDeviceTensor,
 };
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
+pub use ivf_flat::{IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams};
 pub use kmeans::{KMeansFit, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, KMeansPrediction};
 pub use pairwise::pairwise_distance_into;
 pub use pca::{PcaFitTransform, PcaOutputBuffers, PcaParams, PcaSolver, fit_transform_owned};

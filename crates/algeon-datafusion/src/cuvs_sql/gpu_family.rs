@@ -361,6 +361,7 @@ fn examples(operation: CuvsOperation) -> Value {
             "k": 8,
             "metric":"l2_expanded"
         }),
+        CuvsOperation::IvfFlat => json!({ "k": 8, "metric": "l2_expanded", "n_lists": 16, "n_probes": 16 }),
         CuvsOperation::PairwiseDistance => json!({ "metric": "l2_expanded" }),
         CuvsOperation::TopK => json!({ "k": 1, "select": "max" }),
         CuvsOperation::KMeans => json!({
@@ -531,6 +532,7 @@ fn schema_json(schema: &SchemaRef) -> Value {
 fn operation_name(operation: CuvsOperation) -> &'static str {
     match operation {
         CuvsOperation::BruteForceKnn => "brute_force_knn",
+        CuvsOperation::IvfFlat => "ivf_flat",
         CuvsOperation::PairwiseDistance => "pairwise_distance",
         CuvsOperation::TopK => "top_k",
         CuvsOperation::KMeans => "kmeans",

@@ -13,9 +13,10 @@ use crate::{
     expr::Expr,
     plan::{
         CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOptionKind, CuvsVectorElementType, NodeId, PlanNode,
-        ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorKMeansInit,
-        VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema, vector_knn_output_schema,
-        vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
+        ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorDistanceMetric,
+        VectorKMeansInit, VectorRelationBinding, VectorRowIdBinding, vector_kmeans_output_schema,
+        vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
+        vector_top_k_output_schema,
     },
 };
 
@@ -208,6 +209,54 @@ pub fn validate_vector_algorithm_node(
             validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
+        VectorAlgorithmParams::IvfFlat(params) => {
+            if params.k == 0
+                || params.n_lists == 0
+                || params.n_probes == 0
+                || params.kmeans_n_iters == 0
+                || params.n_probes > params.n_lists
+                || !params.kmeans_trainset_fraction.is_finite()
+                || params.kmeans_trainset_fraction <= 0.0
+                || params.kmeans_trainset_fraction > 1.0
+            {
+                return Err(vector_algorithm_error("invalid IVF-Flat build or search parameters")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "invalid_ivf_flat_parameters"));
+            }
+            validate_registry_maximum(CuvsOperation::IvfFlat, "k", params.k as u64, node_id)?;
+            let dataset = validate_vector_relation_binding(
+                CuvsOperation::IvfFlat,
+                "dataset",
+                &params.dataset,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            let queries = validate_vector_relation_binding(
+                CuvsOperation::IvfFlat,
+                "queries",
+                &params.queries,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
+            if let (Some(dataset_dimension), Some(query_dimension)) = (dataset.dimension, queries.dimension)
+                && dataset_dimension != query_dimension
+            {
+                return Err(vector_algorithm_error("IVF-Flat dataset and query dimensions must match")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "feature_dimension_mismatch"));
+            }
+            if params.metric == VectorDistanceMetric::CosineExpanded
+                && dataset.dimension.is_some_and(|dimension| dimension < 2)
+            {
+                return Err(vector_algorithm_error("cosine IVF-Flat requires at least two dimensions")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "insufficient_feature_dimension"));
+            }
+            vector_knn_output_schema(queries.id_type, dataset.id_type)
+        },
         VectorAlgorithmParams::PairwiseDistance(params) => {
             let x = validate_vector_relation_binding(
                 CuvsOperation::PairwiseDistance,
@@ -385,7 +434,7 @@ fn validate_registry_maximum(
     node_id: NodeId,
 ) -> Result<()> {
     let maximum = match operation.descriptor().option(option_name).map(|option| option.kind) {
-        Some(CuvsOptionKind::PositiveInteger { maximum, .. }) => maximum,
+        Some(CuvsOptionKind::Integer { maximum, .. }) => maximum,
         _ => {
             return Err(QueryError::new(
                 QueryErrorCode::Internal,

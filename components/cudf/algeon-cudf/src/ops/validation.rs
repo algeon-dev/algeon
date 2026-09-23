@@ -261,6 +261,135 @@ pub(crate) fn validate_int64_buffer_range(
     })
 }
 
+pub(crate) fn validate_int64_buffer_range_or_sentinel(
+    buffer: &DeviceBuffer,
+    min_inclusive: i64,
+    max_exclusive: i64,
+    sentinel: i64,
+) -> Result<()> {
+    if min_inclusive >= max_exclusive {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            INT64_BUFFER_RANGE_OPERATION,
+            "Int64 validation range must be non-empty",
+        ));
+    }
+    let validated_values = exact_buffer_element_count(buffer, mem::size_of::<i64>(), INT64_BUFFER_RANGE_OPERATION)?;
+    let input = buffer.as_ptr().map_err(|error| error.reanchor(INT64_BUFFER_RANGE_OPERATION))? as *const i64;
+    let execution = buffer.execution_domain().enter_execution()?;
+    let mut invalid_count = 0i32;
+    error::check_status_in_with_details(
+        unsafe {
+            cudf_sys::cudf_int64_buffer_out_of_range_or_sentinel_count_ex(
+                input,
+                validated_values,
+                min_inclusive,
+                max_exclusive,
+                sentinel,
+                &mut invalid_count,
+                execution.options(),
+            )
+        },
+        INT64_BUFFER_RANGE_OPERATION,
+        [
+            ("validated_values", validated_values.to_string()),
+            ("min_inclusive", min_inclusive.to_string()),
+            ("max_exclusive", max_exclusive.to_string()),
+            ("sentinel", sentinel.to_string()),
+        ],
+    )?;
+    if invalid_count != 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            INT64_BUFFER_RANGE_OPERATION,
+            "Int64 device buffer contains values outside the range and sentinel",
+        )
+        .with_detail("invalid_count", invalid_count.to_string())
+        .with_detail("sentinel", sentinel.to_string())
+        .with_detail("validated_values", validated_values.to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn normalize_missing_neighbor_indices(
+    neighbors: &mut DeviceBuffer,
+    distances: &DeviceBuffer,
+    sentinel: i64,
+) -> Result<()> {
+    let operation = INT64_BUFFER_RANGE_OPERATION;
+    let indices = exact_buffer_element_count(neighbors, mem::size_of::<i64>(), operation)?;
+    let values = exact_buffer_element_count(distances, mem::size_of::<f32>(), operation)?;
+    if values != indices || distances.binding_id() != neighbors.binding_id() || distances.device() != neighbors.device()
+    {
+        return Err(Error::new_with(
+            ErrorCode::RuntimeBindingMismatch,
+            operation,
+            "neighbors and distances must share element count and exact execution binding",
+        ));
+    }
+    let neighbor_ptr = neighbors.as_mut_ptr().map_err(|error| error.reanchor(operation))? as *mut i64;
+    let distance_ptr = distances.as_ptr().map_err(|error| error.reanchor(operation))? as *const f32;
+    let execution = neighbors.execution_domain().enter_execution()?;
+    error::check_status_in_with_details(
+        unsafe {
+            cudf_sys::cudf_normalize_int64_missing_neighbor_indices_ex(
+                neighbor_ptr,
+                distance_ptr,
+                indices,
+                sentinel,
+                execution.options(),
+            )
+        },
+        operation,
+        [("validated_values", indices.to_string()), ("sentinel", sentinel.to_string())],
+    )
+}
+
+pub(crate) fn validate_finite_float32_for_valid_neighbors(
+    distances: &DeviceBuffer,
+    neighbors: &DeviceBuffer,
+    sentinel: i64,
+) -> Result<()> {
+    let values = exact_buffer_element_count(distances, mem::size_of::<f32>(), FINITE_FLOAT32_OPERATION)?;
+    let indices = exact_buffer_element_count(neighbors, mem::size_of::<i64>(), FINITE_FLOAT32_OPERATION)?;
+    if values != indices || distances.binding_id() != neighbors.binding_id() || distances.device() != neighbors.device()
+    {
+        return Err(Error::new_with(
+            ErrorCode::RuntimeBindingMismatch,
+            FINITE_FLOAT32_OPERATION,
+            "distances and neighbors must share element count and exact execution binding",
+        ));
+    }
+    let distance_ptr = distances.as_ptr().map_err(|error| error.reanchor(FINITE_FLOAT32_OPERATION))? as *const f32;
+    let neighbor_ptr = neighbors.as_ptr().map_err(|error| error.reanchor(FINITE_FLOAT32_OPERATION))? as *const i64;
+    let execution = distances.execution_domain().enter_execution()?;
+    let mut invalid_count = 0i32;
+    error::check_status_in_with_details(
+        unsafe {
+            cudf_sys::cudf_float32_buffer_non_finite_valid_neighbors_count_ex(
+                distance_ptr,
+                neighbor_ptr,
+                values,
+                sentinel,
+                &mut invalid_count,
+                execution.options(),
+            )
+        },
+        FINITE_FLOAT32_OPERATION,
+        [("validated_values", values.to_string()), ("sentinel", sentinel.to_string())],
+    )?;
+    if invalid_count != 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            FINITE_FLOAT32_OPERATION,
+            "valid native neighbors contain non-finite distances",
+        )
+        .with_detail("non_finite_count", invalid_count.to_string())
+        .with_detail("validated_values", values.to_string()));
+    }
+    Ok(())
+}
+
 fn validate_float32_type(input: &ColumnView<'_>) -> Result<()> {
     let actual = input.data_type().map_err(|error| error.reanchor(FINITE_FLOAT32_OPERATION))?.id();
     if actual != TypeId::Float32 {

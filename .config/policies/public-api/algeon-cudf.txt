@@ -243,10 +243,13 @@ pub fn cudf::core::DeviceBuffer::as_ptr(&self) -> cudf::core::error::Result<*con
 pub fn cudf::core::DeviceBuffer::binding_id(&self) -> cudf::runtime::ExecutionBindingId
 pub fn cudf::core::DeviceBuffer::device(&self) -> cudf::runtime::device::DeviceId
 pub fn cudf::core::DeviceBuffer::is_empty(&self) -> cudf::core::error::Result<bool>
+pub fn cudf::core::DeviceBuffer::normalize_missing_neighbor_indices(&mut self, &Self, i64) -> cudf::core::error::Result<()>
 pub fn cudf::core::DeviceBuffer::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::core::DeviceBuffer::size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::core::DeviceBuffer::validate_finite_float32(&self) -> cudf::core::error::Result<cudf::core::ValidatedFloat32DeviceBuffer<'_>>
+pub fn cudf::core::DeviceBuffer::validate_finite_float32_for_valid_neighbors(&self, &Self, i64) -> cudf::core::error::Result<()>
 pub fn cudf::core::DeviceBuffer::validate_int64_range(&self, i64, i64) -> cudf::core::error::Result<cudf::core::ValidatedInt64DeviceBufferRange<'_>>
+pub fn cudf::core::DeviceBuffer::validate_int64_range_or_sentinel(&self, i64, i64, i64) -> cudf::core::error::Result<()>
 impl core::marker::Send for cudf::core::DeviceBuffer
 impl core::marker::Sync for cudf::core::DeviceBuffer
 impl core::ops::drop::Drop for cudf::core::DeviceBuffer
@@ -1436,10 +1439,13 @@ pub fn cudf::core::DeviceBuffer::as_ptr(&self) -> cudf::core::error::Result<*con
 pub fn cudf::core::DeviceBuffer::binding_id(&self) -> cudf::runtime::ExecutionBindingId
 pub fn cudf::core::DeviceBuffer::device(&self) -> cudf::runtime::device::DeviceId
 pub fn cudf::core::DeviceBuffer::is_empty(&self) -> cudf::core::error::Result<bool>
+pub fn cudf::core::DeviceBuffer::normalize_missing_neighbor_indices(&mut self, &Self, i64) -> cudf::core::error::Result<()>
 pub fn cudf::core::DeviceBuffer::placement(&self) -> cudf::ExecutionPlacement
 pub fn cudf::core::DeviceBuffer::size_bytes(&self) -> cudf::core::error::Result<usize>
 pub fn cudf::core::DeviceBuffer::validate_finite_float32(&self) -> cudf::core::error::Result<cudf::core::ValidatedFloat32DeviceBuffer<'_>>
+pub fn cudf::core::DeviceBuffer::validate_finite_float32_for_valid_neighbors(&self, &Self, i64) -> cudf::core::error::Result<()>
 pub fn cudf::core::DeviceBuffer::validate_int64_range(&self, i64, i64) -> cudf::core::error::Result<cudf::core::ValidatedInt64DeviceBufferRange<'_>>
+pub fn cudf::core::DeviceBuffer::validate_int64_range_or_sentinel(&self, i64, i64, i64) -> cudf::core::error::Result<()>
 impl core::marker::Send for cudf::core::DeviceBuffer
 impl core::marker::Sync for cudf::core::DeviceBuffer
 impl core::ops::drop::Drop for cudf::core::DeviceBuffer

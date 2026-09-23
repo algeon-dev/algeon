@@ -1,18 +1,52 @@
 use cudf::{Series, TypeId};
 
+#[cfg(test)]
+use crate::plan::VectorBruteForceKnnParams;
 use crate::{
     exec::*,
     plan::{
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding,
-        VectorRowIdBinding, VectorTopKParams,
+        VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
     },
 };
 
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";
 
+pub(in crate::exec) struct KnnAssemblyParams<'a> {
+    pub dataset: &'a VectorRelationBinding,
+    pub queries: &'a VectorRelationBinding,
+    pub k: usize,
+    pub metric: VectorDistanceMetric,
+    pub missing_neighbor: Option<i64>,
+}
+
+#[cfg(test)]
 pub(in crate::exec) fn assemble_brute_force_knn_output(
     context: &ExecutionContext,
     params: &VectorBruteForceKnnParams,
+    dataset: &GpuDataFrame,
+    queries: &GpuDataFrame,
+    neighbor_ordinals_i64: Series,
+    distances_f32: Series,
+) -> Result<GpuDataFrame> {
+    assemble_knn_output(
+        context,
+        KnnAssemblyParams {
+            dataset: &params.dataset,
+            queries: &params.queries,
+            k: params.k,
+            metric: params.metric,
+            missing_neighbor: None,
+        },
+        dataset,
+        queries,
+        neighbor_ordinals_i64,
+        distances_f32,
+    )
+}
+
+pub(in crate::exec) fn assemble_knn_output(
+    context: &ExecutionContext,
+    params: KnnAssemblyParams<'_>,
     dataset: &GpuDataFrame,
     queries: &GpuDataFrame,
     neighbor_ordinals_i64: Series,
@@ -53,40 +87,48 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
     let query_gather_map = query_ordinal.astype_in(TypeId::Int32, &execution).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN query gather map on device", error)
     })?;
-    let query_id = relation_id_series(&params.queries, queries, "queries")?
+    let query_id = relation_id_series(params.queries, queries, "queries")?
         .gather_in(&query_gather_map, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN query ids on device", error))?;
 
-    let neighbor_gather_map = neighbor_ordinals_i64.astype_in(TypeId::Int32, &execution).map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN neighbor gather map on device", error)
-    })?;
-    let neighbor_id = relation_id_series(&params.dataset, dataset, "dataset")?
-        .gather_in(&neighbor_gather_map, &execution)
-        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN neighbor ids on device", error))?;
-    let neighbor_ordinal = neighbor_ordinals_i64.astype_in(TypeId::UInt64, &execution).map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to cast kNN neighbor ordinals on device", error)
-    })?;
-
-    let unsorted = runtime
+    let is_sentinel = params
+        .missing_neighbor
+        .map(|missing| {
+            neighbor_ordinals_i64.eq_scalar_in(missing, &execution).map_err(|error| {
+                cudf_query_error(ASSEMBLY_OPERATION, "failed to identify missing kNN neighbors on device", error)
+            })
+        })
+        .transpose()?;
+    let mut unsorted = runtime
         .empty_dataframe()
         .assign([
             ("query_ordinal", query_ordinal),
             ("query_id", query_id),
-            ("neighbor_ordinal", neighbor_ordinal),
-            ("neighbor_id", neighbor_id),
+            ("neighbor_ordinal", neighbor_ordinals_i64),
             ("distance", distances_f32),
         ])
         .map_err(|error| {
             cudf_query_error(ASSEMBLY_OPERATION, "failed to assemble kNN relational output on device", error)
         })?;
     let descending_distance = matches!(params.metric, VectorDistanceMetric::InnerProduct);
+    let mut keys = vec!["query_ordinal"];
+    let mut descending = vec![false];
+    if let Some(is_sentinel) = is_sentinel {
+        unsorted = unsorted
+            .with_column("is_sentinel", is_sentinel)
+            .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to attach missing-neighbor flags", error))?;
+        keys.push("is_sentinel");
+        descending.push(false);
+    }
+    keys.extend(["distance", "neighbor_ordinal"]);
+    descending.extend([descending_distance, false]);
     let sorted = unsorted
         .with_execution(&execution)
         .sort_values(
-            ["query_ordinal", "distance", "neighbor_ordinal"],
+            keys,
             CudfSortOptions::new()
-                .with_descending(vec![false, descending_distance, false])
-                .with_nulls_first(vec![false, false, false])
+                .with_descending(descending)
+                .with_nulls_first(vec![false; if params.missing_neighbor.is_some() { 4 } else { 3 }])
                 .with_stable(true),
         )
         .map_err(|error| {
@@ -97,8 +139,35 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
         .and_then(|rank| rank.add_scalar_in(1_u64, &execution))
         .and_then(|rank| rank.astype_in(TypeId::UInt32, &execution))
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN ranks on device", error))?;
-    let output = sorted
+    let ranked = sorted
         .with_column("rank", rank)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to rank kNN neighbors on device", error))?;
+    let filtered = if params.missing_neighbor.is_some() {
+        let valid = ranked
+            .series("is_sentinel")
+            .and_then(|sentinel| sentinel.eq_scalar_in(false, &execution))
+            .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to mask missing kNN neighbors", error))?;
+        ranked.filter(&valid).map_err(|error| {
+            cudf_query_error(ASSEMBLY_OPERATION, "failed to omit missing kNN neighbors on device", error)
+        })?
+    } else {
+        ranked
+    };
+    let neighbor_ordinals_i64 = filtered
+        .series("neighbor_ordinal")
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to read valid kNN neighbor ordinals", error))?;
+    let neighbor_gather_map = neighbor_ordinals_i64.astype_in(TypeId::Int32, &execution).map_err(|error| {
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN neighbor gather map on device", error)
+    })?;
+    let neighbor_id = relation_id_series(params.dataset, dataset, "dataset")?
+        .gather_in(&neighbor_gather_map, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN neighbor ids on device", error))?;
+    let neighbor_ordinal = neighbor_ordinals_i64.astype_in(TypeId::UInt64, &execution).map_err(|error| {
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to cast kNN neighbor ordinals on device", error)
+    })?;
+    let output = filtered
+        .with_column("neighbor_ordinal", neighbor_ordinal)
+        .and_then(|output| output.with_column("neighbor_id", neighbor_id))
         .and_then(|output| {
             output.select(["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"])
         })
@@ -411,6 +480,41 @@ mod tests {
             output.frame().series("distance").unwrap().to_vec_strict::<f32>().unwrap(),
             vec![0.9, 0.2, 0.6, 0.4]
         );
+    }
+
+    #[cfg(feature = "cuvs")]
+    #[test]
+    fn knn_assembly_omits_native_sentinels_and_ranks_valid_neighbors() {
+        let context = ExecutionContext::builder().build().expect("execution context");
+        let runtime = context.runtime().expect("runtime");
+        let dataset = GpuDataFrame::new(
+            runtime.empty_dataframe().assign([("id", runtime.series(&[10_i64, 20]).unwrap())]).unwrap(),
+        );
+        let queries = GpuDataFrame::new(
+            runtime.empty_dataframe().assign([("id", runtime.series(&[7_i64, 8]).unwrap())]).unwrap(),
+        );
+        let dataset_binding =
+            VectorRelationBinding::new(NodeId::from_index_for_internal_use(0), VectorRowIdBinding::column("id"), ["x"]);
+        let queries_binding =
+            VectorRelationBinding::new(NodeId::from_index_for_internal_use(1), VectorRowIdBinding::column("id"), ["x"]);
+        let output = assemble_knn_output(
+            &context,
+            KnnAssemblyParams {
+                dataset: &dataset_binding,
+                queries: &queries_binding,
+                k: 2,
+                metric: VectorDistanceMetric::L2Expanded,
+                missing_neighbor: Some(i64::MAX),
+            },
+            &dataset,
+            &queries,
+            runtime.series(&[i64::MAX, 1, 0, i64::MAX]).unwrap(),
+            runtime.series(&[f32::MAX, 2.0, 1.0, f32::MAX]).unwrap(),
+        )
+        .expect("sentinel-aware kNN assembly");
+        assert_eq!(output.frame().series("query_ordinal").unwrap().to_vec_strict::<u64>().unwrap(), vec![0, 1]);
+        assert_eq!(output.frame().series("neighbor_id").unwrap().to_vec_strict::<i64>().unwrap(), vec![20, 10]);
+        assert_eq!(output.frame().series("rank").unwrap().to_vec_strict::<u32>().unwrap(), vec![1, 1]);
     }
 
     #[cfg(feature = "cuvs")]
