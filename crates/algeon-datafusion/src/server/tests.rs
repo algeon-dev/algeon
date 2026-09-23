@@ -107,12 +107,38 @@ fn runtime_backend_with_policy(
 }
 
 #[test]
+fn unset_logical_capture_budget_registers_every_attempt_admission_can_hold_beside_a_finalizing_query() {
+    let config = bounded_config(1);
+    let live_attempts = config.queue_policy.max_queued_attempts() + 1;
+    let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
+        &config.observability,
+        config.active_logical_capture_budget_bytes().expect("default config resolves a capture budget"),
+    ));
+    // A finished statement keeps its reservation until it finalizes, after
+    // its admission slot is free again.
+    let _finalizing = coordinator
+        .register_new("select 0", None, None, config.observability.runtime_observation_config())
+        .expect("the earlier statement registers");
+
+    let leases = (1..=live_attempts)
+        .map(|index| {
+            coordinator
+                .register_new(format!("select {index}"), None, None, config.observability.runtime_observation_config())
+                .unwrap_or_else(|error| panic!("live query {index} of {live_attempts} was refused: {error:?}"))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(leases.len(), live_attempts);
+}
+
+#[test]
 fn shutdown_closes_native_admission_before_coordinator_terminalization() {
     let config = bounded_config(1);
     let backend = runtime_backend(1);
     let admission = admission::QueryAdmission::from_backend(&backend);
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
+        config.active_logical_capture_budget_bytes().expect("test config resolves a capture budget"),
     ));
     let planning = coordinator
         .register_with_id("shutdown-order", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
@@ -140,6 +166,7 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
     let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
+        config.active_logical_capture_budget_bytes().expect("test config resolves a capture budget"),
     ));
     let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
     let execution = coordinator
@@ -192,8 +219,10 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
     let admission = Arc::new(admission::QueryAdmission::new_for_tests());
     let observability =
         ServerObservabilityConfig { shutdown_grace: Duration::from_millis(20), ..ServerObservabilityConfig::default() };
-    let coordinator =
-        coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(&observability));
+    let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
+        &observability,
+        ServerObservabilityConfig::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES,
+    ));
     let execution = coordinator
         .register_with_id(
             "supervisor-forced-timeout",
@@ -235,6 +264,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
+        config.active_logical_capture_budget_bytes().expect("test config resolves a capture budget"),
     ));
     let maintenance = coordinator::QueryCoordinatorMaintenance::start(Arc::clone(&coordinator));
     let mut supervisor = ShutdownSupervisor::start(
@@ -268,8 +298,10 @@ async fn supervisor_uses_captured_expired_plan_after_coordinator_finalization_cl
     let admission = Arc::new(admission::QueryAdmission::new_for_tests());
     let observability =
         ServerObservabilityConfig { shutdown_grace: Duration::ZERO, ..ServerObservabilityConfig::default() };
-    let coordinator =
-        coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(&observability));
+    let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
+        &observability,
+        ServerObservabilityConfig::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES,
+    ));
     let execution = coordinator
         .register_with_id("fast-finalization", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap()

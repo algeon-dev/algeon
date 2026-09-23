@@ -223,7 +223,16 @@ impl ServerConfig {
             models,
         };
         config.validate_gpu_device_profiles()?;
+        // Reject an explicit capture budget below the admission bounds at load time.
+        config.active_logical_capture_budget_bytes()?;
         Ok(config)
+    }
+
+    /// Logical capture budget of the query coordinator under this config's
+    /// admission bounds; see [`ServerObservabilityConfig::active_logical_capture_max_bytes`].
+    pub(crate) fn active_logical_capture_budget_bytes(&self) -> Result<u64> {
+        self.observability
+            .active_logical_capture_budget_bytes(admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles))
     }
 
     /// Prove that the public config struct still carries one profile for each
@@ -315,6 +324,16 @@ impl ServerConfig {
             .collect();
         Ok(devices)
     }
+}
+
+/// Attempts admission can hold at once: every device's active attempts plus
+/// the queue shared by all devices.
+fn admission_live_attempts(queue_policy: &AlgeonGpuQueuePolicy, profiles: &[AlgeonGpuDeviceProfile]) -> u64 {
+    let attempts = profiles
+        .iter()
+        .map(AlgeonGpuDeviceProfile::max_active_attempts)
+        .fold(queue_policy.max_queued_attempts(), usize::saturating_add);
+    u64::try_from(attempts).unwrap_or(u64::MAX)
 }
 
 fn format_device_ordinals(device_ordinals: &[usize]) -> String {

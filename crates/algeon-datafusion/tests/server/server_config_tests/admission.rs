@@ -47,6 +47,29 @@ max_queue_wait_ms = 1000
 }
 
 #[test]
+fn server_config_rejects_a_logical_capture_budget_below_the_admission_bounds() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[admission]
+max_queued_attempts = 64
+
+[observability]
+active_logical_capture_max_bytes = 1073741824
+
+[[admission.device_profiles]]
+device_ordinal = 0
+max_active_attempts = 1
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned())
+        .expect_err("a budget for 25 live queries cannot register 65 admitted or queued attempts");
+    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV));
+    assert_eq!(error.fact_value("reason"), Some("below_admission_live_attempts"));
+    assert_eq!(error.fact_value("admission_live_attempts"), Some("65"));
+}
+
+#[test]
 fn server_config_rejects_zero_resource_admission_values() {
     for field in [ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV] {
         let env = BTreeMap::from([(field, "0".to_string())]);

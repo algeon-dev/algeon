@@ -178,13 +178,26 @@ budget:
 | --- | --- | --- |
 | `per_query_max_records` | `ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS` | `65536` |
 | `per_query_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES` | 8 MiB |
-| `active_logical_capture_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES` | 1 GiB |
+| `active_logical_capture_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES` | Admission requirement plus 1 GiB |
 | `global_sealed_max_count` | `ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT` | `1024` |
 | `global_sealed_max_bytes` | `ALGEON_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES` | 1 GiB |
 | `sealed_ttl_secs` | `ALGEON_SERVER_OBSERVABILITY_SEALED_TTL_SECS` | `3600` |
 | `shutdown_grace_secs` | `ALGEON_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS` | `30` |
 
 All values must be greater than zero.
+
+Every live Flight SQL query reserves logical capture bytes from
+`active_logical_capture_max_bytes` until it finishes: twice
+`per_query_max_bytes`, plus `per_query_max_bytes`, plus its sealed artifact
+(twice `per_query_max_bytes`, capped at `global_sealed_max_bytes`), which is
+40 MiB with the defaults. The budget must cover every attempt admission can
+hold at once, the sum of each device profile's `max_active_attempts` and
+`admission.max_queued_attempts`; otherwise queries are refused as overloaded
+before they reach the admission queue. A query also holds its reservation
+while it plans and finalizes, outside its admission slot. When the field is
+unset, the server sets it to that requirement plus 1 GiB for such queries. An
+explicit value below the requirement fails server startup with
+`below_admission_live_attempts`.
 
 ## GPU SQL UDTFs
 

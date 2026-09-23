@@ -2022,7 +2022,7 @@ pub fn algeon_datafusion::server::ServerError::source(&self) -> core::option::Op
 impl core::fmt::Display for algeon_datafusion::server::ServerError
 pub fn algeon_datafusion::server::ServerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct algeon_datafusion::server::ServerObservabilityConfig
-pub algeon_datafusion::server::ServerObservabilityConfig::active_logical_capture_max_bytes: u64
+pub algeon_datafusion::server::ServerObservabilityConfig::active_logical_capture_max_bytes: core::option::Option<u64>
 pub algeon_datafusion::server::ServerObservabilityConfig::global_sealed_max_bytes: u64
 pub algeon_datafusion::server::ServerObservabilityConfig::global_sealed_max_count: usize
 pub algeon_datafusion::server::ServerObservabilityConfig::per_query_max_bytes: u64
