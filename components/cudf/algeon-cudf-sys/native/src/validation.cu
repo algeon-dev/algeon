@@ -40,23 +40,29 @@ struct float32_buffer_non_finite_count_transform {
   }
 };
 
-__global__ void normalize_missing_neighbor_indices(int64_t* neighbors,
-                                                   float const* distances,
-                                                   std::size_t element_count,
-                                                   int64_t sentinel)
+__global__ void float32_buffer_add_scalar(float* values, std::size_t element_count, float scalar)
 {
   auto const index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index < element_count && cuda::std::isinf(distances[index])) { neighbors[index] = sentinel; }
+  if (index < element_count) { values[index] += scalar; }
 }
 
-struct float32_buffer_non_finite_valid_neighbors_transform {
-  float const* distances;
-  int64_t const* neighbors;
-  int64_t sentinel;
+__global__ void int64_buffer_fill_where_float32_infinite(int64_t* values,
+                                                         float const* paired_values,
+                                                         std::size_t element_count,
+                                                         int64_t fill_value)
+{
+  auto const index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index < element_count && cuda::std::isinf(paired_values[index])) { values[index] = fill_value; }
+}
+
+struct float32_buffer_non_finite_unless_int64_equals_transform {
+  float const* values;
+  int64_t const* paired_values;
+  int64_t excluded_value;
 
   __device__ int32_t operator()(cudf::size_type index) const
   {
-    return neighbors[index] == sentinel || cuda::std::isfinite(distances[index]) ? 0 : 1;
+    return paired_values[index] == excluded_value || cuda::std::isfinite(values[index]) ? 0 : 1;
   }
 };
 
@@ -207,13 +213,38 @@ cudf_status_t cudf_int64_buffer_out_of_range_count_ex(int64_t const* input,
   }
   CUDF_RUST_CATCH
 }
-cudf_status_t cudf_normalize_int64_missing_neighbor_indices_ex(int64_t* neighbors,
-                                                                 float const* distances,
-                                                                 std::size_t element_count,
-                                                                 int64_t sentinel,
-                                                                 cudf_exec_options_t const* options)
+cudf_status_t cudf_float32_buffer_add_scalar_ex(float* values,
+                                                 std::size_t element_count,
+                                                 float scalar,
+                                                 cudf_exec_options_t const* options)
 {
-  if ((neighbors == nullptr || distances == nullptr) && element_count != 0) { set_error("input is null"); return CUDF_ERROR_NULL; }
+  if (values == nullptr && element_count != 0) { set_error("input is null"); return CUDF_ERROR_NULL; }
+  auto const size_status = validate_raw_element_count(element_count);
+  if (size_status != CUDF_SUCCESS) { return size_status; }
+  if (!cuda::std::isfinite(scalar)) { set_error("scalar must be finite"); return CUDF_ERROR_INVALID_OPERATION; }
+  CUDF_RUST_TRY
+  {
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+    if (element_count != 0) {
+      constexpr std::size_t threads = 256;
+      auto const blocks = static_cast<std::uint32_t>((element_count + threads - 1) / threads);
+      float32_buffer_add_scalar<<<blocks, threads, 0, exec->stream.value()>>>(values, element_count, scalar);
+      CUDF_CUDA_TRY(cudaGetLastError());
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_int64_buffer_fill_where_float32_infinite_ex(int64_t* values,
+                                                                float const* paired_values,
+                                                                std::size_t element_count,
+                                                                int64_t fill_value,
+                                                                cudf_exec_options_t const* options)
+{
+  if ((values == nullptr || paired_values == nullptr) && element_count != 0) { set_error("input is null"); return CUDF_ERROR_NULL; }
   auto const size_status = validate_raw_element_count(element_count);
   if (size_status != CUDF_SUCCESS) { return size_status; }
   CUDF_RUST_TRY
@@ -224,7 +255,7 @@ cudf_status_t cudf_normalize_int64_missing_neighbor_indices_ex(int64_t* neighbor
     if (element_count != 0) {
       constexpr std::size_t threads = 256;
       auto const blocks = static_cast<std::uint32_t>((element_count + threads - 1) / threads);
-      normalize_missing_neighbor_indices<<<blocks, threads, 0, exec->stream.value()>>>(neighbors, distances, element_count, sentinel);
+      int64_buffer_fill_where_float32_infinite<<<blocks, threads, 0, exec->stream.value()>>>(values, paired_values, element_count, fill_value);
       CUDF_CUDA_TRY(cudaGetLastError());
     }
     return CUDF_SUCCESS;
@@ -232,16 +263,16 @@ cudf_status_t cudf_normalize_int64_missing_neighbor_indices_ex(int64_t* neighbor
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_float32_buffer_non_finite_valid_neighbors_count_ex(float const* distances,
-                                                                       int64_t const* neighbors,
-                                                                       std::size_t element_count,
-                                                                       int64_t sentinel,
-                                                                       int32_t* out_non_finite_count,
-                                                                       cudf_exec_options_t const* options)
+cudf_status_t cudf_float32_buffer_non_finite_unless_int64_equals_count_ex(float const* values,
+                                                                          int64_t const* paired_values,
+                                                                          std::size_t element_count,
+                                                                          int64_t excluded_value,
+                                                                          int32_t* out_non_finite_count,
+                                                                          cudf_exec_options_t const* options)
 {
   CUDF_RUST_NULL_CHECK(out_non_finite_count, "out_non_finite_count is null");
   *out_non_finite_count = 0;
-  if ((distances == nullptr || neighbors == nullptr) && element_count != 0) { set_error("input is null"); return CUDF_ERROR_NULL; }
+  if ((values == nullptr || paired_values == nullptr) && element_count != 0) { set_error("input is null"); return CUDF_ERROR_NULL; }
   auto const size_status = validate_raw_element_count(element_count);
   if (size_status != CUDF_SUCCESS) { return size_status; }
   CUDF_RUST_TRY
@@ -249,7 +280,7 @@ cudf_status_t cudf_float32_buffer_non_finite_valid_neighbors_count_ex(float cons
     auto exec = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
-    auto const transform = float32_buffer_non_finite_valid_neighbors_transform{distances, neighbors, sentinel};
+    auto const transform = float32_buffer_non_finite_unless_int64_equals_transform{values, paired_values, excluded_value};
     *out_non_finite_count = count_invalid_values(static_cast<cudf::size_type>(element_count), transform, *exec);
     cudf_record_synchronized_stream(exec->stream);
     return CUDF_SUCCESS;

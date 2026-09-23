@@ -34,20 +34,27 @@ cudf_status_t cudf_int64_buffer_out_of_range_count_ex(int64_t const* input,
                                                       int32_t* out_of_range_count,
                                                       cudf_exec_options_t const* options);
 
-/// Mark native infinite-distance placeholders with a missing-neighbor sentinel.
-cudf_status_t cudf_normalize_int64_missing_neighbor_indices_ex(int64_t* neighbors,
-                                                                 float const* distances,
-                                                                 size_t element_count,
-                                                                 int64_t sentinel,
-                                                                 cudf_exec_options_t const* options);
+/// Add a finite scalar in place to every Float32 value on the execution stream.
+/// IEEE infinity and NaN retain their non-finite status.
+cudf_status_t cudf_float32_buffer_add_scalar_ex(float* values,
+                                                size_t element_count,
+                                                float scalar,
+                                                cudf_exec_options_t const* options);
 
-/// Count non-finite distances at positions with a valid neighbor index.
-cudf_status_t cudf_float32_buffer_non_finite_valid_neighbors_count_ex(float const* distances,
-                                                                       int64_t const* neighbors,
-                                                                       size_t element_count,
-                                                                       int64_t sentinel,
-                                                                       int32_t* out_non_finite_count,
-                                                                       cudf_exec_options_t const* options);
+/// Replace Int64 values with fill_value where the paired Float32 value is infinite.
+cudf_status_t cudf_int64_buffer_fill_where_float32_infinite_ex(int64_t* values,
+                                                                float const* paired_values,
+                                                                size_t element_count,
+                                                                int64_t fill_value,
+                                                                cudf_exec_options_t const* options);
+
+/// Count non-finite Float32 values whose paired Int64 value differs from excluded_value.
+cudf_status_t cudf_float32_buffer_non_finite_unless_int64_equals_count_ex(float const* values,
+                                                                          int64_t const* paired_values,
+                                                                          size_t element_count,
+                                                                          int64_t excluded_value,
+                                                                          int32_t* out_non_finite_count,
+                                                                          cudf_exec_options_t const* options);
 
 /// Count values outside [min_inclusive, max_exclusive) except the exact sentinel.
 cudf_status_t cudf_int64_buffer_out_of_range_or_sentinel_count_ex(int64_t const* input,

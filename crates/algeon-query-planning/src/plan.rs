@@ -73,13 +73,14 @@ pub use preference::{
 };
 pub use sink::ResultSink;
 pub use vector_algorithm::{
-    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_IVF_FLAT_FUNCTION, CUVS_KMEANS_FUNCTION,
+    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_ID_TYPES, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION, CUVS_KMEANS_FUNCTION,
     CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION,
     CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor, CuvsOptionDefinition, CuvsOptionKind,
     CuvsOptionValidationError, CuvsOutputContract, CuvsOutputFieldDefinition, CuvsRelationRole, CuvsVectorElementType,
     VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams,
-    VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
-    VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding,
-    VectorTopKParams, canonicalize_cuvs_options, vector_kmeans_output_schema, vector_knn_output_schema,
-    vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
+    VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit,
+    VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
+    VectorRelationBinding, VectorRowIdBinding, VectorTopKParams, canonicalize_cuvs_options,
+    vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
+    vector_pca_output_schema, vector_top_k_output_schema,
 };

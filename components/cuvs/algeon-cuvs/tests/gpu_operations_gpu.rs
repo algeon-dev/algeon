@@ -28,8 +28,9 @@ use cudf::{
 };
 use cuvs::{
     BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, IvfFlatIndex, IvfFlatIndexParams,
-    IvfFlatSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout, PcaOutputBuffers,
-    PcaParams, ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
+    IvfFlatSearchParams, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric, KMeansModel,
+    KMeansParams, MatrixLayout, PcaOutputBuffers, PcaParams, ValidatedDeviceTensor, fit_transform_owned,
+    pairwise_distance_into, select_k_into,
 };
 
 #[derive(Debug)]
@@ -482,6 +483,109 @@ fn ivf_flat_marks_unprobed_slots_and_rejects_foreign_bindings() {
             .kind(),
         ErrorKind::InvalidInput
     );
+    index.close().unwrap();
+}
+
+#[test]
+fn ivf_pq_metrics_recall_against_brute_force_and_mark_missing_slots() {
+    let (runtime, resources, _reservation) = resources();
+    let rows = 320;
+    let dimensions = 8;
+    let points = (0..rows)
+        .flat_map(|row| {
+            (0..dimensions).map(move |dim| {
+                let group = row / 40;
+                let mut hash = (row as u32 + 1).wrapping_mul(0x9e3779b9) ^ (dim as u32 + 1).wrapping_mul(0x85ebca6b);
+                hash ^= hash >> 16;
+                hash = hash.wrapping_mul(0x7feb352d);
+                hash ^= hash >> 15;
+                let noise = (hash % 1001) as f32 / 500.0 - 1.0;
+                let norm = 0.4 + (row % 9) as f32 * 0.35;
+                norm * (if dim == group { 3.0 } else { 0.0 } + noise)
+            })
+        })
+        .collect::<Vec<_>>();
+    let query_points = [0_usize, 41, 82, 123, 164, 205, 246, 287]
+        .into_iter()
+        .flat_map(|row| points[row * dimensions..(row + 1) * dimensions].iter().copied())
+        .collect::<Vec<_>>();
+    let data = DeviceBuffer::from_slice(&resources, &points).unwrap();
+    let queries = DeviceBuffer::from_slice(&resources, &query_points).unwrap();
+    let matrix = data.as_validated_matrix(&resources, rows, dimensions).unwrap();
+    let query_matrix = queries.as_validated_matrix(&resources, 8, dimensions).unwrap();
+    let k = 5;
+    for metric in [
+        DistanceMetric::L2Expanded,
+        DistanceMetric::L2SqrtExpanded,
+        DistanceMetric::InnerProduct,
+        DistanceMetric::CosineExpanded,
+    ] {
+        let brute = BruteForceIndex::build(&resources, &matrix, metric).unwrap();
+        let mut oracle = DeviceBuffer::<i64>::new(&resources, 8 * k).unwrap();
+        let mut oracle_distances = DeviceBuffer::<f32>::new(&resources, 8 * k).unwrap();
+        brute.search_into(&query_matrix, k, &mut oracle, &mut oracle_distances).unwrap();
+        let oracle = i64_to_host(&runtime, oracle);
+        if metric == DistanceMetric::InnerProduct {
+            assert_ne!(oracle[0], 0, "varied norms must change inner-product ranking");
+        } else {
+            assert_eq!(oracle[0], 0, "the exact query row must rank first for distance metrics");
+        }
+        let exact_distances = f32_to_host(&runtime, oracle_distances);
+        brute.close().unwrap();
+        let mut params = IvfPqIndexParams::new(metric, 8);
+        params.pq_dim = 8;
+        let index = IvfPqIndex::build(&resources, &matrix, params).unwrap();
+        let mut ids = DeviceBuffer::<i64>::new(&resources, 8 * k).unwrap();
+        let mut distances = DeviceBuffer::<f32>::new(&resources, 8 * k).unwrap();
+        index.search_into(&query_matrix, k, IvfPqSearchParams { n_probes: 8 }, &mut ids, &mut distances).unwrap();
+        let ids = i64_to_host(&runtime, ids);
+        let distances = f32_to_host(&runtime, distances);
+        let recall = ids
+            .chunks_exact(k)
+            .zip(oracle.chunks_exact(k))
+            .map(|(actual, expected)| actual.iter().filter(|id| expected.contains(id)).count())
+            .sum::<usize>();
+        assert!(recall >= 28, "{metric:?} recall@{k} = {recall}/{}, threshold 28/40", 8 * k);
+        assert!(distances.iter().all(|distance| distance.is_finite()));
+        for (((actual_ids, actual_distances), expected_ids), expected_distances) in ids
+            .chunks_exact(k)
+            .zip(distances.chunks_exact(k))
+            .zip(oracle.chunks_exact(k))
+            .zip(exact_distances.chunks_exact(k))
+        {
+            for (&id, &distance) in actual_ids.iter().zip(actual_distances) {
+                if let Some(position) = expected_ids.iter().position(|&expected_id| expected_id == id) {
+                    let exact = expected_distances[position];
+                    let error = (distance - exact).abs();
+                    let tolerance = if metric == DistanceMetric::CosineExpanded {
+                        0.03 + 0.1 * exact.abs()
+                    } else {
+                        1.5 + 0.3 * exact.abs()
+                    };
+                    assert!(
+                        error <= tolerance,
+                        "{metric:?} id {id}: approximate {distance}, exact {exact}, error {error}, tolerance {tolerance}"
+                    );
+                }
+            }
+        }
+        let foreign_stream = CudaStream::new().unwrap();
+        let foreign_runtime =
+            Arc::new(Runtime::builder().with_device(runtime.device()).with_stream(foreign_stream).build().unwrap());
+        let foreign = CuvsResources::for_runtime(foreign_runtime).unwrap();
+        assert_eq!(IvfPqIndex::build(&foreign, &matrix, params).unwrap_err().kind(), ErrorKind::InvalidInput);
+        index.close().unwrap();
+    }
+    let mut params = IvfPqIndexParams::new(DistanceMetric::CosineExpanded, 8);
+    params.pq_dim = 8;
+    let index = IvfPqIndex::build(&resources, &matrix, params).unwrap();
+    let mut ids = DeviceBuffer::<i64>::new(&resources, 640).unwrap();
+    let mut distances = DeviceBuffer::<f32>::new(&resources, 640).unwrap();
+    index.search_into(&query_matrix, 80, IvfPqSearchParams { n_probes: 1 }, &mut ids, &mut distances).unwrap();
+    let ids = i64_to_host(&runtime, ids);
+    let distances = f32_to_host(&runtime, distances);
+    assert!(ids.iter().zip(&distances).any(|(id, distance)| *id == i64::MAX && *distance == f32::INFINITY));
+    assert!(ids.iter().zip(&distances).all(|(id, distance)| *id == i64::MAX || distance.is_finite()));
     index.close().unwrap();
 }
 

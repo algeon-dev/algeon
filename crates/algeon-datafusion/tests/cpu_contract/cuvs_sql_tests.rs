@@ -11,9 +11,9 @@ use std::{
 use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
 use algeon_datafusion::{
     cuvs_sql::{
-        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY,
-        CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsAlgoExec, CuvsLogicalNode,
-        CuvsOperation, CuvsOptionKind, CuvsRelationRole, cuvs_options_json_schema,
+        CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION, CUVS_KMEANS_FUNCTION,
+        CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION, CUVS_TOP_K_FUNCTION, CuvsAlgoExec,
+        CuvsLogicalNode, CuvsOperation, CuvsOptionKind, CuvsRelationRole, cuvs_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
@@ -68,6 +68,7 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
         [
             CUVS_BRUTE_FORCE_KNN_FUNCTION,
             CUVS_IVF_FLAT_FUNCTION,
+            CUVS_IVF_PQ_FUNCTION,
             CUVS_PAIRWISE_DISTANCE_FUNCTION,
             CUVS_TOP_K_FUNCTION,
             CUVS_KMEANS_FUNCTION,
@@ -107,6 +108,20 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     assert_eq!(ivf["properties"]["kmeans_trainset_fraction"]["maximum"], 1);
     assert_eq!(ivf["properties"]["kmeans_trainset_fraction"]["default"], 0.5);
     assert_eq!(ivf["properties"]["metric"]["enum"], knn["properties"]["metric"]["enum"]);
+
+    let pq = cuvs_options_json_schema(CuvsOperation::IvfPq);
+    assert_eq!(pq["required"], ivf["required"]);
+    assert_eq!(
+        pq["properties"]["metric"]["enum"],
+        serde_json::json!(["l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product"])
+    );
+    assert_eq!(pq["properties"]["pq_dim"]["minimum"], 0);
+    assert_eq!(pq["properties"]["pq_dim"]["default"], 0);
+    assert_eq!(pq["properties"]["pq_bits"]["minimum"], 4);
+    assert_eq!(pq["properties"]["pq_bits"]["maximum"], 8);
+    assert_eq!(pq["properties"]["pq_bits"]["default"], 8);
+    assert_eq!(pq["properties"]["codebook_kind"]["enum"], serde_json::json!(["per_subspace", "per_cluster"]));
+    assert_eq!(pq["properties"]["codebook_kind"]["default"], "per_subspace");
 
     let pca = cuvs_options_json_schema(CuvsOperation::Pca);
     assert_eq!(pca["properties"]["solver"]["default"], "cov_eig_dq");

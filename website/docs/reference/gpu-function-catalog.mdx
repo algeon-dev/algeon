@@ -21,8 +21,9 @@ without reading server source:
   static validation, a dry run: it reads no data and runs nothing on the GPU.
 
 The catalog is one list across providers; filter by `provider` for the
-cuGraph or cuVS subset. cuVS functions (`cuvs_brute_force_knn`, `cuvs_kmeans`,
-`cuvs_pca`) are executable when the build enables the `cuvs` feature;
+cuGraph or cuVS subset. cuVS functions (including `cuvs_brute_force_knn`,
+`cuvs_ivf_flat`, `cuvs_ivf_pq`, `cuvs_kmeans`, and `cuvs_pca`) are executable
+when the build enables the `cuvs` feature;
 otherwise they are listed with `available=false` and
 `unavailable_reason='required_feature_disabled'`.
 

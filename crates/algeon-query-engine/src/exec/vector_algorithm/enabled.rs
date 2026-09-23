@@ -4,9 +4,9 @@ use arrow::datatypes::{DataType, SchemaRef};
 use cudf::{Series, frame::dataframe::GpuRecordBatch};
 use cuvs::{
     BruteForceIndex, CuvsResources, DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams,
-    IvfFlatSearchParams, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, MatrixLayout, OwnedFloat32Matrix,
-    PcaOutputBuffers, PcaParams, PcaSolver, ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into,
-    select_k_into,
+    IvfFlatSearchParams, IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams, KMeansInit, KMeansMetric,
+    KMeansModel, KMeansParams, MatrixLayout, OwnedFloat32Matrix, PcaOutputBuffers, PcaParams, PcaSolver,
+    ValidatedDeviceTensor, fit_transform_owned, pairwise_distance_into, select_k_into,
 };
 
 use super::assembly::{
@@ -20,8 +20,8 @@ use crate::{
     },
     plan::{
         CuvsDenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
-        VectorDistanceMetric, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams,
-        VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorTopKParams,
+        VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams,
+        VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorTopKParams,
     },
 };
 
@@ -156,6 +156,59 @@ pub(in crate::exec) fn execute_vector_algorithm(
                                 .map(|_| ())
                         },
                         "failed to execute IVF-Flat kNN search",
+                    )
+                },
+            },
+            inputs,
+            &resources,
+            native_version,
+        ),
+        VectorAlgorithmParams::IvfPq(params) => execute_knn(
+            context,
+            plan,
+            node_id,
+            KnnExecutionOptions {
+                dataset: &params.dataset,
+                queries: &params.queries,
+                k: params.k,
+                metric: params.metric,
+                algorithm: VectorAlgorithm::IvfPq,
+                n_lists: Some(params.n_lists),
+                missing_neighbor: Some(i64::MAX),
+                build_and_search: |dataset: &ValidatedDeviceTensor<'_>,
+                                   queries: &ValidatedDeviceTensor<'_>,
+                                   output_rows| {
+                    let mut build = IvfPqIndexParams::new(distance_metric(params.metric), params.n_lists);
+                    build.kmeans_n_iters = params.kmeans_n_iters;
+                    build.kmeans_trainset_fraction = params.kmeans_trainset_fraction;
+                    build.pq_dim = params.pq_dim;
+                    build.pq_bits = params.pq_bits;
+                    build.codebook_kind = match params.codebook_kind {
+                        VectorIvfPqCodebookKind::PerSubspace => IvfPqCodebookKind::PerSubspace,
+                        VectorIvfPqCodebookKind::PerCluster => IvfPqCodebookKind::PerCluster,
+                    };
+                    run_knn_native(
+                        context,
+                        node_id,
+                        VectorAlgorithm::IvfPq,
+                        &resources,
+                        native_version,
+                        dataset,
+                        queries,
+                        output_rows,
+                        || IvfPqIndex::build(&resources, dataset, build),
+                        |index, neighbors, distances| {
+                            index
+                                .search_into(
+                                    queries,
+                                    params.k,
+                                    IvfPqSearchParams { n_probes: params.n_probes },
+                                    neighbors,
+                                    distances,
+                                )
+                                .map(|_| ())
+                        },
+                        "failed to execute IVF-PQ kNN search",
                     )
                 },
             },
@@ -330,7 +383,7 @@ where
             node_id,
             algorithm,
             "n_lists_exceeds_dataset_rows",
-            "IVF-Flat n_lists must not exceed the evaluated dataset row count",
+            "n_lists must not exceed the evaluated dataset row count",
         )
         .with_fact("n_lists", n_lists)
         .with_fact("dataset_rows", dataset_rows));

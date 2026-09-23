@@ -144,8 +144,10 @@ fn validate_input_schemas(
         }
         dimensions.push(validate_relation_binding(operation, input.schema(), binding)?);
     }
-    if matches!(operation, CuvsOperation::BruteForceKnn | CuvsOperation::IvfFlat | CuvsOperation::PairwiseDistance)
-        && let [Some(first), Some(second)] = dimensions.as_slice()
+    if matches!(
+        operation,
+        CuvsOperation::BruteForceKnn | CuvsOperation::IvfFlat | CuvsOperation::IvfPq | CuvsOperation::PairwiseDistance
+    ) && let [Some(first), Some(second)] = dimensions.as_slice()
         && first != second
     {
         return Err(invalid_call(
@@ -158,7 +160,7 @@ fn validate_input_schemas(
             ),
         ));
     }
-    if operation == CuvsOperation::IvfFlat
+    if matches!(operation, CuvsOperation::IvfFlat | CuvsOperation::IvfPq)
         && let Some(Some(dimension)) = dimensions.first()
         && *dimension < 2
     {
@@ -168,7 +170,7 @@ fn validate_input_schemas(
             return Err(invalid_call(
                 operation,
                 "insufficient_feature_dimension",
-                "cosine IVF-Flat requires at least two dimensions",
+                "cosine IVF search requires at least two dimensions",
             ));
         }
     }
@@ -315,7 +317,7 @@ fn validate_known_cardinalities(
                 }
             }
         },
-        CuvsOperation::IvfFlat => {
+        CuvsOperation::IvfFlat | CuvsOperation::IvfPq => {
             if let Some(dataset_rows) = known_row_count(&inputs[0]) {
                 let k = options.knn_k().expect("validated IVF-Flat options contain k") as usize;
                 let canonical: serde_json::Value =
@@ -325,7 +327,7 @@ fn validate_known_cardinalities(
                     return Err(invalid_call(
                         operation,
                         "invalid_dataset_cardinality",
-                        "IVF-Flat dataset must be non-empty, with k and n_lists no greater than its row count",
+                        "IVF dataset must be non-empty, with k and n_lists no greater than its row count",
                     ));
                 }
             }

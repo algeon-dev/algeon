@@ -6,8 +6,10 @@ mod device;
 mod dlpack;
 mod error;
 mod ivf_flat;
+mod ivf_pq;
 mod kmeans;
 mod pairwise;
+mod params_handle;
 mod pca;
 mod prepared;
 mod resources;
@@ -19,6 +21,7 @@ pub use device::{
 };
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use ivf_flat::{IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams};
+pub use ivf_pq::{IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchParams};
 pub use kmeans::{KMeansFit, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, KMeansPrediction};
 pub use pairwise::pairwise_distance_into;
 pub use pca::{PcaFitTransform, PcaOutputBuffers, PcaParams, PcaSolver, fit_transform_owned};

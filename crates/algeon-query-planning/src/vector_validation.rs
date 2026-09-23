@@ -257,6 +257,56 @@ pub fn validate_vector_algorithm_node(
             }
             vector_knn_output_schema(queries.id_type, dataset.id_type)
         },
+        VectorAlgorithmParams::IvfPq(params) => {
+            if params.k == 0
+                || params.n_lists == 0
+                || params.n_probes == 0
+                || params.n_probes > params.n_lists
+                || params.kmeans_n_iters == 0
+                || !params.kmeans_trainset_fraction.is_finite()
+                || params.kmeans_trainset_fraction <= 0.0
+                || params.kmeans_trainset_fraction > 1.0
+                || !(4..=8).contains(&params.pq_bits)
+                || (params.pq_dim != 0 && (u64::from(params.pq_dim) * u64::from(params.pq_bits)) % 8 != 0)
+            {
+                return Err(vector_algorithm_error("invalid IVF-PQ build or search parameters")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "invalid_ivf_pq_parameters"));
+            }
+            validate_registry_maximum(CuvsOperation::IvfPq, "k", params.k as u64, node_id)?;
+            let dataset = validate_vector_relation_binding(
+                CuvsOperation::IvfPq,
+                "dataset",
+                &params.dataset,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            let queries = validate_vector_relation_binding(
+                CuvsOperation::IvfPq,
+                "queries",
+                &params.queries,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_matching_element_types("dataset", &dataset, "queries", &queries, node_id)?;
+            if let (Some(dataset_dimension), Some(query_dimension)) = (dataset.dimension, queries.dimension)
+                && dataset_dimension != query_dimension
+            {
+                return Err(vector_algorithm_error("IVF-PQ dataset and query dimensions must match")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "feature_dimension_mismatch"));
+            }
+            if params.metric == VectorDistanceMetric::CosineExpanded
+                && dataset.dimension.is_some_and(|dimension| dimension < 2)
+            {
+                return Err(vector_algorithm_error("cosine IVF-PQ requires at least two dimensions")
+                    .with_fact("node_id", node_id)
+                    .with_fact("reason", "insufficient_feature_dimension"));
+            }
+            vector_knn_output_schema(queries.id_type, dataset.id_type)
+        },
         VectorAlgorithmParams::PairwiseDistance(params) => {
             let x = validate_vector_relation_binding(
                 CuvsOperation::PairwiseDistance,

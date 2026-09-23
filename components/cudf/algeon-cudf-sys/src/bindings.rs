@@ -3314,20 +3314,27 @@ unsafe extern "C" {
         out_of_range_count: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Mark native infinite-distance placeholders with a missing-neighbor sentinel."]
-    pub fn cudf_normalize_int64_missing_neighbor_indices_ex(
-        neighbors: *mut i64,
-        distances: *const f32,
+    #[doc = " Add a finite scalar in place to every Float32 value on the execution stream.\n IEEE infinity and NaN retain their non-finite status."]
+    pub fn cudf_float32_buffer_add_scalar_ex(
+        values: *mut f32,
         element_count: usize,
-        sentinel: i64,
+        scalar: f32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Count non-finite distances at positions with a valid neighbor index."]
-    pub fn cudf_float32_buffer_non_finite_valid_neighbors_count_ex(
-        distances: *const f32,
-        neighbors: *const i64,
+    #[doc = " Replace Int64 values with fill_value where the paired Float32 value is infinite."]
+    pub fn cudf_int64_buffer_fill_where_float32_infinite_ex(
+        values: *mut i64,
+        paired_values: *const f32,
         element_count: usize,
-        sentinel: i64,
+        fill_value: i64,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Count non-finite Float32 values whose paired Int64 value differs from excluded_value."]
+    pub fn cudf_float32_buffer_non_finite_unless_int64_equals_count_ex(
+        values: *const f32,
+        paired_values: *const i64,
+        element_count: usize,
+        excluded_value: i64,
         out_non_finite_count: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;

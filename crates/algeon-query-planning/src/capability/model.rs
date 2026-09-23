@@ -410,8 +410,18 @@ impl VectorInputRole {
     #[doc(hidden)]
     pub fn for_vector_input(vector: &VectorAlgorithmNode, input_index: usize) -> Self {
         match (&vector.spec.params, input_index) {
-            (VectorAlgorithmParams::BruteForceKnn(_) | VectorAlgorithmParams::IvfFlat(_), 0) => Self::Dataset,
-            (VectorAlgorithmParams::BruteForceKnn(_) | VectorAlgorithmParams::IvfFlat(_), 1) => Self::Queries,
+            (
+                VectorAlgorithmParams::BruteForceKnn(_)
+                | VectorAlgorithmParams::IvfFlat(_)
+                | VectorAlgorithmParams::IvfPq(_),
+                0,
+            ) => Self::Dataset,
+            (
+                VectorAlgorithmParams::BruteForceKnn(_)
+                | VectorAlgorithmParams::IvfFlat(_)
+                | VectorAlgorithmParams::IvfPq(_),
+                1,
+            ) => Self::Queries,
             (VectorAlgorithmParams::PairwiseDistance(_), 0) => Self::X,
             (VectorAlgorithmParams::PairwiseDistance(_), 1) => Self::Y,
             (VectorAlgorithmParams::TopK(_), 0) => Self::Input,

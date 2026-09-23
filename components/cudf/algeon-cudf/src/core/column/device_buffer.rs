@@ -335,16 +335,22 @@ impl DeviceBuffer {
             .map_err(|error| error.reanchor("device_buffer::validate_int64_range_or_sentinel"))
     }
 
-    /// Mark infinite-distance placeholder slots as missing neighbors on the retained execution stream.
-    pub fn normalize_missing_neighbor_indices(&mut self, distances: &Self, sentinel: i64) -> Result<()> {
-        validation::normalize_missing_neighbor_indices(self, distances, sentinel)
-            .map_err(|error| error.reanchor("device_buffer::normalize_missing_neighbor_indices"))
+    /// Add a finite scalar to each Float32 value on the retained execution stream.
+    /// Non-finite values retain their IEEE non-finite status.
+    pub fn add_scalar_to_float32(&mut self, scalar: f32) -> Result<()> {
+        validation::add_scalar_to_float32_buffer(self, scalar)
     }
 
-    /// Validate finite Float32 values at every position whose Int64 neighbor is not the sentinel.
-    pub fn validate_finite_float32_for_valid_neighbors(&self, neighbors: &Self, sentinel: i64) -> Result<()> {
-        validation::validate_finite_float32_for_valid_neighbors(self, neighbors, sentinel)
-            .map_err(|error| error.reanchor("device_buffer::validate_finite_float32_for_valid_neighbors"))
+    /// Fill Int64 values where paired Float32 values are infinite on the retained execution stream.
+    pub fn fill_int64_where_float32_infinite(&mut self, paired_values: &Self, fill_value: i64) -> Result<()> {
+        validation::fill_int64_where_float32_infinite(self, paired_values, fill_value)
+            .map_err(|error| error.reanchor("device_buffer::fill_int64_where_float32_infinite"))
+    }
+
+    /// Require finite Float32 values where paired Int64 values differ from `excluded_value`.
+    pub fn validate_finite_float32_unless_int64_equals(&self, paired_values: &Self, excluded_value: i64) -> Result<()> {
+        validation::validate_finite_float32_unless_int64_equals(self, paired_values, excluded_value)
+            .map_err(|error| error.reanchor("device_buffer::validate_finite_float32_unless_int64_equals"))
     }
 
     /// Consume this buffer and return the raw FFI handle **without** running

@@ -5,6 +5,7 @@ use crate::{
     device::{DeviceBuffer, MatrixLayout, ValidatedDeviceTensor},
     dlpack::DlpackTensor,
     error::{Result, check_cuvs, from_cudf, invalid_input, invalid_state, require_nonzero},
+    params_handle::ParamsHandle,
     resources::CuvsResources,
 };
 
@@ -30,49 +31,6 @@ pub struct IvfFlatSearchParams {
 impl Default for IvfFlatSearchParams {
     fn default() -> Self {
         Self { n_probes: 20 }
-    }
-}
-
-struct ParamsHandle<T> {
-    raw: Option<NonNull<T>>,
-    destroy: unsafe extern "C" fn(*mut T) -> cuvs_sys::cuvsError_t,
-}
-
-impl<T> ParamsHandle<T> {
-    fn new(
-        create: unsafe extern "C" fn(*mut *mut T) -> cuvs_sys::cuvsError_t,
-        destroy: unsafe extern "C" fn(*mut T) -> cuvs_sys::cuvsError_t,
-        operation: &'static str,
-    ) -> Result<Self> {
-        let mut raw = ptr::null_mut();
-        unsafe { check_cuvs(create(&mut raw), operation)? };
-        Ok(Self {
-            raw: Some(NonNull::new(raw).ok_or_else(|| invalid_state(operation, "cuVS returned null IVF-Flat params"))?),
-            destroy,
-        })
-    }
-
-    fn as_ptr(&self) -> *mut T {
-        self.raw.expect("params remain live during native call").as_ptr()
-    }
-
-    fn close(&mut self, operation: &'static str) -> Result<()> {
-        let Some(raw) = self.raw.take() else { return Ok(()) };
-        let result = unsafe { check_cuvs((self.destroy)(raw.as_ptr()), operation) };
-        if result.is_err() {
-            self.raw = Some(raw);
-        }
-        result
-    }
-}
-
-impl<T> Drop for ParamsHandle<T> {
-    fn drop(&mut self) {
-        if let Some(raw) = self.raw.take() {
-            unsafe {
-                let _ = (self.destroy)(raw.as_ptr());
-            }
-        }
     }
 }
 
@@ -123,6 +81,7 @@ impl IvfFlatIndex {
                 cuvs_sys::cuvsIvfFlatIndexParamsCreate,
                 cuvs_sys::cuvsIvfFlatIndexParamsDestroy,
                 operation,
+                "IVF-Flat params",
             )?;
             unsafe {
                 let config_ptr = config.as_ptr();
@@ -201,6 +160,7 @@ impl IvfFlatIndex {
                 cuvs_sys::cuvsIvfFlatSearchParamsCreate,
                 cuvs_sys::cuvsIvfFlatSearchParamsDestroy,
                 operation,
+                "IVF-Flat search params",
             )?;
             unsafe {
                 (*config.as_ptr()).n_probes = params.n_probes;
@@ -230,7 +190,7 @@ impl IvfFlatIndex {
         // cuVS local top-k can return an in-range placeholder ID with an infinite distance.
         neighbors
             .inner_mut()
-            .normalize_missing_neighbor_indices(distances.inner(), i64::MAX)
+            .fill_int64_where_float32_infinite(distances.inner(), i64::MAX)
             .map_err(|error| from_cudf(operation, error))?;
         neighbors.validate_native_index_range_or_sentinel(0, indexed_rows, i64::MAX, operation)?;
         distances.validate_native_distances_for_valid_neighbors(neighbors, i64::MAX, operation)?;

@@ -6,9 +6,9 @@ use query_engine::{
     expr::Expr as NativeExpr,
     plan::{
         ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
-        VectorBruteForceKnnParams, VectorDistanceMetric, VectorIvfFlatParams, VectorKMeansInit, VectorKMeansMetric,
-        VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
-        VectorRowIdBinding, VectorTopKParams,
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind,
+        VectorIvfPqParams, VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams,
+        VectorPcaParams, VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -124,6 +124,33 @@ pub(super) fn lower_cuvs_query_plan(
             params.kmeans_trainset_fraction = value_f64(operation, &canonical, "kmeans_trainset_fraction")?;
             VectorAlgorithmParams::IvfFlat(params)
         },
+        CuvsOperation::IvfPq => {
+            let metric = match value_str(operation, &canonical, "metric")? {
+                "l2_expanded" => VectorDistanceMetric::L2Expanded,
+                "l2_sqrt_expanded" => VectorDistanceMetric::L2SqrtExpanded,
+                "cosine" => VectorDistanceMetric::CosineExpanded,
+                "inner_product" => VectorDistanceMetric::InnerProduct,
+                _ => unreachable!("canonical IVF-PQ metric is registry validated"),
+            };
+            let mut params = VectorIvfPqParams::new(
+                relations[0].clone(),
+                relations[1].clone(),
+                value_usize(operation, &canonical, "k")?,
+                metric,
+                value_u32(operation, &canonical, "n_lists")?,
+            );
+            params.n_probes = value_u32(operation, &canonical, "n_probes")?;
+            params.kmeans_n_iters = value_u32(operation, &canonical, "kmeans_n_iters")?;
+            params.kmeans_trainset_fraction = value_f64(operation, &canonical, "kmeans_trainset_fraction")?;
+            params.pq_dim = value_u32(operation, &canonical, "pq_dim")?;
+            params.pq_bits = value_u32(operation, &canonical, "pq_bits")?;
+            params.codebook_kind = match value_str(operation, &canonical, "codebook_kind")? {
+                "per_subspace" => VectorIvfPqCodebookKind::PerSubspace,
+                "per_cluster" => VectorIvfPqCodebookKind::PerCluster,
+                _ => unreachable!("canonical IVF-PQ codebook kind is registry validated"),
+            };
+            VectorAlgorithmParams::IvfPq(params)
+        },
         CuvsOperation::PairwiseDistance => VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
             x: relations[0].clone(),
             y: relations[1].clone(),
@@ -176,6 +203,7 @@ pub(super) fn lower_cuvs_query_plan(
     let algorithm = match operation {
         CuvsOperation::BruteForceKnn => VectorAlgorithm::BruteForceKnn,
         CuvsOperation::IvfFlat => VectorAlgorithm::IvfFlat,
+        CuvsOperation::IvfPq => VectorAlgorithm::IvfPq,
         CuvsOperation::PairwiseDistance => VectorAlgorithm::PairwiseDistance,
         CuvsOperation::TopK => VectorAlgorithm::TopK,
         CuvsOperation::KMeans => VectorAlgorithm::KMeans,
