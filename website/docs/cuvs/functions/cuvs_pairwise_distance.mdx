@@ -57,7 +57,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 | Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance metric; inner_product is a similarity where larger is closer. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Float64: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
+| `metric` | yes | `string` | No default | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance metric; inner_product is a similarity where larger is closer. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Float64: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
 
 ### Vector binding shapes
 

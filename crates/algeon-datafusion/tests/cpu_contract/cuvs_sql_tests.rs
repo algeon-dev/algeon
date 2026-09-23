@@ -129,7 +129,8 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     );
 
     let ivf = cuvs_options_json_schema(CuvsOperation::IvfFlat);
-    assert_eq!(ivf["required"], serde_json::json!(["dataset", "queries", "k", "metric", "n_lists"]));
+    assert_eq!(ivf["required"], serde_json::json!(["dataset", "queries", "k", "n_lists"]));
+    assert_eq!(ivf["properties"]["metric"]["default"], "l2_expanded");
     assert_eq!(ivf["properties"]["n_lists"]["minimum"], 1);
     assert_eq!(ivf["properties"]["n_probes"]["default"], 20);
     assert_eq!(ivf["properties"]["kmeans_n_iters"]["default"], 20);
@@ -153,7 +154,8 @@ fn canonical_registry_drives_names_relations_and_json_schemas() {
     assert_eq!(pq["properties"]["codebook_kind"]["default"], "per_subspace");
 
     let cagra = cuvs_options_json_schema(CuvsOperation::Cagra);
-    assert_eq!(cagra["required"], serde_json::json!(["dataset", "queries", "k", "metric"]));
+    assert_eq!(cagra["required"], serde_json::json!(["dataset", "queries", "k"]));
+    assert_eq!(cagra["properties"]["metric"]["default"], "l2_expanded");
     assert_eq!(cagra["properties"]["build_algo"]["enum"], serde_json::json!(["ivf_pq", "nn_descent"]));
     assert_eq!(cagra["properties"]["itopk_size"]["default"], 64);
     assert_eq!(cagra["properties"]["metric"]["enum"], serde_json::json!(["l2_expanded", "inner_product", "cosine"]));
@@ -705,6 +707,26 @@ async fn operation_output_schemas_and_defaulted_options_are_stable() {
     assert_eq!(normalized["whiten"], false);
     assert_eq!(normalized["solver"], "cov_eig_dq");
     assert_eq!(normalized["n_iterations"], 15);
+
+    for (function, index_options) in [
+        (CUVS_IVF_FLAT_FUNCTION, ", n_lists => 1, n_probes => 1"),
+        (CUVS_IVF_PQ_FUNCTION, ", n_lists => 1, n_probes => 1"),
+        (CUVS_CAGRA_FUNCTION, ""),
+    ] {
+        let ann = logical_plan(
+            &ctx,
+            &format!(
+                "SELECT * FROM {function}(\
+                     dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
+                     queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+                     k => 1{index_options})"
+            ),
+        )
+        .await;
+        let ann = find_cuvs_node(&ann).unwrap();
+        let normalized: serde_json::Value = serde_json::from_str(ann.validated_options().canonical_json()).unwrap();
+        assert_eq!(normalized["metric"], "l2_expanded", "{function} uses the native default metric");
+    }
 }
 
 #[tokio::test]

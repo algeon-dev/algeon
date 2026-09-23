@@ -56,7 +56,7 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 | Argument | Type | Required | Description |
 | --- | --- | --- | --- |
 | `k` | `integer` | yes | Number of neighbors returned for each evaluated query row. |
-| `metric` | `enum ("l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product")` | yes | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
+| `metric` | `enum ("l2_expanded", "l2_sqrt_expanded", "cosine", "inner_product")` | no | Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first. |
 | `n_lists` | `integer` | yes | Number of inverted lists; must not exceed the evaluated dataset row count. |
 | `n_probes` | `integer` | no | Lists probed per query; native default 20, and must not exceed n_lists. |
 | `kmeans_n_iters` | `integer` | no | Iterations for training list centers; native default 20. |
@@ -66,11 +66,11 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 | Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
+| `k` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
 | `kmeans_n_iters` | no | `integer` | `20` | minimum 1; maximum 4294967295 | Iterations for training list centers; native default 20. |
 | `kmeans_trainset_fraction` | no | `number` | `0.5` | greater than 0; maximum 1 | Fraction of the dataset used for training centers; native default 0.5. |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Int8: l2_expanded, l2_sqrt_expanded, cosine, inner_product; UInt8: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
-| `n_lists` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of inverted lists; must not exceed the evaluated dataset row count. |
+| `metric` | no | `string` | `"l2_expanded"` | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric; native default l2_expanded. Distance metrics rank lower values first; inner product ranks higher values first. Supported element/metric combinations: Float32: l2_expanded, l2_sqrt_expanded, cosine, inner_product; Int8: l2_expanded, l2_sqrt_expanded, cosine, inner_product; UInt8: l2_expanded, l2_sqrt_expanded, cosine, inner_product. |
+| `n_lists` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of inverted lists; must not exceed the evaluated dataset row count. |
 | `n_probes` | no | `integer` | `20` | minimum 1; maximum 4294967295 | Lists probed per query; native default 20, and must not exceed n_lists. |
 
 ### Vector binding shapes

@@ -57,8 +57,8 @@ Vertex columns of `sources`, `include_vertices`, `exclude_vertices`, `target_ver
 | `depth_limit` | `integer\|null` | `null` | min 0; max 9223372036854776000 | optional non-negative BFS depth limit |
 | `output_mode` | `string` | `"raw"` | one of `"raw"`, `"normalized"`, `"path"` | BFS output shape |
 | `return_target_info` | `boolean` | `false` |  | whether raw or normalized BFS output includes target information |
-| `source_vertex` | `integer\|string` |  |  | scalar source vertex; BFS source selectors are mutually exclusive |
-| `source_vertices` | `array` |  |  | non-empty homogeneous BFS source vertex array; mutually exclusive with source_vertex and sources |
+| `source_vertex` | `integer\|string` | No default |  | scalar source vertex; BFS source selectors are mutually exclusive |
+| `source_vertices` | `array` | No default |  | non-empty homogeneous BFS source vertex array; mutually exclusive with source_vertex and sources |
 
 ### Graph construction options
 

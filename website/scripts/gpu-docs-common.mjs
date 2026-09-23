@@ -77,6 +77,12 @@ export function code(value) {
   return `${fence}${pad}${inner}${pad}${fence}`;
 }
 
+// A JSON-schema option without `default` must be supplied by the caller when
+// required and is absent otherwise; an empty table cell hides that contract.
+export function defaultCell(option) {
+  return Object.hasOwn(option, 'default') ? code(JSON.stringify(option.default)) : 'No default';
+}
+
 export function prose(value) {
   return String(value ?? '')
     .replace(/[{}]/g, match => `\\${match}`)

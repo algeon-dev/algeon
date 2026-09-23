@@ -56,8 +56,8 @@ Each relation argument is a parenthesized `SELECT` subquery that the planner kee
 
 | Argument | Required | Literal shape | Default | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of values selected from each row. |
-| `select` | yes | `string` |  | one of `"min"`, `"max"` | Select the minimum or maximum values. |
+| `k` | yes | `integer` | No default | minimum 1; maximum 4294967295 | Number of values selected from each row. |
+| `select` | yes | `string` | No default | one of `"min"`, `"max"` | Select the minimum or maximum values. |
 
 ### Vector binding shapes
 

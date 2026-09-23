@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   cell,
   code,
+  defaultCell,
   loadProviderSpecs,
   prose,
   renderFunctionPage,
@@ -212,7 +213,7 @@ function renderArguments(spec) {
       code(name),
       required.has(name) ? 'yes' : 'no',
       code(optionType(option)),
-      Object.hasOwn(option, 'default') ? code(JSON.stringify(option.default)) : '',
+      defaultCell(option),
       cell(optionConstraints(option)),
       cell(option.description),
     ]);
