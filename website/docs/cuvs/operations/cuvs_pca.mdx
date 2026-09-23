@@ -12,12 +12,6 @@ SQL function: `cuvs_pca`
 
 Principal-component analysis transform for dense vector rows.
 
-## Signature
-
-```sql
-cuvs_pca(input => (relation subquery), n_components => value, whiten => value, solver => value, tol => value, n_iterations => value, flip_signs_based_on_u => value)
-```
-
 ## Quickstart
 
 The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
@@ -77,7 +71,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 | `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
 | `pc_<index>` | `Float32` | no | One transformed principal-component value; the field count is set by the literal n_components option. The output contains `n_components` such columns, `pc_0` through `pc_&lt;n_components - 1&gt;`. |
 
-**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 
 ## Limits
 
@@ -87,15 +81,4 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 - The evaluated input needs at least two rows and two dimensions, and n_components must not exceed the evaluated dimension.
 - Component sign orientation is not a semantic label. The output schema changes with the literal n_components option.
 
-## Validate the call
-
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cuvs_pca',
-  '{"relations":{"input":{"table":"input_vectors"}},"options":{"n_components":2}}'
-);
-```
-
-See [GPU Function Catalog API](../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

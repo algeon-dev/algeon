@@ -12,12 +12,6 @@ SQL function: `cuvs_kmeans`
 
 K-means clustering assignments for dense vector rows.
 
-## Signature
-
-```sql
-cuvs_kmeans(input => (relation subquery), n_clusters => value, metric => value, max_iter => value, tol => value, n_init => value, init => value)
-```
-
 ## Quickstart
 
 The call below expects the registered relation `input_vectors` (the `input` role), passed as a parenthesized `SELECT` subquery. Substitute your own relations and column names.
@@ -77,7 +71,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 | `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
 | `cluster_id` | `Int32` | no | Query-local numeric assignment label, not a stable business or topic identifier. |
 
-**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
 
 ## Limits
 
@@ -87,15 +81,4 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 - The evaluated input must be non-empty and n_clusters must not exceed its row count.
 - cluster_id values are query-local labels. Do not attach permanent business meaning to their numeric values.
 
-## Validate the call
-
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cuvs_kmeans',
-  '{"relations":{"input":{"table":"input_vectors"}},"options":{"n_clusters":8}}'
-);
-```
-
-See [GPU Function Catalog API](../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

@@ -14,12 +14,6 @@ Official cuGraph reference: [C API](https://docs.rapids.ai/api/cugraph/stable/ap
 
 Compare explicit vertex pairs by dividing the size of their shared-neighbor intersection by the size of their neighbor union.
 
-## Signature
-
-```sql
-cugraph_jaccard(edges => (relation subquery), directed => value, renumber => value, construction_policy => value, vertex_pairs => (relation subquery))
-```
-
 ## Quickstart
 
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `candidate_pairs` (the `vertex_pairs` relation with columns `first`, `second`). Substitute your own registered relations.
@@ -66,7 +60,7 @@ This function requires `directed=false` (undirected/symmetric graph); all other 
 | `second` | `Int64\|Utf8` | no | Second vertex from the explicit candidate-pair relation. |
 | `similarity` | `Float64` | no | Similarity coefficient for the explicit candidate pair. |
 
-These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -85,15 +79,4 @@ import Examples from '../../_examples/cugraph_jaccard.mdx';
 - providing edges.weight selects weighted similarity; omitting it selects unit-weight similarity
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
-## Validate the call
-
-Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
-
-```sql
-SELECT * FROM gpu_validate_call(
-  'cugraph_jaccard',
-  '{"relations":{"edges":{"table":"target_edges"},"vertex_pairs":{"table":"candidate_pairs"}},"options":{}}'
-);
-```
-
-See [GPU Function Catalog API](../../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx).

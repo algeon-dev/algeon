@@ -642,27 +642,35 @@
   color: var(--ifm-link-color);
 }
 
-/* cuGraph overview cheatsheet: give prose room while keeping the
-   generated table horizontally scrollable when the viewport is narrow. */
+/* cuGraph overview cheatsheet: wrap description prose to fit the content area,
+   keeping compact columns nowrap and allowing horizontal scroll on narrow viewports. */
 .cugraph-function-cheatsheet {
   max-width: 100%;
   overflow-x: auto;
 }
 
 .cugraph-function-cheatsheet table {
-  width: max-content;
+  display: table;
+  width: 100%;
 }
 
-.cugraph-function-cheatsheet table th:last-child,
-.cugraph-function-cheatsheet table td:last-child {
-  min-width: 30rem;
+.cugraph-function-cheatsheet table td {
+  vertical-align: top;
 }
 
-@media (max-width: 996px) {
-  .cugraph-function-cheatsheet table th:last-child,
-  .cugraph-function-cheatsheet table td:last-child {
-    min-width: 22rem;
-  }
+.cugraph-function-cheatsheet table th:nth-child(1),
+.cugraph-function-cheatsheet table td:nth-child(1),
+.cugraph-function-cheatsheet table th:nth-child(2),
+.cugraph-function-cheatsheet table td:nth-child(2),
+.cugraph-function-cheatsheet table th:nth-child(4),
+.cugraph-function-cheatsheet table td:nth-child(4) {
+  white-space: nowrap;
+}
+
+.cugraph-function-cheatsheet table th:nth-child(3),
+.cugraph-function-cheatsheet table td:nth-child(3) {
+  white-space: normal;
+  min-width: 16rem;
 }
 
 .markdown table td ul {

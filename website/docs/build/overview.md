@@ -22,8 +22,6 @@ Follow the pages in this order:
    maintainer diagnostics.
 4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
    server after a source build.
-5. [Troubleshooting](./troubleshooting.md): native failures whose error text
-   does not point at the cause.
 
 ## The stack
 
