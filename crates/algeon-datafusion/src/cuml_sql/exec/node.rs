@@ -22,9 +22,8 @@ use super::{
     lowering::lower_cuml_query_plan,
 };
 use crate::native_exec::{
-    AlgeonNativeExecutionConfig, GpuResidentProducer,
+    AlgeonNativeExecutionConfig,
     child_inputs::NativeChildBinding,
-    register_gpu_resident_producer_discovery,
     relation_function::{
         RelationFunctionExec, RelationFunctionMessages, RelationFunctionOperations, RelationFunctionSpec,
         RelationFunctionText,
@@ -52,7 +51,6 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
         output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
     ) -> Result<Self> {
-        register_cuml_execution_spi();
         let id = NEXT_CUML_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
         let input_names =
             (0..inputs.len()).map(|index| format!("__algeon_datafusion_cuml_input_{id}_{index}")).collect();
@@ -70,15 +68,6 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
     pub fn operation(&self) -> CumlOperation {
         self.spec().operation
     }
-}
-
-fn cuml_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    plan.downcast_ref::<CumlAlgoExec>().map(|producer| producer as &dyn GpuResidentProducer)
-}
-
-fn register_cuml_execution_spi() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| register_gpu_resident_producer_discovery(cuml_gpu_resident_producer));
 }
 
 impl RelationFunctionSpec for CumlRelationFunctionSpec {

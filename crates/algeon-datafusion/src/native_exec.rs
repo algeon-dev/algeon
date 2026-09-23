@@ -54,31 +54,30 @@ pub(crate) mod graph;
 mod host;
 pub(crate) mod lakehouse;
 mod metrics;
+mod native_node;
 mod occurrence;
 mod producer;
 pub(crate) mod relation_function;
 
-pub(crate) use common::{NativeHostOutputCursor, native_host_output_stream, run_gpu_execution_task};
+pub(crate) use common::{
+    NativeHostOutputCursor, cancellation_requested, native_host_output_stream, run_gpu_execution_task,
+};
 
 #[cfg(feature = "cugraph")]
 #[cfg(feature = "cugraph")]
 pub(crate) use self::composed::composed_admission_capability_evidence;
-#[cfg(feature = "server")]
-pub(crate) use self::metrics::{NativeMetricsCapture, ServerNativeObservationActivityFactory};
 pub(crate) use self::{
-    admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
+    admission::{QueryAdmissionSource, plan_is_query_admission_wrapped},
     composed::producer_bound_capability_evidence,
     metrics::{
-        AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, NativeRuntimeObservation,
-        SealedAttemptMetricsTarget,
+        AlgeonNativeMetrics, GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, SealedAttemptMetricsTarget,
     },
     occurrence::{GpuFunctionHostOccurrenceExec, gpu_function_occurrence_from_task_context},
     producer::{
         GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer,
         gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
         gpu_resident_producer_unique_output_key, prepare_gpu_resident_producer_for_execution,
-        prepared_gpu_resident_producer_admission_tickets, register_gpu_resident_producer_discovery,
-        rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
+        prepared_gpu_resident_producer_admission_tickets, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
 };
 pub use self::{
@@ -93,11 +92,14 @@ pub use self::{
     producer::AlgeonNativeGpuProducerExec,
 };
 
-/// Return the wrapped plan for an adapter-owned transparent root wrapper.
-///
-/// These wrappers intentionally delegate [`ExecutionPlan::children`] to their
-/// inputs, so callers that need to inspect the actual root must not infer the
-/// wrapped input from `children()`.
+/// The plan below the admission node the native optimizer places at a
+/// query's root, or `plan` itself when it has none.
+pub fn below_native_admission(plan: &Arc<dyn ExecutionPlan>) -> &Arc<dyn ExecutionPlan> {
+    admission::query_admission_wrapped_input(plan.as_ref()).unwrap_or(plan)
+}
+
+/// Return the input of an adapter-owned root node (native admission or a GPU
+/// function host occurrence), which adds no rows or GPU work of its own.
 pub(crate) fn transparent_root_wrapper_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
     admission::query_admission_wrapped_input(plan).or_else(|| occurrence::gpu_function_occurrence_wrapped_input(plan))
 }

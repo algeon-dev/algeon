@@ -120,6 +120,7 @@ pub(super) fn metric_usize(metrics: &MetricsSet, name: &str) -> usize {
 }
 
 pub(super) fn assert_algeon_native_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {
+    let plan = below_native_admission(plan);
     assert_eq!(plan.name(), "AlgeonNativeExec", "{context}");
     assert!(plan.downcast_ref::<AlgeonNativeExec>().is_some(), "{context}");
 }

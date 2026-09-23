@@ -9,7 +9,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     error::DataFusionErrorExt,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, below_native_admission},
     native_report::NativeDataFusionExecutionMetrics,
     planner::{FinalPlanDisposition, plan_with_native_diagnostics},
 };
@@ -23,7 +23,7 @@ use datafusion::{
 use futures::{StreamExt, stream::once};
 use query_engine::observability::{
     AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureCode,
-    AttemptFailureFactValue, AttemptHealthTransition, RuntimeTerminalOutcome,
+    AttemptFailureFactValue, AttemptHealthTransition, QueryAttemptReport, RuntimeTerminalOutcome,
 };
 use tokio::{sync::OwnedSemaphorePermit, time::sleep};
 
@@ -248,13 +248,15 @@ async fn native_invocation_shares_one_admission_and_distinct_boundaries() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attempts() {
-    let backend = backend();
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
     let ctx = native_context(&backend).await;
     let planner = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let plan = planner.plan_sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     let planner_id = planner.attempt_id();
     assert!(
-        plan.metrics().is_none_or(|metrics| metrics.sum_by_name("attempt_report_rows").is_none()),
+        below_native_admission(&plan)
+            .metrics()
+            .is_none_or(|metrics| metrics.sum_by_name("attempt_report_rows").is_none()),
         "retry advice cannot appear in DataFusion metrics before the attempt seals"
     );
 
@@ -265,7 +267,7 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     }
     let report = planner.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
-    let metrics = plan.metrics().expect("native root exposes DataFusion metrics");
+    let metrics = below_native_admission(&plan).metrics().expect("native root exposes DataFusion metrics");
     let execution = planner.sealed_native_execution_snapshot().expect("sealed native execution snapshot");
     assert_eq!(execution.attempt_id, planner_id);
     assert_eq!(execution.coverage.disposition(), FinalPlanDisposition::Native);
@@ -306,7 +308,7 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some(), "reused plan admits under the new attempt");
     assert_eq!(
-        plan.metrics().unwrap().sum_by_name("attempt_report_rows").unwrap().as_usize(),
+        below_native_admission(&plan).metrics().unwrap().sum_by_name("attempt_report_rows").unwrap().as_usize(),
         2,
         "reused wrappers project one counter row per sealed attempt rather than sharing terminal state"
     );
@@ -320,18 +322,17 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     assert_ne!(third.attempt_id(), planner_id);
     assert_ne!(third.attempt_id(), second_id);
 
-    // The same attempt-bound plan executed through a raw session without the
-    // invocation extension is rejected: fragments cannot observe a
+    // The same plan executed through a raw session without an attempt runs
+    // as an internal attempt of its own: fragments cannot observe a
     // plan-lifetime attempt.
     let raw_state =
         backend.install_on(SessionStateBuilder::new_with_default_features()).expect("install backend").build();
     let raw_ctx = SessionContext::new_with_state(raw_state);
-    let error = match execute_stream(plan, raw_ctx.task_ctx()) {
-        Ok(_) => panic!("raw execution of an attempt-bound plan must be rejected"),
-        Err(error) => error,
-    };
-    let algeon_error = DataFusionErrorExt::find_algeon_error(&error).expect("structured algeon error");
-    assert_eq!(algeon_error.fact_value("reason"), Some("attempt_execution_required"));
+    drain(execute_stream(plan, raw_ctx.task_ctx()).expect("raw execution starts")).await;
+    let report = sole_abandoned_report(&backend).await;
+    assert!(![planner_id, second_id].contains(&report.attempt_id), "raw execution begins a fresh attempt");
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert!(report.admission.is_some(), "the internal attempt admits the raw execution");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -761,4 +762,112 @@ async fn coverage_planned_inside_an_attempt_keeps_the_outer_disposition() {
     let report = attempt.completion().await;
     assert_eq!(report.disposition, AttemptDisposition::CpuFallback);
     assert!(report.admission.is_none());
+}
+
+async fn drain(mut stream: SendableRecordBatchStream) -> usize {
+    let mut rows = 0;
+    while let Some(batch) = stream.next().await {
+        rows += batch.expect("stream batch").num_rows();
+    }
+    rows
+}
+
+/// Waits for `count` reports of attempts no caller awaits, such as the
+/// internal attempt of a plain `collect`. An admitted attempt publishes its
+/// report after GPU cleanup, which can finish after its result stream ends.
+async fn abandoned_reports(backend: &AlgeonGpuBackend, count: usize) -> Vec<std::sync::Arc<QueryAttemptReport>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut reports = backend.take_abandoned_attempt_reports(8);
+    while reports.len() < count {
+        assert!(std::time::Instant::now() < deadline, "{} of {count} attempt reports published", reports.len());
+        sleep(std::time::Duration::from_millis(5)).await;
+        reports.extend(backend.take_abandoned_attempt_reports(8));
+    }
+    assert_eq!(reports.len(), count, "each execution publishes exactly one attempt report");
+    reports
+}
+
+async fn sole_abandoned_report(backend: &AlgeonGpuBackend) -> std::sync::Arc<QueryAttemptReport> {
+    abandoned_reports(backend, 1).await.remove(0)
+}
+
+const NATIVE_AGGREGATE_SQL: &str = "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_collect_runs_as_one_internal_attempt() {
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let begun = backend.attempt_counters_snapshot().attempts_begun;
+
+    let batches = ctx.sql(NATIVE_AGGREGATE_SQL).await.unwrap().collect().await.unwrap();
+
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 2);
+    assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 1);
+    let report = sole_abandoned_report(&backend).await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(report.disposition, AttemptDisposition::Native);
+    assert!(report.admission.is_some(), "the internal attempt admits the native plan once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_plain_execution_of_one_plan_runs_one_attempt_each_time() {
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let plan = ctx.sql(NATIVE_AGGREGATE_SQL).await.unwrap().create_physical_plan().await.unwrap();
+
+    let mut attempt_ids = Vec::new();
+    for _ in 0..2 {
+        assert_eq!(drain(execute_stream(std::sync::Arc::clone(&plan), ctx.task_ctx()).unwrap()).await, 2);
+        let report = sole_abandoned_report(&backend).await;
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+        assert!(report.admission.is_some());
+        attempt_ids.push(report.attempt_id);
+    }
+    assert_ne!(attempt_ids[0], attempt_ids[1], "each execution is its own attempt");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_plain_executions_on_one_context_run_one_attempt_each() {
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let plan = ctx.sql(NATIVE_AGGREGATE_SQL).await.unwrap().create_physical_plan().await.unwrap();
+
+    let (first, second) = tokio::join!(
+        drain(execute_stream(std::sync::Arc::clone(&plan), ctx.task_ctx()).unwrap()),
+        drain(execute_stream(std::sync::Arc::clone(&plan), ctx.task_ctx()).unwrap()),
+    );
+
+    assert_eq!((first, second), (2, 2));
+    let reports = abandoned_reports(&backend, 2).await;
+    assert_ne!(reports[0].attempt_id, reports[1].attempt_id);
+    for report in &reports {
+        assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+        assert!(report.admission.is_some());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctas_inner_plan_runs_inside_one_attempt() {
+    let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
+    let ctx = native_context(&backend).await;
+    let begun = backend.attempt_counters_snapshot().attempts_begun;
+
+    // DataFusion executes the inner plan of a CTAS while it builds the outer
+    // statement; without an attempt, that execution is the internal attempt.
+    ctx.sql(&format!("CREATE TABLE plain_totals AS {NATIVE_AGGREGATE_SQL}")).await.unwrap();
+    assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 1);
+    let report = sole_abandoned_report(&backend).await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert!(report.admission.is_some());
+
+    // Planned inside an attempt, as the Flight DDL path runs it, the inner
+    // plan admits under that attempt's ticket and begins no internal attempt.
+    let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    attempt.plan_sql(&ctx, &format!("CREATE TABLE attempt_totals AS {NATIVE_AGGREGATE_SQL}")).await.unwrap();
+    let report = completion.await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert!(report.admission.is_some(), "the inner plan admits under the attempt");
+    assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun + 2);
+    assert!(backend.take_abandoned_attempt_reports(8).is_empty());
 }

@@ -9,6 +9,7 @@ use std::{
 
 use algeon_datafusion::{
     backend::AlgeonGpuBackend,
+    native_exec::below_native_admission,
     native_report::{
         NativePlanningFailure,
         bench_support::{
@@ -481,7 +482,7 @@ async fn execute_native(plan: Arc<dyn ExecutionPlan>) -> NativeTpcdsParityNative
     let schema = plan.schema();
     match collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await {
         Ok(batches) => {
-            let metrics = plan.metrics().unwrap_or_default();
+            let metrics = below_native_admission(&plan).metrics().unwrap_or_default();
             NativeTpcdsParityNativeRuntimeOutcome::Succeeded { schema, batches, metrics }
         },
         Err(error) => NativeTpcdsParityNativeRuntimeOutcome::Failed { message: error.to_string() },

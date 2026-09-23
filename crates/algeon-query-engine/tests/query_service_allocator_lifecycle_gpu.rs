@@ -261,12 +261,14 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
 
     let first = Arc::new(
         session
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES))
+            .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES))
             .unwrap(),
     );
     let second = Arc::new(
         session
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(SECOND_QUERY_CAP_BYTES))
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_cap_bytes(SECOND_QUERY_CAP_BYTES),
+            )
             .unwrap(),
     );
     assert_eq!(first.device_ordinal(), device.ordinal());
@@ -325,7 +327,9 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     // can create the root stream/domain envelope, and no lane has been released.
     assert!(
         session
-            .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES))
+            .enqueue_admission_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES)
+            )
             .unwrap()
             .try_admit()
             .unwrap()
@@ -424,7 +428,12 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
     assert_eq!(ledger.active_attempts, 2);
     assert_eq!(ledger.live_grants_bytes, derived.saturating_mul(2));
     assert!(
-        session.enqueue_admission_with_request(QueryAdmissionRequest::new()).unwrap().try_admit().unwrap().is_none(),
+        session
+            .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt())
+            .unwrap()
+            .try_admit()
+            .unwrap()
+            .is_none(),
         "two derived defaults fill the lanes and the query share; a third queues"
     );
 
@@ -521,7 +530,8 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     let first = first_session.admit_query().unwrap();
     let first_sequence = first.admission_sequence();
     let queued_session = second_session.clone();
-    let queued = spawn(async move { queued_session.admit_async_with_request(Default::default()).await });
+    let queued =
+        spawn(async move { queued_session.admit_async_with_request(QueryAdmissionRequest::test_attempt()).await });
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

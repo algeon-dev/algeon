@@ -1,6 +1,6 @@
 use std::{
     mem,
-    sync::{Arc, Mutex, Once, atomic::Ordering},
+    sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -27,12 +27,11 @@ use super::{
     attach_graph_residency, check_host_staging_cancellation, collect_cugraph_inputs, counted_cudf_runtime,
     cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted, cugraph_execution_capability_evidence,
     cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor, cugraph_schema_query_plan,
-    edge_execution_config, edge_source_graph_vertex_estimate, exact_native_edge_source_gpu_plan,
-    execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping, materialize_gpu_output_eagerly,
-    native_graph_spec_for_placement_hint, plan, planned_resident_graph_key, preflight_cugraph_query_plan,
-    prepare_cugraph_source_metadata, record_batches_to_gpu, register_gpu_resident_producer_discovery,
-    register_graph_execution_plan_discovery, run_gpu_execution_task, task_context_with_cugraph_execution_ticket,
-    validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
+    edge_source_graph_vertex_estimate, exact_native_edge_source_gpu_plan, execute_cugraph_query_to_gpu_with_options,
+    graph_uses_logical_mapping, materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan,
+    planned_resident_graph_key, preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu,
+    run_gpu_execution_task, task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
+    validate_standalone_bounded_cugraph_sources,
 };
 use crate::{
     attempt::InvocationAttempt,
@@ -164,7 +163,6 @@ impl CugraphAlgoExec {
         host_boundary_config: GpuIslandHostBoundaryConfig,
         gpu_result_input_name: String,
     ) -> Result<Self> {
-        register_cugraph_execution_spis();
         let schema = projected_schema(&spec.output_schema, result_options.projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
@@ -295,9 +293,9 @@ impl CugraphAlgoExec {
         task_context: Arc<TaskContext>,
     ) -> Result<(Self, StagedCugraphInputs)> {
         let prepared = self.prepare_lakehouse_source_metadata(Arc::clone(&task_context)).await?;
-        let cancellation = edge_execution_config(prepared.edge_source.as_ref(), &prepared.native_execution_config)
-            .cancellation()
-            .clone();
+        let cancellation = prepared
+            .native_execution_config
+            .attempt_cancellation(&task_context, "algeon_datafusion.cugraph_sql.host_staging")?;
         let max_staging_bytes = prepared.host_boundary_config.max_input_staging_bytes();
         let max_output_staging_bytes = prepared.host_boundary_config.max_output_staging_bytes();
         let collected_inputs = collect_cugraph_inputs(
@@ -1066,25 +1064,17 @@ pub(super) fn pushed_logical_consumer_options(
     Ok(Some(result_options))
 }
 
-pub(super) fn cugraph_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    let producer = plan.downcast_ref::<CugraphAlgoExec>()?;
-    let logical_mapping = graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema()).ok()?;
-    if producer.spec.validate_logical_edge_id_capability(logical_mapping).is_err() {
-        return None;
+impl CugraphAlgoExec {
+    /// This node as a GPU-resident producer, when its output can stay on the
+    /// device for a native consumer: logical edge-id mapping must be
+    /// available for its algorithm.
+    pub(crate) fn gpu_resident_producer(&self) -> Option<&dyn GpuResidentProducer> {
+        let logical_mapping = graph_uses_logical_mapping(&self.spec, &self.edge_source.schema()).ok()?;
+        if self.spec.validate_logical_edge_id_capability(logical_mapping).is_err() {
+            return None;
+        }
+        Some(self)
     }
-    Some(producer as &dyn GpuResidentProducer)
-}
-
-pub(super) fn cugraph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-    plan.downcast_ref::<CugraphAlgoExec>().map(|exec| exec as &dyn GraphExecutionPlan)
-}
-
-pub(super) fn register_cugraph_execution_spis() {
-    static REGISTER: Once = Once::new();
-    REGISTER.call_once(|| {
-        register_gpu_resident_producer_discovery(cugraph_gpu_resident_producer);
-        register_graph_execution_plan_discovery(cugraph_execution_plan);
-    });
 }
 
 impl CugraphAlgoExec {

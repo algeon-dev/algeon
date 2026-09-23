@@ -361,7 +361,8 @@ impl QueryHandle {
                 let binding = envelope.take_root_binding()?;
                 let memory_grant = envelope.memory_grant().clone();
                 let allocation_domain = envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
-                Ok((binding, memory_grant, allocation_domain, lifetime.observation_owner()))
+                let observation_owner = lifetime.observation_owner().ok_or_else(|| self.lifetime.released_error())?;
+                Ok((binding, memory_grant, allocation_domain, observation_owner))
             })?;
         #[cfg(test)]
         self.lifetime.wait_at_root_context_binding_gate();

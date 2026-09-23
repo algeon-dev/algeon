@@ -371,10 +371,12 @@ impl<S: RelationFunctionSpec> GpuResidentProducer for RelationFunctionExec<S> {
     ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
             self.reject_unavailable_execution()?;
+            let cancellation =
+                self.native_execution_config.attempt_cancellation(&task_context, S::TEXT.operations.execute)?;
             let staged = stage_native_children(
                 self.child_specs(),
                 task_context,
-                self.native_execution_config.cancellation(),
+                &cancellation,
                 DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
             )
             .await?;
@@ -510,10 +512,11 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
+                let cancellation = execution_config.attempt_cancellation(&task_context, S::TEXT.operations.execute)?;
                 let staged = stage_native_children(
                     exec.child_specs(),
                     Arc::clone(&task_context),
-                    execution_config.cancellation(),
+                    &cancellation,
                     DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
                 )
                 .await?;

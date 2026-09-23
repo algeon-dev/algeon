@@ -102,7 +102,7 @@ pub(in crate::runtime) struct AdmittedAttempt {
     /// Revocable lifetime for this attempt's outward resources.
     pub(in crate::runtime) query_epoch: QueryResourceEpoch,
     pub(in crate::runtime) cancellation: ExecutionCancellation,
-    pub(in crate::runtime) observation_owner: Option<RuntimeObservationOwner>,
+    pub(in crate::runtime) observation_owner: RuntimeObservationOwner,
     /// Carrier for exact resident-cache allocator failures, sealed into the
     /// attempt report.
     #[cfg(feature = "cugraph")]

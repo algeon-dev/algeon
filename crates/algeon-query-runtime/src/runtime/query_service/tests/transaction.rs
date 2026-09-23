@@ -191,19 +191,14 @@ fn transaction_deadline_expiry_after_acquisition_rolls_back_complete_envelope() 
     probe.force_deadline_after_acquisition_step(AdmissionStep::AfterRootMember);
     service.set_admission_transaction_probe(probe);
     let queue_deadline = Instant::now() + Duration::from_secs(10);
-    let owner = RuntimeObservationOwner::new(
-        "post-acquisition-deadline",
-        None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
-    let admission_owner = owner.clone();
+    let attempt_owner =
+        observed_attempt("post-acquisition-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt_owner.observation_owner_for_test();
+    let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service.admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_queue_deadline(queue_deadline)
-                .with_runtime_observation_owner(admission_owner),
-        )
+        admission_service
+            .admit_query_with_request(QueryAdmissionRequest::new(binding).with_queue_deadline(queue_deadline))
     });
 
     pause.wait_until_entered(Duration::from_secs(10));
@@ -236,19 +231,14 @@ fn deadline_is_rechecked_after_admission_mutex_reacquisition_before_publication(
     probe.force_deadline_before_publication();
     service.set_admission_transaction_probe(probe);
     let queue_deadline = Instant::now() + Duration::from_secs(10);
-    let owner = RuntimeObservationOwner::new(
-        "pre-publication-deadline",
-        None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
-    );
-    let admission_owner = owner.clone();
+    let attempt_owner =
+        observed_attempt("pre-publication-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let owner = attempt_owner.observation_owner_for_test();
+    let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service.admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_queue_deadline(queue_deadline)
-                .with_runtime_observation_owner(admission_owner),
-        )
+        admission_service
+            .admit_query_with_request(QueryAdmissionRequest::new(binding).with_queue_deadline(queue_deadline))
     });
 
     pause.wait_until_entered(Duration::from_secs(10));

@@ -172,7 +172,7 @@ impl RuntimeExecutionObservationLifecycle {
         // An admitted attempt's owner seals once for the attempt, so each plan
         // finishes only its own execution; a standalone owner seals the query.
         let (owner, owns_query) = match &context.query {
-            QueryScope::Admitted(attempt) => (attempt.observation_owner.as_ref(), false),
+            QueryScope::Admitted(attempt) => (Some(&attempt.observation_owner), false),
             QueryScope::Standalone(query) => (query.observation_owner.as_ref(), true),
         };
         let inner = match owner {

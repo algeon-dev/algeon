@@ -28,6 +28,7 @@ use cudf_sys::test_support::{
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use query_engine::{
     admission::{AttemptCapabilityEvidence, admit},
+    attempt::{AttemptOwner, BeginAttemptRequest},
     error::{QueryErrorCode, Result},
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
@@ -37,9 +38,9 @@ use query_engine::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LimitSpec},
     mode::StatisticalAggregateExecutionMode,
     observability::{
-        LiveRuntimeObservationSnapshot, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
+        AttemptDisposition, AttemptQueryId, PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner,
         RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTaskId, RuntimeTerminalOutcome,
-        RuntimeWorkerId, StreamLeaseLifecycleState, TaskLifecycleState,
+        RuntimeTimelineEvent, RuntimeWorkerId, StreamLeaseLifecycleState, TaskLifecycleState,
     },
     pipeline::{CompiledPipeline, PipelineTaskKind, ResidentDataForm},
     plan::{ProjectionOutput, QueryPlan, QueryPlanBuilder},
@@ -100,7 +101,7 @@ impl LaneBackendGuard {
         let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
         let mut backend = self.backend.borrow_mut();
         ensure_lane_backend(&mut backend)?;
-        let mut request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence);
+        let mut request = QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence);
         if let Some(cap) = cap_bytes {
             request = request.with_query_cap_bytes(cap);
         }
@@ -110,13 +111,36 @@ impl LaneBackendGuard {
             .session_capability()
             .admit_query_with_request(request)?;
         let context = handle.acquire_context()?;
-        Ok(LaneTestContext { context, _handle: handle })
+        Ok(LaneTestContext { context, _handle: handle, _attempt: None })
+    }
+
+    /// Admits `plan` under an attempt identified as `query_id`, so a test's own
+    /// observation scope for that query id applies to the admitted context.
+    fn admit_as(&self, plan: &QueryPlan, query_id: &str) -> Result<LaneTestContext> {
+        admit_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
+        let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
+        let mut backend = self.backend.borrow_mut();
+        ensure_lane_backend(&mut backend)?;
+        let session = backend.as_ref().expect("lane backend is installed").session_capability();
+        let attempt = session
+            .begin_attempt(BeginAttemptRequest {
+                query_id: Some(AttemptQueryId::new(query_id)?),
+                ..BeginAttemptRequest::default()
+            })?
+            .owner;
+        attempt.handle().set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
+        let request =
+            QueryAdmissionRequest::new(attempt.admission_binding()).with_query_plan_capability_evidence(evidence);
+        let handle = session.admit_query_with_request(request)?;
+        let context = handle.acquire_context()?;
+        Ok(LaneTestContext { context, _handle: handle, _attempt: Some(attempt) })
     }
 }
 
 struct LaneTestContext {
     context: AdmittedQueryContext,
     _handle: QueryHandle,
+    _attempt: Option<AttemptOwner>,
 }
 
 fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
@@ -154,10 +178,10 @@ fn write_key_value_parquet(path: &Path, keys: &[i32], values: &[i64]) {
 
 /// Splits this run's acquired stream leases into lane leases (acquired with
 /// no source worker in scope) and nested source-worker leases.
-fn count_acquired_stream_leases(snapshot: &LiveRuntimeObservationSnapshot) -> (usize, usize) {
+fn count_acquired_stream_leases(events: &[RuntimeTimelineEvent]) -> (usize, usize) {
     let mut lane_leases = 0usize;
     let mut source_worker_leases = 0usize;
-    for event in snapshot.events() {
+    for event in events {
         if let RuntimeObservationPayload::StreamLease(lease) = &event.payload
             && matches!(lease.lifecycle, StreamLeaseLifecycleState::Acquired { .. })
         {
@@ -640,17 +664,11 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
         test_context.context.context().attempt_stream_provider_route().expect("admitted context carries a fork route");
     assert_eq!(route.lane_capacity(), 2, "the fork pool backs exactly the lane width this test pins");
 
-    let owner = RuntimeObservationOwner::new(
-        "lane-root-chain-inline",
-        None,
-        RuntimeObservationConfig::bounded(4096, 4 * 1024 * 1024),
-    );
-    let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("lane-root-chain"));
-    let context: ExecutionContext = test_context
-        .context
-        .context()
-        .with_runtime_execution_scope(lifecycle.execution_scope())
-        .expect("observation scope applies");
+    // `execute_query_plan` records the plan execution into the attempt's
+    // own observation, after the root lease its context binding acquired.
+    let context: ExecutionContext = test_context.context.context().clone();
+    let attempt_observation = context.runtime_observation().clone();
+    let run_start = attempt_observation.live_snapshot().expect("observation is live").events().len();
 
     let admitted_plan =
         admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy())
@@ -682,11 +700,10 @@ fn root_query_job_dispatches_lanes_within_the_attempt_auxiliary_envelope() {
         left_keys.iter().chain(right_keys.iter()).map(|key| (Some(*key), Some(i64::from(*key) * 10))).collect();
     assert_eq!(pairs, expected, "every parquet branch row survives the root -> lane chain exactly once");
 
-    let snapshot = owner.live_snapshot().expect("observation remains live");
-    let (lane_leases, source_worker_leases) = count_acquired_stream_leases(&snapshot);
+    let snapshot = attempt_observation.live_snapshot().expect("observation remains live");
+    let (lane_leases, source_worker_leases) = count_acquired_stream_leases(&snapshot.events()[run_start..]);
     assert_eq!(lane_leases, 2, "one attempt work lease per lane backs the whole run");
     assert_eq!(source_worker_leases, 0, "no lane leases a nested attempt auxiliary permit of its own attempt");
-    lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
 }
 
 /// Acquires an attempt work lease holding auxiliary fork `fork_index` of
@@ -747,7 +764,7 @@ fn lane_dispatch_narrows_with_held_fork(held_fork: usize) {
     let pipeline = admitted_pipeline(&plan);
     assert!(is_lane_family_pipeline(&pipeline));
 
-    let test_context = backend.admit(&plan, None).expect("lane union admits");
+    let test_context = backend.admit_as(&plan, "lane-permit-contention").expect("lane union admits");
     let route =
         test_context.context.context().attempt_stream_provider_route().expect("admitted context carries a fork route");
     assert_eq!(route.lane_capacity(), 2, "the fork pool backs exactly the lane width this test pins");
@@ -822,7 +839,7 @@ fn lane_dispatch_releases_a_single_narrowed_lease_before_the_inline_run() {
     let pipeline = admitted_pipeline(&plan);
     assert!(is_lane_family_pipeline(&pipeline));
 
-    let test_context = backend.admit(&plan, None).expect("lane union admits");
+    let test_context = backend.admit_as(&plan, "lane-inline-release").expect("lane union admits");
     let context: &ExecutionContext = test_context.context.context();
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     assert_eq!(route.lane_capacity(), 2, "the fork pool backs exactly the lane width this test pins");
@@ -908,7 +925,7 @@ fn a_full_width_run_serves_every_lane_a_distinct_fork() {
     let pipeline = admitted_pipeline(&plan);
     assert!(is_lane_family_pipeline(&pipeline));
 
-    let test_context = backend.admit(&plan, None).expect("lane union admits");
+    let test_context = backend.admit_as(&plan, "lane-full-width").expect("lane union admits");
     let context: &ExecutionContext = test_context.context.context();
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     let capacity = route.lane_capacity();
@@ -982,7 +999,7 @@ fn lane_cancellation_while_workers_run_drains_without_committing() {
     let plan = literal_union_plan();
     let pipeline = admitted_pipeline(&plan);
 
-    let test_context = backend.admit(&plan, None).expect("lane union admits");
+    let test_context = backend.admit_as(&plan, "lane-running-cancel").expect("lane union admits");
     let context: &ExecutionContext = test_context.context.context();
     let route = context.attempt_stream_provider_route().expect("admitted context carries a fork route");
     let width = route.lane_capacity();
@@ -1126,7 +1143,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let test_context = backend.admit(&plan, None).expect("grouped aggregate admits");
+    let test_context = backend.admit_as(&plan, "lane-inline-source-read").expect("grouped aggregate admits");
     let route =
         test_context.context.context().attempt_stream_provider_route().expect("admitted context carries a fork route");
     let lane_capacity = route.lane_capacity();
@@ -1177,7 +1194,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
     assert_eq!(metrics.source_chunks_attempted, ROW_GROUPS as u64);
     assert_eq!(metrics.source_chunks_committed, ROW_GROUPS as u64);
     let snapshot = owner.live_snapshot().expect("observation remains live");
-    let (_, source_worker_leases) = count_acquired_stream_leases(&snapshot);
+    let (_, source_worker_leases) = count_acquired_stream_leases(snapshot.events());
     assert_eq!(
         source_worker_leases, 0,
         "a read issued from a work lease runs inline on that lease instead of leasing a nested worker"

@@ -4,10 +4,7 @@
 //! wrapper type is exposed for diagnostics and plan inspection, but executing
 //! them through the ordinary DataFusion streaming path is invalid.
 
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
@@ -38,6 +35,7 @@ use super::{
         native_query_runtime_error, properties_with_equivalence, write_native_plan_tree,
     },
     metrics::{AlgeonNativeMetrics, NativeExecutionMetricsCapture},
+    native_node::native_node,
 };
 use crate::error::{Error, ErrorCode, Result};
 
@@ -168,25 +166,6 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
         partition: usize,
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>>;
-}
-
-/// A frontend hook that recognizes one of its GPU-resident producer nodes.
-pub(crate) type GpuResidentProducerDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GpuResidentProducer>;
-
-static GPU_RESIDENT_PRODUCER_DISCOVERIES: OnceLock<Mutex<Vec<GpuResidentProducerDiscovery>>> = OnceLock::new();
-
-/// Register a frontend's GPU-resident producer recognizer.
-///
-/// Registration is idempotent for the same function. Core execution never
-/// imports a concrete frontend to discover producer nodes.
-pub(crate) fn register_gpu_resident_producer_discovery(discovery: GpuResidentProducerDiscovery) {
-    let mut discoveries = GPU_RESIDENT_PRODUCER_DISCOVERIES
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .expect("GPU-resident producer discovery registry mutex cannot be poisoned");
-    if !discoveries.iter().any(|candidate| std::ptr::fn_addr_eq(*candidate, discovery)) {
-        discoveries.push(discovery);
-    }
 }
 
 /// GPU-resident native fragment producer for composed execution.
@@ -445,35 +424,16 @@ impl GpuResidentProducer for AlgeonNativeGpuProducerExec {
     }
 }
 
-fn native_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    if let Some(producer) = plan.downcast_ref::<AlgeonNativeGpuProducerExec>() {
-        return Some(producer);
-    }
-    None
-}
-
-fn ensure_native_gpu_resident_producer_registered() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| register_gpu_resident_producer_discovery(native_gpu_resident_producer));
-}
-
 pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    ensure_native_gpu_resident_producer_registered();
-    let discoveries = {
-        GPU_RESIDENT_PRODUCER_DISCOVERIES
-            .get_or_init(|| Mutex::new(Vec::new()))
-            .lock()
-            .expect("GPU-resident producer discovery registry mutex cannot be poisoned")
-            .clone()
-    };
-    discoveries.iter().find_map(|discovery| discovery(plan)).or_else(|| {
+    native_node(plan).and_then(|node| node.gpu_resident_producer()).or_else(|| {
         // DataFusion adds this scheduling-only wrapper around leaf plans after
         // physical planning. It does not alter rows, partitions, or device
         // ownership, so composed execution may safely reach the inner producer
         // directly. Do not generalize this to repartition/coalesce wrappers:
         // those are row-stream operators and would be host boundaries.
         plan.downcast_ref::<CooperativeExec>()
-            .and_then(|cooperative| discoveries.iter().find_map(|discovery| discovery(cooperative.input().as_ref())))
+            .and_then(|cooperative| native_node(cooperative.input().as_ref()))
+            .and_then(|node| node.gpu_resident_producer())
     })
 }
 
@@ -619,40 +579,5 @@ impl ExecutionPlan for AlgeonNativeGpuProducerExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
-    }
-}
-
-#[cfg(test)]
-mod registry_tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    use arrow::datatypes::Schema;
-    use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec};
-
-    use super::*;
-
-    static REENTRANT_REGISTRATION_RAN: AtomicBool = AtomicBool::new(false);
-
-    fn no_match(_: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-        None
-    }
-
-    fn register_while_discovering(_: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-        register_gpu_resident_producer_discovery(no_match);
-        REENTRANT_REGISTRATION_RAN.store(true, Ordering::Release);
-        None
-    }
-
-    #[test]
-    fn discovery_callbacks_run_without_holding_the_registry_lock() {
-        REENTRANT_REGISTRATION_RAN.store(false, Ordering::Release);
-        register_gpu_resident_producer_discovery(register_while_discovering);
-        let plan = EmptyExec::new(Arc::new(Schema::empty()));
-
-        assert!(gpu_resident_producer(&plan).is_none());
-        assert!(REENTRANT_REGISTRATION_RAN.load(Ordering::Acquire));
     }
 }

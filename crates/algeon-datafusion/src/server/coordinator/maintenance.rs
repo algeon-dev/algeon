@@ -280,7 +280,6 @@ impl QueryCoordinator {
             (Self::live_count_locked(&state), deadline, tickets_to_cancel, executions_to_cancel)
         };
         for ticket in tickets_to_cancel {
-            ticket.native_cancellation.cancel();
             if let Some(attempt) = ticket.attempt.as_ref() {
                 attempt.cancel_before_stream();
             }

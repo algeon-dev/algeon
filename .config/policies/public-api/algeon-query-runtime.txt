@@ -1907,7 +1907,6 @@ pub struct query_runtime::runtime::GpuBackendSession
 impl query_runtime::runtime::GpuBackendSession
 pub fn query_runtime::runtime::GpuBackendSession::admission_snapshot(&self) -> query_planning::error::Result<query_runtime::runtime::QueryServiceAdmissionSnapshot>
 pub async fn query_runtime::runtime::GpuBackendSession::admit_async_with_request(&self, query_runtime::runtime::QueryAdmissionRequest) -> query_planning::error::Result<query_runtime::runtime::QueryHandle>
-pub fn query_runtime::runtime::GpuBackendSession::admit_query(&self) -> query_planning::error::Result<query_runtime::runtime::QueryHandle>
 pub fn query_runtime::runtime::GpuBackendSession::admit_query_with_request(&self, query_runtime::runtime::QueryAdmissionRequest) -> query_planning::error::Result<query_runtime::runtime::QueryHandle>
 pub fn query_runtime::runtime::GpuBackendSession::attempt_counters_snapshot(&self) -> query_runtime::attempt::AttemptBackendCountersSnapshot
 pub fn query_runtime::runtime::GpuBackendSession::backend_metrics_snapshot(&self) -> query_runtime::runtime::BackendMetricsSnapshot
@@ -1989,15 +1988,12 @@ impl core::fmt::Debug for query_runtime::runtime::QueryActivityLease
 pub fn query_runtime::runtime::QueryActivityLease::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub struct query_runtime::runtime::QueryAdmissionRequest
 impl query_runtime::runtime::QueryAdmissionRequest
-pub fn query_runtime::runtime::QueryAdmissionRequest::new() -> Self
-pub fn query_runtime::runtime::QueryAdmissionRequest::with_attempt_binding(self, query_runtime::attempt::AttemptAdmissionBinding) -> Self
+pub fn query_runtime::runtime::QueryAdmissionRequest::new(query_runtime::attempt::AttemptAdmissionBinding) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_execution_cancellation(self, query_runtime::runtime::ExecutionCancellation) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_query_cap_bytes(self, u64) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_query_plan_capability_evidence(self, query_planning::admission::evidence::AttemptCapabilityEvidence) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_queue_deadline(self, std::time::Instant) -> Self
 pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_activity_result(self, query_planning::error::Result<query_runtime::runtime::QueryActivityLease>) -> Self
-pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_handle(self, query_runtime::observability::RuntimeObservationHandle) -> Self
-pub fn query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_owner(self, query_runtime::observability::RuntimeObservationOwner) -> Self
 pub struct query_runtime::runtime::QueryExecutionConfig
 pub query_runtime::runtime::QueryExecutionConfig::aggregate_strategy_execution_options: query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub query_runtime::runtime::QueryExecutionConfig::lakehouse_cache_fill: query_runtime::runtime::LakehouseCacheFillConfig

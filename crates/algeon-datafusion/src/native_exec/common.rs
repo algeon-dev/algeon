@@ -11,6 +11,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
@@ -32,9 +33,10 @@ use query_engine::{
     error::QueryError,
     observability::{RuntimeObservationHandle, RuntimeStreamLeaseScope},
     plan::{PlanNode, QueryPlan},
-    runtime::{GpuExecutionJobKind, GpuExecutorLease, resident::GpuHostBatchCursor},
+    runtime::{ExecutionCancellation, GpuExecutionJobKind, GpuExecutorLease, resident::GpuHostBatchCursor},
     source::SourceNode,
 };
+use tokio::time::sleep;
 
 use super::{config::AlgeonNativeExecutionContext, metrics::AlgeonNativeMetrics};
 use crate::error::{Error, ErrorCode, Result};
@@ -450,6 +452,18 @@ pub(super) enum NativeOutputPublication {
 impl NativeOutputPublication {
     pub(super) const fn as_bool(self) -> bool {
         matches!(self, Self::Started)
+    }
+}
+
+/// Interval at which a host-staging wait re-reads the cancellation flag.
+const HOST_STAGING_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Resolves once `cancellation` is cancelled or past its deadline. The flag
+/// carries no waker, so a wait raced against it re-reads the flag on an
+/// interval; host staging uses this to stop while an input stream is pending.
+pub(crate) async fn cancellation_requested(cancellation: &ExecutionCancellation) {
+    while !cancellation.is_cancelled() && !cancellation.is_expired() {
+        sleep(HOST_STAGING_CANCELLATION_POLL_INTERVAL).await;
     }
 }
 

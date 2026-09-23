@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use std::time::Duration;
-use std::{fmt, mem, time::Instant};
+use std::{fmt, time::Instant};
 
 #[cfg(test)]
 use query_planning::error::QueryErrorCode;
@@ -46,6 +46,8 @@ impl DeviceQuarantineInjection {
 }
 use query_planning::admission::AttemptRequirement;
 
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::attempt::AttemptOwner;
 #[cfg(test)]
 use crate::runtime::query_service::config::QueueBounds;
 use crate::{
@@ -53,15 +55,6 @@ use crate::{
     observability::{AttemptId, RuntimeObservationHandle, RuntimeObservationOwner},
     runtime::ExecutionCancellation,
 };
-
-#[derive(Debug, Default)]
-enum RuntimeObservationAttachment {
-    #[default]
-    Disabled,
-    StandaloneOwner(RuntimeObservationOwner),
-    Handle(RuntimeObservationHandle),
-    Attempt(AttemptAdmissionBinding),
-}
 
 /// Point-in-time service admission state for bounded-queue and overload reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -365,7 +358,7 @@ mod outcome_tests {
 }
 
 /// Complete request-scoped metadata for one query-service admission attempt.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct QueryAdmissionRequest {
     /// Explicit immutable query cap. When absent, the selected device resolves
@@ -388,25 +381,19 @@ pub struct QueryAdmissionRequest {
     /// either publishes a complete envelope or rolls every provisional
     /// resource back.
     pub(crate) execution_cancellation: ExecutionCancellation,
-    runtime_observation: RuntimeObservationAttachment,
+    /// The admitted attempt's observation and cleanup attachment.
+    attempt: AttemptAdmissionBinding,
     runtime_observation_activity: Option<Result<QueryActivityLease>>,
 }
 
 pub(in crate::runtime::query_service::service) struct AdmissionObservation {
     pub(in crate::runtime::query_service::service) handle: RuntimeObservationHandle,
-    pub(in crate::runtime::query_service::service) owner: Option<RuntimeObservationOwner>,
+    pub(in crate::runtime::query_service::service) owner: RuntimeObservationOwner,
     pub(in crate::runtime::query_service::service) activity: Option<QueryActivityLease>,
     pub(in crate::runtime::query_service::service) activity_error: Option<QueryError>,
-    /// Present only for an engine-minted attempt binding. This is the identity
-    /// that may receive a post-callback allocator correlation after a physical
-    /// domain has been admitted.
-    pub(in crate::runtime::query_service::service) attempt_id: Option<AttemptId>,
-}
-
-impl AdmissionObservation {
-    pub(in crate::runtime::query_service::service) fn as_ref(&self) -> &RuntimeObservationHandle {
-        &self.handle
-    }
+    /// The engine-minted attempt identity, which may receive a post-callback
+    /// allocator correlation after a physical domain has been admitted.
+    pub(in crate::runtime::query_service::service) attempt_id: AttemptId,
 }
 
 /// Opaque RAII token retained until query-service cleanup is complete.
@@ -431,9 +418,36 @@ impl fmt::Debug for QueryActivityLease {
 }
 
 impl QueryAdmissionRequest {
-    /// Creates a request with no explicit capability requirement.
-    pub fn new() -> Self {
-        Self::default()
+    /// Creates the admission request of one execution attempt, with no
+    /// explicit capability requirement.
+    ///
+    /// The binding is the request's only observation and cleanup attachment.
+    /// [`crate::attempt::AttemptOwner`] mints it as one unit, so a request
+    /// cannot pair one attempt's observation with another attempt's cleanup.
+    pub fn new(attempt: AttemptAdmissionBinding) -> Self {
+        Self {
+            requested_query_cap_bytes: None,
+            attempt_requirement: None,
+            planned_capability_evidence: None,
+            queue_deadline: None,
+            execution_cancellation: ExecutionCancellation::default(),
+            attempt,
+            runtime_observation_activity: None,
+        }
+    }
+
+    /// Creates the request of a fresh attempt classified as native, for
+    /// tests that admit without a planning frontend.
+    ///
+    /// The attempt owner rides in the request's activity lease, which the
+    /// service drops last, after the attempt report is published; until then
+    /// the owner cannot commit a `Dropped` outcome over the admission.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn test_attempt() -> Self {
+        let owner = AttemptOwner::native_for_test();
+        Self::new(owner.admission_binding())
+            .with_runtime_observation_activity_result(Ok(QueryActivityLease::new(owner)))
     }
 
     /// Requests an exact immutable query cap. Admission never clamps it.
@@ -444,12 +458,6 @@ impl QueryAdmissionRequest {
 
     pub(in crate::runtime::query_service) const fn requested_query_cap_bytes(&self) -> Option<u64> {
         self.requested_query_cap_bytes
-    }
-
-    /// Borrows the engine-issued capability evidence, if planning attached one.
-    /// This is diagnostic/read-only and cannot manufacture a new evidence.
-    pub(crate) fn planned_capability_evidence(&self) -> Option<&AttemptRequirement> {
-        self.planned_capability_evidence.as_ref()
     }
 
     /// Attaches an opaque evidence computed by capability-first planning.
@@ -497,29 +505,6 @@ impl QueryAdmissionRequest {
         self
     }
 
-    /// Attaches the query observation owner created by the adapter before enqueue.
-    pub fn with_runtime_observation_owner(mut self, owner: RuntimeObservationOwner) -> Self {
-        self.runtime_observation = RuntimeObservationAttachment::StandaloneOwner(owner);
-        self
-    }
-
-    /// Attaches the one engine-minted observation/cleanup binding for an
-    /// execution attempt.
-    ///
-    /// The binding is the only request path that carries attempt cleanup
-    /// authority. It is minted atomically by [`crate::attempt::AttemptOwner`],
-    /// so request callers cannot create incomplete or cross-attempt pairings.
-    pub fn with_attempt_binding(mut self, binding: AttemptAdmissionBinding) -> Self {
-        self.runtime_observation = RuntimeObservationAttachment::Attempt(binding);
-        self
-    }
-
-    /// Attaches coordinator-owned recording access without query-seal authority.
-    pub fn with_runtime_observation_handle(mut self, observation: RuntimeObservationHandle) -> Self {
-        self.runtime_observation = RuntimeObservationAttachment::Handle(observation);
-        self
-    }
-
     /// Retains an adapter-owned activity token through delayed native cleanup.
     #[cfg(test)]
     pub(crate) fn with_runtime_observation_activity(mut self, activity: QueryActivityLease) -> Self {
@@ -536,42 +521,22 @@ impl QueryAdmissionRequest {
         self
     }
 
-    #[cfg(test)]
-    pub(in crate::runtime::query_service::service) fn into_runtime_observation(self) -> AdmissionObservation {
-        let mut request = self;
-        request.take_runtime_observation()
-    }
-
-    pub(in crate::runtime::query_service::service) fn take_runtime_observation(&mut self) -> AdmissionObservation {
-        let (activity, activity_error) = match self.runtime_observation_activity.take() {
+    pub(in crate::runtime::query_service::service) fn into_admission_observation(self) -> AdmissionObservation {
+        let (activity, activity_error) = match self.runtime_observation_activity {
             Some(Ok(activity)) => (Some(activity), None),
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        let (handle, owner, attempt_id) = match mem::take(&mut self.runtime_observation) {
-            RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None),
-            RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None),
-            RuntimeObservationAttachment::Handle(handle) => (handle, None, None),
-            RuntimeObservationAttachment::Attempt(binding) => {
-                let attempt_id = binding.attempt_id();
-                let owner = binding.into_observation_owner();
-                (owner.handle(), Some(owner), Some(attempt_id))
-            },
-        };
-        AdmissionObservation { handle, owner, activity, activity_error, attempt_id }
+        let attempt_id = self.attempt.attempt_id();
+        let owner = self.attempt.into_observation_owner();
+        AdmissionObservation { handle: owner.handle(), owner, activity, activity_error, attempt_id }
     }
 
-    /// Claims the bound attempt's only admission right. Requests without an
-    /// attempt binding have nothing to claim.
+    /// Claims the bound attempt's only admission right.
     pub(in crate::runtime::query_service::service) fn claim_attempt_admission(
         &self,
-    ) -> std::result::Result<Option<AttemptAdmission>, AttemptLifecycleError> {
-        match &self.runtime_observation {
-            RuntimeObservationAttachment::Attempt(binding) => binding.claim().map(Some),
-            RuntimeObservationAttachment::Disabled
-            | RuntimeObservationAttachment::StandaloneOwner(_)
-            | RuntimeObservationAttachment::Handle(_) => Ok(None),
-        }
+    ) -> std::result::Result<AttemptAdmission, AttemptLifecycleError> {
+        self.attempt.claim()
     }
 }
 
@@ -587,7 +552,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
+        attempt::{AttemptBackendCounters, BeginAttemptRequest},
         observability::{AttemptDisposition, RuntimeObservationConfig},
         runtime::BackendLifecycle,
     };
@@ -603,26 +568,10 @@ mod tests {
     #[test]
     fn public_capability_attachment_retains_only_an_engine_issued_evidence() {
         let evidence = explicit_sink_capability_evidence();
-        let request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone());
+        let request = QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone());
 
-        assert_eq!(request.planned_capability_evidence(), Some(&evidence));
+        assert_eq!(request.submitted_plan_capability_evidence(), Some(evidence.clone()));
         assert_eq!(request.resolved_attempt_requirement(), Some(evidence));
-        assert!(request.submitted_plan_capability_evidence().is_some());
-    }
-
-    #[test]
-    fn standalone_observation_owner_carries_no_attempt_release_capability() {
-        let owner = RuntimeObservationOwner::new(
-            "standalone-observation",
-            None,
-            RuntimeObservationConfig::bounded(8, 8 * 1024),
-        );
-        let request = QueryAdmissionRequest::new().with_runtime_observation_owner(owner);
-
-        assert!(matches!(request.claim_attempt_admission(), Ok(None)));
-        let observation = request.into_runtime_observation();
-        assert!(observation.owner.is_some());
-        assert!(observation.attempt_id.is_none());
     }
 
     #[test]
@@ -639,12 +588,11 @@ mod tests {
         );
         let attempt_id = attempt.owner.attempt_id();
         attempt.owner.handle().set_disposition(AttemptDisposition::Native).expect("native disposition");
-        let request = QueryAdmissionRequest::new().with_attempt_binding(attempt.owner.admission_binding());
+        let request = QueryAdmissionRequest::new(attempt.owner.admission_binding());
 
-        assert!(matches!(request.claim_attempt_admission(), Ok(Some(_))));
+        assert!(request.claim_attempt_admission().is_ok());
         assert!(matches!(request.claim_attempt_admission(), Err(AttemptLifecycleError::AdmissionAlreadyClaimed)));
-        let observation = request.into_runtime_observation();
-        assert!(observation.owner.is_some());
-        assert_eq!(observation.attempt_id, Some(attempt_id));
+        let observation = request.into_admission_observation();
+        assert_eq!(observation.attempt_id, attempt_id);
     }
 }

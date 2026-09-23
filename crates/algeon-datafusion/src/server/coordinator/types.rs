@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_engine::{plan::MlForestModelDigest, runtime::ExecutionCancellation};
+use query_engine::plan::MlForestModelDigest;
 
 use crate::server::{
     adapter_error::{Error, ErrorCode},
@@ -30,6 +30,8 @@ impl QueryKey {
     }
 }
 
+/// The coordinator observation generation a test-held activity lease binds to.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ObservationId(pub(crate) Arc<str>);
 
@@ -272,7 +274,6 @@ pub(crate) struct CoordinatorTicketPayload {
     pub(crate) prepared_handle: Option<String>,
     pub(crate) kind: u8,
     pub(crate) execution_domain: StatementExecutionDomain,
-    pub(crate) native_cancellation: ExecutionCancellation,
     /// The sole attempt for a Flight SQL result-stream invocation. It begins
     /// before logical planning and moves exactly once into DoGet.
     pub(crate) attempt: Option<AlgeonAttempt>,

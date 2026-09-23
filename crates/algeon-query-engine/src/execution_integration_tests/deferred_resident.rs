@@ -228,7 +228,7 @@ fn leased_context_preserves_activated_deferred_resident_phase() {
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("deferred attempt admission");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
@@ -263,7 +263,7 @@ fn deferred_resident_activation_rejects_same_schema_producer_substitution() {
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("deferred attempt admission");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
@@ -287,7 +287,7 @@ fn deferred_resident_activation_rejects_a_missing_occurrence() {
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("deferred attempt admission");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
@@ -310,7 +310,7 @@ fn unscoped_upload_does_not_skip_scoped_resident_validation() {
     let evidence = composed_provenance_evidence(&consumer, &[("right", &producer_b)]);
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("deferred attempt admission");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
@@ -334,7 +334,7 @@ fn deferred_resident_activation_accepts_repeated_execution_with_fresh_frames() {
     let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("deferred attempt admission");
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
@@ -361,7 +361,7 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
         shared_two_join_fixture();
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed admission service");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence))
         .expect("deferred attempt admission");
     let immutable_grant = attempt.grant_identity().expect("one immutable grant identity");
     let admitted = attempt.acquire_context().expect("admitted execution context");

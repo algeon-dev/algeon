@@ -7,8 +7,9 @@ use ::cudf::Runtime as CudfRuntime;
 use query_engine::{
     error::QueryErrorCode,
     observability::{
-        DeterministicRuntimeObservationClock, RuntimeObservationPayload, RuntimeObservationSession,
-        RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, SourceReadLifecycleState, StreamLeaseLifecycleState,
+        DeterministicRuntimeObservationClock, RuntimeObservationOwner, RuntimeObservationPayload,
+        RuntimeObservationSession, RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, SourceReadLifecycleState,
+        StreamLeaseLifecycleState,
     },
     runtime::{
         ExecutionCancellation, MemoryControlPolicy, RuntimeObservedExecutionContext, ServiceStreamPool,

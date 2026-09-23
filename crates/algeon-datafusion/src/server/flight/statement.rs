@@ -129,30 +129,11 @@ impl DatafusionAlgeonFlightSqlService {
 
     /// Execution inputs of a statement whose native metrics stay with its
     /// attempt.
-    pub(super) fn attempt_invocation_execution(
-        &self,
-        correlation_id: Option<&str>,
-        cancellation: ExecutionCancellation,
-    ) -> InvocationExecution {
-        self.invocation_execution(correlation_id, cancellation, NativeMetricsCapture::standalone())
-    }
-
-    /// Execution inputs of a statement whose native metrics also feed the
-    /// query coordinator's observation.
-    pub(super) fn coordinated_invocation_execution(
-        &self,
-        query_id: &str,
-        correlation_id: Option<&str>,
-        cancellation: ExecutionCancellation,
-        observation: RuntimeObservationHandle,
-        activity_factory: NativeObservationActivityFactory,
-    ) -> InvocationExecution {
-        self.invocation_execution(
-            correlation_id,
-            cancellation,
-            NativeMetricsCapture::coordinated(query_id.to_string(), observation)
-                .with_observation_activity_factory(activity_factory),
-        )
+    pub(super) fn attempt_invocation_execution(&self, correlation_id: Option<&str>) -> InvocationExecution {
+        InvocationExecution {
+            io_lifecycle: self.io_lifecycle.handle(),
+            trace_id: correlation_id.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
+        }
     }
 
     /// The context a Data statement plans in: its attempt's invocation, or,
@@ -171,20 +152,6 @@ impl DatafusionAlgeonFlightSqlService {
             return Ok(SessionContext::new_with_state(state));
         };
         attempt.planning_context(&self.ctx, execution)
-    }
-
-    fn invocation_execution(
-        &self,
-        correlation_id: Option<&str>,
-        cancellation: ExecutionCancellation,
-        metrics_capture: NativeMetricsCapture,
-    ) -> InvocationExecution {
-        InvocationExecution {
-            io_lifecycle: self.io_lifecycle.handle(),
-            cancellation,
-            metrics_capture,
-            trace_id: correlation_id.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string),
-        }
     }
 
     /// Retain the immutable report at the attempt-owned seal point.
@@ -270,10 +237,8 @@ impl DatafusionAlgeonFlightSqlService {
     ) -> Result<FlightInfo, Status> {
         self.expire_stale_tickets(Instant::now());
         // Before ticket issuance there is no per-query token, so planning
-        // observes the server shutdown token directly. The native flag is still
-        // shared with the optimizer rule, but `do_action_cancel_query` cannot
-        // reach it until the ticket is registered.
-        let native_cancellation = ExecutionCancellation::new();
+        // observes the server shutdown token directly; `do_action_cancel_query`
+        // cannot reach the attempt until the ticket is registered.
         let mut attempt = match execution_domain {
             StatementExecutionDomain::Metadata => None,
             StatementExecutionDomain::Data => {
@@ -300,10 +265,9 @@ impl DatafusionAlgeonFlightSqlService {
         }
         let query_ctx = match (execution_domain, attempt.as_ref()) {
             (StatementExecutionDomain::Metadata, _) => self.metadata_query_context(),
-            (StatementExecutionDomain::Data, attempt) => match self.data_query_context(
-                attempt,
-                self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
-            ) {
+            (StatementExecutionDomain::Data, attempt) => match self
+                .data_query_context(attempt, self.attempt_invocation_execution(correlation_id.as_deref()))
+            {
                 Ok(context) => context,
                 Err(error) => {
                     let (status, captured) = datafusion_error_to_status_and_capture(
@@ -341,7 +305,6 @@ impl DatafusionAlgeonFlightSqlService {
                 }
             },
             _ = self.shutdown_token.cancelled() => {
-                native_cancellation.cancel();
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.cancel_before_stream();
                 }
@@ -466,7 +429,6 @@ impl DatafusionAlgeonFlightSqlService {
                 prepared_handle,
                 kind: ticket_kind.code(),
                 execution_domain,
-                native_cancellation,
                 attempt: attempt.take(),
                 started_at,
                 deadline,
@@ -554,7 +516,6 @@ impl DatafusionAlgeonFlightSqlService {
                 prepared_handle: None,
                 kind: ticket_kind.code(),
                 execution_domain: StatementExecutionDomain::Data,
-                native_cancellation: ExecutionCancellation::new(),
                 attempt: attempt.take(),
                 started_at,
                 deadline,

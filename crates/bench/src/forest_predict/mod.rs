@@ -36,14 +36,16 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use algeon_datafusion::{
+    attempt::AttemptOptions,
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
     cuml_sql::{CumlModelStoreConfig, CumlSqlConfig},
     native_exec::AlgeonNativeExecutionConfig,
@@ -57,9 +59,10 @@ use arrow::{
 };
 use datafusion::{
     execution::SessionStateBuilder,
-    physical_plan::{ExecutionPlan, collect, metrics::MetricsSet},
+    physical_plan::{ExecutionPlan, metrics::MetricsSet},
     prelude::{SessionConfig, SessionContext},
 };
+use futures::TryStreamExt;
 use query_engine::observability::{
     RuntimeObservationPayload, RuntimeOperatorStageState, SealedRuntimeObservationSnapshot,
     write_runtime_observation_jsonl,
@@ -84,6 +87,9 @@ const GPU_LOCK_PATH: &str = "/tmp/cudf-gpu.lock";
 pub const CPU_THREADS: usize = 16;
 const EMBER_MODEL: &str = "EMBER2024_all";
 const MEMORY_SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
+/// Bound on the wait for the attempt owner to deliver the sealed observation
+/// after the result stream ends.
+const SEALED_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 const COLUMNS: &[&str] = &[
     "case",
@@ -201,12 +207,9 @@ pub async fn run() -> BenchResult<()> {
         })
         .transpose()?;
 
-    let capture = Arc::new(Mutex::new(None));
     let backend = AlgeonGpuBackend::builder()
         .with_execution_mode(AlgeonGpuExecutionMode::NativePreferred)
-        .with_native_execution_config(
-            AlgeonNativeExecutionConfig::bounded_default().with_benchmark_observation_capture(Arc::clone(&capture)),
-        )
+        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded_default())
         .devices([AlgeonGpuDeviceConfig::new(AlgeonGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)])
         .build()?;
     let state = backend
@@ -226,7 +229,7 @@ pub async fn run() -> BenchResult<()> {
     println!("{}", COLUMNS.join("\t"));
     for case in &options.cases {
         let spec = CaseSpec::new(*case, ember.as_ref(), lineitem.as_ref(), &options.model_root)?;
-        let report = run_case(&ctx, &capture, &spec, &options, device_idle_mib).await?;
+        let report = run_case(&ctx, &backend, &spec, &options, device_idle_mib).await?;
         println!("{}", report.to_tsv());
         write_case_report(&options.output_dir, &environment, ember.as_ref(), lineitem.as_ref(), &report)?;
     }
@@ -386,7 +389,7 @@ impl CaseReport {
 
 async fn run_case(
     ctx: &SessionContext,
-    capture: &Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>,
+    backend: &AlgeonGpuBackend,
     spec: &CaseSpec,
     options: &Options,
     device_idle_mib: Option<u64>,
@@ -396,7 +399,7 @@ async fn run_case(
     let mut last_snapshot = None;
     let mut failure = None;
     for iteration in 0..=options.repeat {
-        let (measurement, batches, snapshot) = match run_once(ctx, capture, spec, device_idle_mib).await {
+        let (measurement, batches, snapshot) = match run_once(ctx, backend, spec, device_idle_mib).await {
             Ok(run) => run,
             Err(error) => {
                 eprintln!("[forest_predict] {} run {iteration} failed: {error}", spec.case.name);
@@ -453,26 +456,33 @@ async fn run_case(
     })
 }
 
+/// Plans and executes the statement as one attempt and returns the attempt's
+/// sealed observation, which its owner delivers after the report publishes.
 async fn run_once(
     ctx: &SessionContext,
-    capture: &Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>,
+    backend: &AlgeonGpuBackend,
     spec: &CaseSpec,
     device_idle_mib: Option<u64>,
 ) -> BenchResult<(RunMeasurement, Vec<RecordBatch>, SealedRuntimeObservationSnapshot)> {
-    capture.lock().map_err(|_| "observation capture lock poisoned")?.take();
+    let attempt = backend.begin_attempt(AttemptOptions::default())?;
+    let (sealed_sender, sealed_receiver) = mpsc::sync_channel(1);
+    attempt.register_sealed_report_observer(move |_report, snapshot| {
+        let _ = sealed_sender.try_send(snapshot);
+    });
     let started = Instant::now();
-    let plan = ctx.sql(&spec.sql).await?.create_physical_plan().await?;
+    let plan = attempt.plan_sql(ctx, &spec.sql).await?;
     let parse_bind_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let sampler = DeviceMemorySampler::start();
     let started = Instant::now();
-    let batches = collect(Arc::clone(&plan), ctx.task_ctx()).await?;
+    let batches: Vec<RecordBatch> = attempt.execute_physical_plan(Arc::clone(&plan), ctx)?.try_collect().await?;
     let execute_ms = started.elapsed().as_secs_f64() * 1000.0;
     let device_peak_mib = sampler.finish();
 
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
-    let snapshot = capture.lock().map_err(|_| "observation capture lock poisoned")?.take();
-    let snapshot = snapshot.ok_or("no sealed runtime observation was captured for the forest statement")?;
+    let snapshot = sealed_receiver
+        .recv_timeout(SEALED_OBSERVATION_TIMEOUT)
+        .map_err(|_| "no sealed runtime observation was captured for the forest statement")?;
     let mut measurement = stage_measurement(&snapshot);
     measurement.rows = batches.iter().map(|batch| batch.num_rows() as u64).sum();
     measurement.parse_bind_ms = parse_bind_ms;

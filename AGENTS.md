@@ -100,6 +100,9 @@ compatibility belong in `crates/algeon-query-engine`.
 - Support requires a correct kernel, types, and semantics; an operator lacking one is structured unsupported. A missing memory estimate is never a reason to reject.
 - Admission issues a service-configured cap, not a predicted requirement: `query-planning` proves the plan is executable, `query-runtime` admits it against the device ledger, and the query domain's allocator enforces the cap while `query-engine` executes.
 - The query domain's allocator is the single arbiter of a query's allocation limit. Never add a second Rust-side reservation, per-operator subgrant, or estimate-derived veto.
+- Every production query-engine execution belongs to one attempt. A plain
+  DataFusion execution creates an internal attempt at its execution boundary;
+  component runtimes may be used independently.
 - Each native fragment runs one compiled schedule. An attempt owns one
   admission claim and one immutable grant; all native fragments share that
   grant, and deferred refinement stays inside it. A second admission claim

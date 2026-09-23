@@ -45,7 +45,7 @@ use tokio::{task::yield_now, time::timeout};
 
 use super::*;
 use crate::{
-    attempt::AttemptOptions,
+    attempt::{AlgeonAttempt, AttemptOptions, attempt_ticket_for_test},
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
         CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource, CugraphGraphOptions,
@@ -65,7 +65,9 @@ use crate::{
     },
     native_exec::{
         GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget,
-        admission::{QueryAdmissionTicket, query_admission_ticket_from_task_context},
+        admission::{
+            QueryAdmissionTicket, query_admission_ticket_from_task_context, task_context_with_query_admission_ticket,
+        },
         composed_admission_capability_evidence, gpu_resident_producer, gpu_resident_producer_unique_output_key,
         graph::{GraphExecutionPlan, graph_execution_plan},
     },
@@ -79,6 +81,16 @@ fn test_gpu_backend() -> InstalledTestGpuBackend {
 
 fn backend_execution_config(backend: &InstalledTestGpuBackend) -> AlgeonNativeExecutionConfig {
     backend.optimizer_config().native_execution_config().clone()
+}
+
+/// `task_context` inside a fresh attempt's invocation on `backend`; native
+/// work executing in it binds that attempt's one ticket.
+fn attempt_task_context(
+    backend: &InstalledTestGpuBackend,
+    task_context: TaskContext,
+) -> (AlgeonAttempt, Arc<TaskContext>) {
+    let (attempt, ticket) = attempt_ticket_for_test(admission_source(backend), None);
+    (attempt, task_context_with_query_admission_ticket(Arc::new(task_context), ticket))
 }
 
 fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
@@ -137,7 +149,7 @@ struct CountingExec {
 }
 
 #[derive(Debug)]
-struct CountingGpuResidentProducer {
+pub(crate) struct CountingGpuResidentProducer {
     input_name: String,
     ticket: Arc<QueryAdmissionTicket>,
     capability_evidence: AttemptCapabilityEvidence,
@@ -231,14 +243,6 @@ impl GraphExecutionPlan for CountingGpuResidentProducer {
     fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
         SealedAttemptMetricsTarget::new(&ExecutionPlanMetricsSet::new(), GraphClaimCalibrationCapture::default())
     }
-}
-
-fn counting_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    plan.downcast_ref::<CountingGpuResidentProducer>().map(|producer| producer as &dyn GpuResidentProducer)
-}
-
-fn counting_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-    plan.downcast_ref::<CountingGpuResidentProducer>().map(|producer| producer as &dyn GraphExecutionPlan)
 }
 
 impl CountingExec {
@@ -800,9 +804,9 @@ async fn bfs_path_materializes_only_the_bounded_frame_under_small_host_limit() {
     )
     .expect("the bounded path must plan below the deliberately small host-output limit");
     let plan = Arc::new(exec) as Arc<dyn ExecutionPlan>;
-    let batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default()))
-        .await
-        .expect("only the seven-row path should cross the host boundary");
+    let (_attempt, task_context) = attempt_task_context(&backend, TaskContext::default());
+    let batches =
+        collect(Arc::clone(&plan), task_context).await.expect("only the seven-row path should cross the host boundary");
     let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
     assert_eq!(rows, 7);
     let vertices = batches
@@ -1092,8 +1096,10 @@ fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
 
 #[tokio::test]
 async fn cugraph_producer_preparation_stages_host_inputs_before_gpu_execution() {
+    let backend = test_gpu_backend();
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let (_attempt, task_context) =
+        attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let exec = Arc::new(
         CugraphAlgoExec::try_new(
             triangle_spec(),
@@ -1130,7 +1136,8 @@ async fn cugraph_staged_attempt_uses_exact_filtered_host_rows_once() {
     let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(admission_source(&backend));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let (_attempt, task_context) =
+        attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let edge_source = memory_edge_source(1_000);
     let schema = edge_source.schema();
     let predicate =
@@ -1165,7 +1172,8 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
     let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(admission_source(&backend));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let (_attempt, task_context) =
+        attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
     params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new());
@@ -1254,7 +1262,8 @@ async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission
     let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(admission_source(&backend));
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let (_attempt, task_context) =
+        attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let boundary = GpuIslandHostBoundaryConfig::try_new(1, 1024 * 1024).unwrap();
     let exec = CugraphAlgoExec::try_new_with_host_boundary_config(
         triangle_spec(),
@@ -1278,11 +1287,11 @@ async fn cugraph_staged_attempt_failure_cleans_host_reservation_before_admission
 }
 
 #[tokio::test]
-async fn cugraph_producer_preparation_mints_one_post_hydration_ticket_for_host_and_gpu_paths() {
+async fn cugraph_producer_preparation_binds_one_post_hydration_ticket_for_host_and_gpu_paths() {
     let backend = test_gpu_backend();
     let source = admission_source(&backend);
     let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
-    let task_context = Arc::new(TaskContext::default());
+    let (_attempt, task_context) = attempt_task_context(&backend, TaskContext::default());
     let exec = Arc::new(
         CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(16), vec![], None, None, config)
             .expect("cuGraph producer should build without a pre-hydration ticket"),
@@ -1293,7 +1302,7 @@ async fn cugraph_producer_preparation_mints_one_post_hydration_ticket_for_host_a
     let prepared = exec
         .prepare_execution_plan(Arc::clone(&exec) as Arc<dyn ExecutionPlan>, Arc::clone(&task_context))
         .await
-        .expect("producer preparation should hydrate metadata and mint its one ticket");
+        .expect("producer preparation should hydrate metadata and bind its invocation's ticket");
     let prepared_exec = prepared.downcast_ref::<CugraphAlgoExec>().expect("prepared plan should remain cuGraph");
     let ticket_id = prepared_exec
         .native_execution_config
@@ -1325,8 +1334,10 @@ async fn cugraph_producer_preparation_mints_one_post_hydration_ticket_for_host_a
 
 #[tokio::test]
 async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
+    let backend = test_gpu_backend();
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let (_attempt, task_context) =
+        attempt_task_context(&backend, TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let exec = Arc::new(
         CugraphAlgoExec::try_new(
             triangle_spec(),
@@ -1528,24 +1539,23 @@ fn direct_composed_admission_context_config(
     backend: &InstalledTestGpuBackend,
     consumer_plan: &QueryPlan,
     children: &[Arc<dyn ExecutionPlan>],
-) -> AlgeonNativeExecutionConfig {
+) -> (AlgeonAttempt, AlgeonNativeExecutionConfig) {
     let evidence = composed_admission_capability_evidence(consumer_plan, children)
         .expect("direct composed fixture must issue one complete admission evidence");
     let admitted = backend
         .backend()
         .session_capability()
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()))
+        .admit_query_with_request(
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()),
+        )
         .expect("direct composed evidence must be admitted by the installed backend profile");
     drop(admitted);
-    backend_execution_config(backend)
-        .with_graph_aware_plan_query_admission_ticket(vec![evidence])
-        .expect("direct composed fixture must mint one admission ticket")
+    let (attempt, ticket) = attempt_ticket_for_test(admission_source(backend), Some(evidence));
+    (attempt, backend_execution_config(backend).with_existing_query_admission_ticket(ticket))
 }
 
 #[tokio::test]
 async fn composed_edge_source_rejects_admission_mismatch_before_running_producers() {
-    register_gpu_resident_producer_discovery(counting_gpu_resident_producer);
-    register_graph_execution_plan_discovery(counting_graph_execution_plan);
     let backend = test_gpu_backend();
     let admission_source = admission_source(&backend);
     let (schema, producer_evidence) = direct_composed_graph_evidence();
@@ -1553,14 +1563,15 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     let consumer_gpu_plan = consumer_host_plan.clone_with_gpu_resident_sink();
     let execute_counts = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let producer_names = ["producer_a", "producer_b"];
+    let (_producer_attempt, producer_ticket) =
+        attempt_ticket_for_test(admission_source.clone(), Some(producer_evidence.clone()));
     let children = producer_names
         .iter()
         .zip(&execute_counts)
         .map(|(input_name, execute_count)| {
-            let ticket = QueryAdmissionTicket::new(admission_source.clone(), Some(producer_evidence.clone()));
             Arc::new(CountingGpuResidentProducer {
                 input_name: (*input_name).to_string(),
-                ticket,
+                ticket: Arc::clone(&producer_ticket),
                 capability_evidence: producer_evidence.clone(),
                 execute_count: Arc::clone(execute_count),
                 inner: EmptyExec::new(Arc::clone(&schema)),
@@ -1577,7 +1588,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     ) as Arc<dyn ExecutionPlan>;
 
     let wrong_order_children = vec![Arc::clone(&children[1]), Arc::clone(&children[0])];
-    let wrong_order_config =
+    let (_wrong_order_attempt, wrong_order_config) =
         direct_composed_admission_context_config(&backend, &consumer_gpu_plan, &wrong_order_children);
     let wrong_order_task_context = Arc::new(TaskContext::default());
     let wrong_order_context = wrong_order_config
@@ -1615,7 +1626,8 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     assert_eq!(execute_counts[1].load(Ordering::SeqCst), 0);
     drop(wrong_order_context);
 
-    let original_config = direct_composed_admission_context_config(&backend, &consumer_gpu_plan, &children);
+    let (_original_attempt, original_config) =
+        direct_composed_admission_context_config(&backend, &consumer_gpu_plan, &children);
     let original_task_context = Arc::new(TaskContext::default());
     let original_context = original_config
         .execution_context_async(Arc::clone(&original_task_context))
@@ -1661,7 +1673,8 @@ async fn cugraph_host_staging_completes_before_backend_gpu_admission() {
         CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
             .expect("cuGraph exec should build"),
     );
-    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cuGraph stream should build");
+    let (_attempt, task_context) = attempt_task_context(&backend, TaskContext::default());
+    let mut stream = exec.execute(0, task_context).expect("cuGraph stream should build");
     let execution = tokio::spawn(async move { stream.try_next().await });
 
     timeout(std::time::Duration::from_secs(5), async {
@@ -1913,22 +1926,6 @@ fn cugraph_pre_hydration_exec_leaves_backend_ticketless() {
         .expect("cuGraph exec should build without a pre-hydration ticket");
 
     assert_eq!(exec.native_execution_config.query_admission_ticket_id(), None);
-}
-
-#[test]
-fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
-    let config = AlgeonNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1);
-    let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
-        .expect("cuGraph exec should register its execution SPIs");
-    let plan = &exec as &dyn ExecutionPlan;
-
-    let producer =
-        gpu_resident_producer(plan).expect("registered producer discovery should recognize cuGraph execution");
-    assert_eq!(producer.gpu_result_input_name(), exec.gpu_result_input_name);
-
-    let graph =
-        graph_execution_plan(plan).expect("registered graph admission discovery should recognize cuGraph execution");
-    assert!(graph.graph_execution_capability_evidence().is_ok());
 }
 
 #[test]

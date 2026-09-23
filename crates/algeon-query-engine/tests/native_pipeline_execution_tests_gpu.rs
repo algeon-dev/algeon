@@ -25,6 +25,7 @@ use query_engine::{
         AdmittedPlan, AttemptCapabilityEvidence, CompiledBoundedPipelineSupport, admit,
         compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
+    attempt::BeginAttemptRequest,
     capability::CapabilityRejectionProjection,
     dynamic_filter::DynamicFilterProducer,
     error::Result,
@@ -39,7 +40,7 @@ use query_engine::{
     },
     metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::{RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationOwner},
+    observability::{AttemptDisposition, AttemptQueryId, RuntimeObservationConfig, RuntimeObservationHandle},
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
@@ -55,7 +56,8 @@ use query_engine::{
     runtime::{
         AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
         GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
+        QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
+        resident::GpuResidentInputMap,
     },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
@@ -166,20 +168,32 @@ mod cudf {
         pub(super) fn acquire_context_for_plan_with_observation(
             self: &Arc<Self>,
             plan: &QueryPlan,
-            owner: RuntimeObservationOwner,
-        ) -> Result<PipelineTestContext> {
+            observation: RuntimeObservationConfig,
+        ) -> Result<(PipelineTestContext, RuntimeObservationHandle)> {
             admit_query_plan(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())?;
             let evidence = AttemptCapabilityEvidence::for_query_plan(plan);
             let mut backend = self.backend.borrow_mut();
             ensure_suite_backend(&mut backend)?;
-            let handle =
-                backend.as_ref().expect("suite backend is installed").session_capability().admit_query_with_request(
-                    QueryAdmissionRequest::new()
-                        .with_query_plan_capability_evidence(evidence)
-                        .with_runtime_observation_owner(owner),
-                )?;
+            let session = backend.as_ref().expect("suite backend is installed").session_capability();
+            let attempt = session
+                .begin_attempt(BeginAttemptRequest {
+                    query_id: Some(AttemptQueryId::new("observed-compiled-pipeline").expect("valid attempt query id")),
+                    observation,
+                    ..BeginAttemptRequest::default()
+                })?
+                .owner;
+            attempt.handle().set_disposition(AttemptDisposition::Native).expect("a new attempt accepts a disposition");
+            let binding = attempt.admission_binding();
+            let observation = binding.observation_handle();
+            // The activity lease keeps the attempt owner alive until query-service cleanup completes;
+            // dropping the owner earlier would commit a `Dropped` outcome over the admission.
+            let handle = session.admit_query_with_request(
+                QueryAdmissionRequest::new(binding)
+                    .with_query_plan_capability_evidence(evidence)
+                    .with_runtime_observation_activity_result(Ok(QueryActivityLease::new(attempt))),
+            )?;
             let context = handle.acquire_context()?;
-            Ok(PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) })
+            Ok((PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) }, observation))
         }
 
         pub(super) fn acquire_context_for_compiled_executor_test(
@@ -199,7 +213,7 @@ mod cudf {
             ensure_suite_backend(&mut backend)?;
             let handle =
                 backend.as_ref().expect("suite backend is installed").session_capability().admit_query_with_request(
-                    QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence),
+                    QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence),
                 )?;
             let context = handle.acquire_context()?;
             Ok(PipelineTestContext { context, _handle: handle, _request: Arc::clone(self) })
@@ -340,11 +354,7 @@ fn bounded_observed_context(
     runtime: Arc<cudf::Runtime>,
     plan: &QueryPlan,
 ) -> (PipelineTestContext, RuntimeObservationHandle) {
-    let owner =
-        RuntimeObservationOwner::new("observed-compiled-pipeline", None, RuntimeObservationConfig::native_execution());
-    let observation = owner.handle();
-    let context = runtime.acquire_context_for_plan_with_observation(plan, owner).unwrap();
-    (context, observation)
+    runtime.acquire_context_for_plan_with_observation(plan, RuntimeObservationConfig::native_execution()).unwrap()
 }
 
 fn compiled_executor_context(runtime: Arc<cudf::Runtime>, plan: &QueryPlan) -> PipelineTestContext {

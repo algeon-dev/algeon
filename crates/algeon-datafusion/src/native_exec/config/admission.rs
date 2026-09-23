@@ -1,81 +1,17 @@
 use std::sync::Arc;
 
-use query_engine::{
-    admission::AttemptCapabilityEvidence, error::Result as QueryEngineResult, runtime::GpuBackendSession,
-};
+use query_engine::runtime::{ExecutionCancellation, GpuBackendSession};
 
 use super::{
-    AlgeonNativeExecutionConfig, NativeExecutionMetricsCapture, NativeMetricsCapture, QueryAdmissionSource,
-    QueryAdmissionTicket, QueryId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId, TaskContext,
-    invocation_admission_ticket,
+    AlgeonNativeExecutionConfig, QueryAdmissionSource, QueryAdmissionTicket, TaskContext, invocation_admission_ticket,
 };
-use crate::native_exec::NativeRuntimeObservation;
+use crate::{error::Result, native_exec::admission::attempt_execution_required_error, planner::native::Invocation};
 
 impl AlgeonNativeExecutionConfig {
     pub(crate) fn with_query_admission_source(mut self, source: QueryAdmissionSource) -> Self {
         self.query_admission_source = Some(source);
         self.query_admission_ticket = None;
         self
-    }
-
-    pub(crate) fn new_plan_query_admission_ticket_with_fragment_requirements(
-        &self,
-        fragment_evidence_items: Vec<AttemptCapabilityEvidence>,
-    ) -> QueryEngineResult<Option<Arc<QueryAdmissionTicket>>> {
-        let Some(source) = self.query_admission_source.clone() else {
-            return Ok(None);
-        };
-        if fragment_evidence_items.is_empty() {
-            return Ok(None);
-        }
-        let attempt_capability_evidence = AttemptCapabilityEvidence::aggregate(fragment_evidence_items)?;
-        let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
-        let observation = self.new_runtime_observation(observation_capture.as_ref());
-        Ok(Some(QueryAdmissionTicket::new_with_capability_evidence_and_observation(
-            source,
-            Some(attempt_capability_evidence),
-            observation,
-            observation_capture,
-        )))
-    }
-
-    pub(super) fn new_runtime_observation(
-        &self,
-        capture: Option<&NativeExecutionMetricsCapture>,
-    ) -> NativeRuntimeObservation {
-        let query_id = self.query_id.clone().unwrap_or_else(QueryId::mint);
-        let trace_id = self.trace_id.as_ref().map(|trace_id| RuntimeTraceId::new(trace_id.as_str()));
-        let observation = match capture {
-            Some(capture) => capture.new_runtime_observation(query_id, trace_id),
-            None => {
-                RuntimeObservationOwner::new(query_id, trace_id, RuntimeObservationConfig::native_execution()).into()
-            },
-        };
-        #[cfg(feature = "bench-support")]
-        if let (Some(target), NativeRuntimeObservation::Local(owner)) =
-            (&self.benchmark_observation_capture, &observation)
-        {
-            let target = Arc::clone(target);
-            owner.register_seal_observer(move |snapshot| {
-                if let Ok(mut slot) = target.lock() {
-                    *slot = Some(snapshot);
-                }
-            });
-        }
-        observation
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn with_graph_aware_plan_query_admission_ticket(
-        mut self,
-        fragment_evidence_items: Vec<AttemptCapabilityEvidence>,
-    ) -> QueryEngineResult<Self> {
-        if let Some(ticket) =
-            self.new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)?
-        {
-            self.query_admission_ticket = Some(ticket);
-        }
-        Ok(self)
     }
 
     pub(crate) fn query_admission_source(&self) -> Option<QueryAdmissionSource> {
@@ -110,6 +46,23 @@ impl AlgeonNativeExecutionConfig {
     #[cfg(test)]
     pub(crate) fn query_admission_ticket_id_for_task_context(&self, task_context: &TaskContext) -> Option<u64> {
         self.query_admission_ticket_for_task_context(task_context).map(|ticket| ticket.id())
+    }
+
+    /// The cancellation of the attempt that native work in `task_context`
+    /// runs under: the invocation's attempt token, else the token of the
+    /// attempt its admission ticket belongs to.
+    pub(crate) fn attempt_cancellation(
+        &self,
+        task_context: &TaskContext,
+        operation: &'static str,
+    ) -> Result<ExecutionCancellation> {
+        Invocation::of_task(task_context)
+            .and_then(Invocation::attempt)
+            .map(|attempt| attempt.cancellation().execution_cancellation())
+            .or_else(|| {
+                self.query_admission_ticket_for_task_context(task_context).map(|ticket| ticket.attempt_cancellation())
+            })
+            .ok_or_else(|| attempt_execution_required_error(operation))
     }
 
     pub(crate) fn query_admission_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {

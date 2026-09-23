@@ -7,31 +7,36 @@ use std::{
 };
 
 use query_engine::{
+    attempt::AttemptCancellation,
     observability::{
         QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
         RuntimeTraceId, SealedRuntimeObservationSnapshot,
     },
-    runtime::ExecutionCancellation,
 };
 use uuid::Uuid;
 
 #[cfg(test)]
 use super::types::CoordinatorArtifact;
+#[cfg(test)]
+use super::types::ObservationId;
 use super::{
     super::observability::{CapturedError, CapturedQuery},
     QueryCoordinator,
     artifacts::LiveStatsCache,
     ticket::QueryPlanningLease,
     types::{
-        CoordinatorTicketPayload, ObservationId, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounters,
-        QueryKey, QueryPhase, QueryTerminal, QueryTerminalOutcome, RetainedQueryBundle, RetainedUnavailableReason,
+        CoordinatorTicketPayload, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounters, QueryKey,
+        QueryPhase, QueryTerminal, QueryTerminalOutcome, RetainedQueryBundle, RetainedUnavailableReason,
     },
 };
+#[cfg(test)]
+use crate::attempt::AlgeonAttempt;
 use crate::{attempt::server_internal::AlgeonAttemptServerExt, native_report::NativeDataFusionExecutionMetrics};
 
 #[derive(Debug)]
 pub(crate) struct QueryRecord {
     pub(crate) key: QueryKey,
+    #[cfg(test)]
     pub(crate) observation_id: ObservationId,
     pub(crate) captured: Option<CapturedQuery>,
     pub(crate) phase: QueryPhase,
@@ -59,7 +64,7 @@ pub(crate) struct QueryRecord {
     pub(crate) capture_version: u64,
     pub(crate) live_stats_cache: Arc<LiveStatsCache>,
     pub(crate) ticket: Option<CoordinatorTicketPayload>,
-    pub(crate) execution_cancellation: Option<ExecutionCancellation>,
+    pub(crate) execution_cancellation: Option<AttemptCancellation>,
     pub(crate) retained: Option<Arc<RetainedQueryBundle>>,
     pub(crate) unavailable: Option<RetainedUnavailableReason>,
     pub(crate) retention_deadline: Option<Instant>,
@@ -259,6 +264,7 @@ impl QueryCoordinator {
         })?;
         state.next_generation = generation;
         let key = QueryKey { query_id: Arc::from(query_id.as_str()), generation };
+        #[cfg(test)]
         let observation_id = ObservationId(Arc::from(format!("{query_id}:{generation}")));
         let owner = create_runtime_observation_owner.then(|| {
             RuntimeObservationOwner::new(
@@ -282,6 +288,7 @@ impl QueryCoordinator {
             key.clone(),
             QueryRecord {
                 key: key.clone(),
+                #[cfg(test)]
                 observation_id: observation_id.clone(),
                 captured: Some(captured),
                 phase: QueryPhase::Planning,
@@ -313,6 +320,7 @@ impl QueryCoordinator {
         Ok(QueryPlanningLease {
             coordinator: Arc::downgrade(self),
             key,
+            #[cfg(test)]
             observation_id,
             hot,
             attempt_report_handoff_registered: std::cell::Cell::new(false),
@@ -476,11 +484,8 @@ impl QueryCoordinator {
             state.ticketed_count = state.ticketed_count.checked_sub(1).expect("cancelled ticket count underflow");
             ticket
         };
-        if let Some(ticket) = ticket {
-            ticket.native_cancellation.cancel();
-            if let Some(attempt) = ticket.attempt.as_ref() {
-                attempt.cancel_before_stream();
-            }
+        if let Some(attempt) = ticket.as_ref().and_then(|ticket| ticket.attempt.as_ref()) {
+            attempt.cancel_before_stream();
         }
         self.notify.notify_waiters();
         self.finalize_ready();
@@ -510,14 +515,14 @@ impl QueryCoordinator {
     }
 
     #[cfg(test)]
-    pub(crate) fn ticket_cancellation(&self, query_id: &str) -> Option<ExecutionCancellation> {
+    pub(crate) fn ticket_cancellation(&self, query_id: &str) -> Option<AttemptCancellation> {
         let state = self.lock_state();
         let key = state.current.get(query_id)?;
         let record = state.records.get(key)?;
         if record.phase != QueryPhase::Ticketed {
             return None;
         }
-        Some(record.ticket.as_ref()?.native_cancellation.clone())
+        record.ticket.as_ref()?.attempt.as_ref().map(AlgeonAttempt::cancellation)
     }
 
     /// Close registration, record a server-shutdown cancellation cause, and

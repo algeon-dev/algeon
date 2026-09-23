@@ -27,10 +27,10 @@ use crate::{
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
         AlgeonNativeGpuProducerExec, GpuFunctionHostOccurrenceExec,
-        admission::QueryAdmissionTicket,
+        admission::{QueryAdmissionSource, wrap_plan_with_native_admission},
         gpu_resident_producer,
         graph::{GraphExecutionPlan, graph_execution_plan},
-        plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
+        plan_is_query_admission_wrapped,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
@@ -375,17 +375,15 @@ impl AlgeonNativePhysicalOptimizerRule {
         {
             attempt.native_admission_planned(optimized.plan.as_ref());
         }
-        let query_admission_ticket = if binds_final_plan {
-            plan_query_admission_ticket_for_optimized_plan(
-                optimized.plan.as_ref(),
-                native_execution_config,
-                invocation,
-            )?
+        let native_admission = if binds_final_plan {
+            plan_native_admission(optimized.plan.as_ref(), native_execution_config, invocation)?
         } else {
             None
         };
-        if self.plans_query_root {
-            apply_execution_admission_wrappers(&mut optimized, query_admission_ticket);
+        if self.plans_query_root
+            && let Some((source, evidence)) = native_admission
+        {
+            optimized.plan = wrap_plan_with_native_admission(Arc::clone(&optimized.plan), source, evidence);
         }
         if retains_prior_selection_report {
             return Ok((optimized.plan, None));
@@ -407,38 +405,28 @@ impl AlgeonNativePhysicalOptimizerRule {
     }
 }
 
-fn apply_execution_admission_wrappers(
-    optimized: &mut NativeOptimizationAttempt,
-    query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
-) {
-    if let Some(ticket) = query_admission_ticket {
-        optimized.plan = wrap_plan_with_query_admission_ticket(Arc::clone(&optimized.plan), ticket);
-    }
-}
-
-/// Mints the rule-equivalent plan admission ticket for a directly constructed
-/// native plan and wraps it for execution. Unit tests that build native execs
-/// without the optimizer rule use this instead of duplicating ticket plumbing.
+/// Roots a directly constructed native plan in the admission node the
+/// optimizer rule would place. Unit tests that build native execs without the
+/// optimizer rule use this instead of duplicating the admission plumbing.
 #[cfg(test)]
-pub(crate) fn wrap_direct_native_plan_with_admission_ticket(
+pub(crate) fn wrap_direct_native_plan_with_admission(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &AlgeonNativeExecutionConfig,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-    let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), native_execution_config, None)?;
-    Ok(match ticket {
-        Some(ticket) => wrap_plan_with_query_admission_ticket(plan, ticket),
+    Ok(match plan_native_admission(plan.as_ref(), native_execution_config, None)? {
+        Some((source, evidence)) => wrap_plan_with_native_admission(plan, source, evidence),
         None => plan,
     })
 }
 
-/// The admission ticket for a final plan. An attempt invocation mints its one
-/// ticket from the plan's evidence, or extends a ticket it already minted;
-/// every other plan gets its own plan ticket.
-fn plan_query_admission_ticket_for_optimized_plan(
+/// The admission artifacts of a final plan: the backend that admits it and the
+/// aggregated evidence of its native fragments. An attempt invocation also
+/// mints its one ticket from them, or extends the ticket it already minted.
+fn plan_native_admission(
     plan: &dyn ExecutionPlan,
     native_execution_config: &AlgeonNativeExecutionConfig,
     invocation: Option<&Invocation>,
-) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
+) -> DataFusionResult<Option<(QueryAdmissionSource, AttemptCapabilityEvidence)>> {
     let ticket_ask_error = |error| {
         DataFusionError::from(Error::from_native(
             "algeon_datafusion.native_optimizer.graph_ticket_ask",
@@ -447,24 +435,19 @@ fn plan_query_admission_ticket_for_optimized_plan(
         ))
     };
     let fragment_evidence_items = native_fragment_capability_evidences(plan)?;
-    let attempt_ticket = match (invocation, native_execution_config.query_admission_source()) {
-        (Some(invocation), Some(source)) if invocation.attempt().is_some() && !fragment_evidence_items.is_empty() => {
-            let evidence =
-                AttemptCapabilityEvidence::aggregate(fragment_evidence_items.clone()).map_err(ticket_ask_error)?;
-            invocation.attempt_admission_ticket(source, Some(evidence))
-        },
-        _ => None,
+    let Some(source) = native_execution_config.query_admission_source() else {
+        return Ok(None);
     };
-    match attempt_ticket {
-        Some((ticket, true)) => Ok(Some(ticket)),
-        Some((ticket, false)) => {
-            ticket.extend_capability_evidence_before_admission(fragment_evidence_items).map_err(ticket_ask_error)?;
-            Ok(Some(ticket))
-        },
-        None => native_execution_config
-            .new_plan_query_admission_ticket_with_fragment_requirements(fragment_evidence_items)
-            .map_err(ticket_ask_error),
+    if fragment_evidence_items.is_empty() {
+        return Ok(None);
     }
+    let evidence = AttemptCapabilityEvidence::aggregate(fragment_evidence_items.clone()).map_err(ticket_ask_error)?;
+    if let Some((ticket, false)) =
+        invocation.and_then(|invocation| invocation.attempt_admission_ticket(source.clone(), Some(evidence.clone())))
+    {
+        ticket.extend_capability_evidence_before_admission(fragment_evidence_items).map_err(ticket_ask_error)?;
+    }
+    Ok(Some((source, evidence)))
 }
 
 fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<AttemptCapabilityEvidence>> {
@@ -882,7 +865,7 @@ mod tests {
 
     #[cfg(feature = "cugraph")]
     #[test]
-    fn planner_ticket_aggregates_scopes_from_composed_native_fragments() {
+    fn planner_admission_aggregates_scopes_from_composed_native_fragments() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let left = AlgeonNativeGpuProducerExec::try_new(
             "left",
@@ -912,17 +895,16 @@ mod tests {
             AlgeonNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
                 .unwrap();
 
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&composed, &config, None).unwrap().unwrap();
+        let (_, evidence) = plan_native_admission(&composed, &config, None).unwrap().unwrap();
 
-        assert_eq!(ticket.attempt_capability_evidence(), Some(expected));
-        let evidence = ticket.attempt_capability_evidence().expect("planner ticket retains its evidence");
+        assert_eq!(evidence, expected);
         assert!(evidence.required_capabilities().is_empty());
         assert_eq!(evidence.execution_scopes().len(), 3);
     }
 
     #[cfg(feature = "cugraph")]
     #[test]
-    fn planner_binds_outer_ticket_for_registered_graph_descendant() {
+    fn planner_admits_registered_graph_descendant() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let graph = deferred_cugraph_exec(&config);
         let plan = Arc::new(CooperativeExec::new(graph)) as Arc<dyn ExecutionPlan>;
@@ -930,22 +912,21 @@ mod tests {
         let plan = bind_gpu_function_host_occurrences(plan, true, &mut next_occurrence)
             .expect("final-plan binding should assign graph occurrence lineage");
 
-        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None)
+        let (_, evidence) = plan_native_admission(plan.as_ref(), &config, None)
             .expect("registered cuGraph discovery should not fail")
-            .expect("the final plan must own one ticket before deferred graph preparation");
-        let evidence = ticket.attempt_capability_evidence().expect("graph ticket retains initial evidence");
+            .expect("the final plan must admit before deferred graph preparation");
         assert_eq!(evidence.execution_manifest().unwrap().occurrences().len(), 1);
     }
 
     #[test]
-    fn planner_keeps_outer_ticket_for_non_graph_native_plan() {
+    fn planner_keeps_outer_admission_for_non_graph_native_plan() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let plan = native_exec_leaf();
 
-        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None)
-            .expect("non-graph native ticket planning should succeed")
+        let (source, evidence) = plan_native_admission(plan.as_ref(), &config, None)
+            .expect("non-graph native admission planning should succeed")
             .expect("non-graph native plan must retain normal outer admission");
-        let wrapped = wrap_plan_with_query_admission_ticket(plan, ticket);
+        let wrapped = wrap_plan_with_native_admission(plan, source, evidence);
 
         assert!(
             plan_is_query_admission_wrapped(wrapped.as_ref()),

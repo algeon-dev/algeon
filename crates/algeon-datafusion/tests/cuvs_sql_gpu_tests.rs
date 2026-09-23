@@ -3,7 +3,7 @@
 use std::{fs::File, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
-    attempt::AttemptOptions,
+    attempt::{AttemptOptions, RuntimeTerminalOutcome},
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
@@ -43,7 +43,10 @@ use datafusion::{
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
 #[cfg(feature = "cugraph")]
-use tokio::{task::yield_now, time::timeout};
+use tokio::{
+    task::yield_now,
+    time::{sleep, timeout},
+};
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
@@ -449,6 +452,17 @@ async fn functions_only_executes_cugraph_through_cpu_join_into_cuvs_under_one_ad
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&recursive_plan_metrics(plan.as_ref()));
     assert!(metrics.admission_sequence.is_some(), "both GPU functions must retain one admission sequence");
     assert_eq!(metrics.graph_runtime_rows.len(), 1, "the graph occurrence must execute exactly once");
+    // The internal attempt publishes its report after GPU cleanup, which can
+    // finish after the result stream ends.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut reports = backend.take_abandoned_attempt_reports(8);
+    while reports.is_empty() && std::time::Instant::now() < deadline {
+        sleep(Duration::from_millis(5)).await;
+        reports = backend.take_abandoned_attempt_reports(8);
+    }
+    assert_eq!(reports.len(), 1, "a plain collect of the mixed plan runs as one internal attempt");
+    assert!(matches!(reports[0].outcome, RuntimeTerminalOutcome::Succeeded));
+    assert!(reports[0].admission.is_some(), "both native fragments execute under the attempt's one grant");
     close_cuvs_test_backend(backend, ctx);
 }
 
@@ -1054,6 +1068,7 @@ fn cuvs_test_backend_with_mode(mode: AlgeonGpuExecutionMode) -> AlgeonGpuBackend
             1,
         ))
         .devices([device])
+        .with_attempt_completion_queue_capacity(8)
         .build()
         .expect("cuVS SQL tests require a backend-owned GPU")
 }

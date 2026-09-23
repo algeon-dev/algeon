@@ -23,11 +23,9 @@ use datafusion::{
 };
 use query_engine::admission::AttemptCapabilityEvidence;
 #[cfg(feature = "server")]
-use query_engine::runtime::{ExecutionCancellation, IoLifecycle};
+use query_engine::runtime::IoLifecycle;
 
 use super::NativePlanningDiagnostics;
-#[cfg(feature = "server")]
-use crate::native_exec::NativeMetricsCapture;
 use crate::{
     attempt::InvocationAttempt,
     native::{FooterCache, FooterScope},
@@ -69,8 +67,6 @@ struct InvocationState {
 pub(crate) struct InvocationExecution {
     /// The server generation gate for file-backed native I/O.
     pub(crate) io_lifecycle: IoLifecycle,
-    pub(crate) cancellation: ExecutionCancellation,
-    pub(crate) metrics_capture: NativeMetricsCapture,
     pub(crate) trace_id: Option<String>,
 }
 
@@ -137,7 +133,7 @@ impl Invocation {
         let mut minted = false;
         let ticket = self.0.admission.get_or_init(|| {
             minted = true;
-            QueryAdmissionTicket::new_attempt_bound(source, evidence, attempt.ticket_binding())
+            QueryAdmissionTicket::new(source, evidence, attempt.ticket_binding())
         });
         Some((Arc::clone(ticket), minted))
     }
@@ -153,11 +149,7 @@ impl Invocation {
     pub(crate) fn execution_config(&self, config: AlgeonNativeExecutionConfig) -> AlgeonNativeExecutionConfig {
         #[cfg(feature = "server")]
         if let Some(execution) = self.0.execution.lock().unwrap_or_else(PoisonError::into_inner).clone() {
-            let config = config
-                .with_io_lifecycle(execution.io_lifecycle)
-                .with_host_output_memory_pool_accounting(true)
-                .with_cancellation(execution.cancellation)
-                .with_metrics_capture(execution.metrics_capture);
+            let config = config.with_io_lifecycle(execution.io_lifecycle).with_host_output_memory_pool_accounting(true);
             return match execution.trace_id {
                 Some(trace_id) => config.with_trace_id(trace_id),
                 None => config,

@@ -220,6 +220,7 @@ fn native_report_operator_is_supported(name: &str, candidate_shape: &str) -> boo
             | "AlgeonNativeExec"
             | "AlgeonNativeComposedExec"
             | "AlgeonNativeGpuProducerExec"
+            | "NativeAdmissionExec"
     ) || (name == "RepartitionExec" && candidate_shape.contains("RepartitionExec"))
 }
 

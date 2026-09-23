@@ -25,8 +25,8 @@ mod enabled {
         metrics::QueryMetrics,
         native_error::{cuml_query_error, query_error_code_for_cuml_error},
         observability::{
-            LiveRuntimeObservationSnapshot, RuntimeObservationConfig, RuntimeObservationOwner,
-            RuntimeObservationPayload, RuntimeOperatorStageKind, RuntimeOperatorStageState,
+            LiveRuntimeObservationSnapshot, RuntimeObservationConfig, RuntimeObservationPayload,
+            RuntimeOperatorStageKind, RuntimeOperatorStageState,
         },
         plan::{
             MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec, MlForestModelFacts, MlForestModelFormat,
@@ -163,14 +163,12 @@ mod enabled {
         let schema = input_schema(shape);
         let plan = plan(Arc::clone(&schema), algorithm, shape, components);
         let context = backend_context();
-        let owner = RuntimeObservationOwner::new(
-            "ml-execution",
-            None,
-            RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024),
-        );
+        let attempt =
+            context.begin_native_attempt("ml-execution", RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
+        let binding = attempt.admission_binding();
         let evidence = capability_evidence_for_fixture_plan(&plan).expect("ML capability evidence");
         let admitted =
-            context.admit_evidence_with_observation(evidence, Some(owner.clone())).expect("ML plan admission");
+            context.admit_evidence_with_observation(evidence, Some(binding.clone())).expect("ML plan admission");
         let runtime = Arc::new(admitted.runtime().expect("execution runtime"));
         let mut inputs = GpuResidentInputMap::new();
         inputs.insert(
@@ -190,7 +188,7 @@ mod enabled {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         );
         let (result, metrics, _) = outcome.into_parts();
-        let observation = owner.live_snapshot();
+        let observation = binding.observation_handle().live_snapshot();
         drop(inputs);
         drop(runtime);
         admitted.finish();
@@ -291,13 +289,11 @@ mod enabled {
         ));
         let plan = builder.finish_with_host_sink(root);
         let context = backend_context();
-        let owner = RuntimeObservationOwner::new(
-            "ml-supervised",
-            None,
-            RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024),
-        );
+        let attempt =
+            context.begin_native_attempt("ml-supervised", RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
+        let binding = attempt.admission_binding();
         let evidence = capability_evidence_for_fixture_plan(&plan).unwrap();
-        let admitted = context.admit_evidence_with_observation(evidence, Some(owner.clone())).unwrap();
+        let admitted = context.admit_evidence_with_observation(evidence, Some(binding.clone())).unwrap();
         let runtime = Arc::new(admitted.runtime().unwrap());
         let mut inputs = GpuResidentInputMap::new();
         for (name, batch, schema) in
@@ -321,7 +317,7 @@ mod enabled {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
-        let observation = owner.live_snapshot().unwrap();
+        let observation = binding.observation_handle().live_snapshot().unwrap();
         drop(inputs);
         drop(runtime);
         admitted.finish();
@@ -978,10 +974,11 @@ mod enabled {
         ));
         let plan = builder.finish_with_host_sink(root);
         let context = backend_context();
-        let owner =
-            RuntimeObservationOwner::new("ml-forest", None, RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
+        let attempt =
+            context.begin_native_attempt("ml-forest", RuntimeObservationConfig::bounded(4096, 16 * 1024 * 1024));
+        let binding = attempt.admission_binding();
         let evidence = capability_evidence_for_fixture_plan(&plan).unwrap();
-        let admitted = context.admit_evidence_with_observation(evidence, Some(owner.clone())).unwrap();
+        let admitted = context.admit_evidence_with_observation(evidence, Some(binding.clone())).unwrap();
         let runtime = Arc::new(admitted.runtime().unwrap());
         let mut inputs = GpuResidentInputMap::new();
         inputs.insert(
@@ -1001,7 +998,7 @@ mod enabled {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&inputs),
         )
         .into_parts();
-        let observation = owner.live_snapshot().unwrap();
+        let observation = binding.observation_handle().live_snapshot().unwrap();
         drop(inputs);
         drop(runtime);
         assert_attempt_domain_released(&admitted);

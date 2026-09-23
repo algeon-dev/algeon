@@ -5,7 +5,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
+    native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, below_native_admission},
     planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
     report::PlanningReport,
 };
@@ -163,7 +163,9 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "partial_aggregate_count"), 0, "median must stay single-stage");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
@@ -366,7 +368,9 @@ async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     assert_algeon_native_exec(&optimization.plan, "bare-boolean plan must rewrite to AlgeonNativeExec");
 
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(batch_rows(&native_batches), vec![vec!["3".to_string()]]);
     assert_eq!(metric_usize(&metrics, "input_rows"), 6);
 
@@ -389,7 +393,9 @@ async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig,
     assert_algeon_native_exec(&optimization.plan, "reader-pushdown query must rewrite to AlgeonNativeExec");
 
     let output = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
 
     NativeQueryObservation {
         output,
@@ -478,7 +484,9 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
@@ -517,7 +525,9 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(arrow_host_import_call_count_for_test(), 0);
@@ -608,7 +618,9 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
 
@@ -634,7 +646,9 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
     assert_eq!(metric_usize(&metrics, "read_columns"), 0);
     assert_eq!(metric_usize(&metrics, "input_rows"), 8);
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
@@ -752,7 +766,9 @@ async fn assert_sql_native_parity(
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
 
     if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
         assert_eq!(total_row_groups, 4);
@@ -800,7 +816,9 @@ async fn assert_native_physical_plan_parity(
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
-    let metrics = optimization.plan.metrics().expect("AlgeonNativeExec should expose DataFusion metrics");
+    let metrics = below_native_admission(&optimization.plan)
+        .metrics()
+        .expect("AlgeonNativeExec should expose DataFusion metrics");
 
     assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
     assert_eq!(metric_usize(&metrics, "host_to_device_uploaded_rows"), 0);

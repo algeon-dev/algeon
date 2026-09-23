@@ -5,23 +5,19 @@
 //! executor when execution acquires the native query context.
 
 use std::sync::Arc;
-#[cfg(feature = "bench-support")]
-use std::sync::Mutex;
 
 use datafusion::execution::context::TaskContext;
-#[cfg(feature = "bench-support")]
-use query_engine::observability::SealedRuntimeObservationSnapshot;
 use query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
-    observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
+    observability::RuntimeObservationConfig,
     policy::PlanningPolicy,
     runtime::{
-        AdmittedQueryContext, ExecutionCancellation, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig,
-        MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        AdmittedQueryContext, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig, MemoryControlPolicy,
+        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
     },
 };
 
@@ -48,7 +44,6 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
     pub(super) lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     pub(super) host_output_memory_pool_accounting: bool,
-    pub(super) cancellation: ExecutionCancellation,
     pub(super) io_lifecycle: Option<IoLifecycle>,
     pub(super) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     pub(super) planning_policy: PlanningPolicy,
@@ -61,8 +56,6 @@ pub struct AlgeonNativeExecutionConfig {
     pub(super) trace_id: Option<TraceId>,
     pub(super) plan_task_mapping_datafusion_shape: Option<String>,
     pub(super) metrics_capture: Option<NativeMetricsCapture>,
-    #[cfg(feature = "bench-support")]
-    pub(super) benchmark_observation_capture: Option<Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>>,
     pub(super) lakehouse_footer_pruning: bool,
     #[cfg(feature = "cugraph")]
     pub(super) graph_execution_services: GraphExecutionServices,
@@ -140,7 +133,6 @@ impl AlgeonNativeExecutionConfig {
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
             host_output_memory_pool_accounting: false,
-            cancellation: ExecutionCancellation::new(),
             io_lifecycle: None,
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             planning_policy: PlanningPolicy::default(),
@@ -153,8 +145,6 @@ impl AlgeonNativeExecutionConfig {
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: Some(NativeMetricsCapture::standalone()),
-            #[cfg(feature = "bench-support")]
-            benchmark_observation_capture: None,
             lakehouse_footer_pruning: false,
             #[cfg(feature = "cugraph")]
             graph_execution_services: GraphExecutionServices::default(),
@@ -198,19 +188,6 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    /// Attach a cooperative cancellation flag observed by native execution.
-    #[cfg(any(test, feature = "server"))]
-    pub(crate) fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
-        self.cancellation = cancellation;
-        self
-    }
-
-    /// Cooperative cancellation observed while an adapter-owned host boundary
-    /// is staged before native context acquisition.
-    pub(crate) fn cancellation(&self) -> &ExecutionCancellation {
-        &self.cancellation
-    }
-
     /// Attaches the server-generation gate used by file-backed native I/O.
     #[cfg(feature = "server")]
     pub(crate) fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
@@ -218,28 +195,9 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    /// Attach a server-side query metrics capture sink.
-    #[cfg(any(test, feature = "server"))]
-    pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
-        self.query_id = capture.query_id().map(QueryId::new);
-        self.metrics_capture = Some(capture);
-        self
-    }
-
     /// Attach a diagnostic query id to native execution metrics.
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         self.query_id = Some(query_id.into());
-        self
-    }
-
-    /// Captures the sealed observation from this execution for benchmark artifacts.
-    #[cfg(feature = "bench-support")]
-    #[doc(hidden)]
-    pub fn with_benchmark_observation_capture(
-        mut self,
-        capture: Arc<Mutex<Option<SealedRuntimeObservationSnapshot>>>,
-    ) -> Self {
-        self.benchmark_observation_capture = Some(capture);
         self
     }
 
@@ -281,7 +239,7 @@ impl AlgeonNativeExecutionConfig {
     pub(crate) fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.query_admission_ticket
             .as_ref()
-            .and_then(|ticket| ticket.metrics_capture())
+            .map(|ticket| ticket.metrics_capture())
             .or_else(|| self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution))
     }
 

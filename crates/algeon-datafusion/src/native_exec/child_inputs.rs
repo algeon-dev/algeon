@@ -29,7 +29,8 @@ use query_engine::{
 };
 
 use super::{
-    execute_gpu_resident_producer_with_context, gpu_resident_producer, prepare_gpu_resident_producer_for_execution,
+    cancellation_requested, execute_gpu_resident_producer_with_context, gpu_resident_producer,
+    prepare_gpu_resident_producer_for_execution,
 };
 use crate::error::{Error, ErrorCode};
 
@@ -312,12 +313,16 @@ async fn stage_child_partition(
     check_cancellation(cancellation)?;
     let mut stream = spec.plan.execute(partition, task_context)?;
     let mut batches = Vec::new();
-    while let Some(batch) = stream.try_next().await? {
+    while let Some(batch) = tokio::select! {
+        batch = stream.try_next() => batch?,
+        () = cancellation_requested(cancellation) => None,
+    } {
         check_cancellation(cancellation)?;
         let batch = batch.project(&spec.projection).map_err(DataFusionError::from)?;
         reserve_batch(spec, &batch, max_staging_bytes, staged_bytes, reservation)?;
         batches.push(batch);
     }
+    check_cancellation(cancellation)?;
     Ok(batches)
 }
 
@@ -412,7 +417,7 @@ fn record_batches_to_gpu(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         sync::{
             Arc,
@@ -438,10 +443,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
-    use crate::{
-        error::DataFusionErrorExt,
-        native_exec::{GpuResidentProducer, register_gpu_resident_producer_discovery},
-    };
+    use crate::{error::DataFusionErrorExt, native_exec::GpuResidentProducer};
 
     #[derive(Debug)]
     struct CountingExec {
@@ -656,7 +658,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct FakeProducerExec {
+    pub(crate) struct FakeProducerExec {
         inner: CountingExec,
         prepare_count: Arc<AtomicUsize>,
     }
@@ -723,10 +725,6 @@ mod tests {
                 ))
             })
         }
-    }
-
-    fn fake_producer_discovery(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-        plan.downcast_ref::<FakeProducerExec>().map(|producer| producer as &dyn GpuResidentProducer)
     }
 
     #[derive(Debug)]
@@ -821,7 +819,6 @@ mod tests {
 
     #[tokio::test]
     async fn direct_producer_prepares_without_invoking_host_arrow_execute() {
-        register_gpu_resident_producer_discovery(fake_producer_discovery);
         let execute_count = Arc::new(AtomicUsize::new(0));
         let prepare_count = Arc::new(AtomicUsize::new(0));
         let plan = Arc::new(FakeProducerExec {
@@ -844,7 +841,6 @@ mod tests {
 
     #[tokio::test]
     async fn producer_hidden_below_host_wrapper_without_manifest_is_rejected() {
-        register_gpu_resident_producer_discovery(fake_producer_discovery);
         let producer = Arc::new(FakeProducerExec {
             inner: CountingExec::new(vec![batch(10, 1.0, 100)], Arc::new(AtomicUsize::new(0))),
             prepare_count: Arc::new(AtomicUsize::new(0)),

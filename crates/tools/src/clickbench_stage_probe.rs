@@ -31,11 +31,12 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use query_engine::{
+    attempt::{AttemptOwner, BeginAttemptRequest},
     exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan, output::QueryOutput},
     observability::{
-        LiveRuntimeObservationSnapshot, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig,
-        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload, RuntimeOperatorStageState,
-        RuntimeQueryId, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
+        AttemptDisposition, AttemptQueryId, LiveRuntimeObservationSnapshot, RUNTIME_OBSERVATION_JSONL_SCHEMA,
+        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeOperatorStageState,
+        RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
     },
     runtime::{
         ExecutionCancellation, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
@@ -118,19 +119,29 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         ProbeMode::NativeObserved => {
             let backend = build_probe_backend(&profile)?;
             for query_id in &config.query_ids {
-                let owner = RuntimeObservationOwner::new(
-                    RuntimeQueryId::new(query_id),
-                    None,
-                    RuntimeObservationConfig::bounded(LIVE_RECORDS, LIVE_BYTES),
-                );
-                let observation = owner.handle();
+                let attempt = backend
+                    .session()
+                    .begin_attempt(BeginAttemptRequest {
+                        query_id: Some(AttemptQueryId::new(query_id.as_str())?),
+                        observation: RuntimeObservationConfig::bounded(LIVE_RECORDS, LIVE_BYTES),
+                        ..BeginAttemptRequest::default()
+                    })?
+                    .owner;
+                attempt.handle().set_disposition(AttemptDisposition::Native)?;
+                let binding = attempt.admission_binding();
+                let observation = binding.observation_handle();
                 let query_handle =
-                    Arc::new(backend.session().admit_query_with_request(
-                        QueryAdmissionRequest::new().with_runtime_observation_owner(owner),
-                    )?);
-                let verdict =
-                    probe_native_observed(query_id, &root, &profile, &config, Arc::clone(&query_handle), observation)
-                        .await?;
+                    Arc::new(backend.session().admit_query_with_request(QueryAdmissionRequest::new(binding))?);
+                let verdict = probe_native_observed(
+                    query_id,
+                    &root,
+                    &profile,
+                    &config,
+                    &attempt,
+                    Arc::clone(&query_handle),
+                    observation,
+                )
+                .await?;
                 record_verdict(&config, &verdict)?;
                 verdicts.push(verdict);
             }
@@ -170,6 +181,7 @@ async fn probe_native_observed(
     root: &Path,
     profile: &ClickbenchNativeProfileSettings,
     config: &ProbeConfig,
+    attempt: &AttemptOwner,
     query_handle: Arc<QueryHandle>,
     observation: RuntimeObservationHandle,
 ) -> ToolResult<ProbeVerdict> {
@@ -209,6 +221,10 @@ async fn probe_native_observed(
     let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let (result, _, _) = outcome.into_parts();
+    match &result {
+        Ok(_) => attempt.commit_terminal(RuntimeTerminalOutcome::Succeeded)?,
+        Err(error) => attempt.commit_query_error(error)?,
+    }
     let cancelled = cancellation.is_cancelled();
     let mut completed = false;
     let mut output_rows = None;

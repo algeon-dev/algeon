@@ -19,8 +19,10 @@ use crate::{
         exact_row_count_for_datafusion_local_parquet_scan, graph_vertex_upper_bound_for_datafusion_local_parquet_scan,
     },
     native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, admission::invocation_admission_ticket,
-        composed_admission_capability_evidence, gpu_resident_producer_input_name, lakehouse::resolve_query_plan,
+        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec,
+        admission::{attempt_execution_required_error, invocation_admission_ticket},
+        composed_admission_capability_evidence, gpu_resident_producer_input_name,
+        lakehouse::resolve_query_plan,
     },
     planner::native::Invocation,
 };
@@ -233,14 +235,9 @@ fn compile_cugraph_admission_ticket(
         }
         return Ok((execution_config.with_existing_query_admission_ticket(ticket), graph_execution_plan));
     }
-    let execution_config =
-        execution_config.with_graph_aware_plan_query_admission_ticket(fragment_evidence_items).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "algeon_datafusion.cugraph_sql.graph_ticket_ask",
-                "failed to compute cuGraph SQL graph-aware query admission ticket ask",
-                error,
-            ))
-        })?;
+    if execution_config.query_admission_source().is_some() {
+        return Err(attempt_execution_required_error("algeon_datafusion.cugraph_sql.graph_ticket_ask").into());
+    }
     Ok((execution_config, graph_execution_plan))
 }
 

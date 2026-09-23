@@ -26,7 +26,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     error::{DataFusionErrorExt, Error, ErrorCode},
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, below_native_admission},
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{DataFusionCpuExecutionPolicy, NativePlanningDiagnostics, plan_with_native_diagnostics},
     report::{CandidateOutcome, PlanningReport},
@@ -525,13 +525,13 @@ async fn run_parquet_case_inner(
     let path = row.and_then(|r| r.final_disposition);
     let fragments = row.and_then(|r| r.native_plan_fragment_count);
     let host_boundaries = row.and_then(|r| r.host_datafusion_boundary_count);
-    let plan_root = Some(plan.name().to_string());
+    let plan_root = Some(below_native_admission(&plan).name().to_string());
     let contains_native = Some(plan_contains_native(plan.as_ref()));
     let contains_data_source = Some(plan_contains_name(plan.as_ref(), "DataSourceExec"));
 
     let mut detail = format!(
         "plan_root={} path={path:?} frag={fragments:?} host={host_boundaries:?} rewritten={rewritten} rejected={rejected_reasons:?}",
-        plan.name()
+        below_native_admission(&plan).name()
     );
     let mut ok = true;
 
@@ -675,7 +675,7 @@ async fn run_single_table_case(
             path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.and_then(|r| r.native_plan_fragment_count),
             host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
-            plan_root: Some(plan.name().to_string()),
+            plan_root: Some(below_native_admission(&plan).name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: Some(rewritten),
@@ -762,7 +762,7 @@ async fn run_tpch_case(tpch: &Path, backend: &AlgeonGpuBackend) -> CaseResult {
             path: Some(format!("{path:?}")),
             fragments: row.native_plan_fragment_count,
             host_boundaries: row.host_datafusion_boundary_count,
-            plan_root: Some(plan.name().to_string()),
+            plan_root: Some(below_native_admission(&plan).name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: Some(rewritten),
@@ -846,13 +846,13 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
             ok: false,
             detail: format!(
                 "constrained plan not native: root={} path={:?}",
-                plan.name(),
+                below_native_admission(&plan).name(),
                 row.map(|r| r.final_disposition)
             ),
             path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.and_then(|r| r.native_plan_fragment_count),
             host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
-            plan_root: Some(plan.name().to_string()),
+            plan_root: Some(below_native_admission(&plan).name().to_string()),
             contains_native: Some(false),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: None,
@@ -878,7 +878,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
                 path: row.map(|r| format!("{:?}", r.final_disposition)),
                 fragments: row.and_then(|r| r.native_plan_fragment_count),
                 host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
-                plan_root: Some(plan.name().to_string()),
+                plan_root: Some(below_native_admission(&plan).name().to_string()),
                 contains_native: Some(true),
                 contains_data_source: Some(false),
                 rewritten: None,
@@ -901,7 +901,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
         path: row.map(|r| format!("{:?}", r.final_disposition)),
         fragments: row.and_then(|r| r.native_plan_fragment_count),
         host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
-        plan_root: Some(plan.name().to_string()),
+        plan_root: Some(below_native_admission(&plan).name().to_string()),
         contains_native: Some(true),
         contains_data_source: Some(false),
         rewritten: None,
@@ -972,7 +972,7 @@ async fn run_empty_parquet_corner(path: &Path, backend: &AlgeonGpuBackend) -> Ca
             path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.and_then(|r| r.native_plan_fragment_count),
             host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
-            plan_root: Some(plan.name().to_string()),
+            plan_root: Some(below_native_admission(&plan).name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
             contains_data_source: Some(plan_contains_name(plan.as_ref(), "DataSourceExec")),
             rewritten: Some(rewritten),

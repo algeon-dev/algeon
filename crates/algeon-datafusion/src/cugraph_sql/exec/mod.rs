@@ -86,9 +86,8 @@ use crate::{
         graph::{
             GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader, GraphBfsPublishedResult,
             GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
-            register_graph_execution_plan_discovery,
         },
-        prepare_gpu_resident_producer_for_execution, register_gpu_resident_producer_discovery, run_gpu_execution_task,
+        prepare_gpu_resident_producer_for_execution, run_gpu_execution_task,
     },
 };
 
@@ -123,15 +122,15 @@ mod lowering;
 mod node;
 mod residency;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) use admission::native_graph_input_execution_plan;
 use admission::{
     admit_native_edge_source_gpu_plan, as_algeon_native_composed_exec, as_algeon_native_exec,
-    cugraph_execution_config_after_staging, edge_execution_config, edge_source_graph_vertex_estimate,
-    edge_source_output_rows, exact_native_edge_source_gpu_plan, plan_contains_algeon_native,
-    resident_side_input_output_rows, task_context_with_cugraph_execution_ticket,
-    validate_cugraph_graph_owner_preflight, validate_standalone_bounded_cugraph_sources,
+    cugraph_execution_config_after_staging, edge_source_graph_vertex_estimate, edge_source_output_rows,
+    exact_native_edge_source_gpu_plan, plan_contains_algeon_native, resident_side_input_output_rows,
+    task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
+    validate_standalone_bounded_cugraph_sources,
 };
 use edge_analysis::{CugraphEdgeCanonicalFacts, cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted};
 use input::{

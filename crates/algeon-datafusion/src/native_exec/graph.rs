@@ -20,13 +20,12 @@
 //! resolves the generation, and the leader waits until every joined follower
 //! has copied or dropped the handoff.
 
-use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "cugraph")]
 use std::{
     collections::{HashMap, VecDeque},
     fmt,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -52,6 +51,7 @@ use tokio::sync::{Notify, watch};
 #[cfg(feature = "cugraph")]
 use tokio::time::sleep;
 
+use super::native_node::native_node;
 #[cfg(feature = "cugraph")]
 use crate::error::{Error, ErrorCode, Result};
 use crate::native_exec::SealedAttemptMetricsTarget;
@@ -87,35 +87,8 @@ pub(crate) trait GraphExecutionPlan: Send + Sync {
     }
 }
 
-/// A graph frontend hook that recognizes one of its DataFusion execution nodes.
-pub(crate) type GraphExecutionPlanDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GraphExecutionPlan>;
-
-static GRAPH_EXECUTION_PLAN_DISCOVERIES: OnceLock<Mutex<Vec<GraphExecutionPlanDiscovery>>> = OnceLock::new();
-
-/// Register a graph frontend's execution-plan recognizer.
-///
-/// Registration is idempotent for the same function and does not retain a
-/// frontend value. The core planner only sees the frontend-neutral trait.
-#[cfg(any(feature = "cugraph", test))]
-pub(crate) fn register_graph_execution_plan_discovery(discovery: GraphExecutionPlanDiscovery) {
-    let mut discoveries = GRAPH_EXECUTION_PLAN_DISCOVERIES
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .expect("graph execution-plan discovery registry mutex cannot be poisoned");
-    if !discoveries.iter().any(|candidate| std::ptr::fn_addr_eq(*candidate, discovery)) {
-        discoveries.push(discovery);
-    }
-}
-
 pub(crate) fn graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-    let discoveries = {
-        GRAPH_EXECUTION_PLAN_DISCOVERIES
-            .get_or_init(|| Mutex::new(Vec::new()))
-            .lock()
-            .expect("graph execution-plan discovery registry mutex cannot be poisoned")
-            .clone()
-    };
-    discoveries.iter().find_map(|discovery| discovery(plan))
+    native_node(plan).and_then(|node| node.graph_execution_plan())
 }
 
 /// Shared process-local services carried by native execution configuration.
@@ -911,41 +884,12 @@ fn state_poisoned_error(device_ordinal: usize) -> Error {
         .with_fact("reason", "state_poisoned")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cugraph"))]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
     use arrow::datatypes::Schema;
-    use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec};
 
     use super::*;
 
-    static REENTRANT_REGISTRATION_RAN: AtomicBool = AtomicBool::new(false);
-
-    fn no_graph_match(_: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-        None
-    }
-
-    fn register_while_discovering(_: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
-        register_graph_execution_plan_discovery(no_graph_match);
-        REENTRANT_REGISTRATION_RAN.store(true, Ordering::Release);
-        None
-    }
-
-    #[test]
-    fn discovery_callbacks_run_without_holding_the_registry_lock() {
-        REENTRANT_REGISTRATION_RAN.store(false, Ordering::Release);
-        register_graph_execution_plan_discovery(register_while_discovering);
-        let plan = EmptyExec::new(Arc::new(Schema::empty()));
-
-        assert!(graph_execution_plan(&plan).is_none());
-        assert!(REENTRANT_REGISTRATION_RAN.load(Ordering::Acquire));
-    }
-
-    #[cfg(feature = "cugraph")]
     mod singleflight_tests {
         use std::sync::Barrier;
 
@@ -1342,7 +1286,7 @@ mod tests {
                 .backend()
                 .session_capability()
                 .admit_query_with_request(
-                    QueryAdmissionRequest::new()
+                    QueryAdmissionRequest::test_attempt()
                         .with_query_plan_capability_evidence(AttemptCapabilityEvidence::for_query_plan(&plan)),
                 )
                 .expect("attempt admission");

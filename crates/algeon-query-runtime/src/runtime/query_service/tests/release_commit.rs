@@ -46,7 +46,7 @@ fn assert_legal_resident_output(
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let admitted = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     let context = admitted.acquire_context().expect("attempt context");
     let runtime = context.context().shared_runtime().expect("attempt runtime");
@@ -176,7 +176,7 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let admitted = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     let context = admitted.acquire_context().expect("attempt context");
     let runtime = context.context().shared_runtime().expect("attempt runtime");
@@ -244,7 +244,7 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("first admission");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminalizes admitted attempt");
     // Hold normal observer delivery after the terminal commit. A replacement
@@ -344,7 +344,7 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission succeeds");
 
     // Deliberately omit `AttemptOwner::commit_terminal`: this is the
@@ -387,7 +387,7 @@ async fn unterminalized_release_resolves_fallback_before_gpu_cleanup_starts() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission succeeds");
 
     let pool = service
@@ -432,9 +432,10 @@ async fn unterminalized_release_resolves_fallback_before_gpu_cleanup_starts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandoned_handle_keeps_report_before_reuse_order() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for abandoned release ordering");
-    let owner = RuntimeObservationOwner::new("abandoned-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let attempt_owner = observed_attempt("abandoned-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let binding = attempt_owner.admission_binding();
     let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .admit_query_with_request(QueryAdmissionRequest::new(binding.clone()))
         .expect("first admission");
     drop(first.acquire_context().expect("first context"));
 
@@ -449,7 +450,7 @@ async fn abandoned_handle_keeps_report_before_reuse_order() {
     let gate = first.lifetime.arm_release_commit_gate();
     let release = std::thread::spawn(move || drop(first));
     wait_until(Instant::now() + Duration::from_secs(10), || gate.entered(), "abandoned release reaches the barrier");
-    assert!(owner.sealed_snapshot().is_none());
+    assert!(binding.observation_handle().sealed_snapshot().is_none());
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
     gate.open();
@@ -459,7 +460,10 @@ async fn abandoned_handle_keeps_report_before_reuse_order() {
         .expect("replacement admits")
         .expect("task")
         .expect("admission succeeds");
-    assert!(owner.sealed_snapshot().is_some(), "receiver abandonment does not change the commit order");
+    assert!(
+        binding.observation_handle().sealed_snapshot().is_some(),
+        "receiver abandonment does not change the commit order"
+    );
     admitted.finish();
     drop(admitted);
 }
@@ -506,22 +510,17 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
 
     let service = try_guaranteed_runtime_test_service_with_concurrency(2)
         .expect("runtime-backed service for overlapping cap isolation");
-    let first_owner =
-        RuntimeObservationOwner::new("overlap-first", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
-    let second_owner =
-        RuntimeObservationOwner::new("overlap-second", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let first_owner = observed_attempt("overlap-first", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let first_binding = first_owner.admission_binding();
+    let second_owner = observed_attempt("overlap-second", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let first = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_query_cap_bytes(FIRST_CAP_BYTES)
-                .with_runtime_observation_owner(first_owner.clone()),
+            QueryAdmissionRequest::new(first_binding.clone()).with_query_cap_bytes(FIRST_CAP_BYTES),
         )
         .expect("first explicit cap admits");
     let second = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
-                .with_query_cap_bytes(SECOND_CAP_BYTES)
-                .with_runtime_observation_owner(second_owner.clone()),
+            QueryAdmissionRequest::new(second_owner.admission_binding()).with_query_cap_bytes(SECOND_CAP_BYTES),
         )
         .expect("second explicit cap admits");
     assert_eq!(first.device_budget_bytes(), FIRST_CAP_BYTES);
@@ -574,10 +573,12 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     drop(first_executor);
     drop(second_executor);
     drop(first_context);
-    first_owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
-        error_code: AttemptFailureCode::CudfTemporaryFailure,
-        error_status: AttemptFailureStatus::Temporary,
-    });
+    first_owner
+        .commit_terminal(RuntimeTerminalOutcome::Failed {
+            error_code: AttemptFailureCode::CudfTemporaryFailure,
+            error_status: AttemptFailureStatus::Temporary,
+        })
+        .expect("failed first attempt commits its terminal outcome");
 
     // The release gate is after report sealing and before the envelope drops
     // its lane and grant. This is the cleaning window in which capacity must
@@ -598,10 +599,13 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     };
     assert_eq!(cleaning.active_attempts, 2, "cleaning first attempt still owns its active lane");
     assert_eq!(cleaning.live_grants_bytes, FIRST_CAP_BYTES + SECOND_CAP_BYTES);
-    assert!(first_owner.sealed_snapshot().is_some(), "failed attempt report seals before envelope release");
+    assert!(
+        first_binding.observation_handle().sealed_snapshot().is_some(),
+        "failed attempt report seals before envelope release"
+    );
     assert!(
         service
-            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(FIRST_CAP_BYTES))
+            .try_admit_query_with_request(QueryAdmissionRequest::test_attempt().with_query_cap_bytes(FIRST_CAP_BYTES))
             .expect("third admission probe")
             .is_none(),
         "cleaning attempt still consumes its lane and cap",
@@ -678,18 +682,16 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
 
     let cancelled = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::new(cancelled_owner.admission_binding())
                 .with_query_cap_bytes(CANCELLED_CAP_BYTES)
-                .with_execution_cancellation(cancelled_owner.cancellation().execution_cancellation())
-                .with_attempt_binding(cancelled_owner.admission_binding()),
+                .with_execution_cancellation(cancelled_owner.cancellation().execution_cancellation()),
         )
         .expect("cancelled attempt admits");
     let surviving = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::new(surviving_owner.admission_binding())
                 .with_query_cap_bytes(SURVIVING_CAP_BYTES)
-                .with_execution_cancellation(surviving_owner.cancellation().execution_cancellation())
-                .with_attempt_binding(surviving_owner.admission_binding()),
+                .with_execution_cancellation(surviving_owner.cancellation().execution_cancellation()),
         )
         .expect("surviving attempt admits");
     assert_eq!(cancelled.device_budget_bytes(), CANCELLED_CAP_BYTES);
@@ -783,7 +785,9 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
     assert_eq!(cleaning.live_grants_bytes, CANCELLED_CAP_BYTES + SURVIVING_CAP_BYTES);
     assert!(
         service
-            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(CANCELLED_CAP_BYTES))
+            .try_admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_cap_bytes(CANCELLED_CAP_BYTES),
+            )
             .expect("replacement admission probe")
             .is_none(),
         "a cleaning cancelled grant is not returned early",
@@ -857,7 +861,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let owner = attempt_owner.observation_owner_for_test();
     let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     drop(first.acquire_context().expect("context"));
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
@@ -955,7 +959,7 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let admitted = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     let grant = admitted.lifetime.memory_grant().expect("memory grant");
     // Leak a real allocation into the attempt domain and forget it. The
@@ -1035,7 +1039,7 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     assert!(matches!(
         attempt_owner.admission_binding().claim(),
@@ -1085,11 +1089,11 @@ fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
         .expect("device context");
     let (attempt_owner, completion) = begin_native_attempt();
     let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("first admission");
 
     let error = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect_err("an attempt has one admission claim");
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("attempt_admission_already_claimed"));
@@ -1141,7 +1145,7 @@ fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open()
     let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
-        admission_service.admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(binding))
+        admission_service.admit_query_with_request(QueryAdmissionRequest::new(binding))
     });
 
     pause.wait_until_entered(Duration::from_secs(10));
@@ -1177,11 +1181,10 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for cleanup quarantine");
     let resources = service.inner.resources.as_ref().expect("runtime-backed service");
     let device = resources.devices.context_by_ordinal(0).expect("device context");
-    let owner =
-        RuntimeObservationOwner::new("failed-cleanup-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
-    let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
-        .expect("admission");
+    let attempt_owner =
+        observed_attempt("failed-cleanup-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let binding = attempt_owner.admission_binding();
+    let first = service.admit_query_with_request(QueryAdmissionRequest::new(binding.clone())).expect("admission");
     drop(first.acquire_context().expect("context"));
 
     device.stream_pool().fail_next_synchronization_for_test();
@@ -1199,7 +1202,7 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
         },
         "device ledger closes under quarantine",
     );
-    assert!(owner.sealed_snapshot().is_some(), "report still publishes after failed cleanup");
+    assert!(binding.observation_handle().sealed_snapshot().is_some(), "report still publishes after failed cleanup");
 
     // The attempt's capacity is never reusable: a new admission cannot place
     // on the closed device.
@@ -1257,7 +1260,7 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("first admission");
     assert_eq!(handle.device_ordinal(), 0, "equal-profile placement uses ordinal zero deterministically");
     drop(handle.acquire_context().expect("root context"));
@@ -1324,7 +1327,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     let context = handle.acquire_context().expect("root context");
     handle.lifetime.install_foreign_root_stream_cleanup_completion_for_test();
@@ -1424,20 +1427,21 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for OOM disposition");
     let resources = service.inner.resources.as_ref().expect("runtime-backed service");
     let device = resources.devices.context_by_ordinal(0).expect("device context");
-    let owner = RuntimeObservationOwner::new("oom-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
-    let first = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
-        .expect("admission");
+    let attempt_owner = observed_attempt("oom-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let binding = attempt_owner.admission_binding();
+    let first = service.admit_query_with_request(QueryAdmissionRequest::new(binding.clone())).expect("admission");
     drop(first.acquire_context().expect("context"));
-    owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
-        error_code: AttemptFailureCode::CudfResourceExhausted,
-        error_status: AttemptFailureStatus::Temporary,
-    });
+    attempt_owner
+        .commit_terminal(RuntimeTerminalOutcome::Failed {
+            error_code: AttemptFailureCode::CudfResourceExhausted,
+            error_status: AttemptFailureStatus::Temporary,
+        })
+        .expect("OOM outcome commits");
     first.finish();
     drop(first);
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    wait_until(deadline, || owner.sealed_snapshot().is_some(), "OOM report seals");
+    wait_until(deadline, || binding.observation_handle().sealed_snapshot().is_some(), "OOM report seals");
     wait_until(
         deadline,
         || device.ledger().snapshot().map(|snapshot| snapshot.active_attempts == 0).unwrap_or(false),
@@ -1481,7 +1485,7 @@ fn oom_release_projects_truthful_resource_evidence() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission");
     let grant_bytes = handle.device_budget_bytes();
     let requested_bytes = grant_bytes.checked_add(1).expect("grant leaves one byte above its immutable cap");
@@ -1749,7 +1753,7 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
     attempt_handle.record_planning_finished().expect("planning finishes");
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     let producer = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("producer admission");
     attempt_handle.record_physical_execution_started().expect("physical execution starts");
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");

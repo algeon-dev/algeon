@@ -1024,6 +1024,7 @@ pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::r
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub const algeon_datafusion::native_exec::NATIVE_ALGEON_DATAFUSION_METRIC_NAMES: &[&str]
 pub const algeon_datafusion::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME: &str
+pub fn algeon_datafusion::native_exec::below_native_admission(&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>) -> &alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>
 pub mod algeon_datafusion::native_report
 pub use algeon_datafusion::native_report::CapabilityDecisionRow
 pub use algeon_datafusion::native_report::MetricAggregation

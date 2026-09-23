@@ -28,7 +28,7 @@ impl QueryService {
     /// the waiter is dropped first, the queued request is removed.
     #[cfg(test)]
     pub(crate) fn enqueue_admission(&self) -> Result<QueryAdmissionWaiter> {
-        self.enqueue_admission_with_request(QueryAdmissionRequest::new())
+        self.enqueue_admission_with_request(QueryAdmissionRequest::test_attempt())
     }
 
     /// Admits a query asynchronously without parking a blocking thread.
@@ -39,7 +39,7 @@ impl QueryService {
     /// [`QueryAdmissionWaiter::try_admit`].
     #[cfg(test)]
     pub(crate) async fn admit_async(&self) -> Result<QueryHandle> {
-        self.admit_async_with_request(QueryAdmissionRequest::new()).await
+        self.admit_async_with_request(QueryAdmissionRequest::test_attempt()).await
     }
 
     /// Admits a query asynchronously with consolidated request-scoped admission metadata.
@@ -132,7 +132,6 @@ impl QueryService {
             requested_at,
             execution_cancellation,
             submitted_plan_capability_evidence,
-            request,
             observation,
             attempt_id,
             admission_request_id,
@@ -157,23 +156,26 @@ impl QueryService {
         };
         let submission_seq = pending.submission_seq();
 
-        let (device_entries, compatible_devices) =
-            match self.resolve_device_admission_entries(&request, &requirement, &candidate_ordinals) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    record_admission_lifecycle(
-                        &observation,
-                        admission_request_id,
-                        admission_rejection(&error),
-                        0,
-                        None,
-                        None,
-                    );
-                    pending.release();
-                    completion.finish_error(&error);
-                    return Err(error);
-                },
-            };
+        let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
+            submitted_plan_capability_evidence.as_ref(),
+            &requirement,
+            &candidate_ordinals,
+        ) {
+            Ok(entries) => entries,
+            Err(error) => {
+                record_admission_lifecycle(
+                    &observation,
+                    admission_request_id,
+                    admission_rejection(&error),
+                    0,
+                    None,
+                    None,
+                );
+                pending.release();
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
         if let Err(error) =
             self.reject_impossible_requirements(&device_entries, &required_capabilities, requested_query_cap_bytes)
         {

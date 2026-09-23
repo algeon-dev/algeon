@@ -387,7 +387,7 @@ fn bounded_native_query_releases_a_shared_leaf_stream_when_cancelled_mid_stream(
     let handle = suite_backend_with_policy(context.policy)
         .session_capability()
         .admit_query_with_request(
-            QueryAdmissionRequest::new()
+            QueryAdmissionRequest::test_attempt()
                 .with_query_plan_capability_evidence(evidence)
                 .with_query_cap_bytes(grant_bytes),
         )

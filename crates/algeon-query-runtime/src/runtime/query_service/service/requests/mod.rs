@@ -51,7 +51,7 @@ use super::{
         record_admission_lifecycle,
     },
     QueryService,
-    api::QueryAdmissionRequest,
+    api::{AdmissionObservation, QueryAdmissionRequest},
 };
 
 mod admit;
@@ -64,7 +64,7 @@ impl QueryService {
     /// owner error is returned when no candidate remains.
     pub(in crate::runtime::query_service::service) fn resolve_device_admission_entries(
         &self,
-        request: &QueryAdmissionRequest,
+        planned_capability_evidence: Option<&AttemptRequirement>,
         base_requirement: &AttemptRequirement,
         candidate_ordinals: &[usize],
     ) -> Result<(DeviceAdmissionEntries, Vec<usize>)> {
@@ -80,9 +80,8 @@ impl QueryService {
                 .with_fact("reason", "injected_pending_preflight_failure"));
             }
         }
-        let evidence = request.planned_capability_evidence();
         self.resolve_device_admission_entries_with(candidate_ordinals, |_ordinal| {
-            Ok(evidence.cloned().unwrap_or_else(|| base_requirement.clone()))
+            Ok(planned_capability_evidence.cloned().unwrap_or_else(|| base_requirement.clone()))
         })
     }
 
@@ -155,7 +154,6 @@ struct PreparedSubmission {
     requested_at: Instant,
     execution_cancellation: ExecutionCancellation,
     submitted_plan_capability_evidence: Option<AttemptRequirement>,
-    request: QueryAdmissionRequest,
     observation: RuntimeObservationHandle,
     attempt_id: AttemptId,
     admission_request_id: AdmissionRequestId,
@@ -195,36 +193,27 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
-        let mut request = request;
-        let mut observation_owner = request.take_runtime_observation();
-        let attempt_id = observation_owner.attempt_id.unwrap_or_else(AttemptId::mint);
+        let AdmissionObservation { handle: observation, owner, activity, activity_error, attempt_id } =
+            request.into_admission_observation();
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
-        let activity_error = observation_owner.activity_error.take();
         let completion = QueryCompletion::new(
-            observation_owner.owner.take(),
+            owner,
             attempt_admission,
             observation_permit,
-            observation_owner.activity.take(),
+            activity,
             completion_dispatcher,
             gpu_resource_permit,
         );
         if let Some(error) = activity_error {
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                0,
-                None,
-                None,
-            );
+            record_admission_lifecycle(&observation, admission_request_id, admission_rejection(&error), 0, None, None);
             completion.finish_error(&error);
             return Err(error);
         }
         if execution_cancellation.is_cancelled() {
             let error = admission_cancellation_or_deadline_error(&execution_cancellation);
             record_admission_lifecycle(
-                observation_owner.as_ref(),
+                &observation,
                 admission_request_id,
                 AdmissionLifecycleState::CancellationRequested,
                 0,
@@ -232,7 +221,7 @@ impl QueryService {
                 None,
             );
             record_admission_lifecycle(
-                observation_owner.as_ref(),
+                &observation,
                 admission_request_id,
                 AdmissionLifecycleState::Cancelled,
                 0,
@@ -246,7 +235,7 @@ impl QueryService {
             Ok(requirement) => requirement,
             Err(error) => {
                 record_admission_lifecycle(
-                    observation_owner.as_ref(),
+                    &observation,
                     admission_request_id,
                     admission_rejection(&error),
                     0,
@@ -266,8 +255,7 @@ impl QueryService {
             requested_at,
             execution_cancellation,
             submitted_plan_capability_evidence,
-            request,
-            observation: observation_owner.handle,
+            observation,
             attempt_id,
             admission_request_id,
             completion,

@@ -479,17 +479,17 @@ pub(crate) struct QueryCompletion {
 
 impl QueryCompletion {
     pub(super) fn new(
-        observation_owner: Option<RuntimeObservationOwner>,
-        attempt_admission: Option<AttemptAdmission>,
+        observation_owner: RuntimeObservationOwner,
+        attempt_admission: AttemptAdmission,
         observation_permit: Option<ObservationPermit>,
         observation_activity: Option<QueryActivityLease>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
         gpu_resource_permit: Option<GpuResourcePermit>,
     ) -> Self {
         Self {
-            observation_owner,
-            attempt_report: attempt_admission.as_ref().map(AttemptAdmission::report_publisher),
-            attempt_admission,
+            observation_owner: Some(observation_owner),
+            attempt_report: Some(attempt_admission.report_publisher()),
+            attempt_admission: Some(attempt_admission),
             observation_permit,
             observation_activity,
             completion_dispatcher,
@@ -507,7 +507,7 @@ impl QueryCompletion {
     }
 
     /// Records the published grant on the claimed attempt, under the
-    /// admission mutex. Unbound admissions have no attempt to record on.
+    /// admission mutex.
     pub(super) fn record_attempt_admitted(
         &self,
         fact: AttemptAdmissionFact,
@@ -1282,7 +1282,7 @@ mod tests {
         let binding = owner.admission_binding();
         let admission = binding.claim().unwrap();
         let query_completion =
-            QueryCompletion::new(Some(binding.into_observation_owner()), Some(admission), None, None, None, None);
+            QueryCompletion::new(binding.into_observation_owner(), admission, None, None, None, None);
         let error = QueryError::new(
             QueryErrorCode::MemoryReservationFailed,
             "query_engine.query_service.admission.test",

@@ -31,7 +31,6 @@ use crate::server::attempt::AlgeonAttempt;
 struct FlightExecutionBody {
     inner: Option<SendableRecordBatchStream>,
     cancellation: BoxFuture<'static, ()>,
-    native_cancellation: ExecutionCancellation,
     attempt_cancellation: Option<AttemptCancellation>,
     delivery_started: Arc<AtomicBool>,
     terminal: Arc<CoordinatorExecutionTerminal>,
@@ -42,7 +41,6 @@ impl FlightExecutionBody {
     fn new(
         inner: SendableRecordBatchStream,
         flight_token: CancellationToken,
-        native_cancellation: ExecutionCancellation,
         attempt_cancellation: Option<AttemptCancellation>,
         delivery_started: Arc<AtomicBool>,
         terminal: Arc<CoordinatorExecutionTerminal>,
@@ -51,7 +49,6 @@ impl FlightExecutionBody {
         Self {
             inner: Some(inner),
             cancellation: Box::pin(flight_token.cancelled_owned()),
-            native_cancellation,
             attempt_cancellation,
             delivery_started,
             terminal,
@@ -67,7 +64,6 @@ impl Stream for FlightExecutionBody {
         let this = self.get_mut();
         let _native_enter = this.native_execution_span.enter();
         if this.cancellation.as_mut().poll(context).is_ready() {
-            this.native_cancellation.cancel();
             if let Some(attempt_cancellation) = &this.attempt_cancellation {
                 attempt_cancellation.cancel();
             }
@@ -98,11 +94,10 @@ impl Stream for FlightExecutionBody {
 
 impl Drop for FlightExecutionBody {
     fn drop(&mut self) {
-        if self.inner.is_some() {
-            self.native_cancellation.cancel();
-            if let Some(attempt_cancellation) = &self.attempt_cancellation {
-                attempt_cancellation.cancel();
-            }
+        if self.inner.is_some()
+            && let Some(attempt_cancellation) = &self.attempt_cancellation
+        {
+            attempt_cancellation.cancel();
         }
     }
 }
@@ -127,7 +122,6 @@ impl ExplainGpuExecutionBody {
     }
 
     fn cancel_attempt(&mut self) {
-        self.guard.native_cancellation.cancel();
         if let Some(attempt) = self.attempt.take() {
             attempt.cancel_before_stream();
         }
@@ -259,7 +253,6 @@ impl DatafusionAlgeonFlightSqlService {
             prepared_handle,
             kind,
             execution_domain,
-            native_cancellation,
             mut attempt,
             started_at,
             forest_model_digests: planned_forest_model_digests,
@@ -287,12 +280,7 @@ impl DatafusionAlgeonFlightSqlService {
         }
         let output_counters = execution_lease.hot_counters();
         let attempt_cancellation = attempt.as_ref().map(AlgeonAttempt::cancellation);
-        self.cancellations.insert(
-            query_id.clone(),
-            token.clone(),
-            native_cancellation.clone(),
-            attempt_cancellation.clone(),
-        );
+        self.cancellations.insert(query_id.clone(), token.clone(), attempt_cancellation.clone());
         let attempt_cancellation_for_stream = attempt_cancellation.clone();
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
@@ -315,14 +303,12 @@ impl DatafusionAlgeonFlightSqlService {
             correlation_id: correlation_id.clone(),
             cancellations: Arc::clone(&self.cancellations),
             flight_token: token.clone(),
-            native_cancellation: native_cancellation.clone(),
             attempt_cancellation,
             shutdown_token: self.shutdown_token.clone(),
             delivery_started: Arc::new(AtomicBool::new(false)),
             terminal: Arc::clone(&coordinator_terminal),
         };
         if token.is_cancelled() {
-            native_cancellation.cancel();
             if let Some(attempt) = attempt.as_ref() {
                 attempt.cancel_before_stream();
             }
@@ -337,10 +323,9 @@ impl DatafusionAlgeonFlightSqlService {
             // per-query context, coordinator lease, and cancellation wiring as
             // ordinary statements, but deliberately never executes a physical
             // plan or acquires GPU admission.
-            let query_ctx = match self.data_query_context(
-                attempt.as_ref(),
-                self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
-            ) {
+            let query_ctx = match self
+                .data_query_context(attempt.as_ref(), self.attempt_invocation_execution(correlation_id.as_deref()))
+            {
                 Ok(context) => context,
                 Err(error) => {
                     let (status, captured) = datafusion_error_to_status_and_capture(
@@ -377,7 +362,6 @@ impl DatafusionAlgeonFlightSqlService {
                     },
                 },
                 _ = token.cancelled() => {
-                    native_cancellation.cancel();
                     if let Some(attempt) = attempt.as_ref() {
                         attempt.cancel_before_stream();
                     }
@@ -458,10 +442,9 @@ impl DatafusionAlgeonFlightSqlService {
 
         let query_ctx = match (execution_domain, attempt.as_ref()) {
             (StatementExecutionDomain::Metadata, _) => self.metadata_query_context(),
-            (StatementExecutionDomain::Data, attempt) => match self.data_query_context(
-                attempt,
-                self.attempt_invocation_execution(correlation_id.as_deref(), native_cancellation.clone()),
-            ) {
+            (StatementExecutionDomain::Data, attempt) => match self
+                .data_query_context(attempt, self.attempt_invocation_execution(correlation_id.as_deref()))
+            {
                 Ok(context) => context,
                 Err(error) => {
                     let (status, captured) = datafusion_error_to_status_and_capture(
@@ -503,7 +486,6 @@ impl DatafusionAlgeonFlightSqlService {
                 },
             },
             _ = token.cancelled() => {
-                native_cancellation.cancel();
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.cancel_before_stream();
                 }
@@ -575,7 +557,6 @@ impl DatafusionAlgeonFlightSqlService {
                 },
             },
             _ = token.cancelled() => {
-                native_cancellation.cancel();
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.cancel_before_stream();
                 }
@@ -656,7 +637,6 @@ impl DatafusionAlgeonFlightSqlService {
                 },
             },
             _ = token.cancelled() => {
-                native_cancellation.cancel();
                 if let Some(attempt) = attempt.as_ref() {
                     attempt.cancel_before_stream();
                 }
@@ -711,7 +691,6 @@ impl DatafusionAlgeonFlightSqlService {
         let stream = FlightExecutionBody::new(
             stream,
             token.clone(),
-            native_cancellation.clone(),
             attempt_cancellation_for_stream.clone(),
             Arc::clone(&guard.delivery_started),
             Arc::clone(&coordinator_terminal),
