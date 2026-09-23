@@ -1,6 +1,8 @@
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
+use super::NodeId;
 use super::{
-    Array, ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, InfoDetail, LimitSpec, NodeId,
-    QueryError, QueryErrorCode, RecordBatch, Result, cudf_query_error,
+    Array, ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, InfoDetail, LimitSpec, QueryError,
+    QueryErrorCode, RecordBatch, Result, cudf_query_error,
 };
 pub(super) use crate::util::comma_separated_usize;
 
@@ -67,6 +69,7 @@ pub(super) fn record_batch_memory_size(batch: &RecordBatch) -> usize {
     batch.columns().iter().map(|array| array.get_array_memory_size()).sum()
 }
 
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
 pub(super) fn invalid_node_reference(id: NodeId, message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidPlan, "query_engine.plan.execute", message).with_fact("node", id)
 }

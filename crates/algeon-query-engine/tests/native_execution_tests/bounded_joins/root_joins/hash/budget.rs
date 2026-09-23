@@ -39,7 +39,7 @@ fn bounded_native_query_does_not_split_join_leaf_from_source_estimate() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 2_500_000,
         max_source_chunk_bytes: 16 * 1024 * 1024,
         max_row_groups_per_chunk: 4,

@@ -29,12 +29,12 @@ fn backend_builder(device_ordinals: &[usize]) -> AlgeonGpuBackendBuilder {
     AlgeonGpuBackend::builder().devices(devices)
 }
 
-fn bounded_execution_config(device_budget_bytes: u64) -> AlgeonNativeExecutionConfig {
-    AlgeonNativeExecutionConfig::bounded(device_budget_bytes, 1024, 1, 3, 1)
+fn bounded_execution_config() -> AlgeonNativeExecutionConfig {
+    AlgeonNativeExecutionConfig::new(SourceChunking::try_new(1024, 1, 3, 1).expect("valid source chunking"))
 }
 
 fn bounded_backend_builder(device_ordinals: &[usize]) -> AlgeonGpuBackendBuilder {
-    backend_builder(device_ordinals).with_native_execution_config(bounded_execution_config(1024))
+    backend_builder(device_ordinals).with_native_execution_config(bounded_execution_config())
 }
 
 fn validated(builder: AlgeonGpuBackendBuilder) -> Result<super::ValidatedBackendConstruction> {
@@ -130,7 +130,7 @@ fn backend_validation_projection_keeps_device_configs_independent() {
     let policy = AlgeonGpuQueuePolicy::default().with_max_queued_attempts(8);
     let backend = validated(
         AlgeonGpuBackend::builder()
-            .with_native_execution_config(bounded_execution_config(1024))
+            .with_native_execution_config(bounded_execution_config())
             .devices(devices.clone())
             .queue_policy(policy),
     )
@@ -142,14 +142,8 @@ fn backend_validation_projection_keeps_device_configs_independent() {
     // runtime query limit or manufacture a grant.
     assert_eq!(backend.devices[0].profile().default_query_limit_bytes(), Some(512));
     assert_eq!(
-        backend.optimizer_config.native_execution_config().memory_control_policy(),
-        MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        }
+        backend.optimizer_config.native_execution_config().source_chunking(),
+        SourceChunking::try_new(1024, 1, 3, 1).expect("valid source chunking")
     );
 }
 
@@ -240,7 +234,9 @@ fn backend_validation_preserves_explicit_query_limit_on_each_device_profile() {
     );
     let backend = validated(
         AlgeonGpuBackend::builder()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(100, 64, 1, 1, 1))
+            .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(64, 1, 1, 1).expect("valid source chunking"),
+            ))
             .devices([device]),
     )
     .unwrap();
@@ -249,7 +245,8 @@ fn backend_validation_preserves_explicit_query_limit_on_each_device_profile() {
 
 #[test]
 fn backend_builder_preserves_full_optimizer_config_and_policy() {
-    let native_execution_config = AlgeonNativeExecutionConfig::bounded(4096, 1024, 2, 4, 2);
+    let native_execution_config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(1024, 2, 4, 2).expect("valid source chunking"));
     let optimizer_options = NativeOptimizerOptions::disabled();
     let cost_options = NativePlanCostOptions {
         enabled: true,
@@ -270,8 +267,8 @@ fn backend_builder_preserves_full_optimizer_config_and_policy() {
         validated(AlgeonGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device])).unwrap();
 
     assert_eq!(
-        backend.optimizer_config.native_execution_config().memory_control_policy(),
-        native_execution_config.memory_control_policy()
+        backend.optimizer_config.native_execution_config().source_chunking(),
+        native_execution_config.source_chunking()
     );
     assert_eq!(backend.optimizer_config.datafusion_cpu_execution_policy(), DataFusionCpuExecutionPolicy::Reject);
     assert_eq!(backend.optimizer_config.native_optimizer_options(), &optimizer_options);
@@ -288,16 +285,16 @@ fn backend_install_installs_optimizer_rule_matching_backend_config() {
     assert_eq!(installed.native_optimizer_options(), backend.optimizer_config.native_optimizer_options());
     assert_eq!(installed.native_plan_cost_options(), backend.optimizer_config.native_plan_cost_options());
     assert_eq!(
-        installed.native_execution_config().max_source_chunk_bytes(),
-        backend.optimizer_config.native_execution_config().max_source_chunk_bytes()
+        installed.native_execution_config().source_chunking().max_source_chunk_bytes.get(),
+        backend.optimizer_config.native_execution_config().source_chunking().max_source_chunk_bytes.get()
     );
     assert_eq!(
-        installed.native_execution_config().max_row_groups_per_chunk(),
-        backend.optimizer_config.native_execution_config().max_row_groups_per_chunk()
+        installed.native_execution_config().source_chunking().max_row_groups_per_chunk.get(),
+        backend.optimizer_config.native_execution_config().source_chunking().max_row_groups_per_chunk.get()
     );
     assert_eq!(
-        installed.native_execution_config().max_retry_attempts(),
-        backend.optimizer_config.native_execution_config().max_retry_attempts()
+        installed.native_execution_config().source_chunking().max_retry_attempts.get(),
+        backend.optimizer_config.native_execution_config().source_chunking().max_retry_attempts.get()
     );
     assert_eq!(
         installed.native_execution_config().max_source_reads_in_flight(),

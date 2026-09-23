@@ -237,7 +237,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     );
 
     let context = ExecutionContext::standalone(StandaloneConfig {
-        memory_control_policy: MemoryControlPolicy::Bounded {
+        memory_control_policy: MemoryControlPolicy {
             device_budget_bytes: 32 * 1024 * 1024,
             max_source_chunk_bytes: 8 * 1024 * 1024,
             max_row_groups_per_chunk: 1,

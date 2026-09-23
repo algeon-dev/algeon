@@ -1129,7 +1129,7 @@ impl DisplayAs for CugraphAlgoExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CugraphAlgoExec: algorithm={:?}, src_col={}, dst_col={}, weight_col={}, edge_id_col={}, predicate_source_count={}, construction_policy={}, memory_control_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                "CugraphAlgoExec: algorithm={:?}, src_col={}, dst_col={}, weight_col={}, edge_id_col={}, predicate_source_count={}, construction_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
                 self.spec.algorithm,
                 CUGRAPH_EDGE_SOURCE_COLUMN,
                 CUGRAPH_EDGE_DESTINATION_COLUMN,
@@ -1137,7 +1137,6 @@ impl DisplayAs for CugraphAlgoExec {
                 edge_id_column,
                 self.predicate_sources.len(),
                 self.spec.graph_options.construction_policy.as_str(),
-                self.native_execution_config.memory_control_policy(),
                 self.edge_normalize_inserted(),
                 self.gpu_result_input_name,
             ),
@@ -1149,7 +1148,6 @@ impl DisplayAs for CugraphAlgoExec {
                 writeln!(f, "edge_id_col={}", edge_id_column)?;
                 writeln!(f, "predicate_source_count={}", self.predicate_sources.len())?;
                 writeln!(f, "construction_policy={}", self.spec.graph_options.construction_policy.as_str())?;
-                writeln!(f, "memory_control_policy={}", self.native_execution_config.memory_control_policy())?;
                 writeln!(f, "edge_normalize_inserted={}", self.edge_normalize_inserted())?;
                 writeln!(f, "output_boundary=device_resident_or_device_to_host")?;
                 writeln!(f, "gpu_result_input={}", self.gpu_result_input_name)

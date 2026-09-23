@@ -566,12 +566,9 @@ impl ExecutionContext {
         self.admitted().map(|attempt| attempt.allocation_domain.usage()).transpose()
     }
 
-    /// Returns the effective bounded device budget used by reservation tracking.
-    pub fn bounded_device_budget_bytes(&self) -> Option<u64> {
-        match self.memory_control_policy() {
-            MemoryControlPolicy::Unbounded => None,
-            MemoryControlPolicy::Bounded { device_budget_bytes, .. } => Some(device_budget_bytes),
-        }
+    /// Returns the device budget used by reservation tracking.
+    pub fn device_budget_bytes(&self) -> u64 {
+        self.memory_control_policy().device_budget_bytes
     }
 
     /// Returns source scheduling controls for bounded source execution.
@@ -621,28 +618,13 @@ impl ExecutionContext {
     }
 }
 
-/// The service memory policy an admitted attempt runs under: a bounded
-/// policy's device budget becomes the grant's.
+/// The service memory policy an admitted attempt runs under: its device budget
+/// becomes the grant's.
 pub(in crate::runtime) fn memory_control_policy_for_grant(
     policy: MemoryControlPolicy,
     grant: &MemoryGrant,
 ) -> MemoryControlPolicy {
-    match policy {
-        MemoryControlPolicy::Bounded {
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            ..
-        } => MemoryControlPolicy::Bounded {
-            device_budget_bytes: grant.budget_bytes(),
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-        },
-        MemoryControlPolicy::Unbounded => MemoryControlPolicy::Unbounded,
-    }
+    MemoryControlPolicy { device_budget_bytes: grant.budget_bytes(), ..policy }
 }
 
 fn validate_runtime_observation_query_id(observation: &RuntimeObservationHandle, query_id: &QueryId) -> Result<()> {

@@ -73,42 +73,34 @@ pub enum MemoryResourcePolicy {
     ExternalRuntime,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MemoryControlPolicy {
-    #[default]
-    Unbounded,
-    Bounded {
-        device_budget_bytes: u64,
-        max_source_chunk_bytes: u64,
-        max_row_groups_per_chunk: usize,
-        max_retry_attempts: usize,
-        min_retry_chunk_row_groups: usize,
-    },
+/// The device budget and source chunking one execution runs under. An admitted
+/// attempt's budget is its grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MemoryControlPolicy {
+    pub device_budget_bytes: u64,
+    pub max_source_chunk_bytes: u64,
+    pub max_row_groups_per_chunk: usize,
+    pub max_retry_attempts: usize,
+    pub min_retry_chunk_row_groups: usize,
 }
 
 impl MemoryControlPolicy {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unbounded => "unbounded",
-            Self::Bounded { .. } => "bounded",
-        }
-    }
+    /// The policy kind metrics and strategy facts record; every execution is
+    /// bounded by its device budget.
+    pub const NAME: &'static str = "bounded";
 
-    pub const fn is_bounded(self) -> bool {
-        matches!(self, Self::Bounded { .. })
+    pub const fn as_str(self) -> &'static str {
+        Self::NAME
     }
 
     pub fn validate(self) -> Result<()> {
-        let Self::Bounded {
+        let Self {
             device_budget_bytes,
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
             max_retry_attempts,
             min_retry_chunk_row_groups,
-        } = self
-        else {
-            return Ok(());
-        };
+        } = self;
         validate_nonzero_policy_field("device_budget_bytes", device_budget_bytes == 0)?;
         validate_nonzero_policy_field("max_source_chunk_bytes", max_source_chunk_bytes == 0)?;
         validate_nonzero_policy_field("max_row_groups_per_chunk", max_row_groups_per_chunk == 0)?;
@@ -179,12 +171,6 @@ impl SourceSchedulerPolicy {
 impl Default for SourceSchedulerPolicy {
     fn default() -> Self {
         Self { max_source_reads_in_flight: 2 }
-    }
-}
-
-impl std::fmt::Display for MemoryControlPolicy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 

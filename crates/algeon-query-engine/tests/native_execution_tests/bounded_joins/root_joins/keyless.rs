@@ -42,7 +42,6 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 2);
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);
@@ -107,7 +106,6 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.hash_join_build_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");

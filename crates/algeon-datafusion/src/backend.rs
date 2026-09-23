@@ -27,8 +27,8 @@ pub use query_engine::runtime::{
 use query_engine::{
     error::QueryError,
     runtime::{
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendSession, MemoryControlPolicy,
-        QueryExecutionConfig, QueueBounds, probe_device_capacity,
+        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendSession, QueryExecutionConfig,
+        QueueBounds, probe_device_capacity,
     },
 };
 #[cfg(all(test, feature = "cugraph"))]
@@ -38,7 +38,7 @@ use query_engine::{error::Result as QueryEngineResult, runtime::QueryHandle};
 use crate::native_exec::GraphBfsSingleflightSnapshot;
 use crate::{
     error::{Error, ErrorCode, Result},
-    native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource},
+    native_exec::{AlgeonNativeExecutionConfig, QueryAdmissionSource, SourceChunking},
     observability::{
         BackendMetricsSnapshot, CacheSourceEventSnapshot, DeviceCacheReport, DeviceLedgerReport,
         DeviceMemoryFailureReport, DeviceTelemetrySnapshot, GpuBackendCloseSnapshot, GpuBackendDeviceStartupRecord,
@@ -475,7 +475,7 @@ fn validated_backend_construction(
     let devices = resolve_device_configs(configured_devices)?;
     validate_queue_policy(&queue_policy)?;
     let execution_config = optimizer_config.native_execution_config().clone();
-    let service_config = backend_query_execution_config(&execution_config)?;
+    let service_config = backend_query_execution_config(&execution_config);
     let queue_bounds = backend_queue_bounds(&queue_policy);
     let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
     let mut core_draft = GpuBackendCoreDraft::new(devices.clone(), controller);
@@ -504,7 +504,9 @@ pub(crate) struct InstalledTestGpuBackend {
 impl InstalledTestGpuBackend {
     pub(crate) fn new() -> Self {
         Self::with_config(
-            AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+            AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+            ),
             AlgeonGpuDeviceProfile::new(0)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
             AlgeonGpuQueuePolicy::default(),
@@ -687,25 +689,14 @@ fn resolve_device_configs(configured_devices: Vec<AlgeonGpuDeviceConfig>) -> Res
     Ok(by_ordinal.into_values().collect())
 }
 
-fn backend_query_execution_config(execution_config: &AlgeonNativeExecutionConfig) -> Result<QueryExecutionConfig> {
-    let MemoryControlPolicy::Bounded {
-        device_budget_bytes: _,
+fn backend_query_execution_config(execution_config: &AlgeonNativeExecutionConfig) -> QueryExecutionConfig {
+    let SourceChunking {
         max_source_chunk_bytes,
         max_row_groups_per_chunk,
         max_retry_attempts,
         min_retry_chunk_row_groups,
-    } = execution_config.memory_control_policy()
-    else {
-        return Err(invalid_backend_config(
-            "native_execution_config",
-            "AlgeonGpuBackend admission requires bounded native execution",
-        ));
-    };
-    validate_positive_u64("native_execution_config.max_source_chunk_bytes", max_source_chunk_bytes)?;
-    validate_positive_usize("native_execution_config.max_row_groups_per_chunk", max_row_groups_per_chunk)?;
-    validate_positive_usize("native_execution_config.max_retry_attempts", max_retry_attempts)?;
-    validate_positive_usize("native_execution_config.min_retry_chunk_row_groups", min_retry_chunk_row_groups)?;
-    Ok(QueryExecutionConfig {
+    } = execution_config.source_chunking();
+    QueryExecutionConfig {
         lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
         source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
         source_scheduler_policy: execution_config.source_scheduler_policy(),
@@ -714,11 +705,11 @@ fn backend_query_execution_config(execution_config: &AlgeonNativeExecutionConfig
         planning_policy: execution_config.planning_policy(),
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
         source_chunk_planning_options: execution_config.source_chunk_planning_options(),
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk,
-        max_retry_attempts,
-        min_retry_chunk_row_groups,
-    })
+        max_source_chunk_bytes: max_source_chunk_bytes.get(),
+        max_row_groups_per_chunk: max_row_groups_per_chunk.get(),
+        max_retry_attempts: max_retry_attempts.get(),
+        min_retry_chunk_row_groups: min_retry_chunk_row_groups.get(),
+    }
 }
 
 fn backend_queue_bounds(queue_policy: &AlgeonGpuQueuePolicy) -> QueueBounds {
@@ -729,13 +720,6 @@ fn validate_queue_policy(policy: &AlgeonGpuQueuePolicy) -> Result<()> {
     validate_positive_usize("max_queued_attempts", policy.max_queued_attempts)?;
     if policy.max_queue_wait.is_zero() {
         return Err(invalid_backend_config("max_queue_wait", "must be greater than zero"));
-    }
-    Ok(())
-}
-
-fn validate_positive_u64(field: &'static str, value: u64) -> Result<()> {
-    if value == 0 {
-        return Err(invalid_backend_config(field, "must be greater than zero"));
     }
     Ok(())
 }

@@ -5,7 +5,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use query_planning::{execution_contracts::MemoryControlPolicy, graph_observation::GraphMeasuredPeakRow};
+use query_planning::graph_observation::GraphMeasuredPeakRow;
 
 mod aggregate;
 mod backend_descriptor;
@@ -72,8 +72,6 @@ pub struct QueryMetrics {
     pub dynamic_filter_runtime_rows: Vec<DynamicFilterRuntimeMetrics>,
     /// Source-read runtime event rows in observation order.
     pub source_read_runtime_rows: Vec<SourceReadRuntimeMetrics>,
-    /// Memory policy used by the native bounded executor.
-    pub memory_control_policy: MemoryControlPolicy,
     /// Number of input batches observed by native execution.
     pub input_batches: u64,
     /// Number of input rows observed by native execution.

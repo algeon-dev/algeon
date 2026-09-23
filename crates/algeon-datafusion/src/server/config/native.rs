@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 
 use super::{
     env::{EnvValues, NativeConfigValue},
@@ -198,27 +201,16 @@ pub(super) fn native_optimizer_config(
     )
     .map(|raw| parse_execution_mode(raw.field, &raw.value).map(|mode| NativeConfigValue::new(mode, raw.field)))
     .transpose()?;
-    for (field, zero) in [
-        (max_source_chunk.as_ref().map(|value| value.field), max_source_chunk.as_ref().map(|value| value.value == 0)),
-        (max_row_groups.as_ref().map(|value| value.field), max_row_groups.as_ref().map(|value| value.value == 0)),
-        (
-            max_retry_attempts.as_ref().map(|value| value.field),
-            max_retry_attempts.as_ref().map(|value| value.value == 0),
-        ),
-    ] {
-        if let (Some(field), Some(true)) = (field, zero) {
-            return Err(ServerError::invalid_config(field, "must be greater than zero"));
-        }
-    }
-    let mut execution_config = AlgeonNativeExecutionConfig::bounded(
-        AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-        max_source_chunk
-            .map_or(AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES, |value| value.value),
-        max_row_groups
-            .map_or(AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK, |value| value.value),
-        max_retry_attempts.map_or(AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
-        AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-    );
+    let defaults = SourceChunking::default();
+    let mut execution_config = AlgeonNativeExecutionConfig::new(SourceChunking {
+        max_source_chunk_bytes: nonzero_native_value(max_source_chunk, NonZeroU64::new)?
+            .unwrap_or(defaults.max_source_chunk_bytes),
+        max_row_groups_per_chunk: nonzero_native_value(max_row_groups, NonZeroUsize::new)?
+            .unwrap_or(defaults.max_row_groups_per_chunk),
+        max_retry_attempts: nonzero_native_value(max_retry_attempts, NonZeroUsize::new)?
+            .unwrap_or(defaults.max_retry_attempts),
+        ..defaults
+    });
     if let Some(max_source_reads_in_flight) = max_source_reads_in_flight {
         if max_source_reads_in_flight.value == 0 {
             return Err(ServerError::invalid_config(max_source_reads_in_flight.field, "must be greater than zero"));
@@ -248,6 +240,19 @@ pub(super) fn native_optimizer_config(
         ServerError::invalid_config("native.execution_mode", "conflicts with native.final_plan_requirement")
     })?;
     Ok(optimizer_config)
+}
+
+/// A configured count that must be greater than zero.
+fn nonzero_native_value<T, N>(
+    value: Option<NativeConfigValue<T>>,
+    nonzero: impl FnOnce(T) -> Option<N>,
+) -> Result<Option<N>> {
+    value
+        .map(|value| {
+            let field = value.field;
+            nonzero(value.value).ok_or_else(|| ServerError::invalid_config(field, "must be greater than zero"))
+        })
+        .transpose()
 }
 
 pub(super) fn optional_native_string(

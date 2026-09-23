@@ -20,7 +20,7 @@ use algeon_datafusion::{
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
@@ -1227,8 +1227,9 @@ impl ExecutionPlan for ExecuteCountingExec {
 #[cfg(feature = "cuvs")]
 #[tokio::test]
 async fn bounded_execution_defers_child_execution_until_the_stream_is_polled() {
-    let ctx =
-        fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
+    let ctx = fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::new(
+        SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"),
+    ));
     let sql = format!(
         "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
              dataset => (SELECT item_id AS id, d0, d1 FROM dataset_vectors), \
@@ -1259,7 +1260,7 @@ async fn ordered_input_relations_keep_their_sort_through_physical_optimization()
     for (ctx, planned_input) in [
         (cuvs_context(), "SortPreservingMergeExec"),
         (
-            fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::bounded_default()),
+            fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::default()),
             "AlgeonNativeGpuProducerExec",
         ),
     ] {
@@ -1329,8 +1330,9 @@ fn register_partitioned_vectors(ctx: &SessionContext) {
 #[cfg(not(feature = "cuvs"))]
 #[tokio::test]
 async fn execution_rejects_a_disabled_cuvs_feature_before_any_child_executes() {
-    let ctx =
-        fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
+    let ctx = fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::new(
+        SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"),
+    ));
     for (function, args) in [
         (
             CUVS_BRUTE_FORCE_KNN_FUNCTION,

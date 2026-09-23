@@ -9,7 +9,7 @@ use crate::server::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
 };
 use crate::server::{
     config::{ServerConfig, ServerObservabilityConfig},
@@ -372,12 +372,8 @@ pub(super) struct BoundedTestFlightSqlService {
 #[cfg(test)]
 pub(super) fn default_test_backend() -> AlgeonGpuBackend {
     AlgeonGpuBackend::builder()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            256 * 1024 * 1024,
-            64 * 1024 * 1024,
-            2,
-            3,
-            1,
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
         ))
         .devices([AlgeonGpuDeviceConfig::new(
             AlgeonGpuDeviceProfile::new(0)

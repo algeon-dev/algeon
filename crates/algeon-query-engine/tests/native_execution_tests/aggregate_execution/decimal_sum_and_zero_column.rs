@@ -6,7 +6,7 @@ use super::*;
 fn bounded_native_query_executes_filtered_decimal_global_sum() {
     let dir = unique_temp_dir("query-engine-bounded-filtered-decimal-sum");
     let path = dir.join("lineitem.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -107,7 +107,7 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
 
 #[test]
 fn bounded_native_zero_column_count_uses_row_group_metadata_without_read_columns() {
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 250,
         max_row_groups_per_chunk: 8,

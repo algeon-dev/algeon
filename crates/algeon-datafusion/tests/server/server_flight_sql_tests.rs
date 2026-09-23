@@ -100,13 +100,7 @@ fn build_injected_test_backend(config: &mut ServerConfig) -> AlgeonGpuBackend {
         })
         .collect();
     config.native_optimizer_config =
-        config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            INJECTED_BACKEND_TEST_DEVICE_BUDGET_BYTES,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ));
+        config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     backend_from_server_config(config).expect("injected backend test profile must build")
 }
 use futures::TryStreamExt;

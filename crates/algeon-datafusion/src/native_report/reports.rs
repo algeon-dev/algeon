@@ -41,7 +41,7 @@ impl NativeFallbackPressureReport {
     /// Call [`Self::collect_with_native_execution_config`] with an explicit
     /// config when its precise planning settings matter to the report.
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
-        let execution_config = AlgeonNativeExecutionConfig::bounded_default();
+        let execution_config = AlgeonNativeExecutionConfig::default();
         Self::collect_with_native_execution_config(items, &execution_config)
     }
 

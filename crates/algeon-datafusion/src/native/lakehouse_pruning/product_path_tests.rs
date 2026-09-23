@@ -48,6 +48,7 @@ use crate::{
     error::DataFusionErrorExt,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
+        SourceChunking,
     },
 };
 
@@ -250,8 +251,10 @@ fn unreachable_storage_profile(id: &str) -> SourceStorageProfile {
 
 fn hermetic_backend() -> InstalledTestGpuBackend {
     InstalledTestGpuBackend::with_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
-            .with_source_storage_profile(unreachable_storage_profile(UNREACHABLE_ENGINE_PROFILE_ID)),
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+        )
+        .with_source_storage_profile(unreachable_storage_profile(UNREACHABLE_ENGINE_PROFILE_ID)),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
         AlgeonGpuQueuePolicy::default(),
@@ -283,10 +286,11 @@ fn admission_execution_config(
         .expect("installed backend must provide admission authority");
     let (attempt, ticket) =
         attempt_ticket_for_test(source.clone(), Some(AttemptCapabilityEvidence::for_query_plan(plan)));
-    let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_existing_query_admission_ticket(ticket)
-        .with_lakehouse_footer_pruning(true);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source)
+            .with_existing_query_admission_ticket(ticket)
+            .with_lakehouse_footer_pruning(true);
     (attempt, config)
 }
 
@@ -301,10 +305,11 @@ fn composed_admission_execution_config(
         .query_admission_source()
         .expect("installed backend must provide admission authority");
     let (attempt, ticket) = attempt_ticket_for_test(source.clone(), None);
-    let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_existing_query_admission_ticket(ticket)
-        .with_lakehouse_footer_pruning(true);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source)
+            .with_existing_query_admission_ticket(ticket)
+            .with_lakehouse_footer_pruning(true);
     (attempt, config)
 }
 
@@ -449,10 +454,11 @@ async fn native_host_refines_its_fragment_without_dropping_combined_ticket_evide
         .query_admission_source()
         .expect("installed backend must provide admission authority");
     let (_ticket_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(combined_evidence));
-    let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_existing_query_admission_ticket(Arc::clone(&ticket))
-        .with_lakehouse_footer_pruning(true);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source)
+            .with_existing_query_admission_ticket(Arc::clone(&ticket))
+            .with_lakehouse_footer_pruning(true);
     let exec = AlgeonNativeExec::try_new(plan, config).expect("test native host execution should build");
 
     let mut stream = exec
@@ -501,10 +507,11 @@ async fn native_host_rejects_an_unrelated_admission_ticket_before_grant() {
         .query_admission_source()
         .expect("installed backend must provide admission authority");
     let (_ticket_attempt, ticket) = attempt_ticket_for_test(source.clone(), Some(unrelated_evidence));
-    let config = AlgeonNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_existing_query_admission_ticket(Arc::clone(&ticket))
-        .with_lakehouse_footer_pruning(true);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source)
+            .with_existing_query_admission_ticket(Arc::clone(&ticket))
+            .with_lakehouse_footer_pruning(true);
     let exec = AlgeonNativeExec::try_new(plan, config).expect("test native host execution should build");
 
     let mut stream = exec

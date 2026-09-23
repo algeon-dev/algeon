@@ -343,7 +343,7 @@ fn bounded_native_query_executes_source_adjacent_join_filter_predicate() {
 #[test]
 fn bounded_native_query_defers_single_chunk_source_adjacent_filter_projection_into_hash_probe() {
     let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 1024 * 1024 * 1024,
             max_row_groups_per_chunk: 1024,

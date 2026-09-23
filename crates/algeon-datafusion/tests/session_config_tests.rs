@@ -1,6 +1,6 @@
 use algeon_datafusion::{
     backend::{AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuMemoryOwnership},
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
     session::AlgeonSessionStateBuilderExt,
 };
@@ -35,8 +35,9 @@ async fn sql_set_algeon_datafusion_keys_rejected_as_unrecognized() {
 
 #[test]
 fn optimizer_rule_retains_configured_native_optimizer_config() {
-    let config = AlgeonNativeOptimizerConfig::default()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
+    let config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::new(
+        SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"),
+    ));
     let state = SessionStateBuilder::new().with_algeon_native(config.clone()).build();
 
     let rule = state
@@ -48,16 +49,16 @@ fn optimizer_rule_retains_configured_native_optimizer_config() {
         })
         .expect("algeon native optimizer rule must be installed");
     assert_eq!(
-        rule.config().native_execution_config().max_source_chunk_bytes(),
-        config.native_execution_config().max_source_chunk_bytes()
+        rule.config().native_execution_config().source_chunking().max_source_chunk_bytes.get(),
+        config.native_execution_config().source_chunking().max_source_chunk_bytes.get()
     );
     assert_eq!(
-        rule.config().native_execution_config().max_row_groups_per_chunk(),
-        config.native_execution_config().max_row_groups_per_chunk()
+        rule.config().native_execution_config().source_chunking().max_row_groups_per_chunk.get(),
+        config.native_execution_config().source_chunking().max_row_groups_per_chunk.get()
     );
     assert_eq!(
-        rule.config().native_execution_config().max_retry_attempts(),
-        config.native_execution_config().max_retry_attempts()
+        rule.config().native_execution_config().source_chunking().max_retry_attempts.get(),
+        config.native_execution_config().source_chunking().max_retry_attempts.get()
     );
     assert_eq!(
         rule.config().native_execution_config().max_source_reads_in_flight(),
@@ -69,16 +70,17 @@ fn optimizer_rule_retains_configured_native_optimizer_config() {
 fn execution_policy_configured_via_native_execution_config() {
     use query_engine::runtime::SourceSchedulerPolicy;
 
-    let execution_config = AlgeonNativeExecutionConfig::bounded(1024, 512, 8, 5, 1)
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(4));
-    assert_eq!(execution_config.max_source_chunk_bytes(), 512);
-    assert_eq!(execution_config.max_row_groups_per_chunk(), 8);
-    assert_eq!(execution_config.max_retry_attempts(), 5);
+    let execution_config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 8, 5, 1).expect("valid source chunking"))
+            .with_source_scheduler_policy(SourceSchedulerPolicy::new(4));
+    assert_eq!(execution_config.source_chunking().max_source_chunk_bytes.get(), 512);
+    assert_eq!(execution_config.source_chunking().max_row_groups_per_chunk.get(), 8);
+    assert_eq!(execution_config.source_chunking().max_retry_attempts.get(), 5);
     assert_eq!(execution_config.max_source_reads_in_flight(), 4);
 
     let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(execution_config);
-    assert_eq!(optimizer_config.native_execution_config().max_source_chunk_bytes(), 512);
-    assert_eq!(optimizer_config.native_execution_config().max_row_groups_per_chunk(), 8);
-    assert_eq!(optimizer_config.native_execution_config().max_retry_attempts(), 5);
+    assert_eq!(optimizer_config.native_execution_config().source_chunking().max_source_chunk_bytes.get(), 512);
+    assert_eq!(optimizer_config.native_execution_config().source_chunking().max_row_groups_per_chunk.get(), 8);
+    assert_eq!(optimizer_config.native_execution_config().source_chunking().max_retry_attempts.get(), 5);
     assert_eq!(optimizer_config.native_execution_config().max_source_reads_in_flight(), 4);
 }

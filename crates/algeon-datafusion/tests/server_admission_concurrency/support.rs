@@ -67,13 +67,7 @@ fn server_config_for_concurrency(managed_capacity_bytes: u64, query_cap_bytes: u
             MAX_ACTIVE_ATTEMPTS,
         ));
     config.native_optimizer_config =
-        config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            query_cap_bytes,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ));
+        config.native_optimizer_config.clone().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     config.queue_policy =
         config.queue_policy.clone().with_max_queued_attempts(32).with_max_queue_wait(Duration::from_secs(300));
     config

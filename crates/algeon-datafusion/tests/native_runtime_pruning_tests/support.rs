@@ -78,12 +78,8 @@ fn pruning_test_backend() -> &'static AlgeonGpuBackend {
             .with_default_query_limit_bytes(TEST_DEVICE_BUDGET_BYTES);
         let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         AlgeonGpuBackend::builder()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-                TEST_DEVICE_BUDGET_BYTES,
-                TEST_MAX_SOURCE_CHUNK_BYTES,
-                1,
-                3,
-                1,
+            .with_native_execution_config(AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(TEST_MAX_SOURCE_CHUNK_BYTES, 1, 3, 1).expect("valid source chunking"),
             ))
             .devices([device])
             .queue_policy(AlgeonGpuQueuePolicy::default())

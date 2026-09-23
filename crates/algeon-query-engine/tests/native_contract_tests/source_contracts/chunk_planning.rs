@@ -19,7 +19,7 @@ use super::*;
 
 #[test]
 fn source_task_memory_model_derives_chunk_target_from_live_budget_slots() {
-    let memory_policy = MemoryControlPolicy::Bounded {
+    let memory_policy = MemoryControlPolicy {
         device_budget_bytes: 2_000,
         max_source_chunk_bytes: 1_600,
         max_row_groups_per_chunk: 512,
@@ -52,7 +52,7 @@ fn source_task_memory_model_derives_chunk_target_from_live_budget_slots() {
 
 #[test]
 fn source_task_memory_model_preserves_configured_cap_when_budget_slots_allow_it() {
-    let memory_policy = MemoryControlPolicy::Bounded {
+    let memory_policy = MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1_600,
         max_row_groups_per_chunk: 512,
@@ -68,7 +68,7 @@ fn source_task_memory_model_preserves_configured_cap_when_budget_slots_allow_it(
 
 #[test]
 fn source_task_memory_model_preserves_configured_cap_when_retry_admission_owns_an_oversized_source_read() {
-    let memory_policy = MemoryControlPolicy::Bounded {
+    let memory_policy = MemoryControlPolicy {
         device_budget_bytes: 1_000,
         max_source_chunk_bytes: 1_600,
         max_row_groups_per_chunk: 512,
@@ -80,16 +80,6 @@ fn source_task_memory_model_preserves_configured_cap_when_retry_admission_owns_a
         SourceChunkPlanningPolicy::for_source_task(memory_policy, SourceTaskMemoryModel::aggregate_pipeline(true));
     assert_eq!(policy.max_source_chunk_bytes, Some(1_600));
     assert_eq!(policy.max_row_groups_per_chunk, 512);
-}
-
-#[test]
-fn source_task_memory_model_leaves_unbounded_planning_unchanged() {
-    let policy = SourceChunkPlanningPolicy::for_source_task(
-        MemoryControlPolicy::Unbounded,
-        SourceTaskMemoryModel::join_leaf_stream(true),
-    );
-
-    assert_eq!(policy, SourceChunkPlanningPolicy::default());
 }
 
 #[test]

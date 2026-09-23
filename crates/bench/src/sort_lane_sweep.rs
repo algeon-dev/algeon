@@ -33,7 +33,7 @@ use algeon_datafusion::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuDeviceMemoryLimit,
         GpuMemoryOwnership,
     },
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
 };
 use arrow::{
     array::{Int64Array, RecordBatch},
@@ -238,7 +238,7 @@ fn build_backend(
     query_cap_bytes: u64,
     device_capacity_bytes: u64,
 ) -> Result<AlgeonGpuBackend, Box<dyn Error>> {
-    let execution_config = AlgeonNativeExecutionConfig::bounded(query_cap_bytes, 4 * 1024 * 1024, 1, 3, 1);
+    let execution_config = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(4 * 1024 * 1024, 1, 3, 1)?);
     let template = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: device_capacity_bytes })
         .with_default_query_limit_bytes(query_cap_bytes)

@@ -291,8 +291,7 @@ mod tests {
     };
 
     fn test_optimizer_config() -> AlgeonNativeOptimizerConfig {
-        AlgeonNativeOptimizerConfig::default()
-            .with_native_execution_config(AlgeonNativeExecutionConfig::bounded_default())
+        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default())
     }
 
     fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {

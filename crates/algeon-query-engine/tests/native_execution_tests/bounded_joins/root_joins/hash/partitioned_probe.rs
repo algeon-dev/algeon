@@ -56,7 +56,7 @@ fn partitioned_probe_context(cap: u64, min_units: usize) -> BackendQueryContext 
 }
 
 fn partitioned_probe_retry_policy(cap: u64, min_units: usize) -> MemoryControlPolicy {
-    MemoryControlPolicy::Bounded {
+    MemoryControlPolicy {
         device_budget_bytes: cap,
         max_source_chunk_bytes: 64 * 1024 * 1024,
         max_row_groups_per_chunk: 1,

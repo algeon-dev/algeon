@@ -143,12 +143,8 @@ impl SourceChunkPlanningPolicy {
     /// chunk size and `device_budget_bytes / model.live_slot_count()`.
     pub fn for_source_task(memory_policy: MemoryControlPolicy, model: SourceTaskMemoryModel) -> Self {
         let base = Self::from(memory_policy);
-        let MemoryControlPolicy::Bounded {
-            device_budget_bytes, max_source_chunk_bytes, max_row_groups_per_chunk, ..
-        } = memory_policy
-        else {
-            return base;
-        };
+        let MemoryControlPolicy { device_budget_bytes, max_source_chunk_bytes, max_row_groups_per_chunk, .. } =
+            memory_policy;
         if max_source_chunk_bytes > device_budget_bytes {
             return base;
         }
@@ -233,15 +229,10 @@ impl Default for SourceChunkPlanningPolicy {
 }
 
 impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
-    fn from(policy: MemoryControlPolicy) -> Self {
-        match policy {
-            MemoryControlPolicy::Unbounded => Self::default(),
-            MemoryControlPolicy::Bounded { max_source_chunk_bytes, max_row_groups_per_chunk, .. } => {
-                let mut policy = Self::new(Some(max_source_chunk_bytes), max_row_groups_per_chunk);
-                policy.source_chunk_planning_reason = "configured_policy";
-                policy
-            },
-        }
+    fn from(memory_policy: MemoryControlPolicy) -> Self {
+        let mut policy = Self::new(Some(memory_policy.max_source_chunk_bytes), memory_policy.max_row_groups_per_chunk);
+        policy.source_chunk_planning_reason = "configured_policy";
+        policy
     }
 }
 
@@ -251,10 +242,7 @@ fn local_parquet_throughput_planning_admitted(
     policy: SourceChunkPlanningPolicy,
     options: SourceChunkPlanningOptions,
 ) -> bool {
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = memory_policy else {
-        return false;
-    };
-    if device_budget_bytes < options.local_parquet_throughput_min_device_budget_bytes() {
+    if memory_policy.device_budget_bytes < options.local_parquet_throughput_min_device_budget_bytes() {
         return false;
     }
     if policy.max_row_groups_per_chunk != 1 || policy.max_source_chunk_bytes.is_none() {

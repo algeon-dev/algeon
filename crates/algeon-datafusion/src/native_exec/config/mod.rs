@@ -16,11 +16,12 @@ use query_engine::{
     observability::RuntimeObservationConfig,
     policy::PlanningPolicy,
     runtime::{
-        AdmittedQueryContext, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig, MemoryControlPolicy,
-        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        AdmittedQueryContext, ExecutionContext, IoLifecycle, LakehouseCacheFillConfig, SourceChunkPlanningMode,
+        SourceSchedulerPolicy, SourceStorageProfile,
     },
 };
 
+pub use self::chunking::SourceChunking;
 use super::{
     admission::{
         QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketAdmissionContext,
@@ -39,7 +40,7 @@ use crate::native_exec::graph::GraphExecutionServices;
 /// through backend admission when an accepted native plan begins execution.
 #[derive(Debug, Clone)]
 pub struct AlgeonNativeExecutionConfig {
-    pub(super) memory_control_policy: MemoryControlPolicy,
+    pub(super) source_chunking: SourceChunking,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
     pub(super) lakehouse_cache_fill_config: LakehouseCacheFillConfig,
@@ -72,63 +73,28 @@ pub(crate) struct AlgeonNativeExecutionContext {
 }
 
 mod admission;
+mod chunking;
 mod context;
 #[cfg(test)]
 mod tests;
 
+impl Default for AlgeonNativeExecutionConfig {
+    fn default() -> Self {
+        Self::new(SourceChunking::default())
+    }
+}
+
 impl AlgeonNativeExecutionConfig {
-    /// Fallback bounded device budget, in bytes, used only as an unadmitted
-    /// planning template. A real execution context always replaces this with
-    /// the immutable grant selected by the per-device ledger.
-    pub const AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
     /// Device-memory headroom, in bytes, reserved by automatic per-device
     /// backend profiles for libcudf and driver overhead.
     pub const AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES: u64 = 500 * 1024 * 1024;
-    /// Default bounded source chunk byte target used by [`Self::bounded_default`].
-    pub const DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
-    /// Default bounded source row-group target used by [`Self::bounded_default`].
-    pub const DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
-    /// Default bounded retry-attempt cap used by [`Self::bounded_default`].
-    pub const DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS: usize = 3;
-    /// Default bounded retry floor, in row groups, used by [`Self::bounded_default`].
-    pub const DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
-    /// Use the bounded planning defaults before a backend has admitted an
-    /// attempt. This carries no selected device or capacity decision: admitted
-    /// execution always receives the selected device's immutable grant.
-    pub fn bounded_default() -> Self {
-        Self::bounded(
-            Self::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-            Self::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            Self::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            Self::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            Self::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
-        )
-    }
-
-    /// Use default runtime allocator construction with bounded native memory-control settings.
-    ///
-    /// Byte fields are device-byte budgets. `max_source_chunk_bytes` and
-    /// `max_row_groups_per_chunk` are planning targets for source chunking, not
-    /// absolute promises that every emitted chunk will be smaller. Positive
-    /// value validation is performed when the native `ExecutionContext` is
-    /// built, which keeps this builder lightweight and reports native
-    /// validation failures as adapter execution errors.
-    pub fn bounded(
-        device_budget_bytes: u64,
-        max_source_chunk_bytes: u64,
-        max_row_groups_per_chunk: usize,
-        max_retry_attempts: usize,
-        min_retry_chunk_row_groups: usize,
-    ) -> Self {
+    /// A configuration with `source_chunking` and default settings otherwise.
+    /// It carries no device capacity: admitted execution always runs under the
+    /// selected device's immutable grant.
+    pub fn new(source_chunking: SourceChunking) -> Self {
         Self {
-            memory_control_policy: MemoryControlPolicy::Bounded {
-                device_budget_bytes,
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                min_retry_chunk_row_groups,
-            },
+            source_chunking,
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
@@ -149,15 +115,6 @@ impl AlgeonNativeExecutionConfig {
             #[cfg(feature = "cugraph")]
             graph_execution_services: GraphExecutionServices::default(),
         }
-    }
-
-    /// Set bounded execution controls such as chunk sizing, reservations, and retry limits.
-    ///
-    /// Deployment resource profiles own capacity; backend admission replaces
-    /// this template's budget with the selected immutable grant.
-    pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
-        self.memory_control_policy = memory_control_policy;
-        self
     }
 
     /// Set bounded source scheduling controls.
@@ -342,33 +299,9 @@ impl AlgeonNativeExecutionConfig {
         self
     }
 
-    /// Memory-control policy copied into the lazily built native context.
-    pub fn memory_control_policy(&self) -> MemoryControlPolicy {
-        self.memory_control_policy
-    }
-
-    /// Maximum source bytes planned into one native bounded source chunk.
-    pub fn max_source_chunk_bytes(&self) -> u64 {
-        match self.memory_control_policy {
-            MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => max_source_chunk_bytes,
-            MemoryControlPolicy::Unbounded => Self::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-        }
-    }
-
-    /// Maximum source row groups planned into one native bounded source chunk.
-    pub fn max_row_groups_per_chunk(&self) -> usize {
-        match self.memory_control_policy {
-            MemoryControlPolicy::Bounded { max_row_groups_per_chunk, .. } => max_row_groups_per_chunk,
-            MemoryControlPolicy::Unbounded => Self::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-        }
-    }
-
-    /// Maximum bounded retry attempts.
-    pub fn max_retry_attempts(&self) -> usize {
-        match self.memory_control_policy {
-            MemoryControlPolicy::Bounded { max_retry_attempts, .. } => max_retry_attempts,
-            MemoryControlPolicy::Unbounded => Self::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-        }
+    /// Source chunking of native reads.
+    pub fn source_chunking(&self) -> SourceChunking {
+        self.source_chunking
     }
 
     /// Maximum active native source reads allowed per bounded query.

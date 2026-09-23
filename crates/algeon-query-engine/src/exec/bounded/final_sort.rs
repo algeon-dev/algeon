@@ -36,9 +36,7 @@ pub(super) fn execute_final_sort_node_with_retry(
     input: CommittedPartial,
     dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<CommittedPartial> {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
-        unreachable!("execute_final_sort_node_with_retry is called only for bounded policies");
-    };
+    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
@@ -142,9 +140,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     sort: &SortNode,
     input_frame: GpuDataFrame,
 ) -> Result<ResidentGpuFrame> {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
-        unreachable!("execute_final_sort_node_from_frame_with_retry is called only for bounded policies");
-    };
+    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
     // Full sorts without a limit stay serial on the coordinator: chunk-local
@@ -178,9 +174,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     mut input_stream: ResidentFrameStreamPayload,
     dispatch: Option<&AggregateLaneDispatch>,
 ) -> Result<ResidentGpuFrame> {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
-        unreachable!("execute_final_sort_node_from_stream_with_retry is called only for bounded policies");
-    };
+    let MemoryControlPolicy { max_retry_attempts, .. } = execution.context().memory_control_policy();
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { execution, dispatch, node_id, sort, max_attempts };
@@ -285,11 +279,7 @@ impl FinalSortExecutor<'_, '_, '_> {
             return Ok(true);
         }
 
-        let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } =
-            self.execution.context().memory_control_policy()
-        else {
-            unreachable!("final sort execution is called only for bounded policies");
-        };
+        let MemoryControlPolicy { max_source_chunk_bytes, .. } = self.execution.context().memory_control_policy();
         Ok(input_bytes > max_source_chunk_bytes && limited_output_bytes <= max_source_chunk_bytes)
     }
 }

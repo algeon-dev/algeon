@@ -130,12 +130,8 @@ fn read_local_parquet_source_batch_or_split(
 }
 
 fn source_read_retry_policy(context: &ExecutionContext) -> (usize, usize) {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } => {
-            (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
-        },
-        MemoryControlPolicy::Unbounded => (1, 1),
-    }
+    let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } = context.memory_control_policy();
+    (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
 }
 
 fn read_local_parquet_chunk_required_only_or_split(
@@ -315,7 +311,7 @@ mod tests {
     #[test]
     fn generic_source_batches_cap_decode_scratch_risk_only() {
         let context = ExecutionContext::standalone(StandaloneConfig {
-            memory_control_policy: MemoryControlPolicy::Bounded {
+            memory_control_policy: MemoryControlPolicy {
                 device_budget_bytes: 64 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
                 max_row_groups_per_chunk: 1,
@@ -341,7 +337,7 @@ mod tests {
     #[test]
     fn generic_source_chunk_batches_batch_whole_row_groups_ahead_of_scan_limit_prefix() {
         let context = ExecutionContext::standalone(StandaloneConfig {
-            memory_control_policy: MemoryControlPolicy::Bounded {
+            memory_control_policy: MemoryControlPolicy {
                 device_budget_bytes: 64 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
                 max_row_groups_per_chunk: 1,
@@ -370,7 +366,7 @@ mod tests {
     #[test]
     fn serial_source_chunk_retry_policy_uses_bounded_context() {
         let context = ExecutionContext::standalone(StandaloneConfig {
-            memory_control_policy: MemoryControlPolicy::Bounded {
+            memory_control_policy: MemoryControlPolicy {
                 device_budget_bytes: 64 * 1024 * 1024 * 1024,
                 max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
                 max_row_groups_per_chunk: 1024,

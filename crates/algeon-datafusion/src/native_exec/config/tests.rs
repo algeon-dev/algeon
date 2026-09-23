@@ -10,7 +10,7 @@ use crate::{
 
 #[tokio::test]
 async fn async_execution_context_requires_gpu_backend_before_resolving_cuda_state() {
-    let error = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 1, 1)
+    let error = AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 1, 1).expect("valid source chunking"))
         .with_query_id("query-config")
         .with_trace_id("trace-config")
         .execution_context_async(Arc::new(TaskContext::default()))
@@ -25,10 +25,11 @@ async fn async_execution_context_requires_gpu_backend_before_resolving_cuda_stat
 
 #[test]
 fn native_execution_config_policy_getters_match_bounded_policy() {
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 8, 5, 1);
-    assert_eq!(config.max_source_chunk_bytes(), 512);
-    assert_eq!(config.max_row_groups_per_chunk(), 8);
-    assert_eq!(config.max_retry_attempts(), 5);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 8, 5, 1).expect("valid source chunking"));
+    assert_eq!(config.source_chunking().max_source_chunk_bytes.get(), 512);
+    assert_eq!(config.source_chunking().max_row_groups_per_chunk.get(), 8);
+    assert_eq!(config.source_chunking().max_retry_attempts.get(), 5);
     assert_eq!(config.max_source_reads_in_flight(), 2);
 }
 
@@ -42,9 +43,10 @@ fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
         .expect("installed backend must provide admission authority");
     let (_ambient_attempt, ambient_ticket) = attempt_ticket_for_test(source.clone(), None);
     let (_child_attempt, child_ticket) = attempt_ticket_for_test(source.clone(), None);
-    let child_config = AlgeonNativeExecutionConfig::bounded(256, 512, 1, 3, 1)
-        .with_query_admission_source(source)
-        .with_existing_query_admission_ticket(Arc::clone(&child_ticket));
+    let child_config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source)
+            .with_existing_query_admission_ticket(Arc::clone(&child_ticket));
     let child_ticket_id = child_config.query_admission_ticket_id();
     let task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ambient_ticket));
@@ -60,7 +62,7 @@ fn query_admission_ticket_selection_prefers_ambient_query_admission_ticket() {
 
 #[test]
 fn config_validation_errors_carry_configured_correlation_ids() {
-    let error = AlgeonNativeExecutionConfig::bounded_default()
+    let error = AlgeonNativeExecutionConfig::default()
         .with_query_id("query-config-error")
         .with_trace_id("trace-config-error")
         .with_source_chunk_planning_options(

@@ -24,7 +24,7 @@ use query_engine::{
     },
     rapids_backend::rapids_analysis_context,
     runtime::{
-        ExecutionContext, MemoryControlPolicy, StandaloneConfig,
+        ExecutionContext,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
@@ -545,50 +545,6 @@ fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
     drop(runtime);
     assert_attempt_domain_released(&admitted);
     admitted.finish();
-}
-
-#[test]
-fn unbounded_vector_request_requires_compiled_pipeline_before_source_work() {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("x", DataType::Float32, false),
-        Field::new("y", DataType::Float32, false),
-    ]));
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/algeon-unbounded-vector-source-must-not-open.parquet",
-        Arc::clone(&schema),
-        vec!["id".into(), "x".into(), "y".into()],
-    )));
-    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(VectorPcaParams::new(
-            VectorRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x", "y"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    let plan = builder.finish_with_host_sink(vector);
-    let context = ExecutionContext::standalone(StandaloneConfig {
-        runtime: Some(Arc::new(cudf::Runtime::new().expect("GPU runtime for unbounded vector route test"))),
-        memory_control_policy: MemoryControlPolicy::Unbounded,
-        ..StandaloneConfig::default()
-    })
-    .expect("unbounded execution context");
-
-    let admitted_plan =
-        admit_query_plan(&plan, context.statistical_aggregate_execution_mode(), context.planning_policy()).unwrap();
-    let (result, metrics, _observation) =
-        execute_query_plan_direct(&context, QueryExecutionRequest::admitted(&admitted_plan)).into_parts();
-    let error = match result {
-        Err(error) => error,
-        Ok(_) => panic!("unbounded vector execution must require compiled bounded admission"),
-    };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("reason"), Some("compiled_vector_pipeline_required"));
-    assert_eq!(metrics.compiled_pipeline_attempts, 0);
-    assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
-    assert_eq!(metrics.source_read_time, std::time::Duration::ZERO);
 }
 
 #[test]

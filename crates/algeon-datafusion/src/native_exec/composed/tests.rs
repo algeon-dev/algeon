@@ -31,7 +31,7 @@ use crate::{
     backend::InstalledTestGpuBackend,
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{
-        AlgeonNativeGpuProducerExec, QueryAdmissionSource,
+        AlgeonNativeGpuProducerExec, QueryAdmissionSource, SourceChunking,
         admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
         graph::GraphExecutionPlan,
     },
@@ -293,9 +293,8 @@ fn composed_constructor_preserves_host_owned_graph_gpu_output_rejection() {
     let consumer_plan = consumer_plan(Arc::clone(&schema));
     let child = Arc::new(FakeHostOwnedGraphExec { inner: EmptyExec::new(schema) }) as Arc<dyn ExecutionPlan>;
 
-    let error =
-        AlgeonNativeComposedExec::try_new(consumer_plan, vec![child], AlgeonNativeExecutionConfig::bounded_default())
-            .expect_err("host-owned graph results must not be accepted as GPU-resident producers");
+    let error = AlgeonNativeComposedExec::try_new(consumer_plan, vec![child], AlgeonNativeExecutionConfig::default())
+        .expect_err("host-owned graph results must not be accepted as GPU-resident producers");
 
     assert_eq!(error.code(), ErrorCode::RequiredGpuOperationUnsupported);
     assert_eq!(error.fact_value("reason"), Some("logical_bfs_gpu_result_unsupported"));
@@ -359,7 +358,9 @@ fn complete_composed_admission_evidence_extends_the_invocation_ticket_with_full_
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
     let task_context = invocation_task_context(&producer_ticket);
 
     let completed =
@@ -392,7 +393,9 @@ fn complete_composed_admission_evidence_aggregates_non_attested_consumer_fallbac
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
     let completed = complete_composed_admission_evidence(
         config,
         &consumer_plan,
@@ -431,7 +434,9 @@ fn complete_composed_admission_evidence_bounds_filter_projection_and_limit_befor
             execute_count: Arc::clone(&execute_count),
             inner: EmptyExec::new(schema),
         })];
-        let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_query_admission_source(source);
         let completed = complete_composed_admission_evidence(
             config,
             &consumer_plan,
@@ -479,7 +484,9 @@ fn complete_composed_admission_evidence_preserves_bounded_single_graph_consumer_
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
 
     let completed = complete_composed_admission_evidence(
         config,
@@ -514,7 +521,9 @@ fn complete_composed_admission_evidence_composes_relational_producers_with_typed
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
 
     let completed = complete_composed_admission_evidence(
         config,
@@ -539,7 +548,9 @@ fn complete_composed_admission_evidence_mixed_producers_preserve_engine_selectio
     let source = admission_source(&backend);
     let (schema, graph_evidence) = typed_graph_producer_evidence();
     let relational_evidence = typed_relational_producer_evidence(Arc::clone(&schema));
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
 
     let mixed_plan = consumer_plan_for_inputs(&["graph", "relational"], Arc::clone(&schema));
     let (_mixed_attempt, mixed_ticket) =
@@ -641,7 +652,9 @@ fn complete_composed_admission_evidence_preserves_the_active_stream_ticket_befor
         execute_count: Arc::new(AtomicUsize::new(0)),
         inner: EmptyExec::new(schema),
     })];
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
     let task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&active_ticket));
 
@@ -667,7 +680,9 @@ fn complete_composed_admission_evidence_rebinds_outer_ticket_without_producer_ti
     let (_active_ticket_attempt, active_ticket) = attempt_ticket_for_test(source.clone(), None);
     let task_context =
         task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&active_ticket));
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
 
     let completed =
         complete_composed_admission_evidence(config, &consumer_plan, &[Arc::new(producer)], task_context.as_ref())
@@ -686,7 +701,7 @@ fn complete_composed_admission_evidence_keeps_no_authority_unchanged() {
         AlgeonNativeGpuProducerExec::try_new("fake_input", typed_relational_producer_plan(Arc::clone(&schema)))
             .expect("ticketless relational producer should build");
     let consumer_plan = consumer_plan(schema);
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
 
     let completed =
         complete_composed_admission_evidence(config, &consumer_plan, &[Arc::new(producer)], &TaskContext::default())
@@ -715,8 +730,9 @@ fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind()
     drop(backend);
 
     let other_backend = InstalledTestGpuBackend::new();
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1)
-        .with_query_admission_source(admission_source(&other_backend));
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(admission_source(&other_backend));
     let result =
         complete_composed_admission_evidence(config, &consumer_plan, &prepared_inputs, &TaskContext::default());
     let error = match result {
@@ -752,7 +768,9 @@ async fn prepared_composed_producers_rebind_one_ordered_scope_evidence_and_grant
             inner: EmptyExec::new(Arc::clone(&schema)),
         }) as Arc<dyn ExecutionPlan>,
     ];
-    let config = AlgeonNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let config =
+        AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+            .with_query_admission_source(source);
     let composed = AlgeonNativeComposedExec::try_new(consumer_plan.clone(), producers, config)
         .expect("the real composed constructor must retain both prepared producer occurrences");
 

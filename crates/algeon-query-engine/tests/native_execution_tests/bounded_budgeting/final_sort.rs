@@ -37,7 +37,7 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
     let limit = builder.add_limit(sort, limit, Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1_200_000,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,

@@ -104,16 +104,13 @@ impl Default for BackendTestPolicy {
 
 impl BackendTestPolicy {
     fn from_memory_control_policy(policy: MemoryControlPolicy) -> (Self, u64) {
-        let MemoryControlPolicy::Bounded {
+        let MemoryControlPolicy {
             device_budget_bytes,
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
             max_retry_attempts,
             min_retry_chunk_row_groups,
-        } = policy
-        else {
-            panic!("the public backend test harness requires a bounded service policy");
-        };
+        } = policy;
         (
             Self {
                 max_source_chunk_bytes,

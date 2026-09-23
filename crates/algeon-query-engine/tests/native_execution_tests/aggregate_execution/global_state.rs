@@ -6,7 +6,7 @@ use super::*;
 fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
     let dir = unique_temp_dir("query-engine-bounded-native-global-aggregate-parity");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -75,7 +75,7 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
 fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state() {
     let dir = unique_temp_dir("query-engine-bounded-native-single-chunk-global-state");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 8,

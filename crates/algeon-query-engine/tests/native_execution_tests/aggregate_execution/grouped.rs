@@ -278,7 +278,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
@@ -591,7 +590,7 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-empty-partitions");
     let path = dir.join("input.parquet");
     let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
@@ -813,7 +812,7 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
 fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinality_avg_sum_count() {
     let dir = unique_temp_dir("query-engine-bounded-source-adjacent-preflight-handle");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 4 * 1024 * 1024,
         max_row_groups_per_chunk: 2,
@@ -1384,7 +1383,7 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
 fn bounded_native_query_casts_single_partial_grouped_count_to_output_schema() {
     let dir = unique_temp_dir("query-engine-bounded-native-single-partial-count");
     let path = dir.join("input.parquet");
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
         max_row_groups_per_chunk: 16,
@@ -1481,7 +1480,7 @@ fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_bud
     let plan = builder.finish_with_host_sink(aggregate);
 
     let device_budget_bytes = 8 * 1024 * 1024 * 1024;
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes,
         max_source_chunk_bytes: device_budget_bytes,
         max_row_groups_per_chunk: 1024,
@@ -1538,7 +1537,7 @@ fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it()
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 8 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 1600,
         max_row_groups_per_chunk: 8,
@@ -1595,7 +1594,7 @@ fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and
     // batch, whose decoded rows plus stage, partition, and slice copies cannot
     // fit under this cap; decoded-byte sizing must keep each batch inside it
     // without falling back to allocator rejections and split retries.
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 256 * 1024 * 1024,
         max_source_chunk_bytes: 64 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -1690,7 +1689,7 @@ fn assert_bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_r
     let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 256 * 1024 * 1024,
         max_source_chunk_bytes: 64 * 1024 * 1024,
         max_row_groups_per_chunk: 1,

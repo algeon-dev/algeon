@@ -16,7 +16,7 @@ use query_planning::{
 use super::{
     super::{
         CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
-        ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        QueryExecutionConfig, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
         cache_events::LakehouseCacheFillEventSink,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
@@ -40,13 +40,16 @@ use crate::{
 ///
 /// Without `runtime`, construction builds a cudf runtime on the default CUDA
 /// device from `memory_policy`; with it, `memory_policy` is unused.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StandaloneConfig {
     /// Runtime shared with the caller; its stream, device, and allocator run
     /// every GPU operation of the context.
     pub runtime: Option<Arc<CudfRuntime>>,
     /// Memory resource of a runtime built by construction.
     pub memory_policy: MemoryResourcePolicy,
+    /// Device budget and source chunking. The default budget is
+    /// [`Self::DEFAULT_DEVICE_BUDGET_BYTES`] with the query service's default
+    /// source chunking.
     pub memory_control_policy: MemoryControlPolicy,
     pub source_scheduler_policy: SourceSchedulerPolicy,
     pub source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -66,6 +69,33 @@ pub struct StandaloneConfig {
     pub query_id: Option<QueryId>,
     /// Parent trace id.
     pub trace_id: Option<TraceId>,
+}
+
+impl StandaloneConfig {
+    /// Device budget of a standalone context that names none: large enough
+    /// that a test fixture is not limited by it.
+    pub const DEFAULT_DEVICE_BUDGET_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+}
+
+impl Default for StandaloneConfig {
+    fn default() -> Self {
+        Self {
+            runtime: None,
+            memory_policy: MemoryResourcePolicy::default(),
+            memory_control_policy: QueryExecutionConfig::default()
+                .memory_policy_for_admitted_query(Self::DEFAULT_DEVICE_BUDGET_BYTES),
+            source_scheduler_policy: SourceSchedulerPolicy::default(),
+            source_chunk_planning_mode: SourceChunkPlanningMode::default(),
+            source_chunk_planning_options: SourceChunkPlanningOptions::default(),
+            source_storage_profiles: Vec::new(),
+            service_stream_pool: None,
+            service_stream_pool_size: None,
+            lakehouse_cache_fill: LakehouseCacheFillConfig::default(),
+            cancellation: ExecutionCancellation::default(),
+            query_id: None,
+            trace_id: None,
+        }
+    }
 }
 
 /// Standalone execution context paired with its runtime observation owner.

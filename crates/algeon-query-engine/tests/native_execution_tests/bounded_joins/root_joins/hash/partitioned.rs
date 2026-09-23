@@ -956,7 +956,7 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
 #[test]
 fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_aggregate() {
     let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy::Bounded {
+        MemoryControlPolicy {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,

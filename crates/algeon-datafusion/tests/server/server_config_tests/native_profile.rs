@@ -43,11 +43,11 @@ fn server_config_accepts_bounded_native_profile() {
         config.gpu_device_profiles[0].memory_limit(),
         GpuDeviceMemoryLimit::default()
     );
-    assert_eq!(native.max_source_chunk_bytes(), 512);
-    assert_eq!(native.max_row_groups_per_chunk(), 8);
+    assert_eq!(native.source_chunking().max_source_chunk_bytes.get(), 512);
+    assert_eq!(native.source_chunking().max_row_groups_per_chunk.get(), 8);
     assert_eq!(
-        native.max_retry_attempts(),
-        AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS
+        native.source_chunking().max_retry_attempts.get(),
+        SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get()
     );
 }
 
@@ -56,10 +56,10 @@ fn server_config_accepts_independent_source_chunk_limits() {
     let env = BTreeMap::from([(ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();
     let native = config.native_optimizer_config.native_execution_config();
-    assert_eq!(native.max_source_chunk_bytes(), 512);
+    assert_eq!(native.source_chunking().max_source_chunk_bytes.get(), 512);
     assert_eq!(
-        native.max_row_groups_per_chunk(),
-        AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
+        native.source_chunking().max_row_groups_per_chunk.get(),
+        SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK.get()
     );
 }
 
@@ -120,9 +120,9 @@ max_retry_attempts = 5
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     assert_eq!(config.queue_policy.max_queued_attempts(), 2);
     let native = config.native_optimizer_config.native_execution_config();
-    assert_eq!(native.max_source_chunk_bytes(), 512);
-    assert_eq!(native.max_row_groups_per_chunk(), 8);
-    assert_eq!(native.max_retry_attempts(), 5);
+    assert_eq!(native.source_chunking().max_source_chunk_bytes.get(), 512);
+    assert_eq!(native.source_chunking().max_row_groups_per_chunk.get(), 8);
+    assert_eq!(native.source_chunking().max_retry_attempts.get(), 5);
 }
 
 #[test]

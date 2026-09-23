@@ -731,6 +731,7 @@ mod tests {
     use crate::{
         backend::InstalledTestGpuBackend,
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
+        native_exec::SourceChunking,
         report::NotSupportedDetail,
     };
 
@@ -754,7 +755,7 @@ mod tests {
         Arc::new(
             AlgeonNativeExec::try_new(
                 local_parquet_native_plan("/tmp/algeon-datafusion-final-plan-classifier-not-read.parquet"),
-                AlgeonNativeExecutionConfig::bounded_default(),
+                AlgeonNativeExecutionConfig::default(),
             )
             .expect("native runtime leaf should build without opening its source"),
         )
@@ -821,14 +822,16 @@ mod tests {
         );
     }
 
-    fn backend_admission_config(min_bytes: u64) -> (InstalledTestGpuBackend, AlgeonNativeExecutionConfig) {
+    fn backend_admission_config() -> (InstalledTestGpuBackend, AlgeonNativeExecutionConfig) {
         let backend = InstalledTestGpuBackend::new();
         let source = backend
             .optimizer_config()
             .native_execution_config()
             .query_admission_source()
             .expect("installed backend must provide admission authority");
-        let config = AlgeonNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1).with_query_admission_source(source);
+        let config =
+            AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
+                .with_query_admission_source(source);
         (backend, config)
     }
 
@@ -866,7 +869,7 @@ mod tests {
     #[cfg(feature = "cugraph")]
     #[test]
     fn planner_admission_aggregates_scopes_from_composed_native_fragments() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config();
         let left = AlgeonNativeGpuProducerExec::try_new(
             "left",
             local_parquet_native_plan("/tmp/algeon-datafusion-planner-left-not-read.parquet")
@@ -905,7 +908,7 @@ mod tests {
     #[cfg(feature = "cugraph")]
     #[test]
     fn planner_admits_registered_graph_descendant() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config();
         let graph = deferred_cugraph_exec(&config);
         let plan = Arc::new(CooperativeExec::new(graph)) as Arc<dyn ExecutionPlan>;
         let mut next_occurrence = 0;
@@ -920,7 +923,7 @@ mod tests {
 
     #[test]
     fn planner_keeps_outer_admission_for_non_graph_native_plan() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config();
         let plan = native_exec_leaf();
 
         let (source, evidence) = plan_native_admission(plan.as_ref(), &config, None)
@@ -936,7 +939,7 @@ mod tests {
 
     #[test]
     fn final_rule_binds_a_ticket_to_a_plan_selected_by_the_count_probe() {
-        let (backend, config) = backend_admission_config(64 * 1024 * 1024);
+        let (backend, config) = backend_admission_config();
         let optimizer_config = backend.optimizer_config().clone().with_native_execution_config(config);
         let rule = AlgeonNativePhysicalOptimizerRule::new(optimizer_config);
         let selected_by_count_probe = native_exec_leaf();

@@ -230,9 +230,8 @@ fn source_storage_error_codes_have_stable_policy() {
 }
 
 #[test]
-fn memory_control_policy_names_bounded_and_unbounded_modes() {
-    let unbounded = MemoryControlPolicy::Unbounded;
-    let bounded = MemoryControlPolicy::Bounded {
+fn memory_control_policy_names_the_bounded_mode() {
+    let bounded = MemoryControlPolicy {
         device_budget_bytes: 4 * 1024 * 1024 * 1024,
         max_source_chunk_bytes: 512 * 1024 * 1024,
         max_row_groups_per_chunk: 2,
@@ -240,10 +239,7 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
         min_retry_chunk_row_groups: 1,
     };
 
-    assert_eq!(unbounded.as_str(), "unbounded");
-    assert!(!unbounded.is_bounded());
     assert_eq!(bounded.as_str(), "bounded");
-    assert!(bounded.is_bounded());
     assert_eq!(ReservationKind::SourceRead.as_str(), "source_read");
     assert_eq!(ReservationKind::ChunkOperator.as_str(), "chunk_operator");
     assert_eq!(ReservationKind::OperatorOutput.as_str(), "operator_output");
@@ -285,7 +281,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
     for (field, policy) in [
         (
             "device_budget_bytes",
-            MemoryControlPolicy::Bounded {
+            MemoryControlPolicy {
                 device_budget_bytes: 0,
                 max_source_chunk_bytes: 512 * 1024 * 1024,
                 max_row_groups_per_chunk: 2,
@@ -295,7 +291,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
         ),
         (
             "max_source_chunk_bytes",
-            MemoryControlPolicy::Bounded {
+            MemoryControlPolicy {
                 device_budget_bytes: 4 * 1024 * 1024,
                 max_source_chunk_bytes: 0,
                 max_row_groups_per_chunk: 2,
@@ -305,7 +301,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
         ),
         (
             "max_row_groups_per_chunk",
-            MemoryControlPolicy::Bounded {
+            MemoryControlPolicy {
                 device_budget_bytes: 4 * 1024 * 1024,
                 max_source_chunk_bytes: 512 * 1024,
                 max_row_groups_per_chunk: 0,
@@ -315,7 +311,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
         ),
         (
             "max_retry_attempts",
-            MemoryControlPolicy::Bounded {
+            MemoryControlPolicy {
                 device_budget_bytes: 4 * 1024 * 1024,
                 max_source_chunk_bytes: 512 * 1024,
                 max_row_groups_per_chunk: 2,
@@ -325,7 +321,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
         ),
         (
             "min_retry_chunk_row_groups",
-            MemoryControlPolicy::Bounded {
+            MemoryControlPolicy {
                 device_budget_bytes: 4 * 1024 * 1024,
                 max_source_chunk_bytes: 512 * 1024,
                 max_row_groups_per_chunk: 2,

@@ -12,7 +12,6 @@ use algeon_datafusion::{
 
 const REQUIRED_DEVICE_COUNT: usize = 4;
 const BACKEND_MEMORY_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
-const ATTEMPT_MEMORY_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
 
 fn device_profile(device_ordinal: usize) -> AlgeonGpuDeviceProfile {
     AlgeonGpuDeviceProfile::new(device_ordinal)
@@ -30,13 +29,7 @@ fn public_backend_startup_records_capture_four_device_identities() {
     let devices = (0..REQUIRED_DEVICE_COUNT)
         .map(|ordinal| AlgeonGpuDeviceConfig::new(device_profile(ordinal), GpuMemoryOwnership::WholeDeviceExclusive));
     let backend = AlgeonGpuBackend::builder()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            ATTEMPT_MEMORY_LIMIT_BYTES,
-            64 * 1024 * 1024,
-            1,
-            3,
-            1,
-        ))
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
         .devices(devices)
         .build()
         .expect("public backend builds across the qualifying devices");

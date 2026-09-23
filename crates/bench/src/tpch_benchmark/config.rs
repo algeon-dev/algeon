@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use algeon_datafusion::{
     backend::AlgeonGpuBackend,
+    native_exec::SourceChunking,
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
 use query_engine::runtime::{GpuDeviceMemoryLimit, SourceChunkPlanningMode, SourceSchedulerPolicy};
@@ -153,12 +154,14 @@ impl NativeTpchBenchmarkConfig {
         _resources: &NativeTpchRuntimeResources,
     ) -> AlgeonNativeExecutionConfig {
         let policy = self.native_memory_policy;
-        AlgeonNativeExecutionConfig::bounded(
-            policy.device_budget.planning_template_bytes(),
-            policy.max_source_chunk_bytes,
-            policy.max_row_groups_per_chunk,
-            policy.max_retry_attempts,
-            policy.min_retry_chunk_row_groups,
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(
+                policy.max_source_chunk_bytes,
+                policy.max_row_groups_per_chunk,
+                policy.max_retry_attempts,
+                policy.min_retry_chunk_row_groups,
+            )
+            .expect("validated native memory policy has nonzero source chunking"),
         )
         .with_source_scheduler_policy(SourceSchedulerPolicy::new(self.max_source_reads_in_flight))
         .with_source_chunk_planning_mode(policy.source_chunk_planning_mode)
@@ -276,16 +279,6 @@ impl NativeTpchDeviceBudget {
         match self {
             Self::Automatic => GpuDeviceMemoryLimit::default(),
             Self::Explicit { bytes } => GpuDeviceMemoryLimit::Explicit { limit_bytes: bytes },
-        }
-    }
-
-    /// Budget carried by the unadmitted execution-config template. Backend
-    /// admission replaces it with the device grant, so an automatic budget
-    /// uses the adapter's fallback rather than guessing a capacity here.
-    pub(super) fn planning_template_bytes(self) -> u64 {
-        match self {
-            Self::Automatic => AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-            Self::Explicit { bytes } => bytes,
         }
     }
 

@@ -281,7 +281,7 @@ fn build_cugraph_subplan_state(
 pub(crate) fn planning_native_execution_config(session: &dyn Session) -> AlgeonNativeExecutionConfig {
     let config = installed_algeon_native_optimizer_config(session)
         .map(|config| config.native_execution_config().clone())
-        .unwrap_or_else(AlgeonNativeExecutionConfig::bounded_default);
+        .unwrap_or_default();
     match Invocation::of_options(session.config_options()) {
         Some(invocation) => invocation.execution_config(config),
         None => config,

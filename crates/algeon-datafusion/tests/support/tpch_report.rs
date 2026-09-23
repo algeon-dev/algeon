@@ -56,13 +56,7 @@ impl TestReportDatasetMetadataExt for TpchDatasetMetadata {
 }
 
 pub(crate) fn tpch_native_optimizer_config() -> AlgeonNativeOptimizerConfig {
-    AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-        256 * 1024 * 1024,
-        64 * 1024 * 1024,
-        1,
-        3,
-        1,
-    ))
+    AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default())
 }
 
 pub(crate) async fn tpch_scalar_fallback_pressure_workload_items(

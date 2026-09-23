@@ -33,12 +33,10 @@ const MAX_PENDING_PARTIALS: usize = 16;
 /// incrementally into group-key-aligned partition states instead of retaining
 /// every partial until the stream ends.
 pub(in crate::exec::bounded::aggregate) fn should_execute_incremental_partitioned_final_aggregate_merge(
-    context: &ExecutionContext,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
 ) -> bool {
-    matches!(context.memory_control_policy(), MemoryControlPolicy::Bounded { .. })
-        && aggregate.spec.grouping_sets.is_none()
+    aggregate.spec.grouping_sets.is_none()
         && aggregate_strategy_capability_decision(
             &aggregate.spec,
             input_schema.as_ref(),
@@ -112,11 +110,7 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         expected_partials: usize,
         expected_input_rows: Option<u64>,
     ) -> Result<Self> {
-        let MemoryControlPolicy::Bounded { device_budget_bytes, max_retry_attempts, .. } =
-            context.memory_control_policy()
-        else {
-            unreachable!("incremental partitioned final merge is created only for bounded policies");
-        };
+        let MemoryControlPolicy { device_budget_bytes, max_retry_attempts, .. } = context.memory_control_policy();
         let key_columns = lower_final_aggregate_spec(&aggregate.spec)?.key_columns;
         let policy = BoundedFinalMergePolicy::default();
         let partition_target_bytes =

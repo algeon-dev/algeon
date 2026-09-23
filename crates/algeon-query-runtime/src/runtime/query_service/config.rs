@@ -87,8 +87,8 @@ impl QueryExecutionConfig {
         Ok(())
     }
 
-    pub(super) fn memory_policy_for_admitted_query(&self, device_budget_bytes: u64) -> MemoryControlPolicy {
-        MemoryControlPolicy::Bounded {
+    pub(in crate::runtime) fn memory_policy_for_admitted_query(&self, device_budget_bytes: u64) -> MemoryControlPolicy {
+        MemoryControlPolicy {
             device_budget_bytes,
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,

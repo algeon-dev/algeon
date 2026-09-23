@@ -6,7 +6,7 @@ use algeon_datafusion::{
     backend::GpuDeviceMemoryLimit,
     cuml_sql::CumlModelStoreConfig,
     error::ErrorCode,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::SourceChunking,
     planner::{AlgeonGpuExecutionMode, DataFusionCpuExecutionPolicy},
     server::{
         ALGEON_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,

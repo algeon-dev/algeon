@@ -1,6 +1,6 @@
 use std::panic;
 
-use algeon_datafusion::native_exec::AlgeonNativeExecutionConfig;
+use algeon_datafusion::native_exec::SourceChunking;
 use bench::report_workload::clickbench::{
     ALGEON_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, ALGEON_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     ALGEON_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ALGEON_CLICKBENCH_NATIVE_PROFILE_ENV,
@@ -10,7 +10,7 @@ use bench::report_workload::clickbench::{
     ClickbenchNativeProfileSettings, clickbench_native_optimizer_config_with_profile_settings,
     clickbench_native_profile_settings_with_env,
 };
-use query_engine::runtime::{MemoryControlPolicy, SourceChunkPlanningMode};
+use query_engine::runtime::SourceChunkPlanningMode;
 
 fn clickbench_native_profile_settings_from<const N: usize>(
     env: [(&'static str, &str); N],
@@ -26,8 +26,8 @@ fn clickbench_native_profile_defaults_to_conservative() {
 
     assert_eq!(profile.profile_name, CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE);
     assert_eq!(profile.profile_source, "default");
-    assert_eq!(profile.max_source_chunk_bytes, AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(profile.max_row_groups_per_chunk, AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.max_source_chunk_bytes, SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get());
+    assert_eq!(profile.max_row_groups_per_chunk, SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK.get());
     assert_eq!(profile.source_chunk_planning_mode, SourceChunkPlanningMode::Conservative);
 }
 
@@ -113,10 +113,12 @@ fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
     let execution = config.native_execution_config();
 
     assert_eq!(execution.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = execution.memory_control_policy() else {
-        panic!("clickbench native execution config must be bounded");
-    };
-    assert_eq!(device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
-    assert_eq!(execution.max_source_chunk_bytes(), CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(execution.max_row_groups_per_chunk(), CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(
+        execution.source_chunking().max_source_chunk_bytes.get(),
+        CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES
+    );
+    assert_eq!(
+        execution.source_chunking().max_row_groups_per_chunk.get(),
+        CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK
+    );
 }

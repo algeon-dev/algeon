@@ -8,10 +8,7 @@
 //! [`output::QueryExecutionResult`] so callers can record them after choosing host or
 //! GPU-resident output handling.
 
-#[cfg(feature = "cugraph")]
-use std::collections::BTreeMap;
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -78,14 +75,15 @@ use output::QueryOutput;
 use query_planning::validate_query_plan;
 #[doc(hidden)]
 pub use source::sanitize_cache_component;
-use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};
+use source::{read_gpu_resident_source, read_literal_batch_source};
 #[cfg(all(feature = "cuvs", feature = "test-hooks"))]
 #[doc(hidden)]
 pub use vector_algorithm::set_vector_after_index_build_hook_for_tests;
 
+#[cfg(feature = "cugraph")]
+use self::graph_algorithm::*;
 use self::{
     bounded::*,
-    graph_algorithm::*,
     join::*,
     materialize::*,
     operators::*,
@@ -96,6 +94,8 @@ use self::{
 };
 #[cfg(feature = "cuvs")]
 use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
+#[cfg(any(not(feature = "cuml"), not(feature = "cuvs")))]
+use crate::plan::PlanNode;
 use crate::{
     admission::AdmittedPlan,
     chunk::{
@@ -117,8 +117,8 @@ use crate::{
         RuntimePlanNodeId, RuntimeTerminalOutcome, RuntimeTopologyRecord,
     },
     plan::{
-        AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
-        PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
+        AggregateNode, FilterNode, JoinNode, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId, ProjectionNode,
+        QueryPlan, SortNode, WindowFrame, WindowNode,
     },
     policy::PlanningPolicy,
     prepared::*,
@@ -130,7 +130,7 @@ use crate::{
         },
     },
     source::{
-        GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+        GpuResidentSource, LocalParquetFile, LocalParquetSource, ZERO_COLUMN_COUNT_COLUMN,
         validate_local_parquet_source,
     },
     validation::*,
@@ -160,46 +160,6 @@ pub fn admit_query_plan(
 }
 
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Per-query execution state for unbounded native execution.
-///
-/// `node_results` memorizes every materialized node output for the duration of
-/// one query so DAG-shaped plans reuse device-resident frames instead of
-/// re-reading or recomputing shared subplans. Entries are released together when
-/// `execute_query_plan` returns; there is intentionally no intra-query eviction
-/// policy yet.
-///
-/// `hash_join_builds` memorizes reusable cuDF hash-join artifacts for repeated
-/// probes against the same build node, build keys, and null-equality contract.
-/// Each handle retains the query runtime that produced it, and the map is
-/// released with this scratch object at query end.
-/// Bounded execution does not use this map: each bounded join builds its
-/// own `GpuHashJoinBuildHandle` and observes the retained bytes after the build
-/// (see `bounded::join::hash::build_bounded_hash_join`).
-pub(super) struct ExecutionScratch {
-    node_results: HashMap<NodeId, GpuDataFrame>,
-    hash_join_builds: HashMap<HashJoinCacheKey, GpuHashJoinBuildHandle>,
-}
-
-impl ExecutionScratch {
-    pub(super) fn new() -> Self {
-        Self { node_results: HashMap::new(), hash_join_builds: HashMap::new() }
-    }
-}
-
-// Hash-join build identity scoped to the build node and equality contract.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct HashJoinCacheKey {
-    build_node: NodeId,
-    build_keys: Vec<String>,
-    null_equality: JoinNullEquality,
-}
-
-impl HashJoinCacheKey {
-    pub(super) fn new(build_node: NodeId, build_keys: Vec<String>, null_equality: JoinNullEquality) -> Self {
-        Self { build_node, build_keys, null_equality }
-    }
-}
 
 /// Borrowed inputs for one native plan execution.
 ///
@@ -288,7 +248,7 @@ fn execute_query_plan_with_observation(
         Err(error) => RuntimeTerminalOutcome::from_query_error(error),
     };
     let snapshot = lifecycle.finish(terminal);
-    let mut metrics = query_metrics(context, query_id, trace_id);
+    let mut metrics = query_metrics(query_id, trace_id);
     execution_metrics.project_onto(&mut metrics);
     QueryExecutionOutcome::new(result, metrics, snapshot)
 }
@@ -317,8 +277,8 @@ fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &Q
     }
 }
 
-fn query_metrics(context: &ExecutionContext, query_id: QueryId, trace_id: Option<TraceId>) -> QueryMetrics {
-    QueryMetrics { query_id, trace_id, memory_control_policy: context.memory_control_policy(), ..Default::default() }
+fn query_metrics(query_id: QueryId, trace_id: Option<TraceId>) -> QueryMetrics {
+    QueryMetrics { query_id, trace_id, ..Default::default() }
 }
 
 fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> QueryError {
@@ -354,53 +314,30 @@ fn execute_query_plan_output(
             context.statistical_aggregate_execution_mode().as_str(),
         ));
     }
+    // A build without the backend rejects before any source work.
+    #[cfg(not(feature = "cuml"))]
     if plan.contains_ml_algorithm() {
         let unreachable = plan.unreachable_node_ids();
         if let Some(node) = plan
             .nodes()
             .iter()
             .find(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::MlAlgorithm(_)))
-            && let PlanNode::MlAlgorithm(_ml) = &node.kind
+            && let PlanNode::MlAlgorithm(ml) = &node.kind
         {
-            #[cfg(not(feature = "cuml"))]
-            return Err(ml_algorithm_execution_unavailable(node.id, _ml));
-            #[cfg(feature = "cuml")]
-            if !context.memory_control_policy().is_bounded() {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "query_engine.ml_algorithm.admission",
-                    "ML execution requires a bounded compiled pipeline",
-                )
-                .with_fact("node_id", node.id)
-                .with_fact("reason", "compiled_ml_pipeline_required"));
-            }
+            return Err(ml_algorithm_execution_unavailable(node.id, ml));
         }
     }
-    let vector_node = if plan.contains_vector_algorithm() {
+    #[cfg(not(feature = "cuvs"))]
+    if plan.contains_vector_algorithm() {
         let unreachable = plan.unreachable_node_ids();
-        plan.nodes()
+        if let Some(node) = plan
+            .nodes()
             .iter()
             .find(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::VectorAlgorithm(_)))
-    } else {
-        None
-    };
-    #[cfg(not(feature = "cuvs"))]
-    if let Some(node) = vector_node
-        && let PlanNode::VectorAlgorithm(vector) = &node.kind
-    {
-        return Err(vector_algorithm_execution_unavailable(node.id, vector));
-    }
-    if let Some(node) = vector_node
-        && !context.memory_control_policy().is_bounded()
-    {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "query_engine.vector_algorithm.admission",
-            "vector execution requires a bounded compiled pipeline",
-        )
-        .with_fact("node_id", node.id)
-        .with_fact("operator", "vector_algorithm")
-        .with_fact("reason", "compiled_vector_pipeline_required"));
+            && let PlanNode::VectorAlgorithm(vector) = &node.kind
+        {
+            return Err(vector_algorithm_execution_unavailable(node.id, vector));
+        }
     }
     let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
     // Derive the per-query exact-order scope here so every context clone,
@@ -412,23 +349,7 @@ fn execute_query_plan_output(
     let context = &context;
     context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, gpu_inputs)?;
     let _attempt_execution_range = attempt_execution_range(context);
-    let output = if context.memory_control_policy().is_bounded() {
-        execute_bounded_query_plan(context, admitted, gpu_inputs, metrics, observation_scope)?
-    } else {
-        let mut scratch = ExecutionScratch::new();
-        let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
-        match plan.sink() {
-            ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => {
-                Output::GpuResident(gpu_result_handle(context, plan, frame)?)
-            },
-            ResultSink::HostArrow { schema, .. } => {
-                let executable_schema =
-                    Arc::clone(plan.node(plan.sink().input()).expect("validated sink input exists").output_schema());
-                Output::HostArrow(materialize_gpu_frame_to_host(context, frame, executable_schema, schema, metrics)?)
-            },
-        }
-    };
-    Ok(output)
+    execute_bounded_query_plan(context, admitted, gpu_inputs, metrics, observation_scope)
 }
 
 /// Materialize a GPU-resident result handle to host Arrow and record boundary metrics.
@@ -443,130 +364,6 @@ pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut Que
         .boundary
         .record_device_to_host_materialization(output.num_rows() as u64, record_batch_memory_size(&output) as u64);
     Ok(output)
-}
-
-fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDataFrame) -> Result<GpuResultHandle> {
-    GpuResultHandle::new(
-        context,
-        frame.with_producer_execution_scope(plan.execution_fingerprint()),
-        Arc::clone(plan.output_schema()),
-    )
-    .map(|handle| handle.with_producer_execution_plan(plan.clone()))
-}
-
-fn execute_node(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    id: NodeId,
-    gpu_inputs: &GpuResidentInputMap,
-    scratch: &mut ExecutionScratch,
-    metrics: &ExecutionMetrics,
-) -> Result<GpuDataFrame> {
-    context.check_cancellation("query_engine.exec.execute_node")?;
-    if let Some(frame) = scratch.node_results.get(&id) {
-        return Ok(frame.clone());
-    }
-
-    let node = plan.node(id).ok_or_else(|| invalid_node_reference(id, "query plan references a missing node"))?;
-
-    let frame = match &node.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LocalParquet(source) => read_local_parquet_source(context, id, source, metrics),
-            SourceNode::GpuResident(source) => read_gpu_resident_source(context, source, gpu_inputs, metrics),
-            SourceNode::LiteralBatch(source) => read_literal_batch_source(context, source, metrics),
-        },
-        PlanNode::Filter(filter) => {
-            let input = execute_node(context, plan, filter.input, gpu_inputs, scratch, metrics)?;
-            execute_filter(context, filter, input, metrics)
-        },
-        PlanNode::Projection(projection) => {
-            let input = execute_node(context, plan, projection.input, gpu_inputs, scratch, metrics)?;
-            execute_projection(context, projection, input, metrics)
-        },
-        PlanNode::Aggregate(aggregate) => {
-            let input = execute_node(context, plan, aggregate.input, gpu_inputs, scratch, metrics)?;
-            let input_schema = plan
-                .node(aggregate.input)
-                .ok_or_else(|| invalid_node_reference(aggregate.input, "aggregate references a missing input"))?
-                .output_schema();
-            execute_aggregate(context, aggregate, input_schema, input, &node.facts.output_schema, metrics)
-        },
-        PlanNode::Window(window) => {
-            let input = execute_node(context, plan, window.input, gpu_inputs, scratch, metrics)?;
-            let input_schema = plan
-                .node(window.input)
-                .ok_or_else(|| invalid_node_reference(window.input, "window references a missing input"))?
-                .output_schema();
-            execute_window(context, window, input_schema, input, &node.facts.output_schema, metrics)
-        },
-        PlanNode::Sort(sort) => {
-            let input = execute_node(context, plan, sort.input, gpu_inputs, scratch, metrics)?;
-            execute_sort(context, sort, input, metrics)
-        },
-        PlanNode::Limit(limit) => {
-            let input = execute_node(context, plan, limit.input, gpu_inputs, scratch, metrics)?;
-            execute_limit(context, limit, input, metrics)
-        },
-        PlanNode::Join(join) => {
-            let left = execute_node(context, plan, join.inputs[0], gpu_inputs, scratch, metrics)?;
-            let right = execute_node(context, plan, join.inputs[1], gpu_inputs, scratch, metrics)?;
-            execute_join(context, node.id, join, left, right, scratch, metrics)
-        },
-        PlanNode::Union(union) => {
-            let inputs = union
-                .inputs
-                .iter()
-                .map(|input| execute_node(context, plan, *input, gpu_inputs, scratch, metrics))
-                .collect::<Result<Vec<_>>>()?;
-            execute_union(context, node.id, inputs, metrics)
-        },
-        PlanNode::EdgeNormalize(edge_normalize) => {
-            let input = execute_node(context, plan, edge_normalize.input, gpu_inputs, scratch, metrics)?;
-            execute_edge_normalize(context, node.id, edge_normalize, input, metrics)
-        },
-        PlanNode::GraphAlgorithm(graph) => {
-            #[cfg(not(feature = "cugraph"))]
-            return Err(graph_algorithm_feature_disabled(node.id, graph));
-            #[cfg(feature = "cugraph")]
-            {
-                let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;
-                let side_inputs = graph
-                    .inputs
-                    .iter()
-                    .skip(1)
-                    .map(|input_id| {
-                        execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics)
-                            .map(|frame| (*input_id, frame))
-                    })
-                    .collect::<Result<BTreeMap<_, _>>>()?;
-                let result = execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics);
-                Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
-            }
-        },
-        PlanNode::MlAlgorithm(_ml) => {
-            #[cfg(not(feature = "cuml"))]
-            return Err(ml_algorithm_execution_unavailable(node.id, _ml));
-            #[cfg(feature = "cuml")]
-            Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.ml_algorithm.execute",
-                "ML execution requires the compiled pipeline",
-            )
-            .with_fact("node_id", node.id)
-            .with_fact("reason", "compiled_ml_pipeline_required"))
-        },
-        PlanNode::VectorAlgorithm(_) => Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "query_engine.vector_algorithm.execute",
-            "vector execution requires the compiled pipeline",
-        )
-        .with_fact("node_id", node.id)
-        .with_fact("reason", "compiled_vector_pipeline_required")),
-    }?;
-
-    record_device_memory_observation(&frame, metrics)?;
-    scratch.node_results.insert(id, frame.clone());
-    Ok(frame)
 }
 
 #[cfg(test)]

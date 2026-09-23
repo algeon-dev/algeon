@@ -116,11 +116,8 @@ fn execute_source_adjacent_batch_retry(
 ) -> Result<SourceAdjacentBatchOutput> {
     use super::execution::read_bounded_chunk_source;
     execution.context().check_cancellation("query_engine.exec.bounded.source_adjacent_chunk_batch_retry")?;
-    let super::MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } =
-        execution.context().memory_control_policy()
-    else {
-        unreachable!("source-adjacent batches require bounded execution");
-    };
+    let super::MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } =
+        execution.context().memory_control_policy();
     let max_attempts = max_retry_attempts.max(1);
     let source = if batch.is_singleton() {
         read_bounded_chunk_source(execution, bounded.source, &batch.chunks[0]).map_err(|error| {

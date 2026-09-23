@@ -103,7 +103,7 @@ fn partitioned_build_decision<'a>(metrics: &'a QueryMetrics, node_id: &str) -> &
 
 // One 2 MiB row group per chunk under the suite's default 1 MiB chunk policy.
 fn build_recovery_policy(device_budget_bytes: u64, max_row_groups_per_chunk: usize) -> MemoryControlPolicy {
-    MemoryControlPolicy::Bounded {
+    MemoryControlPolicy {
         device_budget_bytes,
         max_source_chunk_bytes: 64 * 1024 * 1024,
         max_row_groups_per_chunk,

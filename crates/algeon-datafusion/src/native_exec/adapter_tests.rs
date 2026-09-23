@@ -20,6 +20,7 @@ use algeon_datafusion::{
     error::ErrorCode,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
+        SourceChunking,
     },
     planner::{
         AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
@@ -73,7 +74,7 @@ fn admitted_plan(fixture: &InstalledTestGpuBackend, plan: Arc<dyn ExecutionPlan>
 }
 
 fn template_execution_config() -> AlgeonNativeExecutionConfig {
-    AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
+    AlgeonNativeExecutionConfig::new(SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"))
 }
 
 fn template_optimizer_config() -> AlgeonNativeOptimizerConfig {
@@ -95,7 +96,7 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     let display = displayable(&exec).one_line().to_string();
     assert!(display.contains("AlgeonNativeExec"));
     assert!(display.contains("sink=host_arrow"));
-    assert!(display.contains("memory_control_policy=bounded"));
+    assert!(display.contains("native_pipeline_execution_mode=bounded"));
     assert!(display.contains("edge_normalize_inserted=false"));
 
     let tree = displayable(&exec).indent(false).to_string();
@@ -117,24 +118,18 @@ fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
 }
 
 #[test]
-fn native_exec_uses_bounded_memory_control_policy() {
-    let exec = AlgeonNativeExec::try_new(host_sink_plan(), AlgeonNativeExecutionConfig::bounded_default()).unwrap();
-
-    let display = displayable(&exec).one_line().to_string();
-    assert!(display.contains("AlgeonNativeExec"));
-    assert!(display.contains("memory_control_policy=bounded"));
-}
-
-#[test]
 fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
-    let config = AlgeonNativeExecutionConfig::bounded_default();
+    let config = AlgeonNativeExecutionConfig::default();
 
-    assert_eq!(config.max_source_chunk_bytes(), AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(
-        config.max_row_groups_per_chunk(),
-        AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
+        config.source_chunking().max_source_chunk_bytes.get(),
+        SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get()
     );
-    assert_eq!(config.max_retry_attempts(), AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+    assert_eq!(
+        config.source_chunking().max_row_groups_per_chunk.get(),
+        SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK.get()
+    );
+    assert_eq!(config.source_chunking().max_retry_attempts.get(), SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get());
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
     assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
     assert_eq!(config.lakehouse_cache_fill_config().acquire_timeout, LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT);
@@ -158,14 +153,14 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
     let source_chunk_planning_options =
         SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
     assert_eq!(
-        AlgeonNativeExecutionConfig::bounded_default()
+        AlgeonNativeExecutionConfig::default()
             .with_source_chunk_planning_options(source_chunk_planning_options)
             .source_chunk_planning_options(),
         source_chunk_planning_options
     );
-    assert!(!AlgeonNativeExecutionConfig::bounded_default().host_output_memory_pool_accounting());
+    assert!(!AlgeonNativeExecutionConfig::default().host_output_memory_pool_accounting());
     assert!(
-        AlgeonNativeExecutionConfig::bounded_default()
+        AlgeonNativeExecutionConfig::default()
             .with_host_output_memory_pool_accounting(true)
             .host_output_memory_pool_accounting()
     );
@@ -175,7 +170,7 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
 fn optimizer_config_default_uses_bounded_native_execution() {
     let config = AlgeonNativeOptimizerConfig::default();
 
-    assert!(config.native_execution_config().max_source_chunk_bytes() > 0);
+    assert!(config.native_execution_config().source_chunking().max_source_chunk_bytes.get() > 0);
     assert_eq!(config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 

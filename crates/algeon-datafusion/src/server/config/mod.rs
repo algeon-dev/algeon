@@ -18,7 +18,7 @@ use crate::server::{
     backend::{AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuMemoryOwnership},
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     cuml_sql::CumlModelStoreConfig,
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
     planner::AlgeonNativeOptimizerConfig,
 };
 

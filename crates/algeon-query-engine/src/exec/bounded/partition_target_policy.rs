@@ -46,15 +46,8 @@ impl BoundedPartitionTargetPolicy {
         memory_policy: MemoryControlPolicy,
         remaining_bytes: u64,
     ) -> u64 {
-        let policy_target = match memory_policy {
-            MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
-                (device_budget_bytes / self.reusable_hash_join_stream_budget_divisor).clamp(
-                    self.reusable_hash_join_stream_min_target_bytes,
-                    self.reusable_hash_join_stream_max_target_bytes,
-                )
-            },
-            MemoryControlPolicy::Unbounded => self.reusable_hash_join_stream_max_target_bytes,
-        };
+        let policy_target = (memory_policy.device_budget_bytes / self.reusable_hash_join_stream_budget_divisor)
+            .clamp(self.reusable_hash_join_stream_min_target_bytes, self.reusable_hash_join_stream_max_target_bytes);
         let live_target = remaining_bytes.saturating_div(self.reusable_hash_join_stream_live_divisor);
         if live_target == 0 { policy_target } else { policy_target.min(live_target) }
     }
@@ -119,7 +112,7 @@ mod tests {
     #[test]
     fn reusable_hash_join_stream_target_respects_policy_and_live_bytes() {
         let policy = BoundedPartitionTargetPolicy::default();
-        let memory_policy = MemoryControlPolicy::Bounded {
+        let memory_policy = MemoryControlPolicy {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 1024,
             max_row_groups_per_chunk: 1,
@@ -131,7 +124,7 @@ mod tests {
             policy.reusable_hash_join_stream_target_output_bytes(memory_policy, 0),
             BoundedPartitionTargetPolicy::DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES
         );
-        let small_budget_policy = MemoryControlPolicy::Bounded {
+        let small_budget_policy = MemoryControlPolicy {
             device_budget_bytes: 512 * 1024 * 1024,
             max_source_chunk_bytes: 1024,
             max_row_groups_per_chunk: 1,
@@ -149,15 +142,6 @@ mod tests {
         assert_eq!(
             policy.reusable_hash_join_stream_target_output_bytes(memory_policy, 1024 * 1024 * 1024),
             64 * 1024 * 1024
-        );
-        assert_eq!(
-            policy
-                .reusable_hash_join_stream_target_output_bytes(MemoryControlPolicy::Unbounded, 4 * 1024 * 1024 * 1024),
-            256 * 1024 * 1024
-        );
-        assert_eq!(
-            policy.reusable_hash_join_stream_target_output_bytes(MemoryControlPolicy::Unbounded, u64::MAX),
-            BoundedPartitionTargetPolicy::DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES
         );
     }
 }

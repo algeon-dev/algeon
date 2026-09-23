@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
     backend::AlgeonGpuBackend,
-    native_exec::{AlgeonNativeExecutionConfig, below_native_admission},
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
@@ -29,7 +29,7 @@ use workloads::tpcds::{
     registration::tpcds_table_schema,
 };
 
-use crate::gpu_backend::build_installed_gpu_backend;
+use crate::gpu_backend::{DEFAULT_NATIVE_DEVICE_BUDGET_BYTES, build_installed_gpu_backend};
 
 mod parity;
 pub use parity::{
@@ -335,12 +335,14 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
     let cost_options = NativePlanCostOptions::disabled();
     AlgeonNativeOptimizerConfig::default()
         .with_native_execution_config(
-            AlgeonNativeExecutionConfig::bounded(
-                profile.device_budget_bytes,
-                profile.max_source_chunk_bytes,
-                profile.max_row_groups_per_chunk,
-                profile.max_retry_attempts,
-                profile.min_retry_chunk_row_groups,
+            AlgeonNativeExecutionConfig::new(
+                SourceChunking::try_new(
+                    profile.max_source_chunk_bytes,
+                    profile.max_row_groups_per_chunk,
+                    profile.max_retry_attempts,
+                    profile.min_retry_chunk_row_groups,
+                )
+                .expect("validated TPC-DS native profile has nonzero source chunking"),
             )
             .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
             .with_source_chunk_planning_mode(profile.source_chunk_planning_mode),
@@ -464,11 +466,11 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
         TPCDS_NATIVE_PROFILE_CONSERVATIVE => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_CONSERVATIVE,
             source: "default",
-            device_budget_bytes: AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-            max_source_chunk_bytes: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            max_row_groups_per_chunk: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
+            max_source_chunk_bytes: SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES.get(),
+            max_row_groups_per_chunk: SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK.get(),
+            max_retry_attempts: SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get(),
+            min_retry_chunk_row_groups: SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS.get(),
             source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
         },
         TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => NativeProfileBase {
@@ -477,11 +479,11 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             // The throughput profile tunes source chunking only; capacity
             // still resolves from the installed device so a same-series card
             // with slightly less CUDA-visible memory can initialize.
-            device_budget_bytes: AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+            device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
             max_source_chunk_bytes: TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            max_retry_attempts: SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS.get(),
+            min_retry_chunk_row_groups: SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS.get(),
             source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
         },
         other => panic!(

@@ -168,7 +168,7 @@ pub struct AlgeonNativeOptimizerConfig {
 impl Default for AlgeonNativeOptimizerConfig {
     fn default() -> Self {
         Self {
-            native_execution_config: AlgeonNativeExecutionConfig::bounded_default(),
+            native_execution_config: AlgeonNativeExecutionConfig::default(),
             native_optimizer_options: NativeOptimizerOptions::default(),
             native_plan_cost_options: NativePlanCostOptions::disabled(),
             datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy::Allow,

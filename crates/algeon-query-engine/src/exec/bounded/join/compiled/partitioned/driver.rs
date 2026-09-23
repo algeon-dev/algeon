@@ -640,11 +640,7 @@ where
 }
 
 fn partitioned_join_retry_policy(context: &ExecutionContext) -> PartitionedJoinRetryPolicy {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } =
-        context.memory_control_policy()
-    else {
-        return PartitionedJoinRetryPolicy { max_attempts: 1, min_probe_rows: 1 };
-    };
+    let MemoryControlPolicy { max_retry_attempts, min_retry_chunk_row_groups, .. } = context.memory_control_policy();
     PartitionedJoinRetryPolicy {
         max_attempts: max_retry_attempts.max(1),
         min_probe_rows: min_retry_chunk_row_groups

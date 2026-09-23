@@ -45,7 +45,7 @@ impl JoinBehindStreamLease {
             StandaloneConfig {
                 runtime: Some(runtime),
                 service_stream_pool: Some(pool.clone()),
-                memory_control_policy: MemoryControlPolicy::Bounded {
+                memory_control_policy: MemoryControlPolicy {
                     device_budget_bytes: 256 * 1024 * 1024,
                     // A byte target below any two row groups keeps each row group its own
                     // read batch, so the multi-chunk leaves read through the source scheduler.

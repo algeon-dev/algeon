@@ -891,7 +891,6 @@ pub use algeon_datafusion::native_exec::AggregateStrategyExecutionOptions
 pub use algeon_datafusion::native_exec::DynamicFilterExecutionOptions
 pub use algeon_datafusion::native_exec::KeyedHashJoinStrategyOptions
 pub use algeon_datafusion::native_exec::LakehouseCacheFillConfig
-pub use algeon_datafusion::native_exec::MemoryControlPolicy
 pub use algeon_datafusion::native_exec::QueryId
 pub use algeon_datafusion::native_exec::RuntimeObservationConfig
 pub use algeon_datafusion::native_exec::RuntimeObservationLimits
@@ -944,27 +943,18 @@ pub fn algeon_datafusion::native_exec::AlgeonNativeExec::properties(&self) -> &a
 pub fn algeon_datafusion::native_exec::AlgeonNativeExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 impl algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
-pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES: u64
 pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES: u64
-pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS: usize
-pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK: usize
-pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES: u64
-pub const algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS: usize
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::bounded(u64, u64, usize, usize, usize) -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::bounded_default() -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &query_runtime::runtime::cache_fill::LakehouseCacheFillConfig
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_retry_attempts(&self) -> usize
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_row_groups_per_chunk(&self) -> usize
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_source_chunk_bytes(&self) -> u64
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::max_source_reads_in_flight(&self) -> usize
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::new(algeon_datafusion::native_exec::SourceChunking) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::planning_policy(&self) -> query_planning::policy::PlanningPolicy
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::query_id(&self) -> core::option::Option<&query_planning::correlation::QueryId>
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::runtime_observation_config(&self) -> query_runtime::observability::recorder::RuntimeObservationConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_chunking(&self) -> algeon_datafusion::native_exec::SourceChunking
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::source_storage_profiles(&self) -> &[query_runtime::runtime::object_store::SourceStorageProfile]
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
@@ -974,7 +964,6 @@ pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_dynamic
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_host_output_memory_pool_accounting(self, bool) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, query_planning::capability::join::KeyedHashJoinStrategyOptions) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_lakehouse_cache_fill_config(self, query_runtime::runtime::cache_fill::LakehouseCacheFillConfig) -> Self
-pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_memory_control_policy(self, query_planning::execution_contracts::MemoryControlPolicy) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_query_id(self, impl core::convert::Into<query_planning::correlation::QueryId>) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_chunk_planning_mode(self, query_planning::execution_contracts::SourceChunkPlanningMode) -> Self
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_source_chunk_planning_options(self, query_planning::chunk::policy::SourceChunkPlanningOptions) -> Self
@@ -985,6 +974,8 @@ pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_statist
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<query_planning::correlation::TraceId>) -> Self
 impl algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
 pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::has_query_admission_authority(&self) -> bool
+impl core::default::Default for algeon_datafusion::native_exec::AlgeonNativeExecutionConfig
+pub fn algeon_datafusion::native_exec::AlgeonNativeExecutionConfig::default() -> Self
 pub struct algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec
 impl algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec
 pub fn algeon_datafusion::native_exec::AlgeonNativeGpuProducerExec::input_name(&self) -> &str
@@ -1022,6 +1013,19 @@ pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::e
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
 pub fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[query_planning::graph_observation::GraphMeasuredPeakRow]
 pub const fn algeon_datafusion::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
+pub struct algeon_datafusion::native_exec::SourceChunking
+pub algeon_datafusion::native_exec::SourceChunking::max_retry_attempts: core::num::nonzero::NonZeroUsize
+pub algeon_datafusion::native_exec::SourceChunking::max_row_groups_per_chunk: core::num::nonzero::NonZeroUsize
+pub algeon_datafusion::native_exec::SourceChunking::max_source_chunk_bytes: core::num::nonzero::NonZeroU64
+pub algeon_datafusion::native_exec::SourceChunking::min_retry_chunk_row_groups: core::num::nonzero::NonZeroUsize
+impl algeon_datafusion::native_exec::SourceChunking
+pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MAX_RETRY_ATTEMPTS: core::num::nonzero::NonZeroUsize
+pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MAX_ROW_GROUPS_PER_CHUNK: core::num::nonzero::NonZeroUsize
+pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MAX_SOURCE_CHUNK_BYTES: core::num::nonzero::NonZeroU64
+pub const algeon_datafusion::native_exec::SourceChunking::DEFAULT_MIN_RETRY_CHUNK_ROW_GROUPS: core::num::nonzero::NonZeroUsize
+pub fn algeon_datafusion::native_exec::SourceChunking::try_new(u64, usize, usize, usize) -> algeon_datafusion::error::Result<Self>
+impl core::default::Default for algeon_datafusion::native_exec::SourceChunking
+pub fn algeon_datafusion::native_exec::SourceChunking::default() -> Self
 pub const algeon_datafusion::native_exec::NATIVE_ALGEON_DATAFUSION_METRIC_NAMES: &[&str]
 pub const algeon_datafusion::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME: &str
 pub fn algeon_datafusion::native_exec::below_native_admission(&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>) -> &alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>

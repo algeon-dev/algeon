@@ -26,7 +26,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     error::{DataFusionErrorExt, Error, ErrorCode},
-    native_exec::{AlgeonNativeExecutionConfig, below_native_admission},
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem},
     planner::{DataFusionCpuExecutionPolicy, NativePlanningDiagnostics, plan_with_native_diagnostics},
     report::{CandidateOutcome, PlanningReport},
@@ -818,14 +818,13 @@ async fn run_runtime_no_rescue(bench: &Path) -> CaseResult {
 
 async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResult> {
     let id = "runtime_failure_no_datafusion_replay";
-    // Mirror tests/native_runtime_pruning_tests::constrained_native_datafusion_config:
-    // device_budget_bytes=1 forces a memory reservation failure after native start.
+    // default_query_limit_bytes=1 forces a memory reservation failure after native start.
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
         .with_default_query_limit_bytes(1);
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1))
+        .with_native_execution_config(AlgeonNativeExecutionConfig::new(SourceChunking::try_new(1024 * 1024, 1, 1, 1)?))
         .queue_policy(AlgeonGpuQueuePolicy::default())
         .devices([device])
         .build()?;
@@ -1009,13 +1008,7 @@ fn build_backend(default_query_limit_bytes: u64) -> ToolResult<AlgeonGpuBackend>
         .with_default_query_limit_bytes(default_query_limit_bytes);
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     Ok(AlgeonGpuBackend::builder()
-        .with_native_execution_config(AlgeonNativeExecutionConfig::bounded(
-            256 * 1024 * 1024,
-            64 * 1024 * 1024,
-            1,
-            3,
-            1,
-        ))
+        .with_native_execution_config(AlgeonNativeExecutionConfig::default())
         .queue_policy(AlgeonGpuQueuePolicy::default())
         .devices([device])
         .build()?)

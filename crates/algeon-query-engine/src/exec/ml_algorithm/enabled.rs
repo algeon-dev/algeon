@@ -132,13 +132,7 @@ pub(in crate::exec) fn execute_ml_algorithm(
     let domain_token = context
         .attempt_allocation_domain_id()
         .map(|_| {
-            let bytes = context.bounded_device_budget_bytes().ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::CudfInvariantViolation,
-                    EXECUTE,
-                    "admitted ML execution is missing its device budget",
-                )
-            })?;
+            let bytes = context.device_budget_bytes();
             let bytes = usize::try_from(bytes).map_err(|_| {
                 QueryError::new(QueryErrorCode::InvalidPlan, EXECUTE, "ML execution budget exceeds usize")
                     .with_fact("budget_bytes", bytes)

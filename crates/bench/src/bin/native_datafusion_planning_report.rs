@@ -179,9 +179,8 @@ async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
-    );
+    let optimizer_config =
+        AlgeonNativeOptimizerConfig::default().with_native_execution_config(AlgeonNativeExecutionConfig::default());
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
         .with_algeon_native(optimizer_config)

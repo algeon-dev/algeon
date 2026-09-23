@@ -322,7 +322,6 @@ pub query_runtime::metrics::QueryMetrics::join_strategy_decisions: alloc::vec::V
 pub query_runtime::metrics::QueryMetrics::materialization_time: core::time::Duration
 pub query_runtime::metrics::QueryMetrics::max_task_observed_peak_bytes: core::option::Option<u64>
 pub query_runtime::metrics::QueryMetrics::max_task_retained_bytes: core::option::Option<u64>
-pub query_runtime::metrics::QueryMetrics::memory_control_policy: query_planning::execution_contracts::MemoryControlPolicy
 pub query_runtime::metrics::QueryMetrics::mixed_join_size_data_bytes: u64
 pub query_runtime::metrics::QueryMetrics::one_shot_join_count: u64
 pub query_runtime::metrics::QueryMetrics::one_shot_join_index_bytes: u64
@@ -1762,11 +1761,11 @@ pub fn query_runtime::runtime::ExecutionContext::acquire_io_lease(&self, &'stati
 pub fn query_runtime::runtime::ExecutionContext::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_id(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> query_planning::error::Result<core::option::Option<cudf::core::memory::usage::QueryMemoryDomainUsage>>
-pub fn query_runtime::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
 pub fn query_runtime::runtime::ExecutionContext::cancellation(&self) -> &query_runtime::runtime::ExecutionCancellation
 pub fn query_runtime::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::ExecutionContext::datafusion_order_tracking(&self) -> bool
 pub fn query_runtime::runtime::ExecutionContext::device(&self) -> cudf::runtime::device::DeviceId
+pub fn query_runtime::runtime::ExecutionContext::device_budget_bytes(&self) -> u64
 pub fn query_runtime::runtime::ExecutionContext::execution_budget_token(&self, cudf::runtime::budget::ExecutionBudgetRequest) -> query_planning::error::Result<cudf::runtime::budget::ExecutionBudgetToken>
 pub fn query_runtime::runtime::ExecutionContext::gpu_executor(&self) -> query_planning::error::Result<query_runtime::runtime::GpuExecutorLease>
 pub fn query_runtime::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
@@ -2098,6 +2097,10 @@ pub query_runtime::runtime::StandaloneConfig::source_chunk_planning_options: que
 pub query_runtime::runtime::StandaloneConfig::source_scheduler_policy: query_planning::execution_contracts::SourceSchedulerPolicy
 pub query_runtime::runtime::StandaloneConfig::source_storage_profiles: alloc::vec::Vec<query_runtime::runtime::SourceStorageProfile>
 pub query_runtime::runtime::StandaloneConfig::trace_id: core::option::Option<query_planning::correlation::TraceId>
+impl query_runtime::runtime::StandaloneConfig
+pub const query_runtime::runtime::StandaloneConfig::DEFAULT_DEVICE_BUDGET_BYTES: u64
+impl core::default::Default for query_runtime::runtime::StandaloneConfig
+pub fn query_runtime::runtime::StandaloneConfig::default() -> Self
 pub const query_runtime::runtime::BACKEND_ATTEMPT_DURATION_BUCKET_COUNT: usize
 pub const query_runtime::runtime::BACKEND_METRIC_DEVICE_CAPACITY: usize
 pub fn query_runtime::runtime::probe_device_capacity(usize, query_runtime::runtime::GpuMemoryOwnership, u64) -> query_planning::error::Result<query_runtime::runtime::GpuDeviceCapacityProbe>

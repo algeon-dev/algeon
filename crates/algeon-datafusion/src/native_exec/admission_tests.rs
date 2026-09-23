@@ -38,7 +38,7 @@ use crate::{
     attempt::{AttemptOptions, attempt_ticket_for_test, attempt_ticket_with_options_for_test},
     backend::{AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, InstalledTestGpuBackend},
     error::{DataFusionErrorExt, Error, ErrorCode},
-    native_exec::AlgeonNativeExecutionConfig,
+    native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -279,7 +279,9 @@ async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
 async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_grant_for_successive_admission() {
     // One active attempt per device, so the second admission can only succeed after the first grant is released.
     let backend = InstalledTestGpuBackend::with_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+        ),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
             .with_max_active_attempts(1),
@@ -361,7 +363,9 @@ async fn admission_failure_clears_round_state_and_ends_the_attempt_admission() {
 #[tokio::test(flavor = "current_thread")]
 async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_context_drops() {
     let backend = InstalledTestGpuBackend::with_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+        ),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
             .with_max_active_attempts(1),
@@ -400,7 +404,9 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_cont
 #[tokio::test(flavor = "current_thread")]
 async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capacity() {
     let backend = InstalledTestGpuBackend::with_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+        ),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
             .with_max_active_attempts(1),
@@ -449,7 +455,9 @@ async fn planner_capability_evidence_rejects_at_the_native_ticket_boundary_befor
     let mut unavailable = explicit_sink_capability_evidence();
     unavailable.required_capabilities = vec![ExecutionCapability::new("unavailable")];
     let backend = InstalledTestGpuBackend::with_config(
-        AlgeonNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+        AlgeonNativeExecutionConfig::new(
+            SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
+        ),
         AlgeonGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
             .with_device_capabilities(DeviceCapabilities::only(Vec::new())),
