@@ -1,4 +1,4 @@
-use std::{ffi::c_void, marker::PhantomData, ptr};
+use std::{marker::PhantomData, ptr};
 
 use crate::device::{DeviceElement, DeviceTensor, DeviceTensorMut, TensorParts};
 
@@ -23,15 +23,17 @@ impl<'a> DlpackTensor<'a> {
         let mut shape = parts.shape.to_vec().into_boxed_slice();
         let mut strides = parts.strides.map(|strides| strides.to_vec().into_boxed_slice());
         let strides_ptr = strides.as_mut().map_or(ptr::null_mut(), |strides| strides.as_mut_ptr());
+        // Validation bounds and aligns the offset; pinned cuVS reads data directly and select_k requires zero byte_offset.
+        let data = parts.data.as_ptr().wrapping_byte_add(parts.byte_offset);
         let tensor = cuvs_sys::DLManagedTensor {
             dl_tensor: cuvs_sys::DLTensor {
-                data: parts.data.as_ptr().cast::<c_void>(),
+                data,
                 device: cuvs_sys::DLDevice { device_type: cuvs_sys::DLDeviceType::kDLCUDA, device_id: parts.device },
                 ndim: shape.len() as i32,
                 dtype: cuvs_sys::DLDataType { code: T::DLPACK_CODE, bits: T::DLPACK_BITS, lanes: 1 },
                 shape: shape.as_mut_ptr(),
                 strides: strides_ptr,
-                byte_offset: parts.byte_offset as u64,
+                byte_offset: 0,
             },
             manager_ctx: ptr::null_mut(),
             deleter: None,
@@ -46,6 +48,8 @@ impl<'a> DlpackTensor<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::c_void;
+
     use super::*;
 
     #[test]
@@ -55,9 +59,10 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_preserves_device_dtype_shape_strides_and_offset() {
+    fn descriptor_folds_offset_into_data_and_preserves_device_dtype_shape_strides() {
         let runtime = cudf::Runtime::new().expect("runtime binding");
-        let data = std::ptr::NonNull::<f32>::dangling().as_ptr().cast::<c_void>();
+        let mut backing = [0_f32; 16];
+        let data = backing.as_mut_ptr().cast::<c_void>();
         let tensor = DeviceTensor::<f32>::from_parts(
             data,
             7,
@@ -72,7 +77,7 @@ mod tests {
         let mut dlpack = DlpackTensor::from_const(&tensor);
         let raw = unsafe { &(*dlpack.as_mut_ptr()).dl_tensor };
 
-        assert_eq!(raw.data, data);
+        assert_eq!(raw.data, data.wrapping_byte_add(8));
         assert_eq!(raw.device.device_type, cuvs_sys::DLDeviceType::kDLCUDA);
         assert_eq!(raw.device.device_id, 7);
         assert_eq!(raw.ndim, 2);
@@ -81,6 +86,6 @@ mod tests {
         assert_eq!(raw.dtype.lanes, 1);
         assert_eq!(unsafe { std::slice::from_raw_parts(raw.shape, 2) }, &[2, 3]);
         assert_eq!(unsafe { std::slice::from_raw_parts(raw.strides, 2) }, &[5, 1]);
-        assert_eq!(raw.byte_offset, 8);
+        assert_eq!(raw.byte_offset, 0);
     }
 }

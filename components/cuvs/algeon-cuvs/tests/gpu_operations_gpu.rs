@@ -501,6 +501,30 @@ fn brute_force_search_writes_caller_owned_device_buffers() {
 }
 
 #[test]
+fn offset_dataset_is_used_by_brute_force_and_select_k() {
+    let (runtime, resources, _reservation) = resources();
+    let data = DeviceBuffer::from_slice(&resources, &[100.0_f32, 101.0, 0.0, 2.0, 1.0, 3.0, 5.0, 7.0])
+        .expect("dataset with leading garbage row");
+    let dataset = data.as_validated_tensor(&resources, &[3, 2], None, 2 * size_of::<f32>()).expect("offset dataset");
+    let queries = DeviceBuffer::from_slice(&resources, &[0.0_f32, 2.0, 5.0, 7.0]).expect("queries");
+    let query_matrix = queries.as_validated_matrix(&resources, 2, 2).expect("query matrix");
+
+    let index = BruteForceIndex::build(&resources, &dataset, DistanceMetric::L2Expanded).expect("build");
+    let mut neighbors = DeviceBuffer::<i64>::new(&resources, 2).expect("neighbors");
+    let mut distances = DeviceBuffer::<f32>::new(&resources, 2).expect("distances");
+    index.search_into(&query_matrix, 1, &mut neighbors, &mut distances).expect("search");
+    index.close().expect("close index");
+    assert_eq!(i64_to_host(&runtime, neighbors), [0, 2]);
+    assert!(f32_to_host(&runtime, distances).iter().all(|distance| *distance < 1e-4));
+
+    let mut values = DeviceBuffer::<f32>::new(&resources, 3).expect("selected values");
+    let mut positions = DeviceBuffer::<i64>::new(&resources, 3).expect("selected positions");
+    select_k_into(&resources, &dataset, 1, true, &mut values, &mut positions).expect("select offset rows");
+    assert_eq!(f32_to_host(&runtime, values), [0.0, 1.0, 5.0]);
+    assert_eq!(i64_to_host(&runtime, positions), [0, 0, 0]);
+}
+
+#[test]
 fn ivf_flat_all_metrics_match_brute_force_when_every_list_is_probed() {
     let (runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(
