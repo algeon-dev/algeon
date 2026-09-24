@@ -7,7 +7,10 @@ use cudf::{
     DenseMatrixLayout, Runtime,
     core::{Column, types::TypeId},
 };
-use cuml::{CumlResources, DeviceBuffer, DeviceMatrix, OwnedFloat32Matrix, PcaModel, PcaParams, TsvdModel, TsvdParams};
+use cuml::{
+    CumlResources, DeviceBuffer, DeviceMatrix, ErrorCode, OwnedFloat32Matrix, PcaModel, PcaParams, TsvdModel,
+    TsvdParams,
+};
 
 unsafe extern "C" {
     fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
@@ -66,6 +69,40 @@ fn copy_packed_input(resources: &CumlResources, packed: &cudf::ValidatedPackedMa
     let status = cuda_memcpy(destination, source, bytes, 3);
     assert_eq!(status, 0, "device-to-device copy failed with CUDA status {status}");
     input
+}
+
+#[test]
+fn packed_float32_matrix_transfers_ownership_to_pca_without_copy() {
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
+    let x = [-3.0_f32, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    let a = runtime.column_from_slice(&x).expect("column a");
+    let b = runtime.column_from_slice(&x.map(|v| v * 2.0)).expect("column b");
+    let c = runtime.column_from_slice(&x.map(|v| -v)).expect("column c");
+    let packed = runtime.pack_columns(&[&a, &b, &c], DenseMatrixLayout::ColumnMajor).expect("packed matrix");
+    let packed_pointer = packed.as_column().device_data_ptr().expect("packed pointer");
+    let mut owned = OwnedFloat32Matrix::from_packed(&resources, packed).expect("owned packed input");
+    assert_eq!(owned.as_ptr().expect("owned pointer"), packed_pointer);
+    let (model, output) = PcaModel::fit_transform(&resources, &mut owned, PcaParams::new(1)).expect("PCA fit");
+    assert!(series_values(&runtime, model.explained_variance_ratio())[0] > 0.99);
+    let scores = series_values(&runtime, &output);
+    assert_eq!(scores.len(), x.len());
+    for (actual, expected) in scores.iter().zip(x) {
+        assert!((actual.abs() - ((expected - 0.5) * 6.0_f32.sqrt()).abs()).abs() < 1e-3);
+    }
+}
+
+#[test]
+fn packed_float64_matrix_is_unsupported() {
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
+    let a = runtime.column_from_slice(&[1.0_f64, 2.0, 3.0]).expect("column a");
+    let b = runtime.column_from_slice(&[2.0_f64, 4.0, 6.0]).expect("column b");
+    let packed = runtime.pack_columns(&[&a, &b], DenseMatrixLayout::ColumnMajor).expect("packed matrix");
+    assert_eq!(
+        OwnedFloat32Matrix::from_packed(&resources, packed).err().expect("unsupported dtype").code(),
+        ErrorCode::UnsupportedDtype
+    );
 }
 
 #[test]

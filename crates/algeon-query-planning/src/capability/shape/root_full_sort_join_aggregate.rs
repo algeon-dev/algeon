@@ -305,7 +305,8 @@ fn root_full_sort_collect_downstream_consumer_joins(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_),
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_),
         )
         | None => {},
     }

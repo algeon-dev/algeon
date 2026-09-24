@@ -165,6 +165,11 @@ fn execute_bounded_generic_node(
         PlanNode::GraphAlgorithm(graph) => {
             execute_bounded_generic_graph_algorithm(execution, plan, id, graph, gpu_inputs)
         },
+        PlanNode::MlAlgorithm(_) => Err(unsupported_bounded_shape(
+            "bounded ML execution requires an admitted compiled pipeline",
+            "compiled_ml_pipeline_required",
+        )
+        .with_fact("node_id", id)),
         PlanNode::VectorAlgorithm(_) => Err(unsupported_bounded_shape(
             "bounded vector execution requires an admitted compiled pipeline",
             "compiled_vector_pipeline_required",
@@ -964,5 +969,6 @@ fn bounded_generic_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
         PlanNode::VectorAlgorithm(_) => "vector_algorithm",
+        PlanNode::MlAlgorithm(_) => "ml_algorithm",
     }
 }

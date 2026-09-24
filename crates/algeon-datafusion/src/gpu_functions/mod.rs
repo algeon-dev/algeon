@@ -6,10 +6,13 @@
 //! does not own execution or family-specific planning.
 
 mod catalog;
+pub(crate) mod dense_relation;
+pub(crate) mod dense_relation_errors;
 mod descriptor;
 mod family;
 mod named_args;
 mod registration;
+pub(crate) mod scalar_arguments;
 mod table_functions;
 mod validation;
 

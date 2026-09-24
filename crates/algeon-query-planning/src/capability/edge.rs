@@ -165,6 +165,9 @@ pub(super) fn edge_contract_kinds(
     if let InputRole::VectorAlgorithmInput { role } = input_role {
         kinds.push(EdgeContractKind::VectorAlgorithmInput { role });
     }
+    if let InputRole::MlAlgorithmInput { role } = input_role {
+        kinds.push(EdgeContractKind::MlAlgorithmInput { role });
+    }
     match input_role {
         InputRole::JoinBuildInput { side } => kinds.push(EdgeContractKind::JoinBuildInput { side }),
         InputRole::JoinProbeInput { side } => kinds.push(EdgeContractKind::JoinProbeInput { side }),
@@ -221,6 +224,7 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
         PlanNode::VectorAlgorithm(_) => "vector_algorithm",
+        PlanNode::MlAlgorithm(_) => "ml_algorithm",
     }
 }
 
@@ -236,6 +240,7 @@ pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::VectorAlgorithm(vector) => {
             InputRole::VectorAlgorithmInput { role: VectorInputRole::for_vector_input(vector, input_index) }
         },
+        PlanNode::MlAlgorithm(ml) => InputRole::MlAlgorithmInput { role: ml.spec.params.relation_role(input_index) },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {

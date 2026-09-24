@@ -23,6 +23,7 @@ cuvs = [
   "algeon-datafusion/cuvs",
   "dep:cuvs-sys",
 ]
+cuml = ["algeon-datafusion/cuml", "dep:cuml-sys"]
 
 [dependencies]
 algeon-datafusion = { workspace = true, features = ["bench-support", "nvml"] }
@@ -40,6 +41,7 @@ cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
+cuml-sys = { workspace = true, optional = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -3,18 +3,19 @@ use std::{cmp::Ordering, fmt, hash::Hash, sync::Arc};
 use arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
 use datafusion::{
     common::{DFSchema, DFSchemaRef, Result},
-    logical_expr::{Expr, FetchType, LogicalPlan, SkipType, UserDefinedLogicalNodeCore},
+    logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore},
 };
 use query_engine::plan::{
-    CuvsIdType, CuvsVectorElementType, vector_kmeans_output_schema, vector_knn_output_schema,
+    RelationIdType, VectorElementType, vector_kmeans_output_schema, vector_knn_output_schema,
     vector_pairwise_distance_output_schema, vector_pca_output_schema, vector_top_k_output_schema,
 };
 
 use super::{
-    CuvsDenseVectorBinding, CuvsOperation, CuvsOutputContract, CuvsValidatedOptions, CuvsVectorRelationBinding,
+    CuvsOperation, CuvsOutputContract, CuvsValidatedOptions, CuvsVectorRelationBinding, DenseVectorBinding,
     error::{field_not_found, invalid_call, unsupported_type},
     options::{options_from_named_values, validate_options},
 };
+use crate::gpu_functions::dense_relation::known_row_count;
 
 #[derive(Debug, Clone)]
 pub struct CuvsLogicalNode {
@@ -130,7 +131,7 @@ fn validate_input_schemas(
     operation: CuvsOperation,
     inputs: &[LogicalPlan],
     options: &CuvsValidatedOptions,
-) -> Result<(Vec<Option<usize>>, CuvsVectorElementType)> {
+) -> Result<(Vec<Option<usize>>, VectorElementType)> {
     let mut dimensions = Vec::with_capacity(inputs.len());
     let mut elements = Vec::with_capacity(inputs.len());
     for ((input, role), binding) in
@@ -234,7 +235,7 @@ fn validate_relation_binding(
     operation: CuvsOperation,
     schema: &DFSchema,
     binding: &CuvsVectorRelationBinding,
-) -> Result<(Option<usize>, CuvsVectorElementType)> {
+) -> Result<(Option<usize>, VectorElementType)> {
     let role = binding.relation_role().as_str();
     let id = resolve_field(operation, schema, role, binding.id())?;
     if id.is_nullable() {
@@ -244,7 +245,7 @@ fn validate_relation_binding(
             format!("cuVS {role} ID field '{}' must be non-nullable", binding.id()),
         ));
     }
-    if CuvsIdType::from_data_type(id.data_type()).is_none() {
+    if RelationIdType::from_data_type(id.data_type()).is_none() {
         return Err(unsupported_type(
             operation,
             role,
@@ -255,7 +256,7 @@ fn validate_relation_binding(
     }
 
     match binding.vector() {
-        CuvsDenseVectorBinding::Columns(columns) => {
+        DenseVectorBinding::Columns(columns) => {
             let mut element = None;
             for column in columns {
                 let field = resolve_field(operation, schema, role, column)?;
@@ -273,7 +274,7 @@ fn validate_relation_binding(
             }
             Ok((Some(columns.len()), element.expect("validated non-empty columns")))
         },
-        CuvsDenseVectorBinding::VectorColumn(column) => {
+        DenseVectorBinding::VectorColumn(column) => {
             let field = resolve_field(operation, schema, role, column)?;
             if field.is_nullable() {
                 return Err(invalid_call(
@@ -330,7 +331,7 @@ fn require_supported_vector_element(
     role: &'static str,
     name: &str,
     field: &FieldRef,
-) -> Result<CuvsVectorElementType> {
+) -> Result<VectorElementType> {
     if field.is_nullable() {
         return Err(invalid_call(
             operation,
@@ -338,7 +339,7 @@ fn require_supported_vector_element(
             format!("cuVS {role} feature field '{name}' must be non-nullable"),
         ));
     }
-    let element = CuvsVectorElementType::from_data_type(field.data_type())
+    let element = VectorElementType::from_data_type(field.data_type())
         .filter(|element| operation.descriptor().element_support(*element).is_some())
         .ok_or_else(|| {
             unsupported_type(operation, role, name, field.data_type(), supported_vector_elements(operation))
@@ -432,32 +433,12 @@ fn validate_known_cardinalities(
     Ok(())
 }
 
-fn known_row_count(plan: &LogicalPlan) -> Option<usize> {
-    match plan {
-        LogicalPlan::EmptyRelation(empty) => Some(usize::from(empty.produce_one_row)),
-        LogicalPlan::Values(values) => Some(values.values.len()),
-        LogicalPlan::Projection(projection) => known_row_count(&projection.input),
-        LogicalPlan::SubqueryAlias(alias) => known_row_count(&alias.input),
-        LogicalPlan::Limit(limit) => {
-            let input_rows = match limit.get_skip_type().ok()? {
-                SkipType::Literal(skip) => known_row_count(&limit.input)?.saturating_sub(skip),
-                SkipType::UnsupportedExpr => return None,
-            };
-            match limit.get_fetch_type().ok()? {
-                FetchType::Literal(fetch) => Some(input_rows.min(fetch.unwrap_or(input_rows))),
-                FetchType::UnsupportedExpr => None,
-            }
-        },
-        _ => None,
-    }
-}
-
 fn derive_output_schema(
     operation: CuvsOperation,
     inputs: &[LogicalPlan],
     options: &CuvsValidatedOptions,
     dimensions: &[Option<usize>],
-    element: CuvsVectorElementType,
+    element: VectorElementType,
 ) -> Result<DFSchemaRef> {
     let schema = match operation.descriptor().output_contract {
         CuvsOutputContract::KnnNeighbors => {
@@ -469,7 +450,7 @@ fn derive_output_schema(
             output_id_field(inputs[0].schema(), options.bindings()[0].id(), "x_id")?.data_type().clone(),
             output_id_field(inputs[1].schema(), options.bindings()[1].id(), "y_id")?.data_type().clone(),
             match element {
-                CuvsVectorElementType::Float64 => DataType::Float64,
+                VectorElementType::Float64 => DataType::Float64,
                 _ => DataType::Float32,
             },
         ),

@@ -33,6 +33,7 @@ pub struct RuntimeOperatorStageIdentity {
     pub input_bytes: Option<u64>,
     pub reserved_bytes: Option<u64>,
     pub vector_algorithm: Option<String>,
+    pub ml_algorithm: Option<String>,
     pub vector_relation_role: Option<String>,
     pub vector_dimension: Option<usize>,
     pub matrix_layout: Option<String>,
@@ -94,6 +95,11 @@ impl RuntimeOperatorStageIdentity {
 
     pub fn with_vector_algorithm(mut self, algorithm: impl Into<String>) -> Self {
         self.vector_algorithm = Some(algorithm.into());
+        self
+    }
+
+    pub fn with_ml_algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.ml_algorithm = Some(algorithm.into());
         self
     }
 
@@ -163,6 +169,9 @@ impl RuntimeOperatorStageIdentity {
         if let Some(vector_algorithm) = &self.vector_algorithm {
             observation = observation.with_vector_algorithm(vector_algorithm.clone());
         }
+        if let Some(ml_algorithm) = &self.ml_algorithm {
+            observation = observation.with_ml_algorithm(ml_algorithm.clone());
+        }
         if let Some(vector_relation_role) = &self.vector_relation_role {
             observation = observation.with_vector_relation_role(vector_relation_role.clone());
         }
@@ -220,6 +229,18 @@ impl RuntimeOperatorStageGuard {
 
     /// Records successful completion with optional output facts.
     pub fn finish(mut self, output_rows: Option<u64>, output_bytes: Option<u64>) {
+        self.record(RuntimeOperatorStageState::Finished, output_rows, output_bytes);
+        self.terminal_recorded = true;
+    }
+
+    /// Attach a native fit outcome known only after the operation completes.
+    pub fn finish_with_strategy_label(
+        mut self,
+        strategy_label: impl Into<String>,
+        output_rows: Option<u64>,
+        output_bytes: Option<u64>,
+    ) {
+        self.identity = self.identity.clone().with_strategy_label(strategy_label);
         self.record(RuntimeOperatorStageState::Finished, output_rows, output_bytes);
         self.terminal_recorded = true;
     }
@@ -425,8 +446,31 @@ mod tests {
                 .with_input_bytes(16_384),
         );
         guard.finish(Some(128), Some(16_384));
+        let ml_guard = RuntimeOperatorStageGuard::start(
+            session.handle(),
+            Some(PlanExecutionId::new("plan-ml")),
+            None,
+            RuntimeOperatorStageKind::MlNative,
+            RuntimeOperatorStageIdentity::new().with_ml_algorithm("tsvd").with_vector_dimension(32),
+        );
+        ml_guard.finish(Some(128), None);
 
         let snapshot = session.seal(RuntimeTerminalOutcome::Succeeded).expect("seal");
+        let ml = snapshot
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                RuntimeObservationPayload::OperatorStage(stage)
+                    if stage.stage_kind == RuntimeOperatorStageKind::MlNative
+                        && matches!(stage.lifecycle, RuntimeOperatorStageState::Started) =>
+                {
+                    Some(stage)
+                },
+                _ => None,
+            })
+            .expect("ML native stage");
+        assert_eq!(ml.ml_algorithm.as_deref(), Some("tsvd"));
+        assert_eq!(ml.vector_dimension, Some(32));
         let stage = snapshot
             .events()
             .iter()
@@ -612,6 +656,9 @@ mod tests {
             RuntimeOperatorStageKind::VectorPack,
             RuntimeOperatorStageKind::VectorNative,
             RuntimeOperatorStageKind::VectorAssemble,
+            RuntimeOperatorStageKind::MlPack,
+            RuntimeOperatorStageKind::MlNative,
+            RuntimeOperatorStageKind::MlAssemble,
         ];
         let session = session_with_limits(256);
         for kind in kinds {

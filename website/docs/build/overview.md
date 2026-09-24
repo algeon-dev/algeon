@@ -8,16 +8,16 @@ description: What you are building, how the repository fits together, and the or
 # Build & Test
 
 Algeon sits above a feature-selected GPU stack. Relational execution
-uses RAPIDS cuDF, graph SQL adds cuGraph, and vector SQL adds cuVS. cuGraph
-links libcuvs, so a full-feature source build always includes it, and the
-native libraries must be built in a fixed, bottom-up order.
+uses RAPIDS cuDF, graph SQL adds cuGraph, vector SQL adds cuVS, and cuML SQL
+adds dimensionality reduction. cuGraph and cuML depend on the shared cuVS
+install. A full-feature source build includes all four native layers.
 
 Follow the pages in this order:
 
 1. [Prerequisites](./prerequisites.md): the GPU, compiler, Rust, and
    test-runner environment.
 2. [Building from Source](./from-source.md): one recursive clone, one build
-   shell, the three native builds, the Rust workspace, and the full gate.
+   shell, the four native builds, the Rust workspace, and the full gate.
 3. [Tests](./tests.md): the full gate in detail, partial edit loops, and
    maintainer diagnostics.
 4. [Building with Docker](./docker.md): optional packaging of the Flight SQL
@@ -33,9 +33,10 @@ Follow the pages in this order:
 | `query-engine` | Native execution composition and the compatible public facade over planning and runtime | Rust | `crates/algeon-query-engine/` |
 | `components/cudf` | Safe Rust API over libcudf (`cudf`, `cudf-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/algeon-dev/cudf) | Rust + C++/CUDA | one component + submodule |
 | `components/cuvs` | Safe Rust API over libcuvs (`cuvs`, `cuvs-sys`); pins the [`algeon-dev cuVS fork`](https://github.com/algeon-dev/cuvs) | Rust + C++/CUDA | one component + submodule |
+| `components/cuml` | Safe Rust API over libcuml (`cuml`, `cuml-sys`); pins the cuML submodule | Rust + C++/CUDA | one component + submodule |
 | `components/cugraph` | Safe Rust API over libcugraph (`cugraph`, `cugraph-sys`); pins the [`cugraph` fork](https://github.com/algeon-dev/cugraph) | Rust + C++/CUDA | one component + submodule |
 
-The root `.gitmodules` pins the three native sources and the root Cargo
+The root `.gitmodules` pins the four native sources and the root Cargo
 workspace resolves all Rust components through `components/*`. Cargo fetches
 Apache DataFusion and the remaining registry or Git dependencies automatically;
 there is one product checkout and one recursive submodule update.
@@ -45,12 +46,14 @@ algeon/
 ├── components/cudf/cudf/       # pinned cuDF fork submodule
 ├── components/cugraph/cugraph/ # pinned cuGraph fork submodule
 ├── components/cuvs/cuvs/       # pinned algeon-dev cuVS fork submodule
+├── components/cuml/cuml/       # pinned cuML submodule
 ├── crates/                      # planning, runtime, engine, and support crates
 ├── crates/algeon-datafusion/src/ # DataFusion adapter
 └── target/native/
     ├── cudf-build/             # canonical cuDF CMake cache
     ├── cudf-install/           # canonical cuDF/RMM install prefix
     ├── cuvs-install/           # canonical cuVS install prefix
+    ├── cuml-install/           # canonical cuML install prefix
     ├── cugraph-build/          # canonical cuGraph CMake build tree
     └── cugraph-install/        # canonical cuGraph install prefix
 ```
@@ -59,12 +62,12 @@ algeon/
 
 ```text
 libcudf ── produces ──> librmm.so
-                            ├──> libcuvs
+                            ├──> libcuvs ──> libcuml
                             └──> libcugraph <── libcuvs
 
 query-runtime depends on query-planning.
 query-engine depends on both and preserves the public facade.
-algeon-datafusion depends on that facade and uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
+algeon-datafusion depends on that facade and uses the enabled cuDF, cuVS, cuML, and cuGraph Rust bindings.
 ```
 
 The full-feature build follows those dependencies, and each step below is
@@ -77,13 +80,14 @@ one command in [Building from Source](./from-source.md):
 3. **libcugraph**: `scripts/build/build_libcugraph.sh` consumes the same RMM
    and cuVS installs, builds in `target/native/cugraph-build`, and installs into
    `target/native/cugraph-install`.
-4. **Rust workspace**: `cargo build --workspace --all-features`, then the
+4. **libcuml**: `scripts/build/build_libcuml.sh` installs cuML and its native dependencies into `target/native/cuml-install` against the shared cuVS and RMM installs.
+5. **Rust workspace**: `cargo build --workspace --all-features`, then the
    single full gate `bash scripts/check_all.sh`, run bare.
-5. **Docker image**: optional. `docker/stage-docker-payload.sh` stages the
+6. **Docker image**: optional. `docker/stage-docker-payload.sh` stages the
    release binary and the locally built RAPIDS libraries;
    `docker/build-image.sh` produces the runnable image.
 
-All three native layers share one `CMAKE_CUDA_ARCHITECTURES` value; the build
+The native layers share one `CMAKE_CUDA_ARCHITECTURES` value; the build
 scripts record it in each library and reject a mismatched downstream build.
 The source-build page explains how to choose it.
 

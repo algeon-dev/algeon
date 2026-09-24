@@ -14,6 +14,7 @@ workspace = true
 [features]
 default = []
 cuvs = ["dep:cuvs-sys", "algeon-datafusion/cuvs"]
+cuml = ["dep:cuml-sys", "algeon-datafusion/cuml"]
 # The reference OTLP exporter is deliberately opt-in: it adds a tonic transport
 # stack that ordinary embedding examples do not need.
 otlp-metrics = [
@@ -29,6 +30,7 @@ axum = { workspace = true }
 cudf-sys = { workspace = true }
 cugraph-sys = { workspace = true }
 cuvs-sys = { workspace = true, optional = true }
+cuml-sys = { workspace = true, optional = true }
 datafusion = { workspace = true }
 futures = { workspace = true }
 algeon-datafusion = { workspace = true, features = ["server", "cugraph"] }

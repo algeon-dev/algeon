@@ -20,9 +20,11 @@ mod core;
 mod display;
 mod estimates;
 mod facts;
+mod gpu_function_options;
 mod graph_algorithm;
 mod identity;
 mod join;
+mod ml_algorithm;
 mod nodes;
 mod preference;
 pub mod row_bounds;
@@ -39,6 +41,10 @@ pub use estimates::{
     estimated_output_rows, estimated_reachable_local_parquet_source_bytes,
 };
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
+pub use gpu_function_options::{
+    DenseVectorBinding, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition,
+    RELATION_ID_TYPES, RelationIdType, VectorElementType,
+};
 pub use graph_algorithm::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner,
     EmptyGraphEdgeInputAction, EmptyGraphInputPolicy, EmptyGraphSideInputPolicy, GRAPH_OPERATION_REGISTRY,
@@ -64,6 +70,15 @@ pub use identity::{DeferredGraphExecutionScopeIdentity, canonical_execution_scop
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
 };
+pub use ml_algorithm::{
+    CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY, CUML_PCA_FUNCTION,
+    CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,
+    CUML_UMAP_FUNCTION, CumlOperation, CumlOperationDescriptor, CumlOutputContract, MlAlgorithm, MlAlgorithmNode,
+    MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlHdbscanParams, MlLogisticRegressionParams,
+    MlPcaParams, MlPcaSolver, MlRandomForestParams, MlRelationBinding, MlRelationRole, MlSplitCriterion, MlTsvdParams,
+    MlUmapInit, MlUmapParams, canonicalize_cuml_options, ml_embedding_output_schema, ml_hdbscan_output_schema,
+    ml_predictions_output_schema,
+};
 pub use nodes::{
     AggregateNode, EdgeNormalizeNode, FilterNode, LimitNode, ProjectionNode, ProjectionOutput, ShiftDirection,
     SortNode, UnionNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
@@ -73,15 +88,14 @@ pub use preference::{
 };
 pub use sink::ResultSink;
 pub use vector_algorithm::{
-    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_ID_TYPES, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
+    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
     CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,
-    CUVS_TOP_K_FUNCTION, CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor,
-    CuvsOptionDefinition, CuvsOptionKind, CuvsOptionValidationError, CuvsOutputContract, CuvsOutputFieldDefinition,
-    CuvsRelationRole, CuvsVectorElementSupport, CuvsVectorElementType, VectorAlgorithm, VectorAlgorithmNode,
-    VectorAlgorithmParams, VectorAlgorithmSpec, VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams,
-    VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams,
-    VectorKMeansInit, VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams,
-    VectorPcaSolver, VectorRelationBinding, VectorRowIdBinding, VectorTopKParams, canonicalize_cuvs_options,
-    vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
-    vector_pca_output_schema, vector_top_k_output_schema,
+    CUVS_TOP_K_FUNCTION, CuvsOperation, CuvsOperationDescriptor, CuvsOutputContract, CuvsRelationRole,
+    CuvsVectorElementSupport, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec,
+    VectorBruteForceKnnParams, VectorCagraBuildAlgo, VectorCagraParams, VectorCagraSearchAlgo, VectorDistanceMetric,
+    VectorIvfFlatParams, VectorIvfPqCodebookKind, VectorIvfPqParams, VectorKMeansInit, VectorKMeansMetric,
+    VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver, VectorRelationBinding,
+    VectorRowIdBinding, VectorTopKParams, canonicalize_cuvs_options, vector_kmeans_output_schema,
+    vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
+    vector_top_k_output_schema,
 };

@@ -158,6 +158,7 @@ pub fn pipeline_tasks_within_migrated_contract(pipeline: &CompiledPipeline) -> b
                     | PipelineTaskKind::EdgeNormalize
                     | PipelineTaskKind::GraphAlgorithm
                     | PipelineTaskKind::VectorAlgorithm
+                    | PipelineTaskKind::MlAlgorithm
                     | PipelineTaskKind::SinkMaterialize
             )
         })
@@ -208,6 +209,7 @@ fn unsupported_shared_resident_producer(pipeline: &CompiledPipeline) -> Option<(
                 | PipelineTaskKind::JoinMaterialize
                 | PipelineTaskKind::Union
                 | PipelineTaskKind::VectorAlgorithm
+                | PipelineTaskKind::MlAlgorithm
         ))
         .then(|| (task.id(), task.kind()))
     })
@@ -230,6 +232,7 @@ fn computed_shared_resident_producer_tasks(pipeline: &CompiledPipeline) -> Vec<&
                     | PipelineTaskKind::JoinMaterialize
                     | PipelineTaskKind::Union
                     | PipelineTaskKind::VectorAlgorithm
+                    | PipelineTaskKind::MlAlgorithm
             )
             .then_some(task)
         })
@@ -383,7 +386,11 @@ fn task_feeds_modeled_input_or_shared_branch(pipeline: &CompiledPipeline, task: 
                 PipelineEdgeKind::SharedResidentProducer => return true,
                 PipelineEdgeKind::ResidentFrame => {
                     if pipeline.tasks().iter().any(|consumer| {
-                        consumer.id() == edge.to() && consumer.kind() == PipelineTaskKind::VectorAlgorithm
+                        consumer.id() == edge.to()
+                            && matches!(
+                                consumer.kind(),
+                                PipelineTaskKind::VectorAlgorithm | PipelineTaskKind::MlAlgorithm
+                            )
                     }) {
                         return true;
                     }

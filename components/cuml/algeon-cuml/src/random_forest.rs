@@ -5,6 +5,7 @@ use cudf::{DataType, Runtime, Series, TypeId, runtime::ExecutionBindingId};
 use crate::{
     DeviceBuffer, DeviceMatrix, MatrixLayout, Result,
     error::{ErrorCode, FailurePhase, check_status, error, from_cudf, invalid_input},
+    labels::{adopt_labels, validate_class_labels, validate_finite_targets},
     resources::{CumlResources, TrainingStreams},
 };
 
@@ -221,24 +222,8 @@ impl RandomForestClassifier {
         const OP: &str = "RandomForestClassifier::fit";
         let dimensions = validate_fit(resources, input, labels.len(), OP)?;
         let params_i32 = params.validate(true, OP)?;
-        if labels.dtype().map_err(|e| from_cudf(OP, e))?.id() != TypeId::Int32 || labels.null_count() != 0 {
-            return Err(invalid_input(OP, "classifier labels must be a non-null Int32 column"));
-        }
-        // cuML's split criteria assume dense labels starting at zero. Inspect a
-        // host copy, but pass the original device column to native training.
-        let y = labels.to_vec_strict::<i32>().map_err(|e| from_cudf(OP, e))?;
-        let n_classes = y.iter().copied().collect::<std::collections::BTreeSet<_>>().len();
-        if n_classes < 2
-            || y.iter().copied().min() != Some(0)
-            || y.iter().copied().max() != i32::try_from(n_classes - 1).ok()
-        {
-            return Err(error(
-                ErrorCode::LabelOutOfRange,
-                FailurePhase::Preflight,
-                OP,
-                "labels must be contiguous integers in 0..n_classes",
-            ));
-        }
+        let labels = adopt_labels(resources, labels, OP)?;
+        let n_classes = validate_class_labels(&labels, OP)?;
         let n_classes = i32::try_from(n_classes).map_err(|_| size_error(OP, "class count exceeds i32"))?;
         let labels_ptr = labels.as_column().device_data_ptr().map_err(|e| from_cudf(OP, e))?.cast();
         resources.validate_exact_binding(OP)?;
@@ -338,18 +323,8 @@ impl RandomForestRegressor {
         const OP: &str = "RandomForestRegressor::fit";
         let dimensions = validate_fit(resources, input, targets.len(), OP)?;
         let params_i32 = params.validate(false, OP)?;
-        if targets.dtype().map_err(|e| from_cudf(OP, e))?.id() != TypeId::Float32 || targets.null_count() != 0 {
-            return Err(invalid_input(OP, "regression targets must be a non-null Float32 column"));
-        }
-        let target_values = targets.to_vec_strict::<f32>().map_err(|e| from_cudf(OP, e))?;
-        if target_values.iter().any(|value| !value.is_finite()) {
-            return Err(error(
-                ErrorCode::NonFiniteInput,
-                FailurePhase::Preflight,
-                OP,
-                "regression targets must be finite",
-            ));
-        }
+        let targets = adopt_labels(resources, targets, OP)?;
+        validate_finite_targets(&targets, OP)?;
         let target_ptr = targets.as_column().device_data_ptr().map_err(|e| from_cudf(OP, e))?.cast();
         resources.validate_exact_binding(OP)?;
         let stream_raw = streams.raw_for_fit(resources, OP)?;

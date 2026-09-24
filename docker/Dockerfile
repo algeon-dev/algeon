@@ -5,7 +5,7 @@
 # ===========================================================================
 #
 # This image ships a Rust binary that links FORKED RAPIDS C++ libraries
-# (cuDF / cuGraph / RMM / cuVS) built from the pinned monorepo sources. Those
+# (cuDF / cuGraph / RMM / cuVS / cuML) built from the pinned monorepo sources. Those
 # forked `.so` files are NOT in any public `rapidsai/*` or `nvidia/cuda`
 # image, so we bundle the exact libraries the binary was linked against.
 # The unmodified CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc,
@@ -22,7 +22,8 @@
 #                  libs are dropped in, then `ldd` resolves exactly which CUDA
 #                  toolkit libraries this binary actually needs and copies just
 #                  those out. A cuDF-only binary pulls ~110 MB (cudart+nvrtc);
-#                  a cuGraph binary pulls ~1.2 GB (adds cublasLt/cusparse/...).
+#                  cuML adds CUDA math dependencies (cuSolver, cuBLAS,
+#                  cuBLASLt, cuSparse); image size with cuML is not measured.
 #   runtime      : a minimal nvidia/cuda:-base image + the forked libs + the
 #                  harvested CUDA subset. No conda, no RAPIDS, no build tools.
 # ===========================================================================

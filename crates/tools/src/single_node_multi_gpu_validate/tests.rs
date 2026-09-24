@@ -34,9 +34,9 @@ use super::{
         GraphClaimCalibrationProfile, InstallationBounds, RateOverrunPolicy, SchedulingProfile, VramCalibrationProfile,
     },
     provenance::{
-        CmakePackageVersion, CuvsBuildInputs, DirtyManifest, FileIdentity, NativeLibraryIdentities, ProcessIdentity,
-        RapidsVersions, RepositoryProvenance, RepositoryProvenanceSet, RunnerIdentity, SourcePackageVersion,
-        ToolchainVersions,
+        CmakePackageVersion, CumlBuildInputs, CuvsBuildInputs, DirtyManifest, FileIdentity, NativeLibraryIdentities,
+        ProcessIdentity, RapidsVersions, RepositoryProvenance, RepositoryProvenanceSet, RunnerIdentity,
+        SourcePackageVersion, ToolchainVersions,
     },
     redact::ensure_redacted_json,
     schedule::{ArrivalPlan, SchedulePhase},
@@ -745,6 +745,7 @@ fn sample_provenance() -> Provenance {
             cudf: repository("cudf-native-source"),
             cugraph: repository("cugraph-native-source"),
             cuvs: repository("cuvs-native-source"),
+            cuml: repository("cuml-native-source"),
         },
         native_libraries: NativeLibraryIdentities {
             libcudf_resolved: Some(identity()),
@@ -756,6 +757,15 @@ fn sample_provenance() -> Provenance {
             libcuvs_selector: identity(),
             libcuvs_resolved: identity(),
             version: "26.06.00".to_string(),
+        },
+        cuml_build_inputs: CumlBuildInputs {
+            install_dir: "/fixture/cuml".to_string(),
+            cmake_config: identity(),
+            libcuml_selector: identity(),
+            libcuml_resolved: identity(),
+            libcuml_rust_selector: identity(),
+            libcuml_rust_resolved: identity(),
+            version: "26.08.00".to_string(),
         },
         toolchains: ToolchainVersions {
             rustc: "rustc 1.95".to_string(),
@@ -774,6 +784,11 @@ fn sample_provenance() -> Provenance {
                     install_dir: "/fixture/cuvs".to_string(),
                     config: identity(),
                     version: "26.06.00".to_string(),
+                },
+                cuml: CmakePackageVersion {
+                    install_dir: "/fixture/cuml".to_string(),
+                    config: identity(),
+                    version: "26.08.00".to_string(),
                 },
             },
             build_profile: "release",
@@ -2609,6 +2624,7 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
         ("missing_cudf_source_hash", Some("cudf"), true, true, true, None, false, &["missing_source_hash"][..]),
         ("missing_cugraph_source_hash", Some("cugraph"), true, true, true, None, false, &["missing_source_hash"][..]),
         ("missing_cuvs_source_hash", Some("cuvs"), true, true, true, None, false, &["missing_source_hash"][..]),
+        ("missing_cuml_source_hash", Some("cuml"), true, true, true, None, false, &["missing_source_hash"][..]),
         ("missing_binary_hash", None, false, true, true, None, false, &["missing_binary_hash"][..]),
         (
             "missing_physical_memory_sample",
@@ -2673,6 +2689,7 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
             Some("cudf") => provenance.repositories.cudf.dirty_manifest.sha256.clear(),
             Some("cugraph") => provenance.repositories.cugraph.dirty_manifest.sha256.clear(),
             Some("cuvs") => provenance.repositories.cuvs.dirty_manifest.sha256.clear(),
+            Some("cuml") => provenance.repositories.cuml.dirty_manifest.sha256.clear(),
             None => {},
             Some(other) => panic!("unexpected source selector {other}"),
         }

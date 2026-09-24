@@ -65,7 +65,8 @@ pub fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -109,7 +110,8 @@ pub fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> 
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -187,7 +189,8 @@ pub fn advisory_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
         | PlanNode::Aggregate(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -209,7 +212,8 @@ pub fn advisory_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
         | PlanNode::Aggregate(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 

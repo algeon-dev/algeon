@@ -12,9 +12,9 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::Expr,
     plan::{
-        CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOptionKind, CuvsVectorElementType, NodeId, PlanNode,
-        ProjectionOutput, QueryNode, QueryPlan, VectorAlgorithmNode, VectorAlgorithmParams, VectorCagraBuildAlgo,
-        VectorCagraSearchAlgo, VectorDistanceMetric, VectorKMeansInit, VectorRelationBinding, VectorRowIdBinding,
+        CuvsOperation, DenseVectorBinding, GpuOptionKind, NodeId, PlanNode, ProjectionOutput, QueryNode, QueryPlan,
+        RelationIdType, VectorAlgorithmNode, VectorAlgorithmParams, VectorCagraBuildAlgo, VectorCagraSearchAlgo,
+        VectorDistanceMetric, VectorElementType, VectorKMeansInit, VectorRelationBinding, VectorRowIdBinding,
         vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
         vector_pca_output_schema, vector_top_k_output_schema,
     },
@@ -23,14 +23,26 @@ use crate::{
 pub fn vector_ingress_columns_by_input(plan: &QueryPlan) -> BTreeMap<NodeId, BTreeSet<String>> {
     let mut columns_by_input = BTreeMap::<NodeId, BTreeSet<String>>::new();
     for node in plan.nodes() {
-        let PlanNode::VectorAlgorithm(vector) = &node.kind else {
-            continue;
+        let bindings = match &node.kind {
+            PlanNode::VectorAlgorithm(vector) => vector
+                .spec
+                .params
+                .relation_bindings()
+                .map(|binding| (binding.input, &binding.vector, &binding.row_id))
+                .collect::<Vec<_>>(),
+            PlanNode::MlAlgorithm(ml) => ml
+                .spec
+                .params
+                .relation_bindings()
+                .map(|binding| (binding.input, &binding.features, &binding.row_id))
+                .collect::<Vec<_>>(),
+            _ => continue,
         };
-        for binding in vector.spec.params.relation_bindings() {
-            let CuvsDenseVectorBinding::VectorColumn(column) = &binding.vector else {
+        for (input, vector, _row_id) in bindings {
+            let DenseVectorBinding::VectorColumn(column) = vector else {
                 continue;
             };
-            mark_vector_ingress_lineage(plan, binding.input, column, &mut columns_by_input, &mut BTreeSet::new());
+            mark_vector_ingress_lineage(plan, input, column, &mut columns_by_input, &mut BTreeSet::new());
         }
     }
     columns_by_input
@@ -395,7 +407,7 @@ pub fn validate_vector_algorithm_node(
                 x.id_type,
                 y.id_type,
                 match x.element_type {
-                    CuvsVectorElementType::Float64 => DataType::Float64,
+                    VectorElementType::Float64 => DataType::Float64,
                     _ => DataType::Float32,
                 },
             )
@@ -549,7 +561,7 @@ fn validate_registry_maximum(
     node_id: NodeId,
 ) -> Result<()> {
     let maximum = match operation.descriptor().option(option_name).map(|option| option.kind) {
-        Some(CuvsOptionKind::Integer { maximum, .. }) => maximum,
+        Some(GpuOptionKind::Integer { maximum, .. }) => maximum,
         _ => {
             return Err(QueryError::new(
                 QueryErrorCode::Internal,
@@ -587,17 +599,17 @@ pub fn validate_vector_algorithm_node_contract(
     validate_vector_algorithm_node(vector, plan, &available_columns_by_node, node_id)
 }
 
-struct VectorRelationValidation {
-    id_type: DataType,
-    dimension: Option<usize>,
-    element_type: CuvsVectorElementType,
+pub(crate) struct DenseRelationValidation {
+    pub(crate) id_type: DataType,
+    pub(crate) dimension: Option<usize>,
+    pub(crate) element_type: VectorElementType,
 }
 
 fn validate_matching_element_types(
     left_role: &'static str,
-    left: &VectorRelationValidation,
+    left: &DenseRelationValidation,
     right_role: &'static str,
-    right: &VectorRelationValidation,
+    right: &DenseRelationValidation,
     node_id: NodeId,
 ) -> Result<()> {
     if left.element_type != right.element_type {
@@ -621,7 +633,7 @@ fn metric_name(metric: VectorDistanceMetric) -> &'static str {
 
 fn validate_element_metric(
     operation: CuvsOperation,
-    element: CuvsVectorElementType,
+    element: VectorElementType,
     metric: &str,
     node_id: NodeId,
 ) -> Result<()> {
@@ -640,7 +652,7 @@ fn validate_element_metric(
 fn validate_vector_element_support(
     operation: CuvsOperation,
     role: &'static str,
-    relation: &VectorRelationValidation,
+    relation: &DenseRelationValidation,
     node_id: NodeId,
 ) -> Result<()> {
     if operation.descriptor().element_support(relation.element_type).is_none() {
@@ -674,11 +686,46 @@ fn validate_vector_relation_binding(
     plan: &QueryPlan,
     available_columns_by_node: &[BTreeSet<String>],
     node_id: NodeId,
-) -> Result<VectorRelationValidation> {
-    let input = input_node(plan, binding.input, node_id)?;
-    let available = available_columns(available_columns_by_node, binding.input)?;
-    let (dimension, element_type) = match &binding.vector {
-        CuvsDenseVectorBinding::Columns(columns) => {
+) -> Result<DenseRelationValidation> {
+    validate_dense_relation_binding(
+        (&binding.vector, &binding.row_id),
+        binding.input,
+        node_id,
+        role,
+        plan,
+        available_columns_by_node,
+        None,
+        |relation| validate_vector_element_support(operation, role, relation, node_id),
+    )
+}
+
+fn with_supported_types(error: QueryError, supported_types: Option<&'static str>) -> QueryError {
+    match supported_types {
+        Some(types) => error.with_fact("supported_types", types),
+        None => error,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the validated relation needs its binding, plan, element contract, and consumer identity"
+)]
+pub(crate) fn validate_dense_relation_binding(
+    binding: (&DenseVectorBinding, &VectorRowIdBinding),
+    input_id: NodeId,
+    consumer_id: NodeId,
+    role: &'static str,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    supported_types: Option<&'static str>,
+    validate_element: impl FnOnce(&DenseRelationValidation) -> Result<()>,
+) -> Result<DenseRelationValidation> {
+    let node_id = consumer_id;
+    let (vector, row_id) = binding;
+    let input = input_node(plan, input_id, consumer_id)?;
+    let available = available_columns(available_columns_by_node, input_id)?;
+    let (dimension, element_type) = match vector {
+        DenseVectorBinding::Columns(columns) => {
             if columns.is_empty() {
                 return Err(vector_algorithm_error("vector relation must bind at least one feature column")
                     .with_fact("node_id", node_id)
@@ -709,19 +756,22 @@ fn validate_vector_relation_binding(
                         .with_fact("reason", "missing_feature_column")
                         .with_fact("column", column)
                 })?;
-                let current_type = CuvsVectorElementType::from_data_type(field.data_type());
+                let current_type = VectorElementType::from_data_type(field.data_type());
                 if current_type.is_none() || field.is_nullable() {
-                    return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedType,
-                        "query_engine.vector_algorithm.validate",
-                        "vector feature columns must have a non-null supported element type",
-                    )
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-                    .with_fact("reason", "unsupported_feature_type")
-                    .with_fact("column", column)
-                    .with_fact("data_type", format!("{:?}", field.data_type()))
-                    .with_fact("nullable", field.is_nullable()));
+                    return Err(with_supported_types(
+                        QueryError::new(
+                            QueryErrorCode::UnsupportedType,
+                            "query_engine.vector_algorithm.validate",
+                            "vector feature columns must have a non-null supported element type",
+                        )
+                        .with_fact("node_id", node_id)
+                        .with_fact("relation_role", role)
+                        .with_fact("reason", "unsupported_feature_type")
+                        .with_fact("column", column)
+                        .with_fact("data_type", format!("{:?}", field.data_type()))
+                        .with_fact("nullable", field.is_nullable()),
+                        supported_types,
+                    ));
                 }
                 let current_type = current_type.expect("validated vector element type");
                 if element_type.is_some_and(|element| element != current_type) {
@@ -735,7 +785,7 @@ fn validate_vector_relation_binding(
             }
             (Some(columns.len()), element_type.expect("non-empty feature columns"))
         },
-        CuvsDenseVectorBinding::VectorColumn(column) => {
+        DenseVectorBinding::VectorColumn(column) => {
             if !available.contains(column) {
                 return Err(vector_algorithm_error("vector column is not produced by its input relation")
                     .with_fact("node_id", node_id)
@@ -751,49 +801,61 @@ fn validate_vector_relation_binding(
                     .with_fact("column", column)
             })?;
             if field.is_nullable() {
-                return Err(vector_algorithm_error("vector column must be non-nullable")
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-                    .with_fact("reason", "unsupported_feature_type")
-                    .with_fact("column", column));
+                return Err(with_supported_types(
+                    vector_algorithm_error("vector column must be non-nullable")
+                        .with_fact("node_id", node_id)
+                        .with_fact("relation_role", role)
+                        .with_fact("reason", "unsupported_feature_type")
+                        .with_fact("column", column),
+                    supported_types,
+                ));
             }
             let (element, dimension) = match field.data_type() {
                 DataType::FixedSizeList(element, dimension) if *dimension > 0 => (element, Some(*dimension as usize)),
                 DataType::List(element) | DataType::LargeList(element) => (element, None),
                 actual => {
-                    return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedType,
-                        "query_engine.vector_algorithm.validate",
-                        "vector column must be a fixed-size or variable-size list",
-                    )
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-                    .with_fact("reason", "unsupported_feature_type")
-                    .with_fact("column", column)
-                    .with_fact("data_type", format!("{actual:?}")));
+                    return Err(with_supported_types(
+                        QueryError::new(
+                            QueryErrorCode::UnsupportedType,
+                            "query_engine.vector_algorithm.validate",
+                            "vector column must be a fixed-size or variable-size list",
+                        )
+                        .with_fact("node_id", node_id)
+                        .with_fact("relation_role", role)
+                        .with_fact("reason", "unsupported_feature_type")
+                        .with_fact("column", column)
+                        .with_fact("data_type", format!("{actual:?}")),
+                        supported_types,
+                    ));
                 },
             };
             if element.is_nullable() {
-                return Err(vector_algorithm_error("vector column elements must be non-null")
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-                    .with_fact("reason", "unsupported_feature_type")
-                    .with_fact("column", column));
+                return Err(with_supported_types(
+                    vector_algorithm_error("vector column elements must be non-null")
+                        .with_fact("node_id", node_id)
+                        .with_fact("relation_role", role)
+                        .with_fact("reason", "unsupported_feature_type")
+                        .with_fact("column", column),
+                    supported_types,
+                ));
             }
-            let element_type = CuvsVectorElementType::from_data_type(element.data_type()).ok_or_else(|| {
-                vector_algorithm_error("vector column element type is not supported")
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-                    .with_fact("reason", "unsupported_feature_type")
-                    .with_fact("column", column)
-                    .with_fact("data_type", format!("{:?}", element.data_type()))
+            let element_type = VectorElementType::from_data_type(element.data_type()).ok_or_else(|| {
+                with_supported_types(
+                    vector_algorithm_error("vector column element type is not supported")
+                        .with_fact("node_id", node_id)
+                        .with_fact("relation_role", role)
+                        .with_fact("reason", "unsupported_feature_type")
+                        .with_fact("column", column)
+                        .with_fact("data_type", format!("{:?}", element.data_type())),
+                    supported_types,
+                )
             })?;
             (dimension, element_type)
         },
     };
-    let relation = VectorRelationValidation { id_type: DataType::Int64, dimension, element_type };
-    validate_vector_element_support(operation, role, &relation, node_id)?;
-    match &binding.row_id {
+    let relation = DenseRelationValidation { id_type: DataType::Int64, dimension, element_type };
+    validate_element(&relation)?;
+    match row_id {
         VectorRowIdBinding::RowIndex if role == "initial_centroids" => Ok(relation),
         VectorRowIdBinding::RowIndex => {
             Err(vector_algorithm_error("vector result relations require an explicit logical row-id column")
@@ -816,7 +878,7 @@ fn validate_vector_relation_binding(
                     .with_fact("reason", "missing_row_id_column")
                     .with_fact("column", column)
             })?;
-            if CuvsIdType::from_data_type(field.data_type()).is_none() || field.is_nullable() {
+            if RelationIdType::from_data_type(field.data_type()).is_none() || field.is_nullable() {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "query_engine.vector_algorithm.validate",
@@ -829,7 +891,7 @@ fn validate_vector_relation_binding(
                 .with_fact("data_type", format!("{:?}", field.data_type()))
                 .with_fact("nullable", field.is_nullable()));
             }
-            Ok(VectorRelationValidation { id_type: field.data_type().clone(), ..relation })
+            Ok(DenseRelationValidation { id_type: field.data_type().clone(), ..relation })
         },
     }
 }

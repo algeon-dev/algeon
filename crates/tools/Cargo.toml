@@ -60,6 +60,7 @@ single-node-multi-gpu-validate-run = [
   "dep:cudf",
   "dep:cudf-sys",
   "dep:cuvs-sys",
+  "dep:cuml-sys",
   "dep:datafusion",
   "dep:algeon-datafusion",
   "dep:query-engine",
@@ -96,6 +97,7 @@ cudf = { workspace = true, optional = true }
 cudf-sys = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
+cuml-sys = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 algeon-datafusion = { workspace = true, optional = true }
 bench = { path = "../bench", optional = true }

@@ -230,7 +230,8 @@ fn simple_source_path_contains_node(plan: &QueryPlan, root: NodeId, target: Node
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => false,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
 
@@ -328,7 +329,8 @@ fn exact_unfiltered_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 

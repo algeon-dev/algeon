@@ -498,6 +498,7 @@ fn qualification_failures(
         &provenance.repositories.cudf,
         &provenance.repositories.cugraph,
         &provenance.repositories.cuvs,
+        &provenance.repositories.cuml,
     ] {
         if repository.revision.is_empty() || repository.dirty_manifest.sha256.is_empty() {
             failures.push(QualificationFailure { code: "missing_source_hash", attempt_id: None });

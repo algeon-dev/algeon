@@ -1,4 +1,4 @@
-//! Root, component, cuVS, and toolchain provenance capture.
+//! Root, component, cuVS, cuML, and toolchain provenance capture.
 
 use std::{
     env, fs,
@@ -20,6 +20,7 @@ pub(super) struct Provenance {
     pub(super) repositories: RepositoryProvenanceSet,
     pub(super) native_libraries: NativeLibraryIdentities,
     pub(super) cuvs_build_inputs: CuvsBuildInputs,
+    pub(super) cuml_build_inputs: CumlBuildInputs,
     pub(super) toolchains: ToolchainVersions,
     pub(super) runner: RunnerIdentity,
 }
@@ -43,9 +44,14 @@ impl Provenance {
                     "cuvs-native-source",
                     &workspace_root.join("components/cuvs/cuvs"),
                 )?,
+                cuml: RepositoryProvenance::collect(
+                    "cuml-native-source",
+                    &workspace_root.join("components/cuml/cuml"),
+                )?,
             },
             native_libraries: NativeLibraryIdentities::collect()?,
             cuvs_build_inputs: CuvsBuildInputs::collect()?,
+            cuml_build_inputs: CumlBuildInputs::collect()?,
             toolchains: ToolchainVersions::collect()?,
             runner: RunnerIdentity::collect()?,
         })
@@ -65,6 +71,7 @@ pub(super) struct RepositoryProvenanceSet {
     pub(super) cudf: RepositoryProvenance,
     pub(super) cugraph: RepositoryProvenance,
     pub(super) cuvs: RepositoryProvenance,
+    pub(super) cuml: RepositoryProvenance,
 }
 
 #[derive(Debug, Serialize)]
@@ -266,6 +273,55 @@ impl CuvsBuildInputs {
 }
 
 #[derive(Debug, Serialize)]
+pub(super) struct CumlBuildInputs {
+    pub(super) install_dir: String,
+    pub(super) cmake_config: FileIdentity,
+    pub(super) libcuml_selector: FileIdentity,
+    pub(super) libcuml_resolved: FileIdentity,
+    pub(super) libcuml_rust_selector: FileIdentity,
+    pub(super) libcuml_rust_resolved: FileIdentity,
+    pub(super) version: String,
+}
+
+impl CumlBuildInputs {
+    pub(super) fn collect() -> ToolResult<Self> {
+        let install_dir = env::var_os("CUML_INSTALL_DIR")
+            .map(PathBuf::from)
+            .ok_or("CUML_INSTALL_DIR is required for production-validation provenance")?;
+        let install_dir = fs::canonicalize(&install_dir).map_err(|_| "cannot canonicalize CUML_INSTALL_DIR")?;
+        let cmake_config_path = install_dir.join("lib/cmake/cuml/cuml-config.cmake");
+        let cmake_config = FileIdentity::collect(&cmake_config_path, "cuml-config.cmake")?;
+        let (libcuml_selector, libcuml_resolved) = installed_library(&install_dir, "libcuml.so")?;
+        let (libcuml_rust_selector, libcuml_rust_resolved) = installed_library(&install_dir, "libcuml_rust.so")?;
+        let config_bytes = fs::read(&cmake_config_path).map_err(|_| "cannot read cuml-config.cmake")?;
+        let version = cmake_set_value(&config_bytes, "CUML_VERSION").ok_or("cuml-config.cmake has no CUML_VERSION")?;
+        Ok(Self {
+            install_dir: install_dir.display().to_string(),
+            cmake_config,
+            libcuml_selector,
+            libcuml_resolved,
+            libcuml_rust_selector,
+            libcuml_rust_resolved,
+            version,
+        })
+    }
+}
+
+fn installed_library(install_dir: &Path, name: &str) -> ToolResult<(FileIdentity, FileIdentity)> {
+    let selector_path = [install_dir.join("lib").join(name), install_dir.join("lib64").join(name)]
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| format!("CUML_INSTALL_DIR must contain lib/{name} or lib64/{name}"))?;
+    let selector = FileIdentity::collect(&selector_path, &format!("{name} selector"))?;
+    let resolved_path = fs::canonicalize(&selector_path).map_err(|_| format!("cannot resolve selected {name}"))?;
+    if !resolved_path.starts_with(install_dir) {
+        return Err(format!("selected {name} resolves outside CUML_INSTALL_DIR").into());
+    }
+    let resolved = FileIdentity::collect(&resolved_path, &format!("resolved {name}"))?;
+    Ok((selector, resolved))
+}
+
+#[derive(Debug, Serialize)]
 pub(super) struct FileIdentity {
     pub(super) path: String,
     pub(super) size_bytes: u64,
@@ -315,6 +371,7 @@ pub(super) struct RapidsVersions {
     pub(super) cudf: CmakePackageVersion,
     pub(super) cugraph: SourcePackageVersion,
     pub(super) cuvs: CmakePackageVersion,
+    pub(super) cuml: CmakePackageVersion,
 }
 
 impl RapidsVersions {
@@ -323,6 +380,7 @@ impl RapidsVersions {
             cudf: CmakePackageVersion::collect("CUDF_INSTALL_DIR", "cudf", "CUDF_VERSION")?,
             cugraph: SourcePackageVersion::collect("components/cugraph/cugraph/VERSION")?,
             cuvs: CmakePackageVersion::collect("CUVS_INSTALL_DIR", "cuvs", "CUVS_VERSION")?,
+            cuml: CmakePackageVersion::collect("CUML_INSTALL_DIR", "cuml", "CUML_VERSION")?,
         })
     }
 }

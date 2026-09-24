@@ -9,7 +9,7 @@ description: The single full gate, what it runs and prints, the partial edit loo
 Before you start:
 
 - The [build shell](./from-source.md#2-configure-the-build-shell) is
-  configured and all three native layers plus the Rust workspace are built.
+  configured and all four native layers plus the Rust workspace are built.
 - `cargo-nextest` 0.9.144 and `cargo-hack` 0.6.45 are installed
   ([Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner)). The
   full gate checks both versions and exits with status 2 before any work if
@@ -134,10 +134,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --keep
 | --- | --- |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
 | `cuvs` | cuVS SQL functions (exact kNN, KMeans, PCA) and their GPU execution |
+| `cuml` | cuML PCA and truncated SVD SQL functions and their GPU execution; requires the native cuML install from `scripts/build/build_libcuml.sh` |
 | `nvml` | Optional NVML device diagnostics |
 
 The Arrow Flight SQL server is launched by the separate `algeon-server` package; its
-`cugraph`, `cuvs`, and `nvml` features forward the corresponding
+`cugraph`, `cuvs`, `cuml`, and `nvml` features forward the corresponding
 adapter and engine capabilities.
 
 Iceberg remains part of the supported source design. Its Cargo feature and
@@ -310,7 +311,7 @@ rustdoc does not build through nextest:
 
 ```bash
 NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock \
-  env LD_LIBRARY_PATH="target/native/cudf-install/lib:target/native/cuvs-install/lib:target/native/cugraph-install/lib:target/native/cugraph-build" \
+  env LD_LIBRARY_PATH="target/native/cudf-install/lib:target/native/cuvs-install/lib:target/native/cugraph-install/lib:target/native/cugraph-build:target/native/cuml-install/lib" \
   cargo test --workspace --all-features --doc --no-fail-fast
 ```
 

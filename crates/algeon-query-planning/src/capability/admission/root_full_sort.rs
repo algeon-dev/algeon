@@ -206,7 +206,8 @@ pub(in crate::capability::admission) fn root_full_sort_aggregate_is_on_sink_path
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => return false,
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => return false,
         }
     }
 }
@@ -447,7 +448,8 @@ pub(in crate::capability::admission) fn root_full_sort_consumer_chain_reaches_jo
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_),
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_),
         )
         | None => false,
     }
@@ -535,7 +537,8 @@ pub(in crate::capability::admission) fn root_full_sort_collect_shared_scalar_agg
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_),
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_),
         )
         | None => {},
     }

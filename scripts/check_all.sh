@@ -79,6 +79,22 @@ source_identity() {
   printf '%s\n' "${identity}"
 }
 
+# The qualification verifier compares gitlink revisions with run artifacts.
+gate_source_identity() {
+  local root_revision state gitlinks="" entry marker revision path
+  root_revision=$(git -C "${ROOT}" rev-parse HEAD)
+  state=clean
+  [[ -z "$(git -C "${ROOT}" status --porcelain --untracked-files=all --ignore-submodules=none)" ]] || state=dirty
+  while IFS= read -r entry; do
+    marker=${entry:0:1}
+    read -r revision path _ <<< "${entry:1}"
+    [[ "$marker" == " " ]] && marker='='
+    [[ -z "$gitlinks" ]] || gitlinks+=","
+    gitlinks+="${marker}${revision}@${path}"
+  done < <(git -C "${ROOT}" submodule status)
+  printf 'root=%s:%s gitlinks=%s\n' "$root_revision" "$state" "$gitlinks"
+}
+
 POLICY_SCRIPTS=(
   scripts/ci/tests/check_cpu_packaging_tests.sh
   scripts/ci/check_iceberg_leaf_dependency.sh
@@ -221,6 +237,7 @@ gate_start=${SECONDS}
 record gate RUNNING "${gate_started}" -
 echo "check_all: mode=${mode} logs=${LOG_DIR}"
 source_start=$(source_identity)
+if [[ "${mode}" == full ]]; then echo "CHECK SOURCE START: $(gate_source_identity)"; fi
 
 run rustfmt cargo +nightly fmt --all --check &
 run native-sources bash scripts/ci/check_native_sources.sh &
@@ -242,6 +259,7 @@ fi
 wait
 
 status=0
+if [[ "${mode}" == full ]]; then echo "CHECK SOURCE END: $(gate_source_identity)"; fi
 if [[ "$(source_identity)" != "${source_start}" ]]; then
   echo "ERROR: the source changed while the gate ran; its results do not describe the current source." >&2
   status=1

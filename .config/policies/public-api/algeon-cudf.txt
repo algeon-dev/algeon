@@ -6905,6 +6905,7 @@ pub fn cudf::Runtime::dataframe_from_record_batches(&self, &[arrow_array::record
 impl cudf::Runtime
 pub fn cudf::Runtime::pack_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::Runtime::pack_flat_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
+pub fn cudf::Runtime::unpack_dense_matrix(&self, cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<alloc::vec::Vec<cudf::Series>>
 impl cudf::Runtime
 pub fn cudf::Runtime::query_execution(&self) -> cudf::QueryExecutionContext<'_>
 impl core::fmt::Debug for cudf::Runtime
@@ -8583,6 +8584,7 @@ pub fn cudf::Runtime::dataframe_from_record_batches(&self, &[arrow_array::record
 impl cudf::Runtime
 pub fn cudf::Runtime::pack_columns(&self, &[&cudf::core::Column], cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
 pub fn cudf::Runtime::pack_flat_column(&self, &cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<cudf::PackedMatrix>
+pub fn cudf::Runtime::unpack_dense_matrix(&self, cudf::core::Column, usize, usize, cudf::DenseMatrixLayout) -> cudf::core::error::Result<alloc::vec::Vec<cudf::Series>>
 impl cudf::Runtime
 pub fn cudf::Runtime::query_execution(&self) -> cudf::QueryExecutionContext<'_>
 impl core::fmt::Debug for cudf::Runtime

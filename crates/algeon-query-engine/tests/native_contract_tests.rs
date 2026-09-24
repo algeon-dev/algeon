@@ -132,6 +132,8 @@ mod dependency_direction;
 mod expr_contracts;
 #[path = "native_contract_tests/graph_algorithm.rs"]
 mod graph_algorithm;
+#[path = "native_contract_tests/ml_algorithm.rs"]
+mod ml_algorithm;
 #[path = "native_contract_tests/optimizer_contracts.rs"]
 mod optimizer_contracts;
 #[path = "native_contract_tests/partial_aggregate_sizing.rs"]

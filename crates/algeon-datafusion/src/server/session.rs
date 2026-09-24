@@ -36,7 +36,9 @@ pub async fn build_session_context_with_backend(
         .map_err(|error| ServerError::session("failed to install backend native session", error))?;
     let builder = builder
         .try_with_cuvs_sql()
-        .map_err(|error| ServerError::session("failed to install cuVS SQL family", error))?;
+        .map_err(|error| ServerError::session("failed to install cuVS SQL family", error))?
+        .try_with_cuml_sql()
+        .map_err(|error| ServerError::session("failed to install cuML SQL family", error))?;
     let builder = match &effective_config.cugraph {
         Some(cugraph) => builder
             .try_with_cugraph_sql(cugraph_sql_config(cugraph))

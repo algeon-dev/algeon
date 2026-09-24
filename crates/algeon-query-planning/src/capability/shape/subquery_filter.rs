@@ -165,7 +165,8 @@ pub(in crate::capability) fn resident_grouped_aggregate_subquery_filter_stats(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "resident_grouped_subquery_filter_unsupported_node",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),

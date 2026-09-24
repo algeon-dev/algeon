@@ -94,7 +94,7 @@ fn capability_first_bounded_pipeline_admission_impl(
     // falls back to their existing executor).
     let analysis = plan.capability_analysis(ctx);
     if let Some(projection) = analysis.first_local_rejection_projection() {
-        if plan.contains_join() || plan.contains_vector_algorithm() {
+        if plan.contains_join() || plan.contains_vector_algorithm() || plan.contains_ml_algorithm() {
             return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
         }
         return Ok(None);
@@ -107,19 +107,22 @@ fn capability_first_bounded_pipeline_admission_impl(
         // reports the failure, not a plan-family envelope verdict about a
         // pipeline that does not exist.
         PipelineCompilation::Rejected(projection) => {
-            if plan.contains_join() || plan.contains_vector_algorithm() {
+            if plan.contains_join() || plan.contains_vector_algorithm() || plan.contains_ml_algorithm() {
                 return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
             }
             return Ok(None);
         },
     };
-    let converged = !plan.contains_join() && !plan.contains_vector_algorithm();
+    let converged = !plan.contains_join() && !plan.contains_vector_algorithm() && !plan.contains_ml_algorithm();
     if converged && !pipeline_tasks_within_migrated_contract(&pipeline) {
         // Windows and graph/vector-owned shapes stay on their existing paths
         // until their compiled contracts migrate.
         return Ok(None);
     }
-    let vector_task_contract = pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::VectorAlgorithm)
+    let vector_task_contract = pipeline
+        .tasks()
+        .iter()
+        .any(|task| matches!(task.kind(), PipelineTaskKind::VectorAlgorithm | PipelineTaskKind::MlAlgorithm))
         && pipeline_tasks_within_migrated_contract(&pipeline);
     let envelope = if pipeline_is_within_migrated_execution_scope(&pipeline) || converged || vector_task_contract {
         analysis.capability_envelope_label()

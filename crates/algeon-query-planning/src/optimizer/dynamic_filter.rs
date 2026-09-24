@@ -338,7 +338,8 @@ fn earliest_filter_consumer_for_column(
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 

@@ -32,7 +32,7 @@ use query_engine::{
         QueueBounds, probe_device_capacity,
     },
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "cugraph"))]
 use query_engine::{error::Result as QueryEngineResult, runtime::QueryHandle};
 
 #[cfg(feature = "cugraph")]
@@ -563,6 +563,7 @@ impl InstalledTestGpuBackend {
         self.backend().optimizer_config()
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn admit_query(&self) -> QueryEngineResult<QueryHandle> {
         self.backend().session_capability().admit_query()
     }

@@ -1,14 +1,14 @@
 # GPU query engine container
 
 A drop-and-run Arrow Flight SQL service that executes DataFusion physical plans
-on the GPU via cuDF (and optionally cuGraph and cuVS). This directory builds a
+on the GPU via cuDF (and optionally cuGraph, cuVS, and cuML). This directory builds a
 self-contained image: you give it a GPU and (optionally) a catalog, it serves
 SQL on `:50051`.
 
 ## Why this image is unusual
 
 algeon-datafusion links **forked, locally built** RAPIDS C++ libraries; a
-modified cuDF, cuGraph, RMM and cuVS. The `.so` files in the public
+modified cuDF, cuGraph, RMM, cuVS, and cuML. The `.so` files in the public
 `rapidsai/*` and `nvidia/cuda` images are the *stock* upstream builds and are
 **ABI-incompatible** with this binary. So the image cannot install RAPIDS from a
 base layer; it must bundle the exact libraries the binary was linked against.
@@ -19,6 +19,7 @@ The split:
 |---|---|---|
 | Forked cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-install` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
 | Canonical cuVS `.so` | root `target/native/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
+| Canonical cuML `.so` | root `target/native/cuml-install` | **bundled** for `cuml`: `libcuml.so`, `libcuml_rust.so`, `libtreelite.so`, `libnvforest.so` |
 | `libcudf_rust*.so` FFI bridges | cudf-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, …) | official `nvidia/cuda:*-runtime` | **harvested** in-Dockerfile via `ldd` |
 | `libgomp1`, `libbrotli1`, `ca-certificates`, `tini` | Ubuntu apt | installed in final stage |
@@ -28,9 +29,10 @@ The split:
 ```bash
 # 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
-bash docker/stage-docker-payload.sh                         # cugraph,cuvs,nvml
+bash docker/stage-docker-payload.sh                         # cugraph,cuvs,cuml,nvml
 FEATURES=nvml bash docker/stage-docker-payload.sh            # lean: cuDF only, ~3x smaller image
 FEATURES=cuvs bash docker/stage-docker-payload.sh             # cuVS without cuGraph
+FEATURES=cuml bash docker/stage-docker-payload.sh             # cuML with its cuVS runtime dependency
 SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh       # reuse only hash-verified canonical artifact
 
 # 2. Build the image. This verifies the payload manifest and all file hashes, then
@@ -49,37 +51,46 @@ the build record and canonical artifact still match the selected policy.
 
 Prerequisites: the forked libs must already be built;
 `target/native/cudf-install/lib/libcudf.so`,
-`target/native/cuvs-install/lib/libcuvs.so`, and (for cugraph)
+`target/native/cuvs-install/lib/libcuvs.so`, (for cuml)
+`target/native/cuml-install/lib/libcuml.so`, and (for cugraph)
 `target/native/cugraph-install/lib/libcugraph.so`. Set `ALGEON_NATIVE_DIR` when
-the matching `cudf-install`, `cuvs-install`, and `cugraph-install` prefixes live
+the matching `cudf-install`, `cuvs-install`, `cuml-install`, and `cugraph-install` prefixes live
 under a different native root. cuGraph must have been configured against that
 root's cuVS prefix. `readelf` and `ldd` are mandatory
 closure checks; `patchelf` and `binutils` (strip) on
 the host are recommended; without them the image falls back to `LD_LIBRARY_PATH`.
 
-Packaging fails if cuGraph resolves a different or private `_deps` cuVS,
+Packaging fails if cuGraph or cuML resolves a different or private `_deps` cuVS,
 `libcuvs_c.so` is missing for the `cuvs` feature, any dependency is unresolved,
 or the final realpath closure contains more than one cuVS/RMM/shared-logger
-identity. `librapids_logger.so` is bundled only when a staged ELF has a
+identity. The Dockerfile harvests the cuML CUDA math dependency closure
+(including cuSolver, cuBLAS, cuBLASLt, and cuSparse) from the CUDA runtime image.
+`librapids_logger.so` is bundled only when a staged ELF has a
 `DT_NEEDED` edge; static/absorbed logger builds deliberately omit it.
 
-## Serving cuVS SQL
+## Serving cuVS and cuML SQL
 
 Use a `cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
 `cuvs_pca`. Their relation arguments are parenthesized SQL subqueries, so the
 same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
 relations. The bounded server runs them inside the admitted query domain, whose
-allocator enforces the query's memory cap.
+allocator enforces the query's memory cap. A `cuml` image also serves
+`cuml_pca`, `cuml_tsvd`, `cuml_hdbscan`, `cuml_umap`,
+`cuml_logistic_regression`, `cuml_random_forest_classifier`, and
+`cuml_random_forest_regressor`.
 
 ## Image size
 
-The cuGraph feature is the dominant cost; it roughly **triples** the image,
-mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
+The figures below predate cuML staging. The full image size is not measured:
+CUDA math libraries are harvested from the runtime base during the image build.
 
 | Build | Forked libs | Harvested CUDA | ≈ Final image |
 |---|---|---|---|
-| **lean** (`nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
-| **full** (`+cugraph,+cuvs`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
+| **lean** (`nvml`, prior estimate) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
+| **full** (`+cugraph,+cuvs,+cuml`) | not measured | not measured | **not measured** |
+
+The previous cuGraph/cuVS image estimate does not include cuML; the full
+image size requires a Docker build to measure.
 
 When `strip` is available, staged artifacts are stripped
 (`strip --strip-unneeded`, ~35–40% off). Set `NO_STRIP=1` to keep symbols for

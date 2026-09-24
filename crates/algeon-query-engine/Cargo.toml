@@ -20,7 +20,7 @@ autotests = false
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
-features = ["cugraph", "cuvs", "nvml"]
+features = ["cugraph", "cuvs", "cuml", "nvml"]
 
 # The package carries the `algeon-` prefix for crates.io; the library identity
 # stays bare so `use query_engine::…` and the public API snapshots do not move.
@@ -31,6 +31,7 @@ name = "query_engine"
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "query-runtime/cugraph"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys"]
+cuml = ["dep:cuml", "dep:cuml-sys"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["query-runtime/nvml"]
 # Forwards the controlled device-quarantine qualification capability the DataFusion adapter exposes.
@@ -53,6 +54,8 @@ cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
+cuml = { workspace = true, optional = true }
+cuml-sys = { workspace = true, optional = true }
 fnv = { workspace = true }
 futures = { workspace = true }
 query-planning = { workspace = true }

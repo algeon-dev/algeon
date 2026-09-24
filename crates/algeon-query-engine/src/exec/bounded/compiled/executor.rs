@@ -36,6 +36,7 @@ mod dynamic_filters;
 mod edge_normalize;
 mod graph;
 mod join;
+mod ml;
 mod routing;
 mod source;
 mod terminal;
@@ -99,6 +100,51 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     /// Merges a successful lane's dynamic-filter set into the coordinator.
     pub(super) fn merge_lane_dynamic_filters(&mut self, filters: DynamicFilterSet) {
         self.dynamic_filters.merge_from(&filters);
+    }
+
+    #[cfg(any(feature = "cuvs", feature = "cuml"))]
+    fn collect_dense_relation_inputs(
+        &self,
+        task: &PipelineTask,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
+        node_id: NodeId,
+        input_ids: &[NodeId],
+    ) -> Result<BTreeMap<NodeId, GpuDataFrame>> {
+        if input_ids.len() != task.input_resources().len() {
+            return Err(invalid("compiled dense relation input resources do not match node inputs")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("input_count", input_ids.len())
+                .with_fact("resource_count", task.input_resources().len()));
+        }
+        let mut inputs = BTreeMap::new();
+        for (input_id, resource) in input_ids.iter().copied().zip(task.input_resources().iter().copied()) {
+            if inputs.contains_key(&input_id) {
+                continue;
+            }
+            let frame = if state.can_consume_task_input_resource(task, resource) {
+                let payload = state.consume_task_input_resource(task, resource)?;
+                let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = payload.payload else {
+                    return Err(invalid("compiled dense relation task requires resident frame inputs")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id)
+                        .with_fact("resident_resource_id", resource));
+                };
+                let ResidentGpuFrame { frame, .. } = *frame;
+                frame
+            } else {
+                let payload = state.resource_payload(resource)?;
+                let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = &payload.payload else {
+                    return Err(invalid("shared compiled dense relation input must be a resident frame")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id)
+                        .with_fact("resident_resource_id", resource));
+                };
+                frame.frame.clone()
+            };
+            inputs.insert(input_id, frame);
+        }
+        Ok(inputs)
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {
@@ -210,6 +256,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::EdgeNormalize => self.execute_edge_normalize_task(task, state),
             PipelineTaskKind::GraphAlgorithm => self.execute_graph_algorithm_task(task, state),
             PipelineTaskKind::VectorAlgorithm => self.execute_vector_algorithm_task(task, state),
+            PipelineTaskKind::MlAlgorithm => self.execute_ml_algorithm_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
         self.execution.metrics().close_budget_window(task.id(), budget_window);

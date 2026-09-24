@@ -206,6 +206,7 @@ pub(super) fn verify_bundle(
             ("cudf", "gitlink:components/cudf/cudf"),
             ("cugraph", "gitlink:components/cugraph/cugraph"),
             ("cuvs", "gitlink:components/cuvs/cuvs"),
+            ("cuml", "gitlink:components/cuml/cuml"),
         ] {
             let revision = gate_source_end.get(gate_key).expect("validated gate identity is complete");
             let pointer = format!("/repositories/{repository}/revision");
@@ -282,7 +283,8 @@ fn gate_source_identity(bytes: &[u8], prefix: &str) -> ToolResult<BTreeMap<Strin
     if name != "gitlinks" {
         return Err("invalid full-gate gitlink identity".into());
     }
-    let expected_paths = ["components/cudf/cudf", "components/cugraph/cugraph", "components/cuvs/cuvs"];
+    let expected_paths =
+        ["components/cudf/cudf", "components/cugraph/cugraph", "components/cuvs/cuvs", "components/cuml/cuml"];
     for entry in value.split(',') {
         let (revision, path) = entry
             .strip_prefix('=')
@@ -342,7 +344,7 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
     {
         failures.push(format!("{} exceeds or omits its physical sample-gap bound", path.display()));
     }
-    for repository in ["root", "cudf", "cugraph", "cuvs"] {
+    for repository in ["root", "cudf", "cugraph", "cuvs", "cuml"] {
         let pointer = format!("/provenance/repositories/{repository}/dirty_manifest/entries");
         if artifact.pointer(&pointer).and_then(Value::as_array).is_none_or(|entries| !entries.is_empty()) {
             failures.push(format!("{} has dirty {repository} source", path.display()));
@@ -353,6 +355,13 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
         "/provenance/repositories/cudf/revision",
         "/provenance/repositories/cugraph/revision",
         "/provenance/repositories/cuvs/revision",
+        "/provenance/repositories/cuml/revision",
+        "/provenance/cuml_build_inputs/cmake_config/sha256",
+        "/provenance/cuml_build_inputs/libcuml_selector/sha256",
+        "/provenance/cuml_build_inputs/libcuml_resolved/sha256",
+        "/provenance/cuml_build_inputs/libcuml_rust_selector/sha256",
+        "/provenance/cuml_build_inputs/libcuml_rust_resolved/sha256",
+        "/provenance/cuml_build_inputs/version",
         "/provenance/native_libraries/libcudf_resolved/sha256",
         "/provenance/native_libraries/libcugraph_resolved/sha256",
         "/provenance/runner/executable/sha256",
@@ -484,6 +493,7 @@ fn artifact_identity(artifact: &Value) -> Value {
     serde_json::json!({
         "repositories": artifact.pointer("/provenance/repositories"),
         "native_libraries": artifact.pointer("/provenance/native_libraries"),
+        "cuml_build_inputs": artifact.pointer("/provenance/cuml_build_inputs"),
         "runner": artifact.pointer("/provenance/runner"),
     })
 }
@@ -596,6 +606,27 @@ mod tests {
                 .to_string()
                 .contains("cuvs revision differs")
         );
+
+        fs::write(&gate, gate_log_with_cuml_revision(revision, other_revision)).unwrap();
+        assert!(
+            verify_bundle(&manifest, &bundle, &gate, &root.join("mismatched-cuml-report"))
+                .unwrap_err()
+                .to_string()
+                .contains("cuml revision differs")
+        );
+
+        let artifact_path = bundle.join("run-10.json");
+        let mut artifact: Value = serde_json::from_slice(&fs::read(&artifact_path).unwrap()).unwrap();
+        artifact["provenance"].as_object_mut().unwrap().remove("cuml_build_inputs");
+        fs::write(&artifact_path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+        fs::write(&gate, gate_log(revision)).unwrap();
+        assert!(
+            verify_bundle(&manifest, &bundle, &gate, &root.join("missing-cuml-report"))
+                .unwrap_err()
+                .to_string()
+                .contains("missing identity /provenance/cuml_build_inputs/")
+        );
+        fs::write(&artifact_path, serde_json::to_vec(&qualifying_artifact(&profile_sha256, 10)).unwrap()).unwrap();
 
         fs::write(&gate, gate_log(other_revision)).unwrap();
         assert!(
@@ -718,13 +749,21 @@ mod tests {
     }
 
     fn gate_log(revision: &str) -> String {
-        gate_log_with_cuvs_revision(revision, revision)
+        gate_log_with_revisions(revision, revision, revision)
     }
 
     fn gate_log_with_cuvs_revision(revision: &str, cuvs_revision: &str) -> String {
+        gate_log_with_revisions(revision, cuvs_revision, revision)
+    }
+
+    fn gate_log_with_cuml_revision(revision: &str, cuml_revision: &str) -> String {
+        gate_log_with_revisions(revision, revision, cuml_revision)
+    }
+
+    fn gate_log_with_revisions(revision: &str, cuvs_revision: &str, cuml_revision: &str) -> String {
         format!(
-            "CHECK SOURCE START: root={revision}:clean gitlinks=={revision}@components/cudf/cudf,={revision}@components/cugraph/cugraph,={cuvs_revision}@components/cuvs/cuvs\n\
-             CHECK SOURCE END: root={revision}:clean gitlinks=={revision}@components/cudf/cudf,={revision}@components/cugraph/cugraph,={cuvs_revision}@components/cuvs/cuvs\n\
+            "CHECK SOURCE START: root={revision}:clean gitlinks=={revision}@components/cudf/cudf,={revision}@components/cugraph/cugraph,={cuvs_revision}@components/cuvs/cuvs,={cuml_revision}@components/cuml/cuml\n\
+             CHECK SOURCE END: root={revision}:clean gitlinks=={revision}@components/cudf/cudf,={revision}@components/cugraph/cugraph,={cuvs_revision}@components/cuvs/cuvs,={cuml_revision}@components/cuml/cuml\n\
              OK: canonical full pre-merge surface passed.\n"
         )
     }

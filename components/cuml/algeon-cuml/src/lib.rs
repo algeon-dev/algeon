@@ -4,6 +4,7 @@ mod decomposition;
 mod device;
 mod error;
 mod hdbscan;
+mod labels;
 mod logistic;
 mod prepared;
 mod random_forest;
@@ -16,7 +17,7 @@ pub use error::{
     CumlErrorDetail, CumlErrorFailureSource, Error, ErrorCode, ErrorKind, ErrorStatus, FailurePhase, Result,
     allocation_attribution,
 };
-pub use hdbscan::{ClusterSelectionMethod, Hdbscan, HdbscanFit, HdbscanOutputBuffers, HdbscanParams};
+pub use hdbscan::{ClusterSelectionMethod, HdbscanFit, HdbscanOutputBuffers, HdbscanParams};
 pub use logistic::{LogisticRegressionFit, LogisticRegressionModel, LogisticRegressionParams};
 pub use prepared::{PreparedMatrixLease, PreparedReadCompletion};
 pub use random_forest::{RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion};

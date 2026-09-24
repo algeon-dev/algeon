@@ -5,6 +5,10 @@ mod root_gpu_fixture;
 #[cfg(feature = "cuvs")]
 mod cuvs_sql_gpu_tests;
 
+#[path = "cuml_sql_gpu_tests.rs"]
+#[cfg(feature = "cuml")]
+mod cuml_sql_gpu_tests;
+
 #[path = "session_config_tests.rs"]
 mod session_config_tests;
 

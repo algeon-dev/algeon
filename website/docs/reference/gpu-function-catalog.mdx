@@ -3,12 +3,12 @@ sidebar_position: 4
 slug: /reference/gpu-function-catalog
 title: GPU Function Catalog API
 sidebar_label: GPU Function Catalog API
-description: Schema reference for discovering installed cuGraph and cuVS SQL functions, inspecting descriptors, and validating GPU function call envelopes.
+description: Schema reference for discovering installed cuGraph, cuVS, and cuML SQL functions, inspecting descriptors, and validating GPU function call envelopes.
 ---
 
 # GPU Function Catalog API
 
-Three SQL table functions describe every cuGraph and cuVS function installed
+Three SQL table functions describe every cuGraph, cuVS, and cuML function installed
 in a session, so a person or an agent can find, understand, and check a call
 without reading server source:
 
@@ -21,18 +21,21 @@ without reading server source:
   static validation, a dry run: it reads no data and runs nothing on the GPU.
 
 The catalog is one list across providers; filter by `provider` for the
-cuGraph or cuVS subset. cuVS functions (including `cuvs_brute_force_knn`,
+cuGraph, cuVS, or cuML subset. cuVS functions (including `cuvs_brute_force_knn`,
 `cuvs_ivf_flat`, `cuvs_ivf_pq`, `cuvs_cagra`, `cuvs_kmeans`, and `cuvs_pca`) are executable
 when the build enables the `cuvs` feature;
 otherwise they are listed with `available=false` and
-`unavailable_reason='required_feature_disabled'`.
+`unavailable_reason='required_feature_disabled'`. The `cuml_pca` and
+`cuml_tsvd` entries use provider `cuml` and require the `cuml` feature for
+execution. See [cuML SQL API](../cuml/overview.mdx) for their query-local
+lifetime.
 
 For the task-oriented list, describe, validate, and execute workflow, use
 [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx).
 This page is the detailed API reference for the metadata functions and their
 response schemas.
 
-Execution syntax is provider-specific: cuGraph and cuVS functions use named
+Execution syntax is provider-specific: cuGraph, cuVS, and cuML functions use named
 arguments, with each relation supplied as a parenthesized relation-valued
 subquery. Validation is provider-neutral: the `call_json` envelope names
 registered tables or views by role and never evaluates SQL text embedded in
@@ -48,14 +51,14 @@ or filtering.
 ```sql
 SELECT function_name, provider, available, summary
 FROM gpu_list_functions()
-WHERE provider IN ('cugraph', 'cuvs')
+WHERE provider IN ('cugraph', 'cuvs', 'cuml')
 ORDER BY function_name;
 ```
 
 | Column | Arrow type | Nullable | Meaning |
 | --- | --- | --- | --- |
 | `function_name` | `Utf8` | no | Exact canonical execution-function name. |
-| `provider` | `Utf8` | no | Implementation provider, such as `cugraph` or `cuvs`. |
+| `provider` | `Utf8` | no | Implementation provider, such as `cugraph`, `cuvs`, or `cuml`. |
 | `available` | `Boolean` | no | Whether the function can be planned for GPU execution in this session and build. |
 | `unavailable_reason` | `Utf8` | yes | Stable reason code when `available=false`. |
 | `signature` | `Utf8` | no | Canonical SQL execution signature. |

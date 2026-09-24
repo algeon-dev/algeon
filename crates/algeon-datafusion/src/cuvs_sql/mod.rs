@@ -6,23 +6,23 @@
 
 mod error;
 mod exec;
+mod extension_planner;
 mod gpu_family;
 mod logical;
 mod options;
-mod query_planner;
 mod registry;
 mod relation_planner;
 
 pub use exec::CuvsAlgoExec;
+pub use extension_planner::CuvsExtensionPlanner;
 pub(crate) use gpu_family::{CuvsGpuFunctionFamily, cuvs_gpu_function_availability};
 pub use logical::CuvsLogicalNode;
 pub use options::{CuvsValidatedOptions, CuvsVectorRelationBinding};
-pub use query_planner::{AlgeonQueryPlanner, CuvsExtensionPlanner};
 pub use registry::{
-    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_ID_TYPES, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
+    CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
     CUVS_KMEANS_FUNCTION, CUVS_OPERATION_REGISTRY, CUVS_PAIRWISE_DISTANCE_FUNCTION, CUVS_PCA_FUNCTION,
-    CUVS_TOP_K_FUNCTION, CuvsDenseVectorBinding, CuvsIdType, CuvsOperation, CuvsOperationDescriptor,
-    CuvsOptionDefinition, CuvsOptionKind, CuvsOptionValidationError, CuvsOutputContract, CuvsRelationRole,
-    CuvsVectorElementType, canonicalize_cuvs_options, cuvs_options_json_schema,
+    CUVS_TOP_K_FUNCTION, CuvsOperation, CuvsOperationDescriptor, CuvsOutputContract, CuvsRelationRole,
+    DenseVectorBinding, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, RELATION_ID_TYPES,
+    RelationIdType, VectorElementType, canonicalize_cuvs_options, cuvs_options_json_schema,
 };
 pub use relation_planner::{CuvsRelationPlanner, cuvs_relation_planner};

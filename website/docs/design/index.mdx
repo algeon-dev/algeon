@@ -130,7 +130,7 @@ Two pages carry the details behind this flow:
         vector, and source work, and re-exports the established public paths.</>,
     },
     {
-      kind: 'bindings', name: 'components/(cudf, cugraph, cuvs)', note: 'safe Rust over RAPIDS', tone: 'gpu',
+      kind: 'bindings', name: 'components/(cudf, cugraph, cuvs, cuml)', note: 'safe Rust over RAPIDS', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
       sub: 'cudf · cugraph · cuvs',
       detail: <>The component crates own RAII device memory, runtime and stream
@@ -138,7 +138,7 @@ Two pages carry the details behind this flow:
         missing GPU capability is added here, not worked around above.</>,
     },
     {
-      kind: 'native', name: 'libcudf + libcugraph + libcuvs + RMM', note: 'C++ / CUDA kernels · memory pool', tone: 'gpu',
+      kind: 'native', name: 'libcudf/libcugraph/libcuvs/libcuml + RMM', note: 'C / C++ / CUDA kernels · memory pool', tone: 'gpu',
       sub: 'NVIDIA RAPIDS',
       detail: <>CUDA kernels and the RMM allocator live below the Rust
         boundary. C++ exceptions are converted at or below the C ABI and

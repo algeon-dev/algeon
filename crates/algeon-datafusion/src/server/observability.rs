@@ -19,23 +19,26 @@ use tonic::metadata::MetadataMap;
 
 #[cfg(feature = "cugraph")]
 use crate::server::cugraph_sql::CugraphAlgoExec;
-use crate::server::{
-    adapter_error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
-    cuvs_sql::CuvsAlgoExec,
-    error::{
-        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
-        status_source_diagnostics,
+use crate::{
+    cuml_sql::CumlAlgoExec,
+    server::{
+        adapter_error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
+        cuvs_sql::CuvsAlgoExec,
+        error::{
+            ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+            status_source_diagnostics,
+        },
+        native_exec::{
+            AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec,
+            AlgeonNativeGpuProducerExec, SERVER_CAPTURE_LOSS_METRIC_NAME,
+        },
+        native_report::{
+            NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
+            NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
+            NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
+        },
+        planner::NativePlanningDiagnostics,
     },
-    native_exec::{
-        AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec,
-        SERVER_CAPTURE_LOSS_METRIC_NAME,
-    },
-    native_report::{
-        NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate, NativeDataFusionExecutionWorkloadItem,
-        NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
-        NativeDataFusionRuntimeOutcome,
-    },
-    planner::NativePlanningDiagnostics,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1373,6 +1376,7 @@ fn is_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
         || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
         || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
         || plan.downcast_ref::<CuvsAlgoExec>().is_some()
+        || plan.downcast_ref::<CumlAlgoExec>().is_some()
     {
         return true;
     }

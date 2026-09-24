@@ -1,9 +1,73 @@
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use cudf::{CudfAllocationAttribution, DenseMatrixLayout, QueryMemoryDomainOptions, Runtime, TypeId};
+use cudf::{
+    BoundaryKind, BoundaryObservation, CudfAllocationAttribution, DenseMatrixLayout, QueryMemoryDomainOptions, Runtime,
+    RuntimeBuilder, TypeId,
+};
 use cuml::{
     CumlResources, DeviceMatrix, RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion,
 };
+
+#[test]
+fn random_forest_adopts_labels_and_targets_from_another_runtime() {
+    let copies = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&copies);
+    let runtime = Arc::new(
+        RuntimeBuilder::default()
+            .with_boundary_observer(move |observation: BoundaryObservation| {
+                if observation.kind == BoundaryKind::DeviceToDeviceCopy {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .build()
+            .expect("runtime"),
+    );
+    let other_runtime = RuntimeBuilder::default().with_device(runtime.device()).build().expect("second runtime");
+    let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
+    let features = (0..48).map(|i| i as f32 - 24.0).collect::<Vec<_>>();
+    let column = runtime.column_from_slice(&features).expect("features");
+    let packed = runtime.pack_flat_column(&column, features.len(), 1, DenseMatrixLayout::RowMajor).expect("matrix");
+    let packed = packed.validate().expect("finite features");
+    let input = DeviceMatrix::from_validated(&packed).expect("matrix view");
+    let streams = resources.training_streams(NonZeroUsize::new(1).unwrap(), None).expect("training streams");
+    let labels = features.iter().map(|value| i32::from(*value >= 0.0)).collect::<Vec<_>>();
+    let local_labels = runtime.series(&labels).expect("local labels");
+    let foreign_labels = other_runtime.series(&labels).expect("foreign labels");
+    assert_ne!(local_labels.placement().stream_debug, foreign_labels.placement().stream_debug);
+    let classifier_params = RandomForestParams { n_trees: 4, max_depth: 8, ..Default::default() };
+    let baseline = RandomForestClassifier::fit(&resources, &streams, &input, &local_labels, classifier_params)
+        .expect("baseline classifier fit");
+    assert_eq!(copies.load(Ordering::Relaxed), 0);
+    let adopted = RandomForestClassifier::fit(&resources, &streams, &input, &foreign_labels, classifier_params)
+        .expect("foreign classifier fit");
+    assert_eq!(copies.load(Ordering::Relaxed), 1, "foreign labels require a device copy");
+    assert_eq!(
+        adopted.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
+        baseline.predict(&resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
+    );
+
+    let targets = features.iter().map(|value| value * 2.0 + 1.0).collect::<Vec<_>>();
+    let local_targets = runtime.series(&targets).expect("local targets");
+    let foreign_targets = other_runtime.series(&targets).expect("foreign targets");
+    let regressor_params =
+        RandomForestParams { n_trees: 4, max_depth: 8, split_criterion: SplitCriterion::Mse, ..Default::default() };
+    let baseline = RandomForestRegressor::fit(&resources, &streams, &input, &local_targets, regressor_params)
+        .expect("baseline regressor fit");
+    assert_eq!(copies.load(Ordering::Relaxed), 1);
+    let adopted = RandomForestRegressor::fit(&resources, &streams, &input, &foreign_targets, regressor_params)
+        .expect("foreign regressor fit");
+    assert_eq!(copies.load(Ordering::Relaxed), 2, "foreign targets require a device copy");
+    assert_eq!(
+        adopted.predict(&resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
+        baseline.predict(&resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
+    );
+}
 
 #[test]
 fn classifier_and_regressor_fit_predict_and_validate_binding() {
@@ -57,6 +121,42 @@ fn classifier_and_regressor_fit_predict_and_validate_binding() {
     let prediction = classifier.predict(&resources, &input).expect("classifier prediction");
     assert_eq!(prediction.dtype().expect("dtype").id(), TypeId::Int32);
     assert_eq!(prediction.to_vec_strict::<i32>().expect("class predictions"), labels);
+    for (values, reason) in [
+        (vec![0_i32; rows], "single_class"),
+        ((0..rows).map(|i| if i < rows / 2 { 0 } else { 2 }).collect(), "labels_not_contiguous"),
+        ((0..rows).map(|i| if i < rows / 2 { 1 } else { 2 }).collect(), "labels_not_contiguous"),
+    ] {
+        let invalid_labels = runtime.series(&values).unwrap();
+        let failure = RandomForestClassifier::fit(
+            &resources,
+            &stream_lease,
+            &input,
+            &invalid_labels,
+            RandomForestParams::default(),
+        )
+        .err()
+        .expect("invalid class labels");
+        assert_eq!(failure.code(), cuml::ErrorCode::LabelOutOfRange);
+        assert_eq!(failure.detail_value("reason"), Some(reason));
+    }
+    let multiclass = runtime.series(&(0..rows).map(|i| (i / 16) as i32).collect::<Vec<_>>()).unwrap();
+    let multi = RandomForestClassifier::fit(
+        &resources,
+        &stream_lease,
+        &input,
+        &multiclass,
+        RandomForestParams { n_trees: 4, max_depth: 8, ..Default::default() },
+    )
+    .expect("three-class RF fit");
+    assert_eq!(multi.predict(&resources, &input).expect("three-class prediction").len(), rows);
+    let nullable = runtime.nullable_series(&labels, &(0..rows).map(|i| i != 3).collect::<Vec<_>>()).unwrap();
+    assert_eq!(
+        RandomForestClassifier::fit(&resources, &stream_lease, &input, &nullable, RandomForestParams::default())
+            .err()
+            .unwrap()
+            .code(),
+        cuml::ErrorCode::NullUnexpected
+    );
 
     let targets = features.iter().map(|x| 2.0 * x + 1.0).collect::<Vec<_>>();
     let target_series =

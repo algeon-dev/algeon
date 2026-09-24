@@ -28,7 +28,7 @@ then point the application at `crates/algeon-datafusion`. Its component crates
 are resolved through the root workspace.
 
 The `algeon-datafusion` crate has no default features. Add `cugraph` for graph SQL, `cuvs`
-for vector SQL, `iceberg` for Iceberg sources, and `nvml` for optional device
+for vector SQL, `cuml` for machine-learning SQL, `iceberg` for Iceberg sources, and `nvml` for optional device
 diagnostics. Omit all of them for relational cuDF execution only.
 
 ## Build one backend
@@ -65,7 +65,7 @@ across every session and frontend instead of building another one.
 ## Add cuGraph and cuVS SQL
 
 `install_on` installs backend-bound native rules and coverage. It does not
-install cuGraph SQL or cuVS SQL. To enable the `cugraph_*` table functions on
+install cuGraph, cuVS, or cuML SQL. To enable the `cugraph_*` table functions on
 the session, chain `try_with_cugraph_sql(config)`:
 
 ```rust
@@ -85,8 +85,11 @@ let ctx = SessionContext::new_with_state(state);
 cuGraph SQL functions resolve the backend's admission and native execution
 configuration from session state when executed. To add the `cuvs_*` functions,
 chain `try_with_cuvs_sql()` in the same manner; it takes no configuration. The
-functions execute only when the crate was built with the `cuvs` feature. See
-[cuVS execution](../cuvs/overview.mdx#execution).
+functions execute only when the crate was built with the `cuvs` feature. For
+`cuml_*` functions, chain `try_with_cuml_sql()` as well; it takes no
+configuration and execution requires the `cuml` feature. See
+[cuVS execution](../cuvs/overview.mdx#execution) and
+[cuML execution](../cuml/overview.mdx#execution-and-lifetime).
 
 ## Execute one attempt per query
 
@@ -179,8 +182,8 @@ Set `AlgeonGpuExecutionMode` on the shared backend before installing sessions:
 
 | Rust mode | Behavior | Use it when |
 | --- | --- | --- |
-| `NativePreferred` (default) | Select supported relational SQL for native GPU execution; retain DataFusion for unsupported or unselected candidates. Explicit GPU functions still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph and vector functions. |
-| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU; run explicit `cugraph_*` and `cuvs_*` functions on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
+| `NativePreferred` (default) | Select supported relational SQL for native GPU execution; retain DataFusion for unsupported or unselected candidates. Explicit GPU functions still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph, vector, and ML functions. |
+| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU; run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` functions on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
 | `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | You need to enforce a plan with no DataFusion CPU operators. |
 
 This replaces the backend construction above, using the same `device`:
@@ -204,14 +207,15 @@ backend requirements. The Flight SQL equivalents are documented in
 
 In `FunctionsOnly`, a CPU relation can feed a GPU function whose Arrow results
 return to CPU SQL. A GPU result can also pass through CPU SQL into another GPU
-function. cuGraph inputs remain registered table or view names; cuVS inputs
+function. cuGraph inputs remain registered table or view names; cuVS and cuML inputs
 remain parenthesized subqueries. Supported compositions share the same backend
 admission and immutable query grant.
 
 CPU-to-GPU input boundaries stage Arrow data in host memory before upload.
 The current staging path does not spill: cuGraph host input and output staging
 each default to a 1 GiB ceiling; cuVS host input staging has a cumulative 1 GiB ceiling
-across one operation's inputs. DataFusion's memory pool can impose a lower
+across one operation's inputs; cuML uses the same staging boundary.
+DataFusion's memory pool can impose a lower
 limit. These are host staging limits, separate from the GPU query cap; keep
 intermediate inputs bounded. See the runnable
 [execution modes example](https://github.com/algeon-dev/algeon/blob/main/crates/examples/src/bin/functions_only_modes.rs)

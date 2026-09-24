@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-description: Clone one recursive repository, configure one checkout-local environment, and build cuDF/RMM, cuVS, cuGraph, and the Rust workspace.
+description: Clone one recursive repository, configure one checkout-local environment, and build cuDF/RMM, cuVS, cuGraph, cuML, and the Rust workspace.
 ---
 
 # Building from Source
@@ -17,7 +17,7 @@ Before you start:
 - The build host has the GPU the artifacts will run on, or you have chosen an
   explicit architecture list ([Choosing CUDA architectures](#choosing-cuda-architectures)).
 
-Run the steps in order: cuDF/RMM → cuVS → cuGraph → the Rust workspace. Each
+Run the steps in order: cuDF/RMM → cuVS → cuGraph → cuML → the Rust workspace. Each
 native step prints where it installed and fails early if the previous layer
 is missing or was built for a different CUDA target. When a step fails, the
 message names the component and the rebuild command.
@@ -45,9 +45,10 @@ gitlinks:
 components/cudf/cudf/       # Algeon cuDF fork
 components/cugraph/cugraph/ # Algeon cuGraph fork
 components/cuvs/cuvs/       # Algeon cuVS fork
+components/cuml/cuml/       # pinned cuML source
 ```
 
-Verify that all three are initialized and match the root commit; every line
+Verify that all four are initialized and match the root commit; every line
 must start with a space, not `-` (uninitialized) or `+` (wrong revision):
 
 ```bash
@@ -76,7 +77,7 @@ export CC=/usr/bin/gcc-14
 export CXX=/usr/bin/g++-14
 export CUDAHOSTCXX=/usr/bin/g++-14
 
-# One CUDA target contract for cuDF, cuVS, and cuGraph. NATIVE is host-local.
+# One CUDA target contract for cuDF, cuVS, cuGraph, and cuML. NATIVE is host-local.
 export CMAKE_CUDA_ARCHITECTURES=NATIVE
 unset CUDF_CMAKE_CUDA_ARCHITECTURES
 
@@ -85,12 +86,13 @@ unset CUDF_CMAKE_CUDA_ARCHITECTURES
 # build fingerprint. Cargo-built binaries find the native libraries through
 # their rpath, so this block does not set LD_LIBRARY_PATH.
 unset ALGEON_NATIVE_DIR CUDF_CPP_BUILD_DIR CUDF_INSTALL_DIR INSTALL_PREFIX \
-  CUVS_INSTALL_DIR CUVS_ROOT CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
+  CUVS_INSTALL_DIR CUVS_ROOT CUML_CPP_BUILD_DIR CUML_INSTALL_DIR \
+  CUGRAPH_CMAKE_BUILD_DIR CUGRAPH_INSTALL_DIR
 ```
 
 Edit the CUDA and compiler lines if your toolkit or compiler lives elsewhere.
 The `unset` clears any native selectors inherited from a previous shell, such
-as an older `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, `CUVS_ROOT`, or
+as an older `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, `CUVS_ROOT`, `CUML_INSTALL_DIR`, or
 `CUGRAPH_CMAKE_BUILD_DIR`, so another checkout's libraries cannot leak in.
 Every Cargo build script and `scripts/build/build_lib*.sh` already default
 each cleared selector to this checkout's `target/native/` prefixes, so leaving
@@ -105,7 +107,7 @@ Confirm that no selector escapes the checkout:
 
 ```bash
 env | sort | grep -E '^(ALGEON_ROOT|CMAKE_CUDA_ARCHITECTURES)='
-env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
+env | sort | grep -E '^(INSTALL_PREFIX|ALGEON_NATIVE_DIR|CUDF_[^=]*|CUVS_[^=]*|CUML_[^=]*|CUGRAPH_[^=]*)=' && echo "selector leaked" || echo "clean"
 ```
 
 The first command must show `ALGEON_ROOT` at the checkout root and
@@ -118,7 +120,7 @@ What each selector means is listed under
 
 ## 3. Build the native stack
 
-Do not change `CMAKE_CUDA_ARCHITECTURES` between the three commands. Each
+Do not change `CMAKE_CUDA_ARCHITECTURES` between the four commands. Each
 script records the value in the library it builds and refuses to build on top
 of a prefix that carries a different one.
 
@@ -186,9 +188,26 @@ On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
 single-GPU strongly-connected-components compatibility path. Building a
 different upstream checkout bypasses that contract.
 
+### Build cuML
+
+The `cuml` Cargo feature requires the cuML native installation. After cuDF
+and cuVS are built, run:
+
+```bash
+bash scripts/build/build_libcuml.sh
+```
+
+The script installs `libcuml.so` and `libcuml_rust.so` under
+`target/native/cuml-install/lib`, using the selected cuDF/RMM and cuVS
+prefixes. Verify the installation before an all-feature Rust build:
+
+```bash
+ls "$ALGEON_ROOT"/target/native/cuml-install/lib/{libcuml.so,libcuml_rust.so}
+```
+
 ### Use the native stack from registry crates
 
-The three build scripts create a native root that registry-installed Algeon
+The four build scripts create a native root that registry-installed Algeon
 crates can consume without a source checkout inside Cargo's package archive:
 
 ```bash
@@ -196,8 +215,8 @@ export ALGEON_NATIVE_DIR="$ALGEON_ROOT/target/native"
 cargo build --all-features
 ```
 
-`ALGEON_NATIVE_DIR` must contain `cudf-install`, `cuvs-install`, and
-`cugraph-install` from the matching Algeon tag. The sys crates verify their
+`ALGEON_NATIVE_DIR` must contain `cudf-install`, `cuvs-install`,
+`cugraph-install`, and `cuml-install` from the matching Algeon tag. The sys crates verify their
 required library before invoking any native tool; the cuDF and cuGraph
 prefixes also carry a `crate-version` marker and are rejected when it differs
 from the Rust crate version. A registry build still needs `cmake` for cuVS
@@ -205,13 +224,13 @@ package discovery, `readelf` and `ldd` from binutils for cuGraph loader
 validation, and a C compiler for the cuVS ABI probe. It does not run bindgen or
 build cuDF or cuGraph with CMake.
 
-`CUDF_INSTALL_DIR`, `CUVS_ROOT`, `CUVS_INSTALL_DIR`, and the three
+`CUDF_INSTALL_DIR`, `CUVS_ROOT`, `CUVS_INSTALL_DIR`, `CUML_INSTALL_DIR`, and the three
 `CUGRAPH_NATIVE_*` variables remain lower-level developer selectors. Prefer
 `ALGEON_NATIVE_DIR` when consuming the complete stack.
 
 ## 4. Build the Rust workspace
 
-After all three native layers exist, build the unified workspace with one
+After all four native layers exist, build the unified workspace with one
 feature selection:
 
 ```bash
@@ -263,19 +282,20 @@ set one only to point a step at a prefix outside the checkout.
 | Variable | Owner and purpose |
 | --- | --- |
 | `ALGEON_ROOT` | Root of the one recursive checkout. |
-| `ALGEON_NATIVE_DIR` | Root containing the three matching registry-consumer install prefixes. Defaults to `target/native`. |
-| `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, and cuGraph. Defaults to `NATIVE`. |
+| `ALGEON_NATIVE_DIR` | Root containing the four matching registry-consumer install prefixes. Defaults to `target/native`. |
+| `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, cuGraph, and cuML. Defaults to `NATIVE`. |
 | `CUDF_CPP_BUILD_DIR` | cuDF CMake cache. Defaults to `target/native/cudf-build`. |
 | `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. Defaults to `target/native/cudf-install`. |
 | `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. Defaults to `target/native/cuvs-install`. |
+| `CUML_CPP_BUILD_DIR` / `CUML_INSTALL_DIR` | cuML build tree and native install. Defaults to `target/native/cuml-build` and `target/native/cuml-install`. |
 | `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. Defaults to `target/native/cugraph-build`. |
 | `CUGRAPH_INSTALL_DIR` | Installed cuGraph libraries, headers, and crate-version marker. Defaults to `target/native/cugraph-install`. |
-| `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuDF/RMM, cuVS, CUDA. Not needed for Cargo-built binaries, which resolve native libraries through their rpath; only a caller that runs a non-Cargo loader, such as a rustdoc doctest binary, needs to compose it. |
+| `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuML, cuDF/RMM, cuVS, CUDA. Not needed for Cargo-built binaries, which resolve native libraries through their rpath; only a caller that runs a non-Cargo loader, such as a rustdoc doctest binary, needs to compose it. |
 
 The native dependency relationship is:
 
 ```text
-cuDF/RMM → cuVS → cuGraph → Algeon
+cuDF/RMM → cuVS → cuGraph and cuML → Algeon
 ```
 
 ### Choosing CUDA architectures
@@ -299,14 +319,14 @@ shared value to cuDF's upstream build interface internally.
 Each native script records the requested `CMAKE_CUDA_ARCHITECTURES` value
 verbatim, plus the full-kernel real cubin set it finds in the built library, at
 `share/algeon-native/cuda-architectures.env` under that layer's prefix. The
-cuVS and cuGraph scripts read the upstream record before configuring and
+cuVS, cuGraph, and cuML scripts read the upstream record before configuring and
 compare real cubin sets after building; small embedded dependency stub sets are
 not treated as targets. An explicitly selected external prefix is exempt,
 since algeon scripts did not build it and it carries no record. To inspect the
 records:
 
 ```bash
-for root in "$ALGEON_ROOT"/target/native/{cudf,cuvs,cugraph}-install; do
+for root in "$ALGEON_ROOT"/target/native/{cudf,cuvs,cugraph,cuml}-install; do
   echo "== $root =="
   cat "$root/share/algeon-native/cuda-architectures.env"
 done

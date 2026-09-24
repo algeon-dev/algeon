@@ -7,6 +7,7 @@ use crate::{
     datatypes::{arrow_data_types_match_except_list_child_names, is_supported_arrow_implicit_cast},
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue},
+    ml_validation::validate_ml_algorithm_node,
     plan::{
         AggregateNode, EdgeNormalizeNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
         GraphEdgePredicateInput, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2VertexAttributesInput,
@@ -294,6 +295,10 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
                 validate_vector_algorithm_node(vector, plan, &available_columns_by_node, node.id)?;
                 schema_column_names(node.output_schema())
             },
+            PlanNode::MlAlgorithm(ml) => {
+                validate_ml_algorithm_node(ml, plan, &available_columns_by_node, node.id)?;
+                schema_column_names(node.output_schema())
+            },
         };
         available_columns_by_node.push(available_columns);
     }
@@ -482,6 +487,7 @@ pub fn plan_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
         PlanNode::VectorAlgorithm(_) => "vector_algorithm",
+        PlanNode::MlAlgorithm(_) => "ml_algorithm",
     }
 }
 

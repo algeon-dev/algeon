@@ -55,7 +55,8 @@
 //!
 //! Optional engines change plan classification only while enabled: with the
 //! `cugraph` feature off, cuGraph table functions fail closed with a typed
-//! capability error; with `cuvs` off, cuVS planner calls fail closed; with
+//! capability error; with `cuvs` or `cuml` off, the corresponding SQL family
+//! remains discoverable but execution fails before input staging; with
 //! `nvml` off, NVML telemetry reads report unavailable. Iceberg source support
 //! remains outside the enabled release feature set until iceberg-rust 0.12.
 //! The `bench-support`,
@@ -69,11 +70,13 @@ pub mod attempt;
 pub mod backend;
 pub mod capability;
 pub mod cugraph_sql;
+pub mod cuml_sql;
 pub mod cuvs_sql;
 pub mod error;
 mod final_plan_observation;
 pub mod gpu_coverage;
 pub mod gpu_functions;
+mod gpu_query_planner;
 mod native;
 pub mod native_exec;
 pub mod native_report;

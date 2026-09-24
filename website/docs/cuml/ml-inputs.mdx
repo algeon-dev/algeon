@@ -1,0 +1,86 @@
+---
+sidebar_position: 3
+slug: /cuml/ml-inputs
+description: Canonical ID, Float32 features, and supervised label contracts for cuML SQL functions.
+---
+
+# ML Inputs
+
+`cuml_pca`, `cuml_tsvd`, `cuml_hdbscan`, and `cuml_umap` accept one `input` relation.
+`cuml_logistic_regression`, `cuml_random_forest_classifier`, and
+`cuml_random_forest_regressor` require both `training` and `predict` relations.
+Each relation argument is a parenthesized `SELECT`. For metadata-only
+`gpu_validate_call`, register tables or views with the corresponding schemas;
+validation does not scan rows.
+
+## Identity and feature projection
+
+Each input must project a non-null column named `id`. Its Arrow type must be
+`Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Duplicate IDs are allowed;
+the output `row_ordinal` distinguishes rows with the same ID and records their
+position in the evaluated relation.
+
+The relation projects exactly one of these dense-feature shapes:
+
+- Wide features: every column other than `id` is a non-null `Float32` feature.
+  For `training`, the canonical `label` column is excluded from features.
+  The order of columns in the `SELECT` projection fixes the dimension order.
+  At least one feature is required.
+- List features: one non-null column named `vector` contains
+  `FixedSizeList<Float32, D>`, `List<Float32>`, or `LargeList<Float32>` with
+  non-null elements. The relation contains no other feature columns; supervised
+  `training` also contains `label`.
+  `FixedSizeList` requires positive `D`; variable-length lists must have the
+  same positive length for every evaluated row.
+
+No implicit feature cast occurs. Apply `CAST` in the subquery to produce
+`Float32` features when source columns have a different numeric type:
+
+```sql
+SELECT id, pc_0
+FROM cuml_pca(
+  input => (SELECT id, CAST(d0 AS FLOAT) AS d0, CAST(d1 AS FLOAT) AS d1 FROM input_vectors),
+  n_components => 1
+);
+```
+
+Float32 feature values must be finite. Null IDs, feature columns, list values,
+and list elements are invalid for this input contract. The unsupervised `input`
+role treats a column named `label` as an ordinary feature.
+
+## Supervised classification and regression
+
+For classification, `training` projects a canonical non-null `Int32` column named `label` alongside
+its ID and Float32 features. Evaluated training labels must contain at least
+two classes with contiguous indices `0..C-1`. Two classes use logistic loss;
+more classes use softmax for logistic regression. A fit that reaches `max_iter` remains a result.
+Random forest classification accepts the same class indices. For random forest
+regression, `training.label` must be non-null finite `Float32`; its output
+`prediction` is `Float32`.
+The query-local model is released after predicting within the statement.
+
+`predict` projects its own `id` and Float32 features, without `label`. Its
+feature dimension must match `training`; known dimensions are checked at
+planning, and evaluated dimensions are checked after packing. Output `id`
+comes from `predict`, including when the training and predict ID types differ.
+An empty evaluated `predict` relation produces zero rows with the stable
+`prediction Int32` schema for classification or `prediction Float32` for
+regression without calling the native model.
+
+## Validation boundary
+
+SQL planning and `gpu_validate_call` check names, static Arrow types,
+nullability, list shape, option ranges, and known dimensions. A known dimension
+smaller than `n_components` is rejected before execution. Metadata validation
+reads no feature values.
+
+Execution checks evaluated row count and feature values, including finiteness
+and uniform positive list length. An empty evaluated input produces zero rows
+with the function's stable output schema without calling cuML. For a nonempty
+input, PCA and TSVD require at least two rows and two feature dimensions;
+`n_components` cannot exceed the evaluated dimension. HDBSCAN requires at
+least two rows, `min_samples < rows`, `min_cluster_size <= rows`, and
+`max_cluster_size <= rows` when the latter is nonzero. UMAP requires at least
+two rows and `n_neighbors < rows`. When an exact row count is known, SQL
+planning can reject invalid counts. Otherwise the execution error carries a
+specific reason for the violated row-dependent condition.

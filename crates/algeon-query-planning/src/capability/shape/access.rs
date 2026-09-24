@@ -443,7 +443,8 @@ pub(in crate::capability) fn projection_or_filter_wrapped_grouped_local_parquet_
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "resident_grouped_aggregate_topk_input_requires_grouped_aggregate",
                     [("node_id", current.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -483,7 +484,8 @@ pub(in crate::capability) fn peel_resident_unary_chain_for_capability(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
                 return Some((current, chain));
             },
         }
@@ -556,7 +558,8 @@ pub(in crate::capability) fn validate_bounded_join_subtree_for_capability(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "join_subtree_input_unsupported_node",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -590,7 +593,8 @@ pub(in crate::capability) fn validate_bounded_join_subtree_with_preaggregate_lea
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "aggregate_over_join_topk_input_requires_join_subplan",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -643,7 +647,8 @@ fn validate_bounded_join_subtree_with_preaggregate_leaves_for_capability(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "join_subtree_input_unsupported_node",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -712,7 +717,8 @@ pub(in crate::capability) fn validate_bounded_join_subtree_rooted_at_join_for_ca
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "aggregate_over_join_topk_input_requires_join_subplan",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -745,7 +751,8 @@ pub(in crate::capability) fn validate_local_parquet_leaf_pipeline_for_capability
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "resident_grouped_aggregate_input_requires_source_filter_projection_leaf",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -782,7 +789,8 @@ pub(in crate::capability) fn validate_local_parquet_leaf_pipeline_for_keyed_hash
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Err(CapabilityDecision::rejected(
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Err(CapabilityDecision::rejected(
             "keyed_hash_resident_subplan_leaf_requires_source_filter_projection",
             [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
         )),
@@ -1064,7 +1072,8 @@ pub(in crate::capability) fn output_lineage(
         PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => Ok(OutputLineage::Derived { node_id, field_index }),
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => Ok(OutputLineage::Derived { node_id, field_index }),
     }
 }
 

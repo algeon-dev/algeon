@@ -153,7 +153,8 @@ fn parent_constrains_or_carries_column(
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => false,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
 

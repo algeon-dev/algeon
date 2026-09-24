@@ -5,7 +5,7 @@
 # WHY THIS SCRIPT EXISTS
 # ----------------------
 # algeon-datafusion links against FORKED RAPIDS C++ libraries (cuDF, cuGraph,
-# RMM, cuVS) that are built from the pinned monorepo sources. They are NOT the
+# RMM, cuVS, cuML) that are built from the pinned monorepo sources. They are NOT the
 # stock libraries shipped in the official `rapidsai/*` or `nvidia/cuda` images,
 # so the image cannot pull them from a base layer: we must bundle the exact
 # `.so` files this binary was linked against. This script collects them.
@@ -16,6 +16,8 @@
 #   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf
 #   lib/libcugraph*.so                 forked RAPIDS C++ libs from cugraph
 #   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
+#   lib/libcuml.so* libcuml_rust.so*   canonical cuML install (for `cuml`)
+#   lib/libtreelite.so* libnvforest.so* cuML native dependencies
 #
 # The CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc, ...) are NOT
 # staged here: they are harvested from an official nvidia/cuda `-runtime`
@@ -29,8 +31,8 @@
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/stage-docker-payload.sh                  # cugraph,cuvs,nvml
-#   FEATURES=nvml bash docker/stage-docker-payload.sh    # lean cudf-only (~1/3 size)
+#   bash docker/stage-docker-payload.sh                  # cugraph,cuvs,cuml,nvml
+#   FEATURES=nvml bash docker/stage-docker-payload.sh    # lean cudf-only
 #   NO_STRIP=1 bash docker/stage-docker-payload.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh    # reuse only verified canonical artifact
 #
@@ -38,8 +40,8 @@
 #   bash docker/build-image.sh
 #
 # The image is feature-agnostic: it bundles whatever this script staged and
-# harvests only the CUDA libs the binary actually links. A lean cuDF-only
-# build therefore yields a ~3x smaller image automatically: no extra flag.
+# harvests only the CUDA libs the binary actually links. A cuDF-only
+# build omits the optional SQL families without an extra image-build flag.
 
 set -euo pipefail
 
@@ -54,7 +56,7 @@ DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" normalize-features \
-    --features "${FEATURES:-cugraph,cuvs,nvml}")"
+    --features "${FEATURES:-cugraph,cuvs,cuml,nvml}")"
 
 eval "$(python3 "$POLICY_HELPER" describe)"
 
@@ -66,6 +68,7 @@ esac
 ALGEON_NATIVE_DIR="${ALGEON_NATIVE_DIR:-$REPO_ROOT/target/native}"
 CUDF_INSTALL_DIR="$ALGEON_NATIVE_DIR/cudf-install"
 CUVS_INSTALL_DIR="$ALGEON_NATIVE_DIR/cuvs-install"
+CUML_INSTALL_DIR="$ALGEON_NATIVE_DIR/cuml-install"
 CUGRAPH_INSTALL_DIR="$ALGEON_NATIVE_DIR/cugraph-install"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
@@ -73,12 +76,14 @@ RUNTIME_LIB_DIR="/app/lib"
 
 want_cugraph=0
 want_cuvs=0
+want_cuml=0
 [[ ",$FEATURES," == *",cugraph,"* ]] && want_cugraph=1
 [[ ",$FEATURES," == *",cuvs,"* ]] && want_cuvs=1
+[[ ",$FEATURES," == *",cuml,"* ]] && want_cuml=1
 want_cuvs_runtime=0
-[[ $want_cugraph -eq 1 || $want_cuvs -eq 1 ]] && want_cuvs_runtime=1
+[[ $want_cugraph -eq 1 || $want_cuvs -eq 1 || $want_cuml -eq 1 ]] && want_cuvs_runtime=1
 
-echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs)"
+echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs cuml=$want_cuml)"
 echo "==> ALGEON_NATIVE_DIR    : $ALGEON_NATIVE_DIR"
 
 cd "$REPO_ROOT"
@@ -172,7 +177,7 @@ copy_lib "$CUDF_LIB/libkvikio.so"        || echo "    note: libkvikio.so absent 
 copy_lib "$CUDF_LIB/libnvcomp.so"*       || echo "    note: libnvcomp.so absent (GPU parquet codecs may be unavailable)"
 copy_lib "$CUDF_LIB/libnvcomp_cpu.so"*   || true
 
-# ── 6. Stage canonical cuVS and optional forked cuGraph libraries ────────────
+# ── 6. Stage canonical cuVS and optional cuGraph / cuML libraries ───────────
 CUVS_LIB=""
 if [[ $want_cuvs_runtime -eq 1 ]]; then
     for candidate in "$CUVS_INSTALL_DIR/lib" "$CUVS_INSTALL_DIR/lib64"; do
@@ -228,6 +233,26 @@ if [[ $want_cugraph -eq 1 ]]; then
     copy_lib "$CUGRAPH_LIB/libcugraph_mg.so"     || { echo "ERROR: libcugraph_mg.so missing" >&2; exit 1; }
 fi
 
+if [[ $want_cuml -eq 1 ]]; then
+    CUML_LIB="$CUML_INSTALL_DIR/lib"
+    [[ -d "$CUML_LIB" ]] || { echo "ERROR: $CUML_LIB not found; build cuml first." >&2; exit 1; }
+    ML_CUVS_REALPATH=$(resolve_needed_realpath "$CUML_LIB/libcuml.so" libcuvs) || {
+        echo "ERROR: ldd could not resolve libcuml.so to a canonical libcuvs.so." >&2
+        exit 1
+    }
+    CANONICAL_CUVS_REALPATH=$(readlink -f "$CUVS_LIB/libcuvs.so")
+    [[ "$ML_CUVS_REALPATH" != */_deps/* && "$ML_CUVS_REALPATH" == "$CANONICAL_CUVS_REALPATH" ]] || {
+        echo "ERROR: libcuml.so and packaging selected different libcuvs.so identities:" >&2
+        echo "  cuML:      $ML_CUVS_REALPATH" >&2
+        echo "  canonical: $CANONICAL_CUVS_REALPATH" >&2
+        exit 1
+    }
+    echo "==> Staging canonical cuML libs from $CUML_LIB"
+    for name in libcuml libcuml_rust libtreelite libnvforest; do
+        copy_lib "$CUML_LIB/$name.so"* || { echo "ERROR: $name.so missing from $CUML_LIB" >&2; exit 1; }
+    done
+fi
+
 # rapids_logger may be linked as a shared library, or absorbed into the
 # canonical cuDF/RMM build. Stage it only when an artifact in this package has
 # a real DT_NEEDED edge; an absorbed build must not acquire a stale second
@@ -257,7 +282,7 @@ else
 fi
 
 # ── 7. Strip + rehome RUNPATHs ──────────────────────────────────────────────
-# Strip removes ~35-40% of each artifact's size; safe for release .so/bin.
+# Strip removes unneeded symbols from release .so/bin artifacts.
 # Rehome every RUNPATH to point only at the runtime lib dir + $ORIGIN, erasing
 # the stale host build paths so the image is hermetic and LD_LIBRARY_PATH-free.
 HAVE_PATCHELF=0; command -v patchelf >/dev/null 2>&1 && HAVE_PATCHELF=1
@@ -404,13 +429,28 @@ validate_loader_closure() {
             return 1
         }
     elif (( ${#cuvs_realpaths[@]} != 0 )); then
-        echo "ERROR: libcuvs.so entered a package with neither cugraph nor cuvs enabled." >&2
+        echo "ERROR: libcuvs.so entered a package without cugraph, cuvs, or cuml enabled." >&2
         return 1
     fi
 
     if [[ $want_cuvs -eq 1 && ! -e "$DIST_DIR/lib/libcuvs_c.so" ]]; then
         echo "ERROR: cuvs feature package is missing staged libcuvs_c.so." >&2
         return 1
+    fi
+    if [[ $want_cuml -eq 1 ]]; then
+        for name in libcuml libcuml_rust libtreelite libnvforest; do
+            [[ -e "$DIST_DIR/lib/$name.so" ]] || {
+                echo "ERROR: cuml feature package is missing staged $name.so." >&2
+                return 1
+            }
+        done
+        local ml_cuvs
+        ml_cuvs=$(LD_LIBRARY_PATH="$DIST_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            resolve_needed_realpath "$DIST_DIR/lib/libcuml.so" libcuvs) || return 1
+        [[ "$ml_cuvs" == "$(readlink -f "$DIST_DIR/lib/libcuvs.so")" ]] || {
+            echo "ERROR: staged libcuml.so resolves a different libcuvs.so identity." >&2
+            return 1
+        }
     fi
     if (( ${#cudart_realpaths[@]} > 1 )); then
         echo "ERROR: loader closure resolves multiple CUDA runtime identities." >&2

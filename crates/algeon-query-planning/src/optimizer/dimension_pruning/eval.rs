@@ -91,7 +91,8 @@ fn derive_i64_expr_range_from_filtered_subtree_inner(
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 

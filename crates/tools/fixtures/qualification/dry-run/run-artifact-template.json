@@ -9,7 +9,17 @@
       "root": {"name": "algeon-datafusion", "path": "/fixture/algeon-datafusion", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
       "cudf": {"name": "cudf-native-source", "path": "/fixture/algeon-datafusion/components/cudf/cudf", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
       "cugraph": {"name": "cugraph-native-source", "path": "/fixture/algeon-datafusion/components/cugraph/cugraph", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
-      "cuvs": {"name": "cuvs-native-source", "path": "/fixture/algeon-datafusion/components/cuvs/cuvs", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}}
+      "cuvs": {"name": "cuvs-native-source", "path": "/fixture/algeon-datafusion/components/cuvs/cuvs", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
+      "cuml": {"name": "cuml-native-source", "path": "/fixture/algeon-datafusion/components/cuml/cuml", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}}
+    },
+    "cuml_build_inputs": {
+      "install_dir": "/fixture/cuml",
+      "cmake_config": {"path": "/fixture/cuml/lib/cmake/cuml/cuml-config.cmake", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "libcuml_selector": {"path": "/fixture/cuml/lib/libcuml.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "libcuml_resolved": {"path": "/fixture/cuml/lib/libcuml.so.26", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "libcuml_rust_selector": {"path": "/fixture/cuml/lib/libcuml_rust.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "libcuml_rust_resolved": {"path": "/fixture/cuml/lib/libcuml_rust.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      "version": "26.08.00"
     },
     "native_libraries": {
       "libcudf_resolved": {"path": "/fixture/libcudf.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

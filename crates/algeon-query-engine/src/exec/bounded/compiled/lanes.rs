@@ -388,6 +388,7 @@ fn is_coordinator_only_task_kind(kind: PipelineTaskKind) -> bool {
             | PipelineTaskKind::JoinMaterialize
             | PipelineTaskKind::GraphAlgorithm
             | PipelineTaskKind::VectorAlgorithm
+            | PipelineTaskKind::MlAlgorithm
             | PipelineTaskKind::EdgeNormalize
     )
 }

@@ -584,6 +584,7 @@ fn root_topk_all_keyless_outer_cross_consumers_reach_window(
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
             | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_)
             | PlanNode::Sort(_) => {
                 visited.remove(&node_id);
                 return Ok(false);
@@ -656,7 +657,8 @@ fn final_topk_sort_and_projection_chain(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "root_topk_join_aggregate_requires_final_sort",
                     [
@@ -851,7 +853,8 @@ fn root_topk_distinct_aggregate_ids(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => {
+            | PlanNode::VectorAlgorithm(_)
+            | PlanNode::MlAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "root_topk_join_aggregate_rejects_nested_blocking_or_branch_node",
                     [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],

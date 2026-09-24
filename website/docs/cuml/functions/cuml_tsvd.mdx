@@ -1,0 +1,85 @@
+---
+title: cuML TSVD
+sidebar_label: cuML TSVD
+description: "cuML truncated SVD fits and transforms Float32 input rows."
+slug: /cuml/functions/cuml_tsvd
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}
+
+# cuML TSVD
+
+SQL function: `cuml_tsvd`
+
+Official cuML reference: [Python API](https://docs.rapids.ai/api/cuml/stable/api/#cuml.TruncatedSVD)
+
+cuML truncated SVD fits and transforms Float32 input rows.
+
+## Quickstart
+
+Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
+
+```sql
+SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM t), n_components => 2) ORDER BY row_ordinal;
+```
+
+## Inputs
+
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+
+| Role | Required | Validation reference | Description |
+| --- | --- | --- | --- |
+| `input` | yes | `table` | Dense Float32 rows fitted and transformed in this statement. |
+
+### Vector element types
+
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | Not applicable |
+
+## Arguments and options
+
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `n_components` | `integer` | yes | Number of transformed pc_&lt;index&gt; columns. |
+| `solver` | `enum ("cov_eig_dq", "cov_eig_jacobi")` | no | Covariance eigensolver used by the query-local fit. |
+| `tol` | `number` | no | Finite nonnegative eigensolver tolerance. |
+| `n_iterations` | `integer` | no | Maximum number of eigensolver iterations. |
+
+### SQL value argument schemas
+
+| Argument | Required | Literal shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `n_components` | yes | `integer` | No default | minimum 1; maximum 2147483647 | Number of transformed pc_&lt;index&gt; columns. |
+| `n_iterations` | no | `integer` | `15` | minimum 1; maximum 4294967295 | Maximum number of eigensolver iterations. |
+| `solver` | no | `string` | `"cov_eig_dq"` | one of `"cov_eig_dq"`, `"cov_eig_jacobi"` | Covariance eigensolver used by the query-local fit. |
+| `tol` | no | `number` | `0` | minimum 0 | Finite nonnegative eigensolver tolerance. |
+
+### Vector binding shapes
+
+Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+
+The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. |
+| `id` | `same_as_input.id` | no | Logical input ID. |
+| `pc_<index>` | `Float32` | no | Transformed component value, repeated n_components times. The output contains `n_components` such columns, `pc_0` through `pc_&lt;n_components - 1&gt;`. |
+
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Limits
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Empty input returns an empty result without a native call. Nonempty input requires at least two evaluated rows and two feature dimensions. n_components cannot exceed dimension; known dimensions are checked during planning, otherwise execution reports a structured error.
+- Only Float32 features are supported. Use CAST in the input subquery for other element types.
+- Component sign is not semantic; this operation returns transformed rows only, not components, explained variance, or mean.
+- TSVD allocates a temporary rows * n_components score matrix inside the query device cap.
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx).

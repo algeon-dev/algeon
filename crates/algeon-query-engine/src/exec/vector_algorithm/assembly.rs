@@ -3,10 +3,14 @@ use cudf::{Series, TypeId};
 #[cfg(test)]
 use crate::plan::VectorBruteForceKnnParams;
 use crate::{
-    exec::*,
-    plan::{
-        VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding, VectorRowIdBinding, VectorTopKParams,
+    exec::{
+        dense_relation::{
+            VECTOR_OPERATIONS, relation_id_series_for, relation_row_ordinals_for, require_libcudf_row_count,
+            require_series_contract_for,
+        },
+        *,
     },
+    plan::{VectorDistanceMetric, VectorPairwiseDistanceParams, VectorRelationBinding, VectorTopKParams},
 };
 
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";
@@ -63,8 +67,14 @@ pub(in crate::exec) fn assemble_knn_output(
         .with_fact("reason", "output_row_count_overflow")
     })?;
     require_libcudf_row_count(output_rows, "brute_force_knn")?;
-    require_series_contract(&neighbor_ordinals_i64, TypeId::Int64, output_rows, "neighbor_ordinals")?;
-    require_series_contract(&distances_f32, TypeId::Float32, output_rows, "distances")?;
+    require_series_contract_for(
+        &VECTOR_OPERATIONS,
+        &neighbor_ordinals_i64,
+        TypeId::Int64,
+        output_rows,
+        "neighbor_ordinals",
+    )?;
+    require_series_contract_for(&VECTOR_OPERATIONS, &distances_f32, TypeId::Float32, output_rows, "distances")?;
 
     let runtime = context.runtime()?;
     let execution =
@@ -78,16 +88,19 @@ pub(in crate::exec) fn assemble_knn_output(
         .with_fact("k", params.k)
         .with_fact("reason", "k_exceeds_uint64")
     })?;
-    let output_ordinal = runtime.sequence(0_u64, 1_u64, output_rows).map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN output ordinals on device", error)
-    })?;
+    let output_ordinal = relation_row_ordinals_for(
+        &VECTOR_OPERATIONS,
+        &runtime,
+        output_rows,
+        "failed to construct kNN output ordinals on device",
+    )?;
     let query_ordinal = output_ordinal.div_scalar_in(k_u64, &execution).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN query ordinals on device", error)
     })?;
     let query_gather_map = query_ordinal.astype_in(TypeId::Int32, &execution).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN query gather map on device", error)
     })?;
-    let query_id = relation_id_series(params.queries, queries, "queries")?
+    let query_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.queries.row_id, queries, "queries")?
         .gather_in(&query_gather_map, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN query ids on device", error))?;
 
@@ -159,7 +172,7 @@ pub(in crate::exec) fn assemble_knn_output(
     let neighbor_gather_map = neighbor_ordinals_i64.astype_in(TypeId::Int32, &execution).map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN neighbor gather map on device", error)
     })?;
-    let neighbor_id = relation_id_series(params.dataset, dataset, "dataset")?
+    let neighbor_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.dataset.row_id, dataset, "dataset")?
         .gather_in(&neighbor_gather_map, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN neighbor ids on device", error))?;
     let neighbor_ordinal = neighbor_ordinals_i64.astype_in(TypeId::UInt64, &execution).map_err(|error| {
@@ -189,13 +202,12 @@ pub(in crate::exec) fn assemble_pairwise_distance_output(
         QueryError::new(QueryErrorCode::SizeOverflow, ASSEMBLY_OPERATION, "pairwise output rows overflowed")
     })?;
     require_libcudf_row_count(rows, "pairwise_distance")?;
-    require_series_contract(&distances, distance_type, rows, "distances")?;
+    require_series_contract_for(&VECTOR_OPERATIONS, &distances, distance_type, rows, "distances")?;
     let runtime = context.runtime()?;
     let execution =
         ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    let sequence = runtime
-        .sequence(0_u64, 1_u64, rows)
-        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to create pairwise output ordinals", error))?;
+    let sequence =
+        relation_row_ordinals_for(&VECTOR_OPERATIONS, &runtime, rows, "failed to create pairwise output ordinals")?;
     // An empty axis has no valid divisor; the output still carries the stable five-column schema.
     let divisor = y.num_rows().max(1) as u64;
     let x_ordinal = sequence
@@ -210,10 +222,10 @@ pub(in crate::exec) fn assemble_pairwise_distance_output(
     let y_map = y_ordinal
         .astype_in(TypeId::Int32, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast y ordinals", error))?;
-    let x_id = relation_id_series(&params.x, x, "x")?
+    let x_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.x.row_id, x, "x")?
         .gather_in(&x_map, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather x ids", error))?;
-    let y_id = relation_id_series(&params.y, y, "y")?
+    let y_id = relation_id_series_for(&VECTOR_OPERATIONS, &params.y.row_id, y, "y")?
         .gather_in(&y_map, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather y ids", error))?;
     let output = runtime
@@ -240,21 +252,19 @@ pub(in crate::exec) fn assemble_top_k_output(
         QueryError::new(QueryErrorCode::SizeOverflow, ASSEMBLY_OPERATION, "Top-K output rows overflowed")
     })?;
     require_libcudf_row_count(rows, "top_k")?;
-    require_series_contract(&positions, TypeId::Int64, rows, "positions")?;
-    require_series_contract(&values, TypeId::Float32, rows, "values")?;
+    require_series_contract_for(&VECTOR_OPERATIONS, &positions, TypeId::Int64, rows, "positions")?;
+    require_series_contract_for(&VECTOR_OPERATIONS, &values, TypeId::Float32, rows, "values")?;
     let runtime = context.runtime()?;
     let execution =
         ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-    let sequence = runtime
-        .sequence(0_u64, 1_u64, rows)
-        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to create Top-K ordinals", error))?;
+    let sequence = relation_row_ordinals_for(&VECTOR_OPERATIONS, &runtime, rows, "failed to create Top-K ordinals")?;
     let row_ordinal = sequence
         .div_scalar_in(params.k as u64, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive Top-K row ordinals", error))?;
     let gather_map = row_ordinal
         .astype_in(TypeId::Int32, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to cast Top-K ordinals", error))?;
-    let id = relation_id_series(&params.input, input, "input")?
+    let id = relation_id_series_for(&VECTOR_OPERATIONS, &params.input.row_id, input, "input")?
         .gather_in(&gather_map, &execution)
         .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather Top-K ids", error))?;
     let sorted = runtime
@@ -289,13 +299,18 @@ pub(in crate::exec) fn assemble_kmeans_output(
     labels_i32: Series,
 ) -> Result<GpuDataFrame> {
     require_libcudf_row_count(input.num_rows(), "kmeans")?;
-    require_series_contract(&labels_i32, TypeId::Int32, input.num_rows(), "cluster_labels")?;
+    require_series_contract_for(&VECTOR_OPERATIONS, &labels_i32, TypeId::Int32, input.num_rows(), "cluster_labels")?;
 
     let runtime = context.runtime()?;
-    let row_ordinal = runtime.sequence(0_u64, 1_u64, input.num_rows()).map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct K-means row ordinals on device", error)
-    })?;
-    let id = relation_id_series(binding, input, "input")?.copy_into_runtime(&runtime).map_err(|error| {
+    let row_ordinal = relation_row_ordinals_for(
+        &VECTOR_OPERATIONS,
+        &runtime,
+        input.num_rows(),
+        "failed to construct K-means row ordinals on device",
+    )?;
+    let id = relation_id_series_for(&VECTOR_OPERATIONS, &binding.row_id, input, "input")?
+        .copy_into_runtime(&runtime)
+        .map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to place K-means logical ids in the query runtime", error)
     })?;
     let output = runtime
@@ -315,7 +330,8 @@ pub(in crate::exec) fn assemble_pca_output(
 ) -> Result<GpuDataFrame> {
     require_libcudf_row_count(input.num_rows(), "pca")?;
     for (component_index, component) in components_f32.iter().enumerate() {
-        require_series_contract(
+        require_series_contract_for(
+            &VECTOR_OPERATIONS,
             component,
             TypeId::Float32,
             input.num_rows(),
@@ -324,10 +340,15 @@ pub(in crate::exec) fn assemble_pca_output(
     }
 
     let runtime = context.runtime()?;
-    let row_ordinal = runtime.sequence(0_u64, 1_u64, input.num_rows()).map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct PCA row ordinals on device", error)
-    })?;
-    let id = relation_id_series(binding, input, "input")?.copy_into_runtime(&runtime).map_err(|error| {
+    let row_ordinal = relation_row_ordinals_for(
+        &VECTOR_OPERATIONS,
+        &runtime,
+        input.num_rows(),
+        "failed to construct PCA row ordinals on device",
+    )?;
+    let id = relation_id_series_for(&VECTOR_OPERATIONS, &binding.row_id, input, "input")?
+        .copy_into_runtime(&runtime)
+        .map_err(|error| {
         cudf_query_error(ASSEMBLY_OPERATION, "failed to place PCA logical ids in the query runtime", error)
     })?;
     let mut output = runtime
@@ -343,69 +364,11 @@ pub(in crate::exec) fn assemble_pca_output(
     GpuDataFrame::try_new_with_source_residency(output, input)
 }
 
-fn relation_id_series(
-    binding: &VectorRelationBinding,
-    input: &GpuDataFrame,
-    relation_role: &'static str,
-) -> Result<Series> {
-    let VectorRowIdBinding::Column(column) = &binding.row_id else {
-        return Err(QueryError::new(
-            QueryErrorCode::Internal,
-            ASSEMBLY_OPERATION,
-            "validated vector result relation is missing its logical row-id column",
-        )
-        .with_fact("relation_role", relation_role)
-        .with_fact("reason", "missing_logical_row_id_column"));
-    };
-    input.frame().series(column).map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to access vector relation logical ids", error)
-            .with_fact("relation_role", relation_role)
-            .with_fact("column", column)
-    })
-}
-
-fn require_series_contract(series: &Series, expected_type: TypeId, expected_rows: usize, output: &str) -> Result<()> {
-    let actual_type = series.dtype().map_err(|error| {
-        cudf_query_error(ASSEMBLY_OPERATION, "failed to inspect vector native output type", error)
-            .with_fact("output", output)
-    })?;
-    if actual_type.id() != expected_type || series.len() != expected_rows || series.null_count() != 0 {
-        return Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
-            ASSEMBLY_OPERATION,
-            "vector native output does not match its device assembly contract",
-        )
-        .with_fact("output", output)
-        .with_fact("expected_type", expected_type.name())
-        .with_fact("actual_type", actual_type.id().name())
-        .with_fact("expected_rows", expected_rows)
-        .with_fact("actual_rows", series.len())
-        .with_fact("null_count", series.null_count())
-        .with_fact("reason", "invalid_native_output_contract"));
-    }
-    Ok(())
-}
-
-fn require_libcudf_row_count(rows: usize, algorithm: &'static str) -> Result<()> {
-    if rows <= i32::MAX as usize {
-        return Ok(());
-    }
-    Err(QueryError::new(
-        QueryErrorCode::CudfInvalidInput,
-        ASSEMBLY_OPERATION,
-        "vector result row count exceeds libcudf size_type range",
-    )
-    .with_fact("algorithm", algorithm)
-    .with_fact("rows", rows)
-    .with_fact("maximum_rows", i32::MAX)
-    .with_fact("reason", "row_count_exceeds_libcudf_size_type"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(feature = "cuvs")]
-    use crate::plan::{NodeId, VectorDistanceMetric};
+    use crate::plan::{NodeId, VectorDistanceMetric, VectorRowIdBinding};
 
     #[test]
     fn libcudf_row_count_contract_is_structured_without_gpu_work() {

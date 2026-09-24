@@ -18,7 +18,7 @@ readme = "README.md"
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
-features = ["server", "bench-support", "cugraph", "cuvs", "nvml"]
+features = ["server", "bench-support", "cugraph", "cuvs", "cuml", "nvml"]
 
 [features]
 default = []
@@ -43,6 +43,7 @@ bench-support = []
 qualification = ["query-engine/qualification"]
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "query-engine/cugraph"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys", "query-engine/cuvs"]
+cuml = ["dep:cuml-sys", "query-engine/cuml"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["query-engine/nvml"]
 
@@ -60,6 +61,7 @@ cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
+cuml-sys = { workspace = true, optional = true }
 query-engine = { workspace = true }
 datafusion = { workspace = true }
 dashmap = { version = "6.2", optional = true }
@@ -144,6 +146,11 @@ required-features = ["server", "cugraph"]
 [[test]]
 name = "server_cuvs_tests_gpu"
 required-features = ["server", "cuvs"]
+
+[[test]]
+name = "server_cuml_tests_gpu"
+path = "tests/server_cuml_tests_gpu.rs"
+required-features = ["server", "cuml"]
 
 [lints]
 workspace = true

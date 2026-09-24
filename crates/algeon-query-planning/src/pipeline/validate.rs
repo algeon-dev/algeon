@@ -562,9 +562,10 @@ fn validate_task_resource_arity(pipeline: &CompiledPipeline) -> Result<()> {
             | PipelineTaskKind::FinalSort
             | PipelineTaskKind::Limit
             | PipelineTaskKind::EdgeNormalize => inputs == 1 && outputs == 1,
-            PipelineTaskKind::Union | PipelineTaskKind::GraphAlgorithm | PipelineTaskKind::VectorAlgorithm => {
-                inputs >= 1 && outputs == 1
-            },
+            PipelineTaskKind::Union
+            | PipelineTaskKind::GraphAlgorithm
+            | PipelineTaskKind::VectorAlgorithm
+            | PipelineTaskKind::MlAlgorithm => inputs >= 1 && outputs == 1,
             PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => inputs == 1 && outputs == 0,
             PipelineTaskKind::JoinMaterialize => inputs == 0 && outputs == 1,
             PipelineTaskKind::SinkMaterialize => inputs == 1 && outputs == 0,

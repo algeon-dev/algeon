@@ -3,6 +3,7 @@ use datafusion::physical_plan::ExecutionPlan;
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::{CugraphAlgoExec, native_graph_input_execution_plan};
 use crate::{
+    cuml_sql::CumlAlgoExec,
     cuvs_sql::CuvsAlgoExec,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeGpuProducerExec,
@@ -115,7 +116,7 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         }
         return observation;
     }
-    if plan.downcast_ref::<CuvsAlgoExec>().is_some() {
+    if plan.downcast_ref::<CuvsAlgoExec>().is_some() || plan.downcast_ref::<CumlAlgoExec>().is_some() {
         let mut observation =
             FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
         for child_plan in plan.children() {

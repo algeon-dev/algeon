@@ -15,7 +15,8 @@ over open data. [Apache DataFusion](https://datafusion.apache.org/) is the
 first integration: supported SQL operations run on
 [cuDF](https://docs.rapids.ai/api/cudf/stable/), while
 [cuGraph](https://docs.rapids.ai/api/cugraph/stable/) and
-[cuVS](https://docs.nvidia.com/cuvs/home) algorithms appear as SQL table
+[cuVS](https://docs.nvidia.com/cuvs/home) and
+[cuML](https://docs.rapids.ai/api/cuml/stable/) algorithms appear as SQL table
 functions that compose with joins, filters, and aggregations. You can embed the
 DataFusion adapter in a Rust application or connect through Arrow Flight SQL.
 
@@ -42,7 +43,8 @@ run executes inside a fixed GPU memory
 - **See what SQL is supported.** Relational coverage is mapped in
   [Native SQL Support](./reference/native-sql-support.mdx); the table
   functions are documented in the [cuGraph SQL API](./cugraph/overview.mdx)
-  and [cuVS SQL API](./cuvs/overview.mdx).
+  [cuVS SQL API](./cuvs/overview.mdx), and
+  [cuML SQL API](./cuml/overview.mdx).
 
 To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon).
 
@@ -61,10 +63,11 @@ To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon
 - **GPU execution behind DataFusion APIs.** Supported physical plans run on
   cuDF without changing your SQL, DataFrame code, or result format. You can
   require that a plan contain no CPU execution and have it rejected otherwise.
-- **Graph and vector algorithms in SQL.** `cugraph_*` table functions run
+- **Graph, vector, and ML algorithms in SQL.** `cugraph_*` table functions run
   PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over relations;
   `cuvs_*` functions run exact kNN, KMeans, and PCA over vector columns. Both
-  return ordinary rows.
+  return ordinary rows. Seven `cuml_*` functions fit query-local models for
+  dimensionality reduction, clustering, embedding, classification, and regression.
 - **Function discovery and validation.** The
   [GPU function catalog](./guides/gpu-function-discovery.mdx) lists the
   functions installed in a session, describes each contract, validates a call
@@ -90,11 +93,10 @@ To learn why we built Algeon, read [Introducing Algeon](/blog/introducing-algeon
 - **No spilling.** Each query runs inside the GPU memory cap it is granted;
   exceeding it returns an allocation error instead of spilling to host memory
   or disk in the style of [cuCascade](https://github.com/NVIDIA/cuCascade).
-- **Algorithm coverage is fixed.** Only the documented cuGraph and cuVS
-  functions are available; unsupported types, options, and algorithms return
-  structured planning errors. The cuVS surface is still growing, and both the
-  [cuML SQL API](./cuml/overview.mdx) and [cuOpt SQL API](./cuopt/overview.mdx)
-  are work in progress.
+- **Algorithm coverage is fixed.** The documented cuGraph, cuVS, and cuML
+  functions are available when their Cargo features are enabled. Unsupported
+  types and options return structured errors. The
+  [cuOpt SQL API](./cuopt/overview.mdx) remains work in progress.
 - **GPU file scans are Parquet-only.** Iceberg position deletes are supported
   when their scan is otherwise supported; equality deletes, delete vectors,
   non-Parquet files, and other source types stay on the DataFusion path.

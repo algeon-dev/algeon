@@ -2,7 +2,7 @@
 
 Contributions are very welcome. Algeon brings specialized GPU algorithms into
 composable SQL workflows. Its first integration lowers Apache DataFusion
-physical plans to native IR and executes them via cuDF and cuGraph. The most
+physical plans to native IR and executes them via cuDF, cuGraph, cuVS, and cuML. The most
 valuable contributions make physical-to-native lowering, capability admission,
 bounded resource management, and GPU execution clearer, faster, and more
 reliable.
@@ -78,7 +78,7 @@ crates:
 ┌─────────────────────────────────────────────────────────────┐
 │ crates/algeon-query-engine (Facade + Native Execution)      │
 │ - Public planning/runtime re-exports                        │
-│ - Bounded relational, graph, vector, and source execution   │
+│ - Bounded relational, graph, vector, ML, and source execution│
 │ - Host/GPU-resident result composition                      │
 └──────────────────────────────┬──────────────────────────────┘
                                │ depends on
@@ -90,12 +90,10 @@ crates:
 └──────────────────────────────┬──────────────────────────────┘
                                │ execution uses
                                ▼
-        ┌─────────────────────────────────────────────┐
-        ▼                                             ▼
-┌──────────────────────────────┐        ┌──────────────────────────────┐
-│ components/cudf              │        │ components/cugraph           │
-│ cuDF / RMM / KvikIO          │        │ cuGraph C++ / C API          │
-└──────────────────────────────┘        └──────────────────────────────┘
+        components/cudf      components/cugraph
+        cuDF / RMM          cuGraph algorithms
+        components/cuvs      components/cuml
+        cuVS vector         cuML machine learning
 ```
 
 ### Key Invariants
@@ -105,8 +103,8 @@ crates:
   pipeline belong in `crates/algeon-query-planning`; lifecycle, query service,
   ledger, grant, cache, observation, and metrics belong in
   `crates/algeon-query-runtime`; native execution and public facade compatibility
-  belong in `crates/algeon-query-engine`. Native cuDF and cuGraph operations
-  belong in their respective component crates. Never paper over an owner or
+  belong in `crates/algeon-query-engine`. Native cuDF, cuGraph, cuVS, and cuML
+  operations belong in their respective component crates. Never paper over an owner or
   RAPIDS limitation with an adapter workaround.
 - **One bounded admission contract**: Every native attempt is admitted against
   a single per-device ledger, immutable grants, and transactional envelopes.
@@ -193,7 +191,7 @@ and inherited by every workspace package; the canonical Clippy gate is
 ## Local Setup
 
 Algeon is a single recursive checkout. The root workspace owns the
-adapter, planning/runtime/engine stack, server, tests, and all three Rust
+adapter, planning/runtime/engine stack, server, tests, and all four Rust
 integration components:
 
 ```text
@@ -204,6 +202,8 @@ algeon/
 │   └── cugraph/                 # pinned cuGraph fork submodule
 ├── components/cuvs/             # cuvs and cuvs-sys
 │   └── cuvs/                    # pinned cuVS fork submodule
+├── components/cuml/             # cuml and cuml-sys
+│   └── cuml/                    # pinned cuML submodule
 ├── crates/algeon-datafusion/    # DataFusion adapter
 │   └── src/
 ├── crates/                      # Planning, runtime, engine, and support crates
@@ -218,7 +218,7 @@ git clone --recurse-submodules \
 
 ## Native Components
 
-`components/cudf`, `components/cuvs`, and `components/cugraph` are members of
+`components/cudf`, `components/cuvs`, `components/cuml`, and `components/cugraph` are members of
 this workspace, not independent projects. Their crate boundaries and native
 defaults are documented in their respective READMEs. The pinned submodules and
 native build order are defined in [Building from Source](website/docs/build/from-source.md).
@@ -233,7 +233,7 @@ defined and maintained in the website documentation:
   CUDA requirements, compiler pairings, and linker setup.
 - [Building from Source](website/docs/build/from-source.md): Recursive clone,
   checkout-local native selectors (`CUDF_INSTALL_DIR`, `ALGEON_NATIVE_DIR`,
-  `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`), native build order, and Rust
+  `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`, `CUML_INSTALL_DIR`), native build order, and Rust
   workspace compilation.
 
 Always use `--workspace --all-features` in cargo commands, and select tests
@@ -252,7 +252,8 @@ cargo nt -E 'package(<component-packages...>)'
 
 The package groups are `package(cudf) | package(cudf-sys) |
 package(rapids-interop)`, `package(cugraph) | package(cugraph-sys)`,
-and `package(cuvs) | package(cuvs-sys)`.
+`package(cuvs) | package(cuvs-sys)`, and
+`package(algeon-cuml) | package(algeon-cuml-sys)`.
 
 ## Testing & Validation
 
@@ -294,7 +295,7 @@ cargo +nightly fmt --all
 cargo clippy --workspace --all-targets --all-features
 
 # What you changed, then everything downstream
-cargo nt -E 'package(algeon-datafusion)'
+cargo nt -E 'package(algeon-datafusion) | package(algeon-cuml)'
 cargo nt -E 'rdeps(algeon-datafusion)'
 
 # Rerun only the failures (repeat the same -E, or skipped binaries rerun as new)

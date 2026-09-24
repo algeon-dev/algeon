@@ -1,7 +1,7 @@
 use std::{marker::PhantomData, mem, sync::Arc};
 
 use cudf::{
-    DenseMatrixLayout, Runtime, Series, TypeId, ValidatedPackedMatrix,
+    DenseMatrixLayout, PackedMatrix, Runtime, Series, TypeId, ValidatedPackedMatrix,
     core::{Column, DeviceBuffer as CudfDeviceBuffer},
     runtime::ExecutionBindingId,
 };
@@ -173,8 +173,15 @@ impl<'a> DeviceMatrix<'a> {
     }
 }
 
+enum MatrixStorage {
+    Buffer(DeviceBuffer<f32>),
+    Packed(PackedMatrix),
+}
+
+/// An owned Float32 matrix bound to one exact cuDF execution binding.
+/// The packed allocation is exclusively owned, so native writers cannot mutate source columns.
 pub struct OwnedFloat32Matrix {
-    inner: DeviceBuffer<f32>,
+    storage: MatrixStorage,
     rows: usize,
     columns: usize,
     layout: MatrixLayout,
@@ -188,7 +195,37 @@ impl OwnedFloat32Matrix {
         if rows == 0 || columns == 0 {
             return Err(invalid_input("OwnedFloat32Matrix::new", "dimensions must be nonzero"));
         }
-        Ok(Self { inner: DeviceBuffer::new(resources, len)?, rows, columns, layout })
+        Ok(Self { storage: MatrixStorage::Buffer(DeviceBuffer::new(resources, len)?), rows, columns, layout })
+    }
+    pub fn from_packed(resources: &CumlResources, matrix: PackedMatrix) -> Result<Self> {
+        const OP: &str = "OwnedFloat32Matrix::from_packed";
+        resources.validate_exact_binding(OP)?;
+        if matrix.element() != TypeId::Float32 {
+            return Err(error(
+                ErrorCode::UnsupportedDtype,
+                FailurePhase::Preflight,
+                OP,
+                "cuML requires Float32 matrix values",
+            ));
+        }
+        let validated = matrix.validate().map_err(|e| from_cudf(OP, e))?;
+        if validated.rows() == 0 || validated.columns() == 0 {
+            return Err(invalid_input(OP, "dimensions must be nonzero"));
+        }
+        if validated.binding_id() != resources.binding_id() || validated.placement().device != resources.device() {
+            return Err(error(
+                ErrorCode::RuntimeBindingMismatch,
+                FailurePhase::Preflight,
+                OP,
+                "packed matrix and cuML resources must share an exact binding",
+            )
+            .with_detail("matrix_binding_id", validated.binding_id())
+            .with_detail("resource_binding_id", resources.binding_id())
+            .with_detail("matrix_device", validated.placement().device.ordinal())
+            .with_detail("resource_device", resources.device().ordinal()));
+        }
+        let (rows, columns, layout) = (validated.rows(), validated.columns(), validated.layout().into());
+        Ok(Self { storage: MatrixStorage::Packed(matrix), rows, columns, layout })
     }
     pub fn rows(&self) -> usize {
         self.rows
@@ -199,16 +236,55 @@ impl OwnedFloat32Matrix {
     pub fn layout(&self) -> MatrixLayout {
         self.layout
     }
+    /// Transfer a validated native output to cuDF without copying its device allocation.
+    pub fn into_column(self) -> Result<Column> {
+        match self.storage {
+            MatrixStorage::Buffer(buffer) => buffer.into_column(),
+            MatrixStorage::Packed(_) => {
+                Err(invalid_input("OwnedFloat32Matrix::into_column", "packed input is not a native output"))
+            },
+        }
+    }
     pub fn binding_id(&self) -> ExecutionBindingId {
-        self.inner.binding_id()
+        match &self.storage {
+            MatrixStorage::Buffer(buffer) => buffer.binding_id(),
+            MatrixStorage::Packed(matrix) => matrix.binding_id(),
+        }
     }
     pub fn as_mut_ptr(&mut self) -> Result<*mut std::ffi::c_void> {
-        self.inner.as_mut_ptr()
+        match &mut self.storage {
+            MatrixStorage::Buffer(buffer) => buffer.as_mut_ptr(),
+            // The packed allocation is exclusively owned by self; no safe alias survives the move.
+            MatrixStorage::Packed(matrix) => matrix
+                .as_column()
+                .device_data_ptr()
+                .map(|ptr| ptr as *mut std::ffi::c_void)
+                .map_err(|e| from_cudf("OwnedFloat32Matrix::as_mut_ptr", e)),
+        }
     }
     pub fn as_ptr(&self) -> Result<*const std::ffi::c_void> {
-        self.inner.as_ptr()
+        match &self.storage {
+            MatrixStorage::Buffer(buffer) => buffer.as_ptr(),
+            MatrixStorage::Packed(matrix) => {
+                matrix.as_column().device_data_ptr().map_err(|e| from_cudf("OwnedFloat32Matrix::as_ptr", e))
+            },
+        }
     }
     pub fn validate_finite(&mut self, op: &'static str) -> Result<()> {
-        self.inner.validate_finite(op)
+        match &mut self.storage {
+            MatrixStorage::Buffer(buffer) => buffer.validate_finite(op),
+            MatrixStorage::Packed(matrix) => {
+                let validated = matrix.validate().map_err(|e| from_cudf_output(op, e, ErrorCode::OutputNotFinite))?;
+                if validated.len() != self.rows * self.columns {
+                    return Err(error(
+                        ErrorCode::InvariantViolation,
+                        FailurePhase::OutputValidation,
+                        op,
+                        "finite validation covered an unexpected length",
+                    ));
+                }
+                Ok(())
+            },
+        }
     }
 }

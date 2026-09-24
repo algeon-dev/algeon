@@ -15,12 +15,19 @@ use super::assembly::{
     assemble_pca_output, assemble_top_k_output,
 };
 use crate::{
-    exec::{GpuDataFrame, *},
+    exec::{
+        GpuDataFrame,
+        dense_relation::{
+            VECTOR_OPERATIONS, checked_output_rows, matrix_bytes_for, pack_dense_relation_for, relation_dimension,
+            relation_element_type_for, relation_input_for, size_overflow_for,
+        },
+        *,
+    },
     observability::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
     plan::{
-        CuvsDenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
+        DenseVectorBinding, QueryPlan, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams,
         VectorCagraBuildAlgo, VectorCagraSearchAlgo, VectorDistanceMetric, VectorIvfPqCodebookKind, VectorKMeansInit,
         VectorKMeansMetric, VectorKMeansParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorPcaSolver,
         VectorRelationBinding, VectorTopKParams,
@@ -69,44 +76,16 @@ fn relation_element(
     algorithm: VectorAlgorithm,
     role: &'static str,
 ) -> Result<TypeId> {
-    let schema = plan
-        .node(binding.input)
-        .ok_or_else(|| invalid_node_reference(binding.input, "vector relation references a missing input"))?
-        .output_schema();
-    let column = match &binding.vector {
-        CuvsDenseVectorBinding::Columns(columns) => {
-            let input = relation_input(inputs, binding, node_id, role)?;
-            return input
-                .frame()
-                .series(&columns[0])
-                .and_then(|series| series.dtype())
-                .map(|dtype| dtype.id())
-                .map_err(|error| {
-                    cudf_query_error(PACK_OPERATION, "failed to inspect evaluated vector element type", error)
-                        .with_fact("relation_role", role)
-                });
-        },
-        CuvsDenseVectorBinding::VectorColumn(column) => column,
-    };
-    let field = schema.field_with_name(column).map_err(|_| {
-        vector_input_error(node_id, algorithm, "missing_feature_column", "vector column is absent from input schema")
-    })?;
-    let element = match field.data_type() {
-        DataType::FixedSizeList(element, _) | DataType::List(element) | DataType::LargeList(element) => {
-            element.data_type()
-        },
-        other => other,
-    };
-    match element {
-        DataType::Float32 => Ok(TypeId::Float32),
-        DataType::Float64 => Ok(TypeId::Float64),
-        DataType::Int8 => Ok(TypeId::Int8),
-        DataType::UInt8 => Ok(TypeId::UInt8),
-        _ => {
-            Err(unsupported_vector_element(node_id, algorithm, role, None)
-                .with_fact("arrow_type", format!("{element:?}")))
-        },
-    }
+    relation_element_type_for(
+        &VECTOR_OPERATIONS,
+        plan,
+        inputs,
+        binding.input,
+        &binding.vector,
+        node_id,
+        algorithm.as_str(),
+        role,
+    )
 }
 
 fn require_matching_elements(left: TypeId, right: TypeId, node_id: NodeId, algorithm: VectorAlgorithm) -> Result<()> {
@@ -480,7 +459,7 @@ fn run_knn_native<I, T: DeviceElement>(
     let query_rows = queries.rows().map_err(|error| {
         cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN query shape", error)
     })?;
-    let dataset_bytes = matrix_bytes::<T>(dataset_rows, dimension, node_id, "dataset")?;
+    let dataset_bytes = matrix_bytes_for::<T>(&VECTOR_OPERATIONS, dataset_rows, dimension, node_id, "dataset")?;
     let index = observe_native(
         context,
         node_id,
@@ -505,11 +484,11 @@ fn run_knn_native<I, T: DeviceElement>(
         .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN neighbor output", error))?;
     let mut distances = DeviceBuffer::<f32>::new(resources, output_rows)
         .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN distance output", error))?;
-    let query_bytes = matrix_bytes::<T>(query_rows, dimension, node_id, "queries")?;
+    let query_bytes = matrix_bytes_for::<T>(&VECTOR_OPERATIONS, query_rows, dimension, node_id, "queries")?;
     let native_output_bytes = output_rows
         .checked_mul(std::mem::size_of::<i64>() + std::mem::size_of::<f32>())
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| size_overflow(node_id, "native_output_bytes"))?;
+        .ok_or_else(|| size_overflow_for(&VECTOR_OPERATIONS, node_id, "native_output_bytes"))?;
     observe_native(
         context,
         node_id,
@@ -557,8 +536,8 @@ where
         algorithm,
     )?;
     let params = KnnAssemblyParams { dataset, queries, k, metric, missing_neighbor };
-    let dataset = relation_input(inputs, params.dataset, node_id, "dataset")?;
-    let queries = relation_input(inputs, params.queries, node_id, "queries")?;
+    let dataset = relation_input_for(&VECTOR_OPERATIONS, inputs, params.dataset.input, node_id, "dataset")?;
+    let queries = relation_input_for(&VECTOR_OPERATIONS, inputs, params.queries.input, node_id, "queries")?;
     let dataset_rows = dataset.num_rows();
     if dataset_rows == 0 {
         return Err(vector_input_error(
@@ -591,7 +570,7 @@ where
         .with_fact("n_lists", n_lists)
         .with_fact("dataset_rows", dataset_rows));
     }
-    let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id, algorithm)?;
+    let output_rows = checked_output_rows(queries.num_rows(), params.k, node_id, algorithm.as_str())?;
 
     with_relation_tensor::<T, _>(
         context,
@@ -629,7 +608,7 @@ where
                         invalid_node_reference(params.queries.input, "vector query relation references a missing input")
                     })?
                     .output_schema();
-                let query_dimension = relation_dimension(params.queries, query_schema, node_id, "queries")?;
+                let query_dimension = relation_dimension(&params.queries.vector, query_schema, node_id, "queries")?;
                 if query_dimension != dimension {
                     return Err(vector_input_error(
                         node_id,
@@ -761,9 +740,9 @@ fn execute_pairwise_distance<E: PairwiseElement>(
         node_id,
         VectorAlgorithm::PairwiseDistance,
     )?;
-    let x = relation_input(inputs, &params.x, node_id, "x")?;
-    let y = relation_input(inputs, &params.y, node_id, "y")?;
-    let rows = checked_output_rows(x.num_rows(), y.num_rows(), node_id, VectorAlgorithm::PairwiseDistance)?;
+    let x = relation_input_for(&VECTOR_OPERATIONS, inputs, params.x.input, node_id, "x")?;
+    let y = relation_input_for(&VECTOR_OPERATIONS, inputs, params.y.input, node_id, "y")?;
+    let rows = checked_output_rows(x.num_rows(), y.num_rows(), node_id, VectorAlgorithm::PairwiseDistance.as_str())?;
     let assemble = |distances| {
         observe_assembly(context, node_id, VectorAlgorithm::PairwiseDistance, resources, native_version, rows, || {
             context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
@@ -821,9 +800,15 @@ fn execute_pairwise_distance<E: PairwiseElement>(
                         native_version,
                         "pairwise_distance",
                         x.num_rows(),
-                        matrix_bytes::<E>(x.num_rows(), dimension, node_id, "x")?,
+                        matrix_bytes_for::<E>(&VECTOR_OPERATIONS, x.num_rows(), dimension, node_id, "x")?,
                         Some(rows),
-                        Some(matrix_bytes::<E::Distance>(x.num_rows(), y.num_rows(), node_id, "pairwise_output")?),
+                        Some(matrix_bytes_for::<E::Distance>(
+                            &VECTOR_OPERATIONS,
+                            x.num_rows(),
+                            y.num_rows(),
+                            node_id,
+                            "pairwise_output",
+                        )?),
                         || {
                             context.check_cancellation("query_engine.vector_algorithm.before_pairwise")?;
                             pairwise_distance_into(
@@ -856,8 +841,8 @@ fn execute_top_k(
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
-    let input = relation_input(inputs, &params.input, node_id, "input")?;
-    let rows = checked_output_rows(input.num_rows(), params.k, node_id, VectorAlgorithm::TopK)?;
+    let input = relation_input_for(&VECTOR_OPERATIONS, inputs, params.input.input, node_id, "input")?;
+    let rows = checked_output_rows(input.num_rows(), params.k, node_id, VectorAlgorithm::TopK.as_str())?;
     let assemble = |positions, values| {
         observe_assembly(context, node_id, VectorAlgorithm::TopK, resources, native_version, rows, || {
             context.check_cancellation("query_engine.vector_algorithm.before_assembly")?;
@@ -906,7 +891,7 @@ fn execute_top_k(
             let output_bytes = rows
                 .checked_mul(std::mem::size_of::<i64>() + std::mem::size_of::<f32>())
                 .and_then(|bytes| u64::try_from(bytes).ok())
-                .ok_or_else(|| size_overflow(node_id, "top_k_output"))?;
+                .ok_or_else(|| size_overflow_for(&VECTOR_OPERATIONS, node_id, "top_k_output"))?;
             observe_native(
                 context,
                 node_id,
@@ -915,7 +900,7 @@ fn execute_top_k(
                 native_version,
                 "select_k",
                 input.num_rows(),
-                matrix_bytes::<f32>(input.num_rows(), dimension, node_id, "input")?,
+                matrix_bytes_for::<f32>(&VECTOR_OPERATIONS, input.num_rows(), dimension, node_id, "input")?,
                 Some(rows),
                 Some(output_bytes),
                 || {
@@ -960,7 +945,7 @@ fn execute_kmeans<E: KMeansElement>(
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
-    let input = relation_input(inputs, &params.input, node_id, "input")?;
+    let input = relation_input_for(&VECTOR_OPERATIONS, inputs, params.input.input, node_id, "input")?;
     let input_rows = input.num_rows();
     if input_rows == 0 {
         return Err(vector_input_error(
@@ -1012,7 +997,7 @@ fn execute_kmeans<E: KMeansElement>(
         native_version,
         |input_tensor| {
             let dimension = tensor_dimension(input_tensor, node_id, "input", "K-means")?;
-            let input_bytes = matrix_bytes::<E>(input_rows, dimension, node_id, "input")?;
+            let input_bytes = matrix_bytes_for::<E>(&VECTOR_OPERATIONS, input_rows, dimension, node_id, "input")?;
             let fit_model = |initial_centroids| {
                 observe_native(
                     context,
@@ -1050,7 +1035,13 @@ fn execute_kmeans<E: KMeansElement>(
                     VectorAlgorithm::KMeans,
                     "initial_centroids",
                     centroid_binding,
-                    relation_input(inputs, centroid_binding, node_id, "initial_centroids")?,
+                    relation_input_for(
+                        &VECTOR_OPERATIONS,
+                        inputs,
+                        centroid_binding.input,
+                        node_id,
+                        "initial_centroids",
+                    )?,
                     resources,
                     native_version,
                     MatrixLayout::RowMajor,
@@ -1104,7 +1095,9 @@ fn execute_kmeans<E: KMeansElement>(
                     input_rows
                         .checked_mul(std::mem::size_of::<i32>())
                         .and_then(|bytes| u64::try_from(bytes).ok())
-                        .ok_or_else(|| size_overflow(node_id, "kmeans_assignment_output_bytes"))?,
+                        .ok_or_else(|| {
+                            size_overflow_for(&VECTOR_OPERATIONS, node_id, "kmeans_assignment_output_bytes")
+                        })?,
                 ),
                 || {
                     context.check_cancellation("query_engine.vector_algorithm.before_kmeans_predict")?;
@@ -1135,7 +1128,7 @@ fn execute_pca(
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
-    let input = relation_input(inputs, &params.input, node_id, "input")?;
+    let input = relation_input_for(&VECTOR_OPERATIONS, inputs, params.input.input, node_id, "input")?;
     let input_rows = input.num_rows();
     if input_rows < 2 {
         return Err(vector_input_error(
@@ -1179,11 +1172,16 @@ fn execute_pca(
                 .with_fact("n_components", params.n_components)
                 .with_fact("feature_dimension", dimension));
             }
-            let input_bytes = matrix_bytes::<f32>(input_rows, dimension, node_id, "input")?;
+            let input_bytes = matrix_bytes_for::<f32>(&VECTOR_OPERATIONS, input_rows, dimension, node_id, "input")?;
             let mut outputs = PcaOutputBuffers::new(resources, input_rows, dimension, params.n_components)
                 .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate PCA device outputs", error))?;
-            let transformed_bytes =
-                matrix_bytes::<f32>(input_rows, params.n_components, node_id, "pca_transformed_output")?;
+            let transformed_bytes = matrix_bytes_for::<f32>(
+                &VECTOR_OPERATIONS,
+                input_rows,
+                params.n_components,
+                node_id,
+                "pca_transformed_output",
+            )?;
             let fit = observe_native(
                 context,
                 node_id,
@@ -1236,7 +1234,7 @@ fn with_relation_tensor<E: DeviceElement, T>(
         .output_schema();
     if matches!(
         &binding.vector,
-        CuvsDenseVectorBinding::VectorColumn(column)
+        DenseVectorBinding::VectorColumn(column)
             if matches!(
                 input_schema.field_with_name(column).map(|field| field.data_type()),
                 Ok(DataType::List(_) | DataType::LargeList(_))
@@ -1255,10 +1253,10 @@ fn with_relation_tensor<E: DeviceElement, T>(
             body,
         );
     }
-    let dimension = relation_dimension(binding, input_schema, node_id, role)?;
+    let dimension = relation_dimension(&binding.vector, input_schema, node_id, role)?;
     let input_rows = input.num_rows();
     let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes::<E>(input_rows, dimension, node_id, role)?;
+    let packed_bytes = matrix_bytes_for::<E>(&VECTOR_OPERATIONS, input_rows, dimension, node_id, role)?;
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
@@ -1279,7 +1277,7 @@ fn with_relation_tensor<E: DeviceElement, T>(
     }
 
     match &binding.vector {
-        CuvsDenseVectorBinding::Columns(columns) => {
+        DenseVectorBinding::Columns(columns) => {
             let packed = (|| {
                 let selected = input.frame().select(columns.iter().map(String::as_str)).map_err(|error| {
                     cudf_query_error(PACK_OPERATION, "failed to select the kNN feature columns", error)
@@ -1327,7 +1325,7 @@ fn with_relation_tensor<E: DeviceElement, T>(
             guard.finish(Some(input_rows as u64), Some(packed_bytes));
             body(&tensor)
         },
-        CuvsDenseVectorBinding::VectorColumn(column) => {
+        DenseVectorBinding::VectorColumn(column) => {
             let batch = match GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
                 cudf_query_error(
                     PACK_OPERATION,
@@ -1407,10 +1405,7 @@ fn with_relation_tensor<E: DeviceElement, T>(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
-)]
+#[expect(clippy::too_many_arguments, reason = "the native call owns the exact cuVS binding and matrix layout")]
 fn with_owned_relation_matrix<E: DeviceElement, T>(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -1424,162 +1419,28 @@ fn with_owned_relation_matrix<E: DeviceElement, T>(
     layout: MatrixLayout,
     body: impl FnOnce(OwnedMatrix<E>, usize) -> Result<T>,
 ) -> Result<T> {
-    let input_schema = plan
-        .node(binding.input)
-        .ok_or_else(|| invalid_node_reference(binding.input, "vector relation references a missing input"))?
-        .output_schema();
-    if matches!(
+    let (packed, dimension) = pack_dense_relation_for(
+        &VECTOR_OPERATIONS,
+        context,
+        resources.runtime(),
+        plan,
+        node_id,
+        role,
+        algorithm.as_str(),
+        binding.input,
         &binding.vector,
-        CuvsDenseVectorBinding::VectorColumn(column)
-            if matches!(
-                input_schema.field_with_name(column).map(|field| field.data_type()),
-                Ok(DataType::List(_) | DataType::LargeList(_))
-            )
-    ) {
-        return with_owned_uniform_list_relation_matrix(
-            context,
-            node_id,
-            algorithm,
-            role,
-            binding,
-            input,
-            input_schema,
-            resources,
-            native_version,
-            layout,
-            body,
-        );
-    }
-    let dimension = relation_dimension(binding, input_schema, node_id, role)?;
-    let input_rows = input.num_rows();
-    let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes::<E>(input_rows, dimension, node_id, role)?;
-    let identity = vector_identity(node_id, algorithm, resources, native_version)
-        .with_vector_relation_role(role)
-        .with_vector_dimension(dimension)
-        .with_matrix_layout(matrix_layout_name(layout))
-        .with_input_rows(input_rows as u64)
-        .with_input_bytes(input_bytes);
-    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
-    let guard = RuntimeOperatorStageGuard::start(
-        observation,
-        plan_execution_id,
-        parent_span_id,
+        input,
+        E::TYPE_ID,
+        layout.into(),
+        vector_identity(node_id, algorithm, resources, native_version),
         RuntimeOperatorStageKind::VectorPack,
-        identity,
-    );
-    if let Err(error) = context.check_cancellation("query_engine.vector_algorithm.before_pack") {
-        guard.fail(&error);
-        return Err(error);
-    }
-
-    let packed = match &binding.vector {
-        CuvsDenseVectorBinding::Columns(columns) => {
-            let packed = (|| {
-                let selected = input.frame().select(columns.iter().map(String::as_str)).map_err(|error| {
-                    cudf_query_error(PACK_OPERATION, "failed to select vector feature columns", error)
-                        .with_fact("node_id", node_id)
-                        .with_fact("relation_role", role)
-                })?;
-                let export = selected.try_prepare_device_table_export().map_err(|error| {
-                    cudf_interop_query_error(
-                        PACK_OPERATION,
-                        "failed to prepare one atomic vector feature-table export",
-                        format!("{:?}", error.kind()),
-                        error,
-                    )
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-                })?;
-                let element = selected.series(&columns[0]).and_then(|series| series.dtype()).map_err(|error| {
-                    cudf_query_error(PACK_OPERATION, "failed to inspect vector feature element type", error)
-                })?;
-                require_vector_element::<E>(element.id(), node_id, algorithm, role)?;
-                resources.pack_prepared_table::<E>(&export, layout).map_err(|error| {
-                    cuvs_query_error(PACK_OPERATION, "failed to pack the prepared vector feature table", error)
-                        .with_fact("node_id", node_id)
-                        .with_fact("relation_role", role)
-                })
-            })();
-            match packed {
-                Ok(packed) => packed,
-                Err(error) => {
-                    guard.fail(&error);
-                    return Err(error);
-                },
-            }
-        },
-        CuvsDenseVectorBinding::VectorColumn(column) => {
-            let batch = match GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
-                cudf_query_error(
-                    PACK_OPERATION,
-                    "failed to bind the vector relation to its FixedSizeList schema",
-                    error,
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
-            }) {
-                Ok(batch) => batch,
-                Err(error) => {
-                    guard.fail(&error);
-                    return Err(error);
-                },
-            };
-            let field_index = match input_schema.index_of(column).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    PACK_OPERATION,
-                    "vector column is absent from the evaluated relation schema",
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
-                .with_fact("reason", "missing_feature_column")
-            }) {
-                Ok(field_index) => field_index,
-                Err(error) => {
-                    guard.fail(&error);
-                    return Err(error);
-                },
-            };
-            let validated = match batch.try_prepare_fixed_size_list_export(field_index).map_err(|error| {
-                cudf_query_error(
-                    PACK_OPERATION,
-                    "failed to prove the FixedSizeList vector child range and finite values",
-                    error,
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
-            }) {
-                Ok(validated) => validated,
-                Err(error) => {
-                    guard.fail(&error);
-                    return Err(error);
-                },
-            };
-            require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
-            match resources.pack_validated_fixed_size_list::<E>(&validated, layout).map_err(|error| {
-                cuvs_query_error(
-                    PACK_OPERATION,
-                    "failed to pack the validated FixedSizeList vector child into an owned matrix",
-                    error,
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
-            }) {
-                Ok(packed) => packed,
-                Err(error) => {
-                    guard.fail(&error);
-                    return Err(error);
-                },
-            }
-        },
-    };
-    guard.finish(Some(input_rows as u64), Some(packed_bytes));
-    body(packed, dimension)
+    )?;
+    let owned = OwnedMatrix::from_packed(resources, packed).map_err(|error| {
+        cuvs_query_error(PACK_OPERATION, "failed to pack the prepared vector feature table", error)
+            .with_fact("node_id", node_id)
+            .with_fact("relation_role", role)
+    })?;
+    body(owned, dimension)
 }
 
 #[expect(
@@ -1617,7 +1478,7 @@ fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
     let rows = validated.rows();
     let dimension = validated.dimension();
     let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes::<E>(rows, dimension, node_id, role)?;
+    let packed_bytes = matrix_bytes_for::<E>(&VECTOR_OPERATIONS, rows, dimension, node_id, role)?;
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
@@ -1663,89 +1524,14 @@ fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
-)]
-fn with_owned_uniform_list_relation_matrix<E: DeviceElement, T>(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    algorithm: VectorAlgorithm,
-    role: &'static str,
-    binding: &VectorRelationBinding,
-    input: &GpuDataFrame,
-    input_schema: &SchemaRef,
-    resources: &CuvsResources,
-    native_version: (u16, u16, u16),
-    layout: MatrixLayout,
-    body: impl FnOnce(OwnedMatrix<E>, usize) -> Result<T>,
-) -> Result<T> {
-    let column = uniform_list_vector_column(binding, node_id, role)?;
-    context.check_cancellation("query_engine.vector_algorithm.before_pack")?;
-    let batch = GpuRecordBatch::new(input.frame().clone(), Arc::clone(input_schema)).map_err(|error| {
-        cudf_query_error(PACK_OPERATION, "failed to bind the vector relation to its variable-width List schema", error)
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
-    })?;
-    let field_index = uniform_list_field_index(input_schema, column, node_id, role)?;
-    let validated = batch.try_prepare_uniform_list_export(field_index).map_err(|error| {
-        cudf_query_error(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
-    })?;
-    require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
-    let rows = validated.rows();
-    let dimension = validated.dimension();
-    let input_bytes = input.device_allocated_size_bytes()?;
-    let packed_bytes = matrix_bytes::<E>(rows, dimension, node_id, role)?;
-    let identity = vector_identity(node_id, algorithm, resources, native_version)
-        .with_vector_relation_role(role)
-        .with_vector_dimension(dimension)
-        .with_matrix_layout(matrix_layout_name(layout))
-        .with_input_rows(rows as u64)
-        .with_input_bytes(input_bytes);
-    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
-    let guard = RuntimeOperatorStageGuard::start(
-        observation,
-        plan_execution_id,
-        parent_span_id,
-        RuntimeOperatorStageKind::VectorPack,
-        identity,
-    );
-    if let Err(error) = context.check_cancellation("query_engine.vector_algorithm.before_uniform_list_pack") {
-        guard.fail(&error);
-        return Err(error);
-    }
-    let packed = match resources.pack_validated_uniform_list::<E>(&validated, layout).map_err(|error| {
-        cuvs_query_error(
-            PACK_OPERATION,
-            "failed to pack the validated uniform List vector child into an owned matrix",
-            error,
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("relation_role", role)
-        .with_fact("column", column)
-    }) {
-        Ok(packed) => packed,
-        Err(error) => {
-            guard.fail(&error);
-            return Err(error);
-        },
-    };
-    guard.finish(Some(rows as u64), Some(packed_bytes));
-    body(packed, dimension)
-}
-
 fn uniform_list_vector_column<'a>(
     binding: &'a VectorRelationBinding,
     node_id: NodeId,
     role: &'static str,
 ) -> Result<&'a str> {
     match &binding.vector {
-        CuvsDenseVectorBinding::VectorColumn(column) => Ok(column),
-        CuvsDenseVectorBinding::Columns(_) => Err(QueryError::new(
+        DenseVectorBinding::VectorColumn(column) => Ok(column),
+        DenseVectorBinding::Columns(_) => Err(QueryError::new(
             QueryErrorCode::CudfInvariantViolation,
             PACK_OPERATION,
             "uniform List vector packing received a scalar-column binding",
@@ -1902,13 +1688,6 @@ fn native_pca_params(params: &VectorPcaParams, node_id: NodeId) -> Result<PcaPar
     })
 }
 
-fn matrix_layout_name(layout: MatrixLayout) -> &'static str {
-    match layout {
-        MatrixLayout::RowMajor => "row_major",
-        MatrixLayout::ColumnMajor => "column_major",
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
@@ -2001,69 +1780,6 @@ fn vector_identity(
         .with_native_version(native_version.0, native_version.1, native_version.2)
 }
 
-fn relation_input<'a>(
-    inputs: &'a BTreeMap<NodeId, GpuDataFrame>,
-    binding: &VectorRelationBinding,
-    node_id: NodeId,
-    role: &'static str,
-) -> Result<&'a GpuDataFrame> {
-    inputs.get(&binding.input).ok_or_else(|| {
-        QueryError::new(QueryErrorCode::InvalidPlan, EXECUTE_OPERATION, "evaluated vector relation input is missing")
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("input_node_id", binding.input)
-            .with_fact("reason", "missing_evaluated_relation")
-    })
-}
-
-fn relation_dimension(
-    binding: &VectorRelationBinding,
-    input_schema: &SchemaRef,
-    node_id: NodeId,
-    role: &'static str,
-) -> Result<usize> {
-    match &binding.vector {
-        CuvsDenseVectorBinding::Columns(columns) => Ok(columns.len()),
-        CuvsDenseVectorBinding::VectorColumn(column) => match input_schema
-            .field_with_name(column)
-            .map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    PACK_OPERATION,
-                    "vector column is absent from its input schema",
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
-                .with_fact("reason", "missing_feature_column")
-            })?
-            .data_type()
-        {
-            DataType::FixedSizeList(_, dimension) if *dimension > 0 => Ok(*dimension as usize),
-            DataType::List(_) | DataType::LargeList(_) => Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                PACK_OPERATION,
-                "variable List<Float32> vector columns require a uniform-dimension device witness",
-            )
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
-            .with_fact("reason", "uniform_list_dimension_witness_unavailable")
-            .with_fact("host_fallback", "disabled")),
-            actual => Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                PACK_OPERATION,
-                "vector column is not a positive-width FixedSizeList",
-            )
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
-            .with_fact("data_type", format!("{actual:?}"))
-            .with_fact("reason", "unsupported_feature_type")),
-        },
-    }
-}
-
 fn distance_metric(metric: VectorDistanceMetric) -> DistanceMetric {
     match metric {
         VectorDistanceMetric::L2Expanded => DistanceMetric::L2Expanded,
@@ -2071,45 +1787,6 @@ fn distance_metric(metric: VectorDistanceMetric) -> DistanceMetric {
         VectorDistanceMetric::CosineExpanded => DistanceMetric::CosineExpanded,
         VectorDistanceMetric::InnerProduct => DistanceMetric::InnerProduct,
     }
-}
-
-fn checked_output_rows(rows: usize, factor: usize, node_id: NodeId, algorithm: VectorAlgorithm) -> Result<usize> {
-    let output_rows = rows.checked_mul(factor).ok_or_else(|| {
-        QueryError::new(QueryErrorCode::SizeOverflow, EXECUTE_OPERATION, "vector output row count overflowed")
-            .with_fact("node_id", node_id)
-            .with_fact("algorithm", algorithm.as_str())
-            .with_fact("reason", "output_row_count_overflow")
-    })?;
-    if output_rows > i32::MAX as usize {
-        return Err(QueryError::new(
-            QueryErrorCode::CudfInvalidInput,
-            EXECUTE_OPERATION,
-            "vector output row count exceeds libcudf size_type range",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("algorithm", algorithm.as_str())
-        .with_fact("input_rows", rows)
-        .with_fact("factor", factor)
-        .with_fact("output_rows", output_rows)
-        .with_fact("maximum_rows", i32::MAX)
-        .with_fact("reason", "row_count_exceeds_libcudf_size_type"));
-    }
-    Ok(output_rows)
-}
-
-fn matrix_bytes<T: DeviceElement>(rows: usize, dimension: usize, node_id: NodeId, role: &'static str) -> Result<u64> {
-    rows.checked_mul(dimension)
-        .and_then(|values| values.checked_mul(std::mem::size_of::<T>()))
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| size_overflow(node_id, role))
-}
-
-fn size_overflow(node_id: NodeId, resource: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::SizeOverflow, EXECUTE_OPERATION, "vector execution size calculation overflowed")
-        .with_fact("node_id", node_id)
-        .with_fact("algorithm", "brute_force_knn")
-        .with_fact("resource", resource)
-        .with_fact("reason", "size_calculation_overflow")
 }
 
 #[cfg(test)]

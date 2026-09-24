@@ -1,27 +1,52 @@
 ---
 sidebar_position: 1
 slug: /cuml
-description: SQL-visible cuML machine learning over Algeon SQL sessions (work in progress).
+description: SQL-visible cuML decomposition, clustering, embedding, classification, and regression over Algeon SQL sessions.
 ---
 
 # cuML SQL API
 
-:::note[Work in progress]
+Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml)
+as relation-valued functions in DataFusion SQL sessions. `cuml_pca` fits and
+transforms principal components; `cuml_tsvd` fits and transforms a truncated
+singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
+membership probabilities, and `cuml_umap` produces a manifold embedding.
+`cuml_logistic_regression` and `cuml_random_forest_classifier` fit Int32 class
+labels from a `training` relation and classify a separate `predict` relation.
+`cuml_random_forest_regressor` fits finite Float32 targets. Forest prediction
+copies the predict features to host and walks trees there; it is not GPU inference. Each result includes
+`row_ordinal` and an `id` from the relation supplying output rows.
 
-The cuML SQL surface is under development. The `cuml_*` table functions are
-not yet exposed in a release: there is no `cuml` Cargo feature yet, and a
-query that calls a `cuml_*` function currently fails as an unknown table
-function. The shape described below is the intended direction and may change.
+`cuml_pca` and `cuvs_pca` have the same row schema but use separate cuML and
+cuVS native implementations. Calls select the provider by function name; no
+automatic substitution occurs. The catalog exposes their respective `cuml`
+and `cuvs` providers.
 
-:::
+## Input and call shape
 
-Algeon plans to expose NVIDIA RAPIDS
-[**cuML**](https://github.com/rapidsai/cuml) as SQL table functions over
-DataFusion SQL sessions, following the same pattern as the
-[cuGraph SQL API](../cugraph/overview.mdx) and the
-[cuVS SQL API](../cuvs/overview.mdx): each `cuml_*` function reads a relation
-of feature inputs, runs a GPU machine learning workload, and returns rows you can
-join and filter alongside the rest of your query.
+Each relation argument (`input`, `training`, or `predict`) is a parenthesized `SELECT` subquery. Ordinary session
+tables and views can supply the projected rows. A bare table identifier is not
+an execution argument. [ML Inputs](./ml-inputs.mdx) specifies the canonical
+`id`, feature layouts, element types, and checks at planning and execution.
 
-Until the functions ship, `gpu_list_functions` does not list a `cuml` family,
-and no relation shape or option schema is final.
+For metadata validation, `gpu_validate_call` resolves a registered table or
+view and inspects its schema without evaluating rows. The [GPU Function
+Catalog API](../reference/gpu-function-catalog.mdx) documents discovery and
+validation. [Functions](./functions/index.mdx) contains the generated option,
+output, and limitation reference for each cuML function.
+
+## Execution and lifetime
+
+Embedded sessions install this SQL family with `try_with_cuml_sql()`. The
+Flight SQL server installs it for each session by default. GPU execution
+requires a binary built with the `cuml` Cargo feature and an installed
+`AlgeonGpuBackend`; otherwise catalog entries remain discoverable with
+`available=false` and `required_feature_disabled`. The
+[DataFusion session guide](../integration/datafusion-session.mdx) describes
+backend and execution-mode setup.
+
+All seven functions fit their evaluated input within one statement.
+Models and transforms are released after that call; there is no model cache,
+cross-statement reuse, or serialization. Allocations run within the admitted
+query memory cap. Requests exceeding that cap produce a typed allocation
+error.
