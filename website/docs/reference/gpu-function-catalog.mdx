@@ -25,8 +25,8 @@ cuGraph, cuVS, or cuML subset. cuVS functions (including `cuvs_brute_force_knn`,
 `cuvs_ivf_flat`, `cuvs_ivf_pq`, `cuvs_cagra`, `cuvs_kmeans`, and `cuvs_pca`) are executable
 when the build enables the `cuvs` feature;
 otherwise they are listed with `available=false` and
-`unavailable_reason='required_feature_disabled'`. The `cuml_pca` and
-`cuml_tsvd` entries use provider `cuml` and require the `cuml` feature for
+`unavailable_reason='required_feature_disabled'`. cuML functions
+use provider `cuml` and require the `cuml` feature for
 execution. See [cuML SQL API](../cuml/overview.mdx) for their query-local
 lifetime.
 

@@ -75,9 +75,8 @@ Use a `cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
 same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
 relations. The bounded server runs them inside the admitted query domain, whose
 allocator enforces the query's memory cap. A `cuml` image also serves
-`cuml_pca`, `cuml_tsvd`, `cuml_hdbscan`, `cuml_umap`,
-`cuml_logistic_regression`, `cuml_random_forest_classifier`, and
-`cuml_random_forest_regressor`.
+`cuml_tsvd`, `cuml_hdbscan`, `cuml_umap`, `cuml_logistic_regression`,
+`cuml_random_forest_classifier`, and `cuml_random_forest_regressor`.
 
 ## Image size
 

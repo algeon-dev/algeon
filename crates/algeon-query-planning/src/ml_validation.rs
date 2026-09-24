@@ -44,12 +44,6 @@ pub fn validate_ml_algorithm_node(
     }
     let input = ml.spec.params.relation_bindings().next().expect("ML input");
     let (operation, integers, numbers, n_components) = match &ml.spec.params {
-        MlAlgorithmParams::Pca(p) => (
-            CumlOperation::Pca,
-            vec![("n_components", p.n_components as u64), ("n_iterations", p.n_iterations as u64)],
-            vec![("tol", p.tolerance)],
-            Some(p.n_components),
-        ),
         MlAlgorithmParams::Tsvd(p) => (
             CumlOperation::Tsvd,
             vec![("n_components", p.n_components as u64), ("n_iterations", p.n_iterations as u64)],
@@ -195,7 +189,7 @@ pub fn validate_ml_algorithm_node(
         },
     )?;
     if let Some(dimension) = relation.dimension {
-        if dimension < 2 && matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+        if dimension < 2 && operation == CumlOperation::Tsvd {
             return Err(invalid(
                 "ML input needs at least two feature dimensions",
                 "insufficient_feature_dimension",
@@ -203,9 +197,7 @@ pub fn validate_ml_algorithm_node(
             )
             .with_fact("feature_count", dimension));
         }
-        if n_components.is_some_and(|count| count > dimension)
-            && matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd)
-        {
+        if n_components.is_some_and(|count| count > dimension) && operation == CumlOperation::Tsvd {
             return Err(invalid("ML components exceed input dimension", "invalid_component_count", node_id)
                 .with_fact("n_components", n_components.expect("decomposition components"))
                 .with_fact("feature_count", dimension));

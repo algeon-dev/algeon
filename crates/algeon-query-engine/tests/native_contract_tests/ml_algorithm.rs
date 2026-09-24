@@ -10,10 +10,10 @@ use query_engine::{
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{
         CUML_OPERATION_REGISTRY, CumlOperation, CumlOutputContract, MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec,
-        MlHdbscanParams, MlLogisticRegressionParams, MlPcaParams, MlRandomForestParams, MlRelationBinding,
-        MlRelationRole, MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder,
-        VectorElementType, VectorRowIdBinding, canonicalize_cuml_options, ml_embedding_output_schema,
-        ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+        MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlRelationRole,
+        MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorElementType,
+        VectorRowIdBinding, canonicalize_cuml_options, ml_embedding_output_schema, ml_hdbscan_output_schema,
+        ml_predictions_output_schema, vector_pca_output_schema,
     },
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
@@ -176,8 +176,8 @@ fn plan_with_schema(input_schema: SchemaRef, id: &str, components: usize, output
     let columns = input_schema.fields().iter().skip(1).map(|field| field.name().clone()).collect::<Vec<_>>();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
     let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Pca,
-        MlAlgorithmParams::Pca(MlPcaParams::new(
+        MlAlgorithm::Tsvd,
+        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
             MlRelationBinding::new(input, VectorRowIdBinding::column(id), columns),
             components,
         )),
@@ -192,7 +192,6 @@ fn plan(algorithm: MlAlgorithm) -> QueryPlan {
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
     let binding = MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x0", "x1"]);
     let params = match algorithm {
-        MlAlgorithm::Pca => MlAlgorithmParams::Pca(MlPcaParams::new(binding, 1)),
         MlAlgorithm::Tsvd => MlAlgorithmParams::Tsvd(MlTsvdParams::new(binding, 1)),
         MlAlgorithm::Hdbscan
         | MlAlgorithm::Umap
@@ -213,7 +212,6 @@ fn registry_and_options_are_operation_specific() {
     assert_eq!(
         CumlOperation::all().collect::<Vec<_>>(),
         vec![
-            CumlOperation::Pca,
             CumlOperation::Tsvd,
             CumlOperation::Hdbscan,
             CumlOperation::Umap,
@@ -225,7 +223,6 @@ fn registry_and_options_are_operation_specific() {
     assert_eq!(
         CUML_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect::<Vec<_>>(),
         [
-            "cuml_pca",
             "cuml_tsvd",
             "cuml_hdbscan",
             "cuml_umap",
@@ -239,7 +236,7 @@ fn registry_and_options_are_operation_specific() {
         assert_eq!(
             descriptor.output_contract,
             match operation {
-                CumlOperation::Pca | CumlOperation::Tsvd => CumlOutputContract::Components,
+                CumlOperation::Tsvd => CumlOutputContract::Components,
                 CumlOperation::Hdbscan => CumlOutputContract::HdbscanClusters,
                 CumlOperation::Umap => CumlOutputContract::Embedding,
                 CumlOperation::LogisticRegression
@@ -271,13 +268,13 @@ fn registry_and_options_are_operation_specific() {
                 | CumlOperation::RandomForestRegressor
         ) {
             r#"{"training":{"id":"id","vector":{"columns":["x0","x1"]},"label":"label"},"predict":{"id":"id","vector":{"columns":["x0","x1"]}}}"#
-        } else if matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+        } else if operation == CumlOperation::Tsvd {
             r#"{"input":{"id":"id","vector":{"columns":["x0","x1"]}},"n_components":1}"#
         } else {
             r#"{"input":{"id":"id","vector":{"columns":["x0","x1"]}}}"#
         };
         let canonical = canonicalize_cuml_options(operation, raw).unwrap();
-        if matches!(operation, CumlOperation::Pca | CumlOperation::Tsvd) {
+        if operation == CumlOperation::Tsvd {
             assert_eq!(canonical["solver"], "cov_eig_dq");
             assert_eq!(canonical["n_iterations"], 15);
         }
@@ -305,7 +302,6 @@ fn registry_and_options_are_operation_specific() {
         canonicalize_cuml_options(CumlOperation::LogisticRegression, invalid_predict).unwrap_err().code(),
         "predict_relation_has_label"
     );
-    assert_eq!(CumlOperation::Pca.descriptor().options_json_schema()["properties"]["whiten"]["default"], false);
     assert!(CumlOperation::Tsvd.descriptor().option("whiten").is_none());
 }
 
@@ -364,26 +360,25 @@ fn clustering_and_embedding_options_and_pipeline_contracts() {
 
 #[test]
 fn builder_display_and_pipeline_preserve_ml_contract() {
-    for algorithm in [MlAlgorithm::Pca, MlAlgorithm::Tsvd] {
-        let plan = plan(algorithm);
-        preflight_query_plan(&plan).unwrap();
-        let PlanNode::MlAlgorithm(ml) = &plan.root_node().kind else { panic!("ML root") };
-        assert_eq!(ml.inputs, ml.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>());
-        assert_eq!(ml.output_schema().as_ref(), vector_pca_output_schema(DataType::Int64, 1).as_ref());
-        assert!(plan.to_string().contains(&format!("algorithm={algorithm}")));
-        assert!(plan.to_string().contains("features:x0|x1"));
-        let analysis = plan.capability_analysis(rapids_analysis_context());
-        let edge = analysis.edges.iter().find(|edge| edge.consumer == EdgeConsumer::Node(plan.root_id())).unwrap();
-        assert_eq!(edge.input_role, InputRole::MlAlgorithmInput { role: MlRelationRole::Input });
-        assert!(edge.contract_kinds.contains(&EdgeContractKind::MlAlgorithmInput { role: MlRelationRole::Input }));
-        let pipeline = compile_pipeline(&plan, &analysis).unwrap();
-        pipeline.validate().unwrap();
-        let task = pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::MlAlgorithm).unwrap();
-        assert_eq!(task.plan_node(), Some(plan.root_id()));
-        assert_eq!(task.input_resources().len(), 1);
-        let resource = pipeline.resources().iter().find(|resource| resource.id() == task.input_resources()[0]).unwrap();
-        assert!(resource.consumers().contains(&task.id()));
-    }
+    let algorithm = MlAlgorithm::Tsvd;
+    let plan = plan(algorithm);
+    preflight_query_plan(&plan).unwrap();
+    let PlanNode::MlAlgorithm(ml) = &plan.root_node().kind else { panic!("ML root") };
+    assert_eq!(ml.inputs, ml.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>());
+    assert_eq!(ml.output_schema().as_ref(), vector_pca_output_schema(DataType::Int64, 1).as_ref());
+    assert!(plan.to_string().contains(&format!("algorithm={algorithm}")));
+    assert!(plan.to_string().contains("features:x0|x1"));
+    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let edge = analysis.edges.iter().find(|edge| edge.consumer == EdgeConsumer::Node(plan.root_id())).unwrap();
+    assert_eq!(edge.input_role, InputRole::MlAlgorithmInput { role: MlRelationRole::Input });
+    assert!(edge.contract_kinds.contains(&EdgeContractKind::MlAlgorithmInput { role: MlRelationRole::Input }));
+    let pipeline = compile_pipeline(&plan, &analysis).unwrap();
+    pipeline.validate().unwrap();
+    let task = pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::MlAlgorithm).unwrap();
+    assert_eq!(task.plan_node(), Some(plan.root_id()));
+    assert_eq!(task.input_resources().len(), 1);
+    let resource = pipeline.resources().iter().find(|resource| resource.id() == task.input_resources()[0]).unwrap();
+    assert!(resource.consumers().contains(&task.id()));
 }
 
 #[test]
@@ -452,8 +447,8 @@ fn validation_and_capability_reject_bad_ml_contracts() {
         GpuResidentSource::new("one_row", schema("id", DataType::Float32, 2)).with_row_count_upper_bound(1),
     ));
     let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Pca,
-        MlAlgorithmParams::Pca(MlPcaParams::new(
+        MlAlgorithm::Tsvd,
+        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
             MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x0", "x1"]),
             1,
         )),
@@ -562,8 +557,8 @@ fn ml_pipeline_keeps_relational_handoffs() {
         Arc::clone(&input_schema),
     );
     let ml = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Pca,
-        MlAlgorithmParams::Pca(MlPcaParams::new(
+        MlAlgorithm::Tsvd,
+        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
             MlRelationBinding::new(filtered, VectorRowIdBinding::column("id"), ["x0", "x1"]),
             1,
         )),

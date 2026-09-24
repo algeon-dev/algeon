@@ -2088,7 +2088,6 @@ pub query_planning::plan::AdvisoryUnknownReason::StatisticsComputationFailed
 pub enum query_planning::plan::CumlOperation
 pub query_planning::plan::CumlOperation::Hdbscan
 pub query_planning::plan::CumlOperation::LogisticRegression
-pub query_planning::plan::CumlOperation::Pca
 pub query_planning::plan::CumlOperation::RandomForestClassifier
 pub query_planning::plan::CumlOperation::RandomForestRegressor
 pub query_planning::plan::CumlOperation::Tsvd
@@ -2386,7 +2385,6 @@ pub fn query_planning::plan::JoinType::fmt(&self, &mut core::fmt::Formatter<'_>)
 pub enum query_planning::plan::MlAlgorithm
 pub query_planning::plan::MlAlgorithm::Hdbscan
 pub query_planning::plan::MlAlgorithm::LogisticRegression
-pub query_planning::plan::MlAlgorithm::Pca
 pub query_planning::plan::MlAlgorithm::RandomForestClassifier
 pub query_planning::plan::MlAlgorithm::RandomForestRegressor
 pub query_planning::plan::MlAlgorithm::Tsvd
@@ -2398,7 +2396,6 @@ pub fn query_planning::plan::MlAlgorithm::fmt(&self, &mut core::fmt::Formatter<'
 pub enum query_planning::plan::MlAlgorithmParams
 pub query_planning::plan::MlAlgorithmParams::Hdbscan(query_planning::plan::MlHdbscanParams)
 pub query_planning::plan::MlAlgorithmParams::LogisticRegression(query_planning::plan::MlLogisticRegressionParams)
-pub query_planning::plan::MlAlgorithmParams::Pca(query_planning::plan::MlPcaParams)
 pub query_planning::plan::MlAlgorithmParams::RandomForestClassifier(query_planning::plan::MlRandomForestParams)
 pub query_planning::plan::MlAlgorithmParams::RandomForestRegressor(query_planning::plan::MlRandomForestParams)
 pub query_planning::plan::MlAlgorithmParams::Tsvd(query_planning::plan::MlTsvdParams)
@@ -2414,13 +2411,13 @@ impl query_planning::plan::MlClusterSelectionMethod
 pub const fn query_planning::plan::MlClusterSelectionMethod::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::plan::MlClusterSelectionMethod
 pub fn query_planning::plan::MlClusterSelectionMethod::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum query_planning::plan::MlPcaSolver
-pub query_planning::plan::MlPcaSolver::CovEigDq
-pub query_planning::plan::MlPcaSolver::CovEigJacobi
-impl query_planning::plan::MlPcaSolver
-pub const fn query_planning::plan::MlPcaSolver::as_str(self) -> &'static str
-impl core::fmt::Display for query_planning::plan::MlPcaSolver
-pub fn query_planning::plan::MlPcaSolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::plan::MlDecompositionSolver
+pub query_planning::plan::MlDecompositionSolver::CovEigDq
+pub query_planning::plan::MlDecompositionSolver::CovEigJacobi
+impl query_planning::plan::MlDecompositionSolver
+pub const fn query_planning::plan::MlDecompositionSolver::as_str(self) -> &'static str
+impl core::fmt::Display for query_planning::plan::MlDecompositionSolver
+pub fn query_planning::plan::MlDecompositionSolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::MlRelationRole
 pub query_planning::plan::MlRelationRole::Input
 pub query_planning::plan::MlRelationRole::Predict
@@ -3046,15 +3043,6 @@ pub query_planning::plan::MlLogisticRegressionParams::predict: query_planning::p
 pub query_planning::plan::MlLogisticRegressionParams::training: query_planning::plan::MlRelationBinding
 impl query_planning::plan::MlLogisticRegressionParams
 pub fn query_planning::plan::MlLogisticRegressionParams::new(query_planning::plan::MlRelationBinding, query_planning::plan::MlRelationBinding) -> Self
-pub struct query_planning::plan::MlPcaParams
-pub query_planning::plan::MlPcaParams::input: query_planning::plan::MlRelationBinding
-pub query_planning::plan::MlPcaParams::n_components: usize
-pub query_planning::plan::MlPcaParams::n_iterations: u32
-pub query_planning::plan::MlPcaParams::solver: query_planning::plan::MlPcaSolver
-pub query_planning::plan::MlPcaParams::tolerance: f64
-pub query_planning::plan::MlPcaParams::whiten: bool
-impl query_planning::plan::MlPcaParams
-pub fn query_planning::plan::MlPcaParams::new(query_planning::plan::MlRelationBinding, usize) -> Self
 pub struct query_planning::plan::MlRandomForestParams
 pub query_planning::plan::MlRandomForestParams::bootstrap: bool
 pub query_planning::plan::MlRandomForestParams::criterion: core::option::Option<query_planning::plan::MlSplitCriterion>
@@ -3085,7 +3073,7 @@ pub struct query_planning::plan::MlTsvdParams
 pub query_planning::plan::MlTsvdParams::input: query_planning::plan::MlRelationBinding
 pub query_planning::plan::MlTsvdParams::n_components: usize
 pub query_planning::plan::MlTsvdParams::n_iterations: u32
-pub query_planning::plan::MlTsvdParams::solver: query_planning::plan::MlPcaSolver
+pub query_planning::plan::MlTsvdParams::solver: query_planning::plan::MlDecompositionSolver
 pub query_planning::plan::MlTsvdParams::tolerance: f64
 impl query_planning::plan::MlTsvdParams
 pub fn query_planning::plan::MlTsvdParams::new(query_planning::plan::MlRelationBinding, usize) -> Self
@@ -3341,7 +3329,6 @@ pub fn query_planning::plan::WindowSpec::new(alloc::vec::Vec<query_planning::exp
 pub const query_planning::plan::CUML_HDBSCAN_FUNCTION: &str
 pub const query_planning::plan::CUML_LOGISTIC_REGRESSION_FUNCTION: &str
 pub const query_planning::plan::CUML_OPERATION_REGISTRY: &[query_planning::plan::CumlOperationDescriptor]
-pub const query_planning::plan::CUML_PCA_FUNCTION: &str
 pub const query_planning::plan::CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION: &str
 pub const query_planning::plan::CUML_RANDOM_FOREST_REGRESSOR_FUNCTION: &str
 pub const query_planning::plan::CUML_TSVD_FUNCTION: &str

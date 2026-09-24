@@ -4,8 +4,8 @@ use arrow::datatypes::DataType;
 use cudf::{DenseMatrixLayout, ExecutionBudgetRequest, Series, TypeId};
 use cuml::{
     ClusterSelectionMethod, CumlResources, DeviceMatrix, HdbscanFit, HdbscanParams, LogisticRegressionModel,
-    LogisticRegressionParams, OwnedFloat32Matrix, PcaModel, PcaParams, PcaSolver, RandomForestClassifier,
-    RandomForestParams, RandomForestRegressor, SplitCriterion, TsvdModel, TsvdParams, UmapInit, UmapModel, UmapParams,
+    LogisticRegressionParams, OwnedFloat32Matrix, PcaSolver, RandomForestClassifier, RandomForestParams,
+    RandomForestRegressor, SplitCriterion, TsvdModel, TsvdParams, UmapInit, UmapModel, UmapParams,
 };
 
 use super::assembly::{assemble_components, assemble_ml_output};
@@ -23,10 +23,10 @@ use crate::{
         RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
     },
     plan::{
-        MlAlgorithm, MlAlgorithmNode, MlAlgorithmParams, MlClusterSelectionMethod, MlHdbscanParams,
-        MlLogisticRegressionParams, MlPcaParams, MlPcaSolver, MlRandomForestParams, MlRelationBinding,
-        MlSplitCriterion, MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, QueryPlan, VectorRowIdBinding,
-        ml_embedding_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+        MlAlgorithm, MlAlgorithmNode, MlAlgorithmParams, MlClusterSelectionMethod, MlDecompositionSolver,
+        MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlSplitCriterion,
+        MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, QueryPlan, VectorRowIdBinding, ml_embedding_output_schema,
+        ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
     },
     runtime::ExecutionContext,
 };
@@ -53,7 +53,6 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
             .with_fact("reason", "algorithm_parameter_mismatch"));
     }
     let (binding, components) = match &ml.spec.params {
-        MlAlgorithmParams::Pca(params) => (&params.input, Some(params.n_components)),
         MlAlgorithmParams::Tsvd(params) => (&params.input, Some(params.n_components)),
         MlAlgorithmParams::Hdbscan(params) => (&params.input, None),
         MlAlgorithmParams::Umap(params) => (&params.input, Some(params.n_components)),
@@ -91,7 +90,7 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
         MlAlgorithm::Umap => {
             ml_embedding_output_schema(id_field.data_type().clone(), components.expect("UMAP dimension"))
         },
-        MlAlgorithm::Pca | MlAlgorithm::Tsvd => {
+        MlAlgorithm::Tsvd => {
             vector_pca_output_schema(id_field.data_type().clone(), components.expect("decomposition dimension"))
         },
     };
@@ -185,62 +184,25 @@ pub(in crate::exec) fn execute_ml_algorithm(
             (&resources, version),
             RowMajorParams::Umap(params),
         ),
-        MlAlgorithmParams::Pca(params) => execute_decomposition_ml(
-            context,
-            plan,
-            node_id,
-            inputs,
-            &resources,
-            version,
-            DecompositionParams::Pca(params),
-        ),
-        MlAlgorithmParams::Tsvd(params) => execute_decomposition_ml(
-            context,
-            plan,
-            node_id,
-            inputs,
-            &resources,
-            version,
-            DecompositionParams::Tsvd(params),
-        ),
+        MlAlgorithmParams::Tsvd(params) => execute_tsvd_ml(context, plan, node_id, inputs, &resources, version, params),
     }
 }
 
-#[derive(Clone, Copy)]
-enum DecompositionParams<'a> {
-    Pca(&'a MlPcaParams),
-    Tsvd(&'a MlTsvdParams),
-}
-
-fn execute_decomposition_ml(
+fn execute_tsvd_ml(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
     inputs: &BTreeMap<NodeId, GpuDataFrame>,
     resources: &CumlResources,
     version: (u16, u16, u16),
-    decomposition: DecompositionParams<'_>,
+    params: &MlTsvdParams,
 ) -> Result<GpuDataFrame> {
-    let (binding, algorithm, n_components, solver, tolerance, n_iterations, whiten) = match decomposition {
-        DecompositionParams::Pca(params) => (
-            &params.input,
-            MlAlgorithm::Pca,
-            params.n_components,
-            params.solver,
-            params.tolerance,
-            params.n_iterations,
-            params.whiten,
-        ),
-        DecompositionParams::Tsvd(params) => (
-            &params.input,
-            MlAlgorithm::Tsvd,
-            params.n_components,
-            params.solver,
-            params.tolerance,
-            params.n_iterations,
-            false,
-        ),
-    };
+    let binding = &params.input;
+    let algorithm = MlAlgorithm::Tsvd;
+    let n_components = params.n_components;
+    let solver = params.solver;
+    let tolerance = params.tolerance;
+    let n_iterations = params.n_iterations;
     let input = relation_input_for(&ML_OPERATIONS, inputs, binding.input, node_id, "input")?;
     let rows = input.num_rows();
     if rows < 2 {
@@ -312,8 +274,8 @@ fn execute_decomposition_ml(
         .map_err(|error| cuml_query_error(ML_OPERATIONS.pack, "failed to adopt packed ML matrix", error))?;
     let solver_name = solver.as_str();
     let solver = match solver {
-        MlPcaSolver::CovEigDq => PcaSolver::CovEigDq,
-        MlPcaSolver::CovEigJacobi => PcaSolver::CovEigJacobi,
+        MlDecompositionSolver::CovEigDq => PcaSolver::CovEigDq,
+        MlDecompositionSolver::CovEigJacobi => PcaSolver::CovEigJacobi,
     };
     let input_bytes = matrix_bytes_for::<f32>(&ML_OPERATIONS, rows, dimension, node_id, "input")?;
     let output_bytes = matrix_bytes_for::<f32>(&ML_OPERATIONS, rows, n_components, node_id, "output")?;
@@ -327,28 +289,12 @@ fn execute_decomposition_ml(
     );
     let transformed = (|| {
         context.check_cancellation(NATIVE)?;
-        let output = match decomposition {
-            DecompositionParams::Pca(_) => {
-                let mut params = PcaParams::new(n_components);
-                params.solver = solver;
-                params.tolerance = tolerance;
-                params.iterations = n_iterations;
-                params.copy = false;
-                params.whiten = whiten;
-                let (_model, output) = PcaModel::fit_transform(resources, &mut matrix, params)
-                    .map_err(|error| cuml_query_error(NATIVE, "failed to fit and transform cuML PCA", error))?;
-                output
-            },
-            DecompositionParams::Tsvd(_) => {
-                let mut params = TsvdParams::new(n_components);
-                params.solver = solver;
-                params.tolerance = tolerance;
-                params.iterations = n_iterations;
-                let (_model, output) = TsvdModel::fit_transform(resources, &mut matrix, params)
-                    .map_err(|error| cuml_query_error(NATIVE, "failed to fit and transform cuML TSVD", error))?;
-                output
-            },
-        };
+        let mut params = TsvdParams::new(n_components);
+        params.solver = solver;
+        params.tolerance = tolerance;
+        params.iterations = n_iterations;
+        let (_model, output) = TsvdModel::fit_transform(resources, &mut matrix, params)
+            .map_err(|error| cuml_query_error(NATIVE, "failed to fit and transform cuML TSVD", error))?;
         context.check_cancellation(NATIVE)?;
         Ok(output)
     })();

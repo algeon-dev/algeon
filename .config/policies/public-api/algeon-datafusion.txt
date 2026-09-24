@@ -514,7 +514,6 @@ pub mod algeon_datafusion::cuml_sql
 pub use algeon_datafusion::cuml_sql::CUML_HDBSCAN_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_LOGISTIC_REGRESSION_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_OPERATION_REGISTRY
-pub use algeon_datafusion::cuml_sql::CUML_PCA_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_RANDOM_FOREST_REGRESSOR_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_TSVD_FUNCTION

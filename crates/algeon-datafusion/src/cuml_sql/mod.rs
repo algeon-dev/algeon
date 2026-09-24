@@ -1,7 +1,7 @@
 //! Relation-aware cuML SQL planning, catalog metadata, and execution.
 //!
-//! PCA and truncated SVD fit and transform Float32 relations within one query.
-//! Both operations return the input ID, a row ordinal, and pc columns.
+//! Truncated SVD fits and transforms Float32 relations within one query.
+//! It returns the input ID, a row ordinal, and pc columns.
 
 mod error;
 mod exec;
@@ -18,7 +18,7 @@ pub(crate) use gpu_family::{CumlGpuFunctionFamily, cuml_gpu_function_availabilit
 pub use logical::CumlLogicalNode;
 pub use options::{CumlRelationBinding, CumlValidatedOptions};
 pub use registry::{
-    CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY, CUML_PCA_FUNCTION,
+    CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY,
     CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,
     CUML_UMAP_FUNCTION, CumlOperation, CumlOperationDescriptor, CumlOutputContract, DenseVectorBinding,
     GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, MlRelationRole, RelationIdType,

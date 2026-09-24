@@ -188,7 +188,7 @@ fn descriptor_for_operation(operation: CumlOperation, availability: GpuFunctionA
     let validation_request_schema =
         validation_request_schema(descriptor.relation_roles.iter().map(|role| role.as_str()), &options_schema);
     let options = match operation {
-        CumlOperation::Pca | CumlOperation::Tsvd => json!({"n_components": 2}),
+        CumlOperation::Tsvd => json!({"n_components": 2}),
         CumlOperation::Hdbscan
         | CumlOperation::Umap
         | CumlOperation::LogisticRegression
@@ -226,7 +226,7 @@ fn descriptor_for_operation(operation: CumlOperation, availability: GpuFunctionA
 
 fn output_contract(operation: CumlOperation) -> &'static str {
     match operation {
-        CumlOperation::Pca | CumlOperation::Tsvd => "components",
+        CumlOperation::Tsvd => "components",
         CumlOperation::Hdbscan => "hdbscan_clusters",
         CumlOperation::Umap => "embedding",
         CumlOperation::LogisticRegression
@@ -241,7 +241,6 @@ trait CumlOperationName {
 impl CumlOperationName for CumlOperation {
     fn as_name(&self) -> &'static str {
         match self {
-            Self::Pca => "pca",
             Self::Tsvd => "tsvd",
             Self::Hdbscan => "hdbscan",
             Self::Umap => "umap",

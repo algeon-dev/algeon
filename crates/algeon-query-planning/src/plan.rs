@@ -71,13 +71,13 @@ pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
 };
 pub use ml_algorithm::{
-    CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY, CUML_PCA_FUNCTION,
+    CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY,
     CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,
     CUML_UMAP_FUNCTION, CumlOperation, CumlOperationDescriptor, CumlOutputContract, MlAlgorithm, MlAlgorithmNode,
-    MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlHdbscanParams, MlLogisticRegressionParams,
-    MlPcaParams, MlPcaSolver, MlRandomForestParams, MlRelationBinding, MlRelationRole, MlSplitCriterion, MlTsvdParams,
-    MlUmapInit, MlUmapParams, canonicalize_cuml_options, ml_embedding_output_schema, ml_hdbscan_output_schema,
-    ml_predictions_output_schema,
+    MlAlgorithmParams, MlAlgorithmSpec, MlClusterSelectionMethod, MlDecompositionSolver, MlHdbscanParams,
+    MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlRelationRole, MlSplitCriterion,
+    MlTsvdParams, MlUmapInit, MlUmapParams, canonicalize_cuml_options, ml_embedding_output_schema,
+    ml_hdbscan_output_schema, ml_predictions_output_schema,
 };
 pub use nodes::{
     AggregateNode, EdgeNormalizeNode, FilterNode, LimitNode, ProjectionNode, ProjectionOutput, ShiftDirection,

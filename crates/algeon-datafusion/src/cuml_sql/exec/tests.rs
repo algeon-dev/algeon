@@ -24,7 +24,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn physical_planning_lowers_both_cuml_operations_into_typed_ml_ir() {
+async fn physical_planning_lowers_cuml_operations_into_typed_ml_ir() {
     let state = SessionStateBuilder::new_with_default_features().try_with_cuml_sql().unwrap().build();
     let ctx = SessionContext::new_with_state(state);
     let schema = Arc::new(Schema::new(vec![
@@ -34,26 +34,21 @@ async fn physical_planning_lowers_both_cuml_operations_into_typed_ml_ir() {
     ]));
     let batch = RecordBatch::new_empty(Arc::clone(&schema));
     ctx.register_table("t", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
-    for (name, operation) in [("cuml_pca", CumlOperation::Pca), ("cuml_tsvd", CumlOperation::Tsvd)] {
-        let sql = format!("SELECT * FROM {name}(input => (SELECT id, d0, d1 FROM t), n_components => 1)");
-        let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
-        let exec = find_cuml_exec(plan.as_ref()).expect("cuML physical node");
-        assert_eq!(exec.operation(), operation);
-        let native = exec.native_plan().unwrap();
-        let ml = native
-            .nodes()
-            .iter()
-            .find_map(|node| match &node.kind {
-                PlanNode::MlAlgorithm(ml) => Some(ml),
-                _ => None,
-            })
-            .expect("typed ML node");
-        assert_eq!(ml.inputs.len(), 1);
-        assert!(matches!(
-            (&ml.spec.params, operation),
-            (MlAlgorithmParams::Pca(_), CumlOperation::Pca) | (MlAlgorithmParams::Tsvd(_), CumlOperation::Tsvd)
-        ));
-    }
+    let sql = "SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM t), n_components => 1)";
+    let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
+    let exec = find_cuml_exec(plan.as_ref()).expect("cuML physical node");
+    assert_eq!(exec.operation(), CumlOperation::Tsvd);
+    let native = exec.native_plan().unwrap();
+    let ml = native
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::MlAlgorithm(ml) => Some(ml),
+            _ => None,
+        })
+        .expect("typed ML node");
+    assert_eq!(ml.inputs.len(), 1);
+    assert!(matches!(&ml.spec.params, MlAlgorithmParams::Tsvd(_)));
 }
 
 #[tokio::test]
@@ -67,7 +62,7 @@ async fn sql_exec_with_native_gpu_input_has_native_final_plan_disposition() {
     ]));
     let batch = RecordBatch::new_empty(Arc::clone(&schema));
     ctx.register_table("t", Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![batch]]).unwrap())).unwrap();
-    let sql = "SELECT * FROM cuml_pca(input => (SELECT id, d0, d1 FROM t), n_components => 1)";
+    let sql = "SELECT * FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM t), n_components => 1)";
     let physical = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
     let exec = find_cuml_exec(physical.as_ref()).expect("cuML physical node");
     let mut builder = QueryPlanBuilder::new();

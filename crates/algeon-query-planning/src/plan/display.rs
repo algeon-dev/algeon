@@ -388,11 +388,8 @@ fn format_vector_algorithm_params(params: &super::VectorAlgorithmParams) -> Stri
 }
 
 fn format_ml_algorithm_params(params: &super::MlAlgorithmParams) -> String {
-    let (input, components, solver, tolerance, iterations, whiten) = match params {
-        super::MlAlgorithmParams::Pca(p) => {
-            (&p.input, p.n_components, p.solver, p.tolerance, p.n_iterations, Some(p.whiten))
-        },
-        super::MlAlgorithmParams::Tsvd(p) => (&p.input, p.n_components, p.solver, p.tolerance, p.n_iterations, None),
+    let (input, components, solver, tolerance, iterations) = match params {
+        super::MlAlgorithmParams::Tsvd(p) => (&p.input, p.n_components, p.solver, p.tolerance, p.n_iterations),
         super::MlAlgorithmParams::Hdbscan(p) => {
             return format!(
                 "input=({};row_id:{};features:{}) min_samples={} min_cluster_size={} max_cluster_size={} cluster_selection_method={}",
@@ -444,15 +441,14 @@ fn format_ml_algorithm_params(params: &super::MlAlgorithmParams) -> String {
         },
     };
     format!(
-        "input=({};row_id:{};features:{}) n_components={} solver={} tolerance={} n_iterations={}{}",
+        "input=({};row_id:{};features:{}) n_components={} solver={} tolerance={} n_iterations={}",
         input.input,
         input.row_id.diagnostic_label(),
         input.features.display_label(),
         components,
         solver,
         tolerance,
-        iterations,
-        whiten.map_or_else(String::new, |value| format!(" whiten={value}"))
+        iterations
     )
 }
 
