@@ -45,16 +45,17 @@
   adjectives (e.g. `fast, reliable, and scalable`, `flexible, robust, and extensible`).
 - **No binary contrasts and colon reveals**: Avoid theatrical structures such as
   `It is not about X; it is about Y` or `The reality: X`.
-- **Burstiness and sentence length**: Vary sentence structures. Never generate
-  three consecutive sentences of identical length or repetitive subject-verb-object rhythm.
+- **Burstiness and sentence length**: Vary sentence length and shape; runs of
+  same-length, subject-verb-object sentences read as generated text.
 - **Fact-dense, source-locked technical claims**: Every paragraph must advance
   a concrete invariant, benchmark number, architectural boundary, or API contract.
   Delete any sentence that functions purely as ungrounded promotional uplift.
 - **Direct reporting and interaction**: Omit conversational filler, flattery, and
   apologies. State changed files, line ranges, non-obvious rationale, verification
   commands and outcomes, and open technical decisions directly.
-- **Domain anti-slop policy**: Adhere to [.config/policies/algeon_domain_anti_slop.md](file:///.config/policies/algeon_domain_anti_slop.md)
-  for GPU query engine, physical optimization, and CUDA memory allocation constraints.
+- **Domain anti-slop policy**: prose about the GPU query engine, physical
+  optimization, or CUDA memory allocation follows
+  [`.config/policies/algeon_domain_anti_slop.md`](.config/policies/algeon_domain_anti_slop.md).
 
 ## Project boundaries
 

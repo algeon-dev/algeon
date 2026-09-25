@@ -50,10 +50,9 @@ execution follow the root `algeon-datafusion` ownership map.
 ## Build and test
 
 ```bash
-cargo clippy -p cuvs -p cuvs-sys \
-  --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-cargo nt -E 'package(cuvs) | package(cuvs-sys)'
+cargo nt -E 'package(algeon-cuvs) | package(algeon-cuvs-sys)'
 
 # Native-free workspace and checked-binding contracts
 DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked \
@@ -67,7 +66,7 @@ validation.
 
 ## Testing and repository policy
 
-- `scripts/ci/check_native_sources.sh`, `scripts/ci/check_component_packages.sh`,
+- `scripts/ci/check_native_sources.sh`, `scripts/ci/check_workspace_publication.py`,
   and `scripts/dev/bindings.sh` are the root owners for source, package, and
   checked-binding maintenance. Do not add a component-local umbrella command.
 - `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` are the
@@ -83,8 +82,8 @@ validation.
 
 ## Public contracts
 
-- Preserve package/import identities: `cuvs` imports as `cuvs`,
-  `cuvs-sys` imports as `cuvs_sys`, and the sys crate keeps
+- Preserve package/import identities: `algeon-cuvs` imports as `cuvs`,
+  `algeon-cuvs-sys` imports as `cuvs_sys`, and the sys crate keeps
   `links = "cuvs_c"`.
 - Preserve `CuvsResources` execution-binding identity and the ownership and
   completion semantics of `PreparedTensorLease`,

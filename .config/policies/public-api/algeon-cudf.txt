@@ -349,6 +349,8 @@ pub cudf::core::error::code::ErrorCode::UnsupportedDtype
 pub cudf::core::error::code::ErrorCode::UnsupportedLayout
 pub cudf::core::error::code::ErrorCode::UnsupportedOperation
 pub cudf::core::error::code::ErrorCode::ValueOutOfRange
+impl cudf::core::error::code::ErrorCode
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 34]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::error::code::ErrorKind
@@ -367,7 +369,6 @@ pub cudf::core::error::code::ErrorStatus::Persistent
 pub cudf::core::error::code::ErrorStatus::Temporary
 impl core::fmt::Display for cudf::core::error::code::ErrorStatus
 pub fn cudf::core::error::code::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct cudf::core::error::code::ErrorCodeIter
 pub const fn cudf::core::error::code::kind_for_code(cudf::core::error::code::ErrorCode) -> cudf::core::error::code::ErrorKind
 pub const fn cudf::core::error::code::status_for_code(cudf::core::error::code::ErrorCode) -> cudf::core::error::code::ErrorStatus
 pub mod cudf::core::error::facts
@@ -475,6 +476,8 @@ pub cudf::core::error::ErrorCode::UnsupportedDtype
 pub cudf::core::error::ErrorCode::UnsupportedLayout
 pub cudf::core::error::ErrorCode::UnsupportedOperation
 pub cudf::core::error::ErrorCode::ValueOutOfRange
+impl cudf::core::error::code::ErrorCode
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 34]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::error::ErrorKind
@@ -1136,6 +1139,8 @@ pub cudf::core::ErrorCode::UnsupportedDtype
 pub cudf::core::ErrorCode::UnsupportedLayout
 pub cudf::core::ErrorCode::UnsupportedOperation
 pub cudf::core::ErrorCode::ValueOutOfRange
+impl cudf::core::error::code::ErrorCode
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 34]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::ErrorKind
@@ -7108,6 +7113,8 @@ pub cudf::ErrorCode::UnsupportedDtype
 pub cudf::ErrorCode::UnsupportedLayout
 pub cudf::ErrorCode::UnsupportedOperation
 pub cudf::ErrorCode::ValueOutOfRange
+impl cudf::core::error::code::ErrorCode
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 34]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::ErrorKind

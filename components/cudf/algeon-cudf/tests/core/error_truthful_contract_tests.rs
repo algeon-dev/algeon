@@ -14,15 +14,10 @@ use cudf::{
         error::{annotate_foreign_invariant_contract_if_absent_for_test, foreign_invariant_violation_for_test},
     },
 };
-use strum::IntoEnumIterator;
-
 use crate::common::run_named_cases;
 
 fn kind_projection_is_defined_for_every_public_error_code() {
-    let codes: Vec<_> = ErrorCode::iter().collect();
-    assert!(!codes.is_empty(), "ErrorCode::iter() must enumerate the public taxonomy");
-
-    for code in codes {
+    for code in ErrorCode::ALL {
         assert!(
             matches!(
                 kind_for_code(code),
@@ -40,10 +35,7 @@ fn kind_projection_is_defined_for_every_public_error_code() {
 }
 
 fn status_projection_is_defined_for_every_public_error_code() {
-    let codes: Vec<_> = ErrorCode::iter().collect();
-    assert!(!codes.is_empty(), "ErrorCode::iter() must enumerate the public taxonomy");
-
-    for code in codes {
+    for code in ErrorCode::ALL {
         assert!(
             matches!(status_for_code(code), ErrorStatus::Permanent | ErrorStatus::Temporary | ErrorStatus::Persistent),
             "{code} must map to exactly one ErrorStatus",

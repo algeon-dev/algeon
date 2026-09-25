@@ -33,7 +33,6 @@ csv.workspace = true
 indexmap.workspace = true
 parquet.workspace = true
 smallvec.workspace = true
-strum.workspace = true
 typed-builder.workspace = true
 
 
