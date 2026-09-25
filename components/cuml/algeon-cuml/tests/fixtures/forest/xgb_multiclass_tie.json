@@ -1,0 +1,179 @@
+{
+ "learner": {
+  "attributes": {},
+  "feature_names": [],
+  "feature_types": [],
+  "gradient_booster": {
+   "model": {
+    "cats": {
+     "enc": [],
+     "feature_segments": [],
+     "sorted_idx": []
+    },
+    "gbtree_model_param": {
+     "num_parallel_tree": "1",
+     "num_trees": "3"
+    },
+    "iteration_indptr": [
+     0,
+     3
+    ],
+    "tree_info": [
+     0,
+     1,
+     2
+    ],
+    "trees": [
+     {
+      "base_weights": [
+       -1.0
+      ],
+      "categories": [],
+      "categories_nodes": [],
+      "categories_segments": [],
+      "categories_sizes": [],
+      "default_left": [
+       0
+      ],
+      "id": 0,
+      "left_children": [
+       -1
+      ],
+      "right_children": [
+       -1
+      ],
+      "loss_changes": [
+       0.0
+      ],
+      "parents": [
+       2147483647
+      ],
+      "split_conditions": [
+       -1.0
+      ],
+      "split_indices": [
+       0
+      ],
+      "split_type": [
+       0
+      ],
+      "sum_hessian": [
+       1.0
+      ],
+      "tree_param": {
+       "num_deleted": "0",
+       "num_feature": "4",
+       "num_nodes": "1",
+       "size_leaf_vector": "1"
+      }
+     },
+     {
+      "base_weights": [
+       0.5
+      ],
+      "categories": [],
+      "categories_nodes": [],
+      "categories_segments": [],
+      "categories_sizes": [],
+      "default_left": [
+       0
+      ],
+      "id": 1,
+      "left_children": [
+       -1
+      ],
+      "right_children": [
+       -1
+      ],
+      "loss_changes": [
+       0.0
+      ],
+      "parents": [
+       2147483647
+      ],
+      "split_conditions": [
+       0.5
+      ],
+      "split_indices": [
+       0
+      ],
+      "split_type": [
+       0
+      ],
+      "sum_hessian": [
+       1.0
+      ],
+      "tree_param": {
+       "num_deleted": "0",
+       "num_feature": "4",
+       "num_nodes": "1",
+       "size_leaf_vector": "1"
+      }
+     },
+     {
+      "base_weights": [
+       0.5
+      ],
+      "categories": [],
+      "categories_nodes": [],
+      "categories_segments": [],
+      "categories_sizes": [],
+      "default_left": [
+       0
+      ],
+      "id": 2,
+      "left_children": [
+       -1
+      ],
+      "right_children": [
+       -1
+      ],
+      "loss_changes": [
+       0.0
+      ],
+      "parents": [
+       2147483647
+      ],
+      "split_conditions": [
+       0.5
+      ],
+      "split_indices": [
+       0
+      ],
+      "split_type": [
+       0
+      ],
+      "sum_hessian": [
+       1.0
+      ],
+      "tree_param": {
+       "num_deleted": "0",
+       "num_feature": "4",
+       "num_nodes": "1",
+       "size_leaf_vector": "1"
+      }
+     }
+    ]
+   },
+   "name": "gbtree"
+  },
+  "learner_model_param": {
+   "base_score": "[0E0,0E0,0E0]",
+   "boost_from_average": "0",
+   "num_class": "3",
+   "num_feature": "4",
+   "num_target": "1"
+  },
+  "objective": {
+   "name": "multi:softmax",
+   "softmax_multiclass_param": {
+    "num_class": "3"
+   }
+  }
+ },
+ "version": [
+  3,
+  4,
+  1
+ ]
+}

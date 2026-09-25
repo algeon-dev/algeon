@@ -3,6 +3,9 @@
 
 #include "error.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,6 +24,11 @@ typedef enum cuml_test_exception_kind {
 
 cuml_status_t cuml_test_raise_error(cuml_status_t status, const char* message);
 cuml_status_t cuml_test_raise_exception(cuml_test_exception_kind_t kind);
+// Host Treelite GTIL oracle over a Treelite checkpoint with the default
+// postprocessor, single-threaded. Writes rows x num_class values.
+cuml_status_t cuml_test_forest_gtil_predict(const uint8_t* checkpoint, size_t len, const double* input,
+                                            int32_t rows, int32_t columns, double* output,
+                                            size_t output_capacity, size_t* out_written);
 
 #ifdef __cplusplus
 }

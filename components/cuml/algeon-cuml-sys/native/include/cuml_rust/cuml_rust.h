@@ -10,5 +10,6 @@
 #include "hdbscan.h"
 #include "umap.h"
 #include "random_forest.h"
+#include "forest_inference.h"
 
 #endif

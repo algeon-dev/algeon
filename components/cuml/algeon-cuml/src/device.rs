@@ -37,6 +37,7 @@ impl From<MatrixLayout> for DenseMatrixLayout {
 
 pub trait DeviceElement: cudf::CudfType + Copy + 'static {}
 impl DeviceElement for f32 {}
+impl DeviceElement for f64 {}
 impl DeviceElement for i32 {}
 impl DeviceElement for i64 {}
 
@@ -95,6 +96,12 @@ impl<T: DeviceElement> DeviceBuffer<T> {
     pub fn into_series(self) -> Result<Series> {
         Series::from_column(self.into_column()?).map_err(|e| from_cudf("DeviceBuffer::into_series", e))
     }
+    /// Transfers a native output that leaves some elements unspecified. The
+    /// caller must validate every element it consumes from the column.
+    pub(crate) fn into_partially_written_column(self) -> Result<Column> {
+        let op = "DeviceBuffer::into_partially_written_column";
+        self.runtime.column_from_device_buffer(self.inner, self.len, T::TYPE_ID).map_err(|e| from_cudf(op, e))
+    }
 }
 
 impl DeviceBuffer<f32> {
@@ -109,6 +116,14 @@ impl DeviceBuffer<f32> {
                 "finite validation covered an unexpected length",
             ));
         }
+        self.validated = true;
+        Ok(())
+    }
+}
+
+impl DeviceBuffer<f64> {
+    pub(crate) fn validate_finite_float64(&mut self, op: &'static str) -> Result<()> {
+        self.inner.validate_finite_float64().map_err(|e| from_cudf_output(op, e, ErrorCode::OutputNotFinite))?;
         self.validated = true;
         Ok(())
     }
@@ -138,20 +153,30 @@ pub struct DeviceMatrix<'a> {
     rows: usize,
     columns: usize,
     layout: MatrixLayout,
+    element: TypeId,
     binding_id: ExecutionBindingId,
     _owner: PhantomData<&'a ()>,
 }
 
 impl<'a> DeviceMatrix<'a> {
     pub fn from_validated(matrix: &'a ValidatedPackedMatrix<'_>) -> Result<Self> {
-        if matrix.element() != TypeId::Float32 {
-            return Err(invalid_input("DeviceMatrix::from_validated", "cuML requires Float32 matrix values"));
+        Self::with_element(matrix, TypeId::Float32, "DeviceMatrix::from_validated")
+    }
+    /// Views Float64 values for consumers with a double-precision native
+    /// path, such as forest inference on a double-threshold model.
+    pub fn from_validated_float64(matrix: &'a ValidatedPackedMatrix<'_>) -> Result<Self> {
+        Self::with_element(matrix, TypeId::Float64, "DeviceMatrix::from_validated_float64")
+    }
+    fn with_element(matrix: &'a ValidatedPackedMatrix<'_>, element: TypeId, op: &'static str) -> Result<Self> {
+        if matrix.element() != element {
+            return Err(invalid_input(op, format!("matrix values must be {element:?}")));
         }
         Ok(Self {
-            ptr: matrix.as_ptr().map_err(|e| from_cudf("DeviceMatrix::from_validated", e))?,
+            ptr: matrix.as_ptr().map_err(|e| from_cudf(op, e))?,
             rows: matrix.rows(),
             columns: matrix.columns(),
             layout: matrix.layout().into(),
+            element,
             binding_id: matrix.binding_id(),
             _owner: PhantomData,
         })
@@ -164,6 +189,9 @@ impl<'a> DeviceMatrix<'a> {
     }
     pub fn layout(&self) -> MatrixLayout {
         self.layout
+    }
+    pub fn element(&self) -> TypeId {
+        self.element
     }
     pub fn binding_id(&self) -> ExecutionBindingId {
         self.binding_id

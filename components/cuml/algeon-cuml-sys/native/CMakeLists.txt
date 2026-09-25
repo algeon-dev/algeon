@@ -32,7 +32,7 @@ option(CUML_RUST_ENABLE_TEST_HOOKS "Build native test-only hooks" OFF)
 set(CUML_RUST_SOURCES
   src/error.cpp src/handle.cpp src/abi_checks.cpp src/c_header_smoke.c
   src/pca.cpp src/tsvd.cpp src/glm.cpp src/hdbscan.cpp src/umap.cpp
-  src/random_forest.cpp)
+  src/random_forest.cpp src/forest_inference.cpp)
 if(CUML_RUST_ENABLE_TEST_HOOKS)
   list(APPEND CUML_RUST_SOURCES src/test_support.cpp)
 endif()
@@ -46,7 +46,14 @@ target_include_directories(cuml_rust PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CUDF_RUST_INCLUDE_DIR}")
-target_link_libraries(cuml_rust PUBLIC cuml::cuml PRIVATE CUDA::cudart CUDA::cuda_driver "${CUDF_RUST_RMM_INTEROP_LIB}")
+# libcuml.so resolves libcuvs.so only through an $ORIGIN RUNPATH, and a
+# RUNPATH is not inherited by a library's children. Record libcuvs.so as a
+# direct shim dependency so the shim's RUNPATH resolves the canonical copy.
+find_library(CUML_RUST_CUVS_LIB cuvs PATHS "${CUVS_INSTALL_DIR}/lib" "${CUVS_INSTALL_DIR}/lib64"
+  NO_DEFAULT_PATH REQUIRED)
+target_link_libraries(cuml_rust PUBLIC cuml::cuml PRIVATE CUDA::cudart CUDA::cuda_driver "${CUDF_RUST_RMM_INTEROP_LIB}"
+  nvforest::nvforest treelite::treelite
+  "-Wl,--push-state,--no-as-needed" "${CUML_RUST_CUVS_LIB}" "-Wl,--pop-state")
 target_link_options(cuml_rust PRIVATE "-Wl,--no-undefined" "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/cuml-rust.map")
 
 install(TARGETS cuml_rust LIBRARY DESTINATION "${lib_dir}")

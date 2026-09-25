@@ -77,6 +77,12 @@ extra_cmake_args=(
     "-DCUML_USE_CUVS_STATIC=OFF"
     "-DCUML_USE_TREELITE_STATIC=OFF"
     "-DDISABLE_OPENMP=ON"
+    "-DCMAKE_PROJECT_treelite_INCLUDE=${repo_root}/scripts/build/cmake/treelite_disable_openmp.cmake"
+    "-DCMAKE_PROJECT_NVForest_INCLUDE=${repo_root}/scripts/build/cmake/nvforest_backport_196.cmake"
+    "-DCPM_DOWNLOAD_Treelite=ON"
+    "-DCPM_DOWNLOAD_nvforest=ON"
+    "-U" "Treelite_DIR"
+    "-U" "nvforest_DIR"
     "-DCMAKE_CUDA_FLAGS=-Xcompiler=-Wno-unknown-pragmas"
     "-DCMAKE_CUDA_ARCHITECTURES=${cuda_architectures}"
     "-U" "rmm_DIR"
@@ -135,6 +141,19 @@ check_package_dir() {
 check_package_dir rmm_DIR "${cudf_install_dir}/lib/cmake/rmm" rmm
 check_package_dir rapids_logger_DIR "${cudf_install_dir}/lib/cmake/rapids_logger" rapids_logger
 check_package_dir cuvs_DIR "${cuvs_config_dir}" cuVS
+# Treelite and nvForest must come from the pinned sources in this build tree:
+# a find_package hit on an earlier install would bypass the OpenMP override.
+for package in Treelite nvforest; do
+    resolved="$(cmake_cache_value "CPM_PACKAGE_${package}_SOURCE_DIR:INTERNAL")" || {
+        echo "error: configure did not build ${package} from source." >&2
+        exit 1
+    }
+    expected="${build_dir}/_deps/${package,,}-src"
+    if [[ "$(realpath -m -- "${resolved}")" != "$(realpath -m -- "${expected}")" ]]; then
+        echo "error: ${package} source resolved to '${resolved}', expected '${expected}'." >&2
+        exit 1
+    fi
+done
 configured_prefix_path="$(awk -F= '$1 == "CMAKE_PREFIX_PATH:UNINITIALIZED" || $1 == "CMAKE_PREFIX_PATH:STRING" { print $2; found = 1 } END { if (!found) exit 1 }' "${build_dir}/CMakeCache.txt")" || {
     echo "error: configure did not record CMAKE_PREFIX_PATH." >&2
     exit 1
@@ -205,6 +224,41 @@ if [[ "${#resolved_rmm_paths[@]}" != 1 || "$(readlink -f "${resolved_rmm_paths[0
     exit 1
 fi
 
+system_needed='libstdc[+][+][.]so[.]6|libm[.]so[.]6|libgcc_s[.]so[.]1|libc[.]so[.]6|ld-linux-[a-z0-9_-]+[.]so[.][0-9]+'
+# Forest inference loads libnvforest.so and libtreelite.so through the shim.
+# Each library's NEEDED set is closed so OpenMP (libgomp) or a private
+# dependency copy cannot enter the process through the cuML closure.
+check_needed_allowlist() {
+    local library="$1" allowed="$2" dynamic needed name openmp
+    dynamic="$(readelf -d "${library}")"
+    needed="$(sed -n 's/.*(NEEDED).*Shared library: \[\(.*\)\]$/\1/p' <<<"${dynamic}")"
+    while IFS= read -r name; do
+        if [[ -n "${name}" ]] && ! grep -Eqx "${allowed}|${system_needed}" <<<"${name}"; then
+            echo "error: $(basename "${library}") declares NEEDED '${name}' outside its allowlist." >&2
+            exit 1
+        fi
+    done <<<"${needed}"
+    openmp="$(nm -D --undefined-only "${library}" | grep -E '[[:space:]](GOMP_|omp_)' || true)"
+    if [[ -n "${openmp}" ]]; then
+        echo "error: $(basename "${library}") imports OpenMP symbols:" >&2
+        echo "${openmp}" >&2
+        exit 1
+    fi
+}
+check_needed_allowlist "${install_dir}/lib/libtreelite.so" ''
+# The shim instantiates nvForest's importer from these headers; a copy in these
+# initializers allocates on the legacy default stream, which the query domain
+# refuses (nvForest #196 backport, scripts/build/patches/).
+for expected in \
+    "include/nvforest/decision_forest.hpp:nodes_{std::move(nodes)}" \
+    "include/nvforest/forest_model.hpp:decision_forest_{std::move(forest)}"; do
+    if ! grep -Fq "${expected#*:}" "${install_dir}/${expected%%:*}"; then
+        echo "error: ${expected%%:*} copies forest buffers instead of moving them (nvForest #196 backport missing)." >&2
+        exit 1
+    fi
+done
+check_needed_allowlist "${install_dir}/lib/libnvforest.so" 'librmm[.]so'
+
 crate_version="$(python3 - "${repo_root}/Cargo.toml" <<'PY'
 import sys
 import tomllib
@@ -217,6 +271,9 @@ install -d --mode=0755 "${metadata_dir}"
 printf '%s\n' "${crate_version}" >"${metadata_dir}/crate-version"
 printf '%s\n' "DISABLE_OPENMP=ON" "CMAKE_CUDA_FLAGS=-Xcompiler=-Wno-unknown-pragmas" >"${metadata_dir}/openmp-disabled"
 git -C "${source_tree}" rev-parse HEAD >"${metadata_dir}/source-revision"
+for dependency in nvforest treelite; do
+    git -C "${build_dir}/_deps/${dependency}-src" rev-parse HEAD >"${metadata_dir}/${dependency}-source-revision"
+done
 
 shim_source="${repo_root}/components/cuml/algeon-cuml-sys/native"
 shim_build_dir="${repo_root}/target/native/cuml-rust-build"
@@ -267,7 +324,7 @@ if [[ -n "${shim_test_symbols}" ]]; then
     exit 1
 fi
 shim_readelf_output="$(readelf -d "${shim_library}")"
-for dependency in libcuml.so libcudf_rust_rmm_interop.so; do
+for dependency in libcuml.so libcudf_rust_rmm_interop.so libcuvs.so; do
     dependency_count="$(grep -Ec "NEEDED.*Shared library: \\[${dependency//./[.]}\\]" <<<"${shim_readelf_output}" || true)"
     if [[ "${dependency_count}" != 1 ]]; then
         echo "error: libcuml_rust.so must declare exactly one ${dependency} dependency; found ${dependency_count}." >&2
@@ -303,6 +360,40 @@ check_resolved_dependency() {
 check_resolved_dependency libcuml.so "${cuml_library}" cuML
 check_resolved_dependency libcudf_rust_rmm_interop.so "${cudf_install_dir}/lib/libcudf_rust_rmm_interop.so" "cuDF RMM interop"
 check_resolved_dependency librmm.so "${cudf_install_dir}/lib/librmm.so" RMM
+check_resolved_dependency libcuvs.so "${cuvs_library_path}" cuVS
+check_resolved_dependency libnvforest.so "${install_dir}/lib/libnvforest.so" nvForest
+check_resolved_dependency libtreelite.so "${install_dir}/lib/libtreelite.so" Treelite
+check_needed_allowlist "${shim_library}" \
+    'libcuml[.]so|libcuvs[.]so|libcudart[.]so[.][0-9]+|libcudf_rust_rmm_interop[.]so|librmm[.]so|libnvforest[.]so|libtreelite[.]so'
+# nvForest and RMM export CUDA::cudart_static in their link interfaces; the
+# shim must keep resolving the CUDA runtime from the shared libcudart.
+shim_cuda_runtime="$(nm -D --defined-only "${shim_library}" | grep -E '[[:space:]]T cuda' || true)"
+if [[ -n "${shim_cuda_runtime}" ]]; then
+    echo "error: libcuml_rust.so defines CUDA runtime symbols from a static runtime:" >&2
+    echo "${shim_cuda_runtime}" >&2
+    exit 1
+fi
+# RMM's per-device resource map is a STB_GNU_UNIQUE header singleton. A private
+# copy in a DSO that allocates through the default resource bypasses the query
+# domain's memory manager.
+for library in "${shim_library}" "${install_dir}/lib/libnvforest.so"; do
+    dynamic_symbols="$(readelf --dyn-syms -W "${library}")"
+    if ! grep -Eq 'OBJECT[[:space:]]+UNIQUE[[:space:]]+DEFAULT.*_ZGVZN3rmm[^ ]*get_ref_mapEvE' <<<"${dynamic_symbols}"; then
+        echo "error: $(basename "${library}") does not export RMM's per-device resource map as STB_GNU_UNIQUE." >&2
+        exit 1
+    fi
+    local_symbols="$(nm --defined-only "${library}" 2>/dev/null || true)"
+    if [[ -z "${local_symbols}" ]]; then
+        echo "error: $(basename "${library}") has no symbol table for the RMM singleton check." >&2
+        exit 1
+    fi
+    private_rmm="$(grep -E '[[:space:]][bdt][[:space:]]_Z(Z|GVZ)N3rmm[^ ]*(get_ref_map|ref_map_lock|initial_resource)EvE' <<<"${local_symbols}" || true)"
+    if [[ -n "${private_rmm}" ]]; then
+        echo "error: $(basename "${library}") holds a private copy of RMM's per-device resource singleton:" >&2
+        echo "${private_rmm}" >&2
+        exit 1
+    fi
+done
 if ! grep -Fxq "cargo:rustc-link-search=native=${install_dir}/lib" "${shim_manifest}" ||
    ! grep -Fxq "cargo:rustc-link-lib=dylib=cuml_rust" "${shim_manifest}" ||
    grep -Eq '@(CMAKE_INSTALL_PREFIX|CUML_INSTALL_DIR|CUDF_INSTALL_DIR|CUDAToolkit_LIBRARY_DIR)@' "${shim_manifest}"; then
@@ -318,10 +409,13 @@ for required in \
     "lib/libtreelite.so" \
     "include/raft/core/handle.hpp" \
     "include/nvforest/decision_forest.hpp" \
+    "include/nvforest/version_config.hpp" \
     "include/treelite/c_api.h" \
     "share/algeon-cuml/crate-version" \
     "share/algeon-cuml/openmp-disabled" \
     "share/algeon-cuml/source-revision" \
+    "share/algeon-cuml/nvforest-source-revision" \
+    "share/algeon-cuml/treelite-source-revision" \
     "share/algeon-cuml/needed-libraries.txt"; do
     [[ -f "${install_dir}/${required}" ]] || {
         echo "error: cuML install is missing '${required}'." >&2

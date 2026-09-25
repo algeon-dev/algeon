@@ -19,4 +19,14 @@ pub use self::cuml_test_exception_kind as cuml_test_exception_kind_t;
 unsafe extern "C" {
     pub fn cuml_test_raise_error(status: cuml_status_t, message: *const core::ffi::c_char) -> cuml_status_t;
     pub fn cuml_test_raise_exception(kind: cuml_test_exception_kind_t) -> cuml_status_t;
+    pub fn cuml_test_forest_gtil_predict(
+        checkpoint: *const u8,
+        len: usize,
+        input: *const f64,
+        rows: i32,
+        columns: i32,
+        output: *mut f64,
+        output_capacity: usize,
+        out_written: *mut usize,
+    ) -> cuml_status_t;
 }

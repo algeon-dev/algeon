@@ -8,7 +8,8 @@
   contracts.
 - The upstream source is `components/cuml/cuml`, pinned at `v26.08.00`.
   Supported Rust algorithms are HDBSCAN, PCA, TSVD, QN logistic regression,
-  random-forest classification/regression, and UMAP. Do not imply that the
+  random-forest classification/regression, UMAP, and nvForest inference
+  (`ForestInferenceModel`) over imported models. Do not imply that the
   broader upstream cuML surface is exposed.
 - Root scripts own native source validation and build entry points. The
   `scripts/build/build_libcuml.sh` script configures a limited algorithm set,

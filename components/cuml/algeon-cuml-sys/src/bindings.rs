@@ -10,6 +10,10 @@ pub type cuml_matrix_layout_t = core::ffi::c_uint;
 pub type cuml_handle_t = *mut cuml_handle;
 pub type cuml_rf_training_streams_t = *mut cuml_rf_training_streams;
 pub type cuml_rf_forest_t = *mut cuml_rf_forest;
+pub type cuml_forest_format_t = core::ffi::c_uint;
+pub type cuml_forest_precision_t = core::ffi::c_uint;
+pub type cuml_forest_output_t = core::ffi::c_uint;
+pub type cuml_forest_model_t = *mut cuml_forest_model;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cuml_error_detail_t {
@@ -55,6 +59,19 @@ pub struct cuml_rf_training_streams {
 pub struct cuml_rf_forest {
     _unused: [u8; 0],
 }
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cuml_forest_metadata_t {
+    pub num_features: i32,
+    pub num_trees: i32,
+    pub num_outputs: i32,
+    pub precision: cuml_forest_precision_t,
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct cuml_forest_model {
+    _unused: [u8; 0],
+}
 pub const CUML_SUCCESS: cuml_status_t = 0;
 pub const CUML_ERROR_NULL: cuml_status_t = 1;
 pub const CUML_ERROR_INVALID_ARGUMENT: cuml_status_t = 2;
@@ -72,6 +89,15 @@ pub const CUML_ERROR_FAILURE_SOURCE_RESERVATION_LIMIT: cuml_error_failure_source
 pub const CUML_ERROR_FAILURE_SOURCE_UNKNOWN: cuml_error_failure_source_t = 2;
 pub const CUML_MATRIX_ROW_MAJOR: cuml_matrix_layout_t = 0;
 pub const CUML_MATRIX_COLUMN_MAJOR: cuml_matrix_layout_t = 1;
+pub const CUML_FOREST_FORMAT_XGBOOST_JSON: cuml_forest_format_t = 0;
+pub const CUML_FOREST_FORMAT_XGBOOST_UBJSON: cuml_forest_format_t = 1;
+pub const CUML_FOREST_FORMAT_XGBOOST_LEGACY: cuml_forest_format_t = 2;
+pub const CUML_FOREST_FORMAT_LIGHTGBM: cuml_forest_format_t = 3;
+pub const CUML_FOREST_FORMAT_TREELITE_CHECKPOINT: cuml_forest_format_t = 4;
+pub const CUML_FOREST_PRECISION_FLOAT32: cuml_forest_precision_t = 0;
+pub const CUML_FOREST_PRECISION_FLOAT64: cuml_forest_precision_t = 1;
+pub const CUML_FOREST_OUTPUT_SCORES: cuml_forest_output_t = 0;
+pub const CUML_FOREST_OUTPUT_CLASS_INDEX: cuml_forest_output_t = 1;
 unsafe extern "C" {
     pub fn cuml_version_get(major: *mut i32, minor: *mut i32, patch: *mut i32) -> cuml_status_t;
     pub fn cuml_last_error_detail() -> *const cuml_error_detail_t;
@@ -343,4 +369,31 @@ unsafe extern "C" {
         predictions: *mut f32,
     ) -> cuml_status_t;
     pub fn cuml_rf_forest_destroy(forest: cuml_rf_forest_t) -> cuml_status_t;
+    pub fn cuml_forest_inspect(
+        bytes: *const u8,
+        len: usize,
+        format: cuml_forest_format_t,
+        out_metadata: *mut cuml_forest_metadata_t,
+        out_checkpoint: *mut *mut u8,
+        out_checkpoint_len: *mut usize,
+    ) -> cuml_status_t;
+    pub fn cuml_forest_bytes_free(bytes: *mut u8) -> cuml_status_t;
+    pub fn cuml_forest_import(
+        handle: cuml_handle_t,
+        checkpoint: *const u8,
+        len: usize,
+        output: cuml_forest_output_t,
+        out_model: *mut cuml_forest_model_t,
+        out_metadata: *mut cuml_forest_metadata_t,
+    ) -> cuml_status_t;
+    pub fn cuml_forest_predict(
+        handle: cuml_handle_t,
+        model: cuml_forest_model_t,
+        input: *const core::ffi::c_void,
+        rows: i32,
+        columns: i32,
+        output: *mut core::ffi::c_void,
+    ) -> cuml_status_t;
+    pub fn cuml_forest_close(model: cuml_forest_model_t) -> cuml_status_t;
+    pub fn cuml_forest_inference_version_get(major: *mut i32, minor: *mut i32, patch: *mut i32) -> cuml_status_t;
 }

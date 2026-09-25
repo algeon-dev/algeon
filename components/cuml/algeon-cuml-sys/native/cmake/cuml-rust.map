@@ -1,4 +1,12 @@
 CUML_RUST_1.0 {
-  global: cuml_*;
+  global:
+    cuml_*;
+    /* RMM's per-device resource map is a header-defined STB_GNU_UNIQUE
+       singleton (rmm/mr/per_device_resource.hpp). Header-instantiated code in
+       this shim allocates through it, so the map, its guard, and RMM's inline
+       functions stay exported and share the copy that
+       libcudf_rust_rmm_interop.so routes. Mangled globs survive RMM ABI
+       namespace bumps. */
+    _ZN3rmm*; _ZZN3rmm*; _ZGVZN3rmm*;
   local: *;
 };

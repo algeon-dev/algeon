@@ -1,0 +1,5 @@
+python=3.12.3
+xgboost=3.4.1
+lightgbm=4.7.0
+treelite=4.7.2
+numpy=2.5.3
