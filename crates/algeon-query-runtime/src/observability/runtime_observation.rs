@@ -555,11 +555,7 @@ macro_rules! runtime_observation_body {
 
 runtime_observation_body!(
     /// Task-lifecycle payload body retained out of line.
-    RuntimeTaskLifecycleObservation {
-        attempt_id: TaskAttemptId,
-        task_kind: String,
-        lifecycle: TaskLifecycleState,
-    }
+    RuntimeTaskLifecycleObservation { attempt_id: TaskAttemptId, task_kind: String, lifecycle: TaskLifecycleState }
 );
 
 runtime_observation_body!(
@@ -656,9 +652,7 @@ pub struct RuntimeReservationObservation {
 
 runtime_observation_body!(
     /// Secondary-cleanup-failure payload body retained out of line.
-    RuntimeCleanupFailureObservation {
-        summary: CleanupFailureSummary,
-    }
+    RuntimeCleanupFailureObservation { summary: CleanupFailureSummary }
 );
 
 /// Operator-substage category for blocking native primitives.
