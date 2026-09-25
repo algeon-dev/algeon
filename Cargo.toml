@@ -131,6 +131,7 @@ iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git" }
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git" }
 indexmap = "2"
+libc = "0.2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
 opendal = "0.58"
 opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }

@@ -21,6 +21,7 @@ use crate::server::table_format::scan::{
 use crate::server::{
     backend::{AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuMemoryOwnership},
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
+    cuml_sql::CumlModelStoreConfig,
     native_exec::AlgeonNativeExecutionConfig,
     planner::AlgeonNativeOptimizerConfig,
 };
@@ -38,6 +39,7 @@ mod cugraph;
 mod env;
 mod file;
 mod iceberg;
+mod models;
 mod native;
 mod observability;
 mod workspace;
@@ -73,6 +75,7 @@ pub use iceberg::{
 };
 #[cfg(feature = "iceberg")]
 use iceberg::{iceberg_config, iceberg_source_storage_profile};
+use models::models_config;
 use native::native_optimizer_config;
 pub use native::{
     ALGEON_SERVER_EXECUTION_MODE_ENV, ALGEON_SERVER_FINAL_PLAN_REQUIREMENT_ENV, ALGEON_SERVER_NATIVE_CONFIG_OPTIONS,
@@ -154,6 +157,9 @@ pub struct ServerConfig {
     #[cfg(feature = "iceberg")]
     pub iceberg: Option<IcebergServerConfig>,
     pub cugraph: Option<CugraphServerConfig>,
+    /// Models root for `cuml_forest_predict`, from the `[models]` table.
+    /// `None` leaves the function unavailable with `model_root_unconfigured`.
+    pub models: Option<CumlModelStoreConfig>,
 }
 impl ServerConfig {
     /// Attach the deployment ownership promise required by bounded backend
@@ -213,6 +219,7 @@ impl ServerConfig {
         let cugraph = cugraph_config(&mut values)?;
 
         let workspace = workspace_overlay_config(&mut values)?;
+        let models = models_config(&overlay.models)?;
 
         overlay.auth.mode.validate()?;
 
@@ -230,6 +237,7 @@ impl ServerConfig {
             #[cfg(feature = "iceberg")]
             iceberg,
             cugraph,
+            models,
         };
         config.validate_gpu_device_profiles()?;
         Ok(config)

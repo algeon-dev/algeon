@@ -30,7 +30,7 @@ use crate::server::{
 #[cfg(feature = "iceberg")]
 pub(crate) use crate::table_format;
 pub(crate) use crate::{
-    attempt, backend, capability, cugraph_sql, cuvs_sql, error as adapter_error, gpu_coverage, native_exec,
+    attempt, backend, capability, cugraph_sql, cuml_sql, cuvs_sql, error as adapter_error, gpu_coverage, native_exec,
     native_report, planner, report, session as adapter_session,
 };
 

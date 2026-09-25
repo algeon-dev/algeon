@@ -13,18 +13,20 @@ use crate::{
             self, Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_COLUMN_INDEX, FACT_EXPECTED_ROWS, FACT_LEFT_TYPE_ID,
             FACT_RIGHT_TYPE_ID, Result,
         },
-        types::TypeId,
+        types::{DataType, TypeId},
     },
     frame::Series,
     ops::{
         concatenate::concatenate_columns_with_exec,
         reshape::interleave_columns_with_exec,
+        unary::cast_impl,
         validation::{FiniteValidationProof, validate_finite_float64},
     },
 };
 
 const PACK_OPERATION: &str = "runtime::pack_columns";
 const PACK_FLAT_OPERATION: &str = "runtime::pack_flat_column";
+const WIDEN_OPERATION: &str = "runtime::widen_packed_matrix_to_float64";
 const UNPACK_OPERATION: &str = "runtime::unpack_dense_matrix";
 
 pub(crate) fn matrix_element_bytes(element: TypeId, operation: &'static str) -> Result<usize> {
@@ -494,6 +496,42 @@ impl Runtime {
         .map_err(|error| error.reanchor(PACK_OPERATION))?;
 
         Ok(PackedMatrix { values, element, rows, columns: column_count, layout })
+    }
+
+    /// Widen a Float32 packed matrix to Float64 on this runtime's exact
+    /// execution domain, preserving shape and layout. Every Float32 value is
+    /// exactly representable in Float64. Any other source element type is a
+    /// `TypeMismatch`. The source matrix stays valid.
+    pub fn widen_packed_matrix_to_float64(&self, matrix: &PackedMatrix) -> Result<PackedMatrix> {
+        if matrix.element != TypeId::Float32 {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                WIDEN_OPERATION,
+                "only a Float32 matrix can be widened to Float64",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, matrix.element)
+            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Float64));
+        }
+        let view = matrix.values.view().map_err(|error| error.reanchor(WIDEN_OPERATION))?;
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(self.execution_domain()),
+            [matrix.values.execution_domain()],
+            WIDEN_OPERATION,
+        )?;
+        let values = cast_impl(
+            &view,
+            &DataType::new(TypeId::Float64),
+            execution.output_domain(),
+            execution.exec_options(),
+            WIDEN_OPERATION,
+        )?;
+        Ok(PackedMatrix {
+            values,
+            element: TypeId::Float64,
+            rows: matrix.rows,
+            columns: matrix.columns,
+            layout: matrix.layout,
+        })
     }
 
     /// Pack one flat, non-null numeric column whose values describe a

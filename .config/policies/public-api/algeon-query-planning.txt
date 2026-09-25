@@ -2086,6 +2086,7 @@ pub query_planning::plan::AdvisoryUnknownReason::OutputSchemaChanged
 pub query_planning::plan::AdvisoryUnknownReason::RewrittenSubtree
 pub query_planning::plan::AdvisoryUnknownReason::StatisticsComputationFailed
 pub enum query_planning::plan::CumlOperation
+pub query_planning::plan::CumlOperation::ForestPredict
 pub query_planning::plan::CumlOperation::Hdbscan
 pub query_planning::plan::CumlOperation::LogisticRegression
 pub query_planning::plan::CumlOperation::RandomForestClassifier
@@ -2099,6 +2100,7 @@ pub fn query_planning::plan::CumlOperation::from_sql_function_name(&str) -> core
 pub enum query_planning::plan::CumlOutputContract
 pub query_planning::plan::CumlOutputContract::Components
 pub query_planning::plan::CumlOutputContract::Embedding
+pub query_planning::plan::CumlOutputContract::ForestPrediction
 pub query_planning::plan::CumlOutputContract::HdbscanClusters
 pub query_planning::plan::CumlOutputContract::Predictions
 pub enum query_planning::plan::CuvsOperation
@@ -2189,6 +2191,8 @@ pub query_planning::plan::GpuOptionKind::NonnegativeNumber::default: f64
 pub query_planning::plan::GpuOptionKind::PositiveNumber
 pub query_planning::plan::GpuOptionKind::PositiveNumber::default: f64
 pub query_planning::plan::GpuOptionKind::RelationBinding
+pub query_planning::plan::GpuOptionKind::Text
+pub query_planning::plan::GpuOptionKind::Text::max_chars: usize
 pub query_planning::plan::GpuOptionKind::UnitInterval
 pub query_planning::plan::GpuOptionKind::UnitInterval::default: f64
 impl query_planning::plan::GpuOptionKind
@@ -2383,6 +2387,7 @@ pub query_planning::plan::JoinType::LeftSemi
 impl core::fmt::Display for query_planning::plan::JoinType
 pub fn query_planning::plan::JoinType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::MlAlgorithm
+pub query_planning::plan::MlAlgorithm::ForestPredict
 pub query_planning::plan::MlAlgorithm::Hdbscan
 pub query_planning::plan::MlAlgorithm::LogisticRegression
 pub query_planning::plan::MlAlgorithm::RandomForestClassifier
@@ -2394,6 +2399,7 @@ pub const fn query_planning::plan::MlAlgorithm::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::plan::MlAlgorithm
 pub fn query_planning::plan::MlAlgorithm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::MlAlgorithmParams
+pub query_planning::plan::MlAlgorithmParams::ForestPredict(query_planning::plan::MlForestPredictParams)
 pub query_planning::plan::MlAlgorithmParams::Hdbscan(query_planning::plan::MlHdbscanParams)
 pub query_planning::plan::MlAlgorithmParams::LogisticRegression(query_planning::plan::MlLogisticRegressionParams)
 pub query_planning::plan::MlAlgorithmParams::RandomForestClassifier(query_planning::plan::MlRandomForestParams)
@@ -2418,6 +2424,34 @@ impl query_planning::plan::MlDecompositionSolver
 pub const fn query_planning::plan::MlDecompositionSolver::as_str(self) -> &'static str
 impl core::fmt::Display for query_planning::plan::MlDecompositionSolver
 pub fn query_planning::plan::MlDecompositionSolver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::plan::MlForestModelFormat
+pub query_planning::plan::MlForestModelFormat::LightGbm
+pub query_planning::plan::MlForestModelFormat::TreeliteCheckpoint
+pub query_planning::plan::MlForestModelFormat::XgboostJson
+pub query_planning::plan::MlForestModelFormat::XgboostLegacy
+pub query_planning::plan::MlForestModelFormat::XgboostUbjson
+impl query_planning::plan::MlForestModelFormat
+pub const fn query_planning::plan::MlForestModelFormat::as_str(self) -> &'static str
+pub fn query_planning::plan::MlForestModelFormat::from_option_value(&str) -> core::option::Option<Self>
+impl core::fmt::Display for query_planning::plan::MlForestModelFormat
+pub fn query_planning::plan::MlForestModelFormat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::plan::MlForestOutputContract
+pub query_planning::plan::MlForestOutputContract::ClassIndex
+pub query_planning::plan::MlForestOutputContract::ClassIndex::classes: usize
+pub query_planning::plan::MlForestOutputContract::Score
+pub query_planning::plan::MlForestOutputContract::Vector(usize)
+impl query_planning::plan::MlForestOutputContract
+pub const fn query_planning::plan::MlForestOutputContract::prediction_type(self) -> arrow_schema::datatype::DataType
+pub const fn query_planning::plan::MlForestOutputContract::width(self) -> usize
+impl core::fmt::Display for query_planning::plan::MlForestOutputContract
+pub fn query_planning::plan::MlForestOutputContract::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::plan::MlForestPrecision
+pub query_planning::plan::MlForestPrecision::Double
+pub query_planning::plan::MlForestPrecision::Single
+impl query_planning::plan::MlForestPrecision
+pub const fn query_planning::plan::MlForestPrecision::as_str(self) -> &'static str
+impl core::fmt::Display for query_planning::plan::MlForestPrecision
+pub fn query_planning::plan::MlForestPrecision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::MlRelationRole
 pub query_planning::plan::MlRelationRole::Input
 pub query_planning::plan::MlRelationRole::Predict
@@ -3018,6 +3052,45 @@ pub query_planning::plan::MlAlgorithmSpec::output_schema: arrow_schema::schema::
 pub query_planning::plan::MlAlgorithmSpec::params: query_planning::plan::MlAlgorithmParams
 impl query_planning::plan::MlAlgorithmSpec
 pub fn query_planning::plan::MlAlgorithmSpec::new(query_planning::plan::MlAlgorithm, query_planning::plan::MlAlgorithmParams, arrow_schema::schema::SchemaRef) -> Self
+pub struct query_planning::plan::MlForestModelDigest(_)
+impl query_planning::plan::MlForestModelDigest
+pub fn query_planning::plan::MlForestModelDigest::as_bytes(&self) -> &[u8; 32]
+pub fn query_planning::plan::MlForestModelDigest::of(&[u8]) -> Self
+pub fn query_planning::plan::MlForestModelDigest::short_hex(&self) -> alloc::string::String
+pub fn query_planning::plan::MlForestModelDigest::to_hex(&self) -> alloc::string::String
+impl core::fmt::Debug for query_planning::plan::MlForestModelDigest
+pub fn query_planning::plan::MlForestModelDigest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for query_planning::plan::MlForestModelDigest
+pub fn query_planning::plan::MlForestModelDigest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct query_planning::plan::MlForestModelFacts
+pub query_planning::plan::MlForestModelFacts::native_output_stride: usize
+pub query_planning::plan::MlForestModelFacts::num_features: usize
+pub query_planning::plan::MlForestModelFacts::num_trees: usize
+pub query_planning::plan::MlForestModelFacts::precision: query_planning::plan::MlForestPrecision
+pub struct query_planning::plan::MlForestModelSnapshot
+impl query_planning::plan::MlForestModelSnapshot
+pub fn query_planning::plan::MlForestModelSnapshot::checkpoint(&self) -> &[u8]
+pub fn query_planning::plan::MlForestModelSnapshot::digest(&self) -> query_planning::plan::MlForestModelDigest
+pub fn query_planning::plan::MlForestModelSnapshot::facts(&self) -> query_planning::plan::MlForestModelFacts
+pub fn query_planning::plan::MlForestModelSnapshot::format(&self) -> query_planning::plan::MlForestModelFormat
+pub fn query_planning::plan::MlForestModelSnapshot::new(&[u8], impl core::convert::Into<alloc::sync::Arc<[u8]>>, query_planning::plan::MlForestModelFormat, query_planning::plan::MlForestModelFacts, query_planning::plan::MlForestOutputContract) -> query_planning::error::Result<Self>
+pub fn query_planning::plan::MlForestModelSnapshot::num_features(&self) -> usize
+pub fn query_planning::plan::MlForestModelSnapshot::output(&self) -> query_planning::plan::MlForestOutputContract
+pub fn query_planning::plan::MlForestModelSnapshot::precision(&self) -> query_planning::plan::MlForestPrecision
+impl core::cmp::Eq for query_planning::plan::MlForestModelSnapshot
+impl core::cmp::Ord for query_planning::plan::MlForestModelSnapshot
+pub fn query_planning::plan::MlForestModelSnapshot::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for query_planning::plan::MlForestModelSnapshot
+pub fn query_planning::plan::MlForestModelSnapshot::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for query_planning::plan::MlForestModelSnapshot
+pub fn query_planning::plan::MlForestModelSnapshot::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for query_planning::plan::MlForestModelSnapshot
+pub fn query_planning::plan::MlForestModelSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for query_planning::plan::MlForestModelSnapshot
+pub fn query_planning::plan::MlForestModelSnapshot::hash<H: core::hash::Hasher>(&self, &mut H)
+pub struct query_planning::plan::MlForestPredictParams
+pub query_planning::plan::MlForestPredictParams::input: query_planning::plan::MlRelationBinding
+pub query_planning::plan::MlForestPredictParams::model: query_planning::plan::MlForestModelSnapshot
 pub struct query_planning::plan::MlHdbscanParams
 pub query_planning::plan::MlHdbscanParams::allow_single_cluster: bool
 pub query_planning::plan::MlHdbscanParams::alpha: f64
@@ -3326,6 +3399,7 @@ pub query_planning::plan::WindowSpec::order_by: alloc::vec::Vec<query_planning::
 pub query_planning::plan::WindowSpec::partition_by: alloc::vec::Vec<query_planning::expr::Expr>
 impl query_planning::plan::WindowSpec
 pub fn query_planning::plan::WindowSpec::new(alloc::vec::Vec<query_planning::expr::Expr>, alloc::vec::Vec<query_planning::expr::SortExpr>, alloc::vec::Vec<query_planning::plan::WindowFunction>) -> Self
+pub const query_planning::plan::CUML_FOREST_PREDICT_FUNCTION: &str
 pub const query_planning::plan::CUML_HDBSCAN_FUNCTION: &str
 pub const query_planning::plan::CUML_LOGISTIC_REGRESSION_FUNCTION: &str
 pub const query_planning::plan::CUML_OPERATION_REGISTRY: &[query_planning::plan::CumlOperationDescriptor]
@@ -3353,6 +3427,7 @@ pub fn query_planning::plan::graph_residency_descriptor_for_local_parquet_source
 pub fn query_planning::plan::graph_result_schema_for_params(query_planning::plan::GraphAlgorithm, &query_planning::plan::GraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::graph_result_schema_for_vertex_type(query_planning::plan::GraphAlgorithm, &query_planning::plan::GraphAlgorithmParams, &arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_embedding_output_schema(arrow_schema::datatype::DataType, usize) -> arrow_schema::schema::SchemaRef
+pub fn query_planning::plan::ml_forest_output_schema(arrow_schema::datatype::DataType, query_planning::plan::MlForestOutputContract) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_hdbscan_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_predictions_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, &query_planning::plan::NativePlanCostOptions) -> query_planning::plan::NativePlanCostDecision

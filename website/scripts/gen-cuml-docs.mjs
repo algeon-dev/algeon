@@ -31,6 +31,7 @@ const FAMILIES = {
   manifold: { label: 'Manifold Embedding', functions: ['cuml_umap'] },
   classification: { label: 'Classification', functions: ['cuml_logistic_regression', 'cuml_random_forest_classifier'] },
   regression: { label: 'Regression', functions: ['cuml_random_forest_regressor'] },
+  inference: { label: 'Inference', functions: ['cuml_forest_predict'] },
 };
 const FUNCTIONS = {
   cuml_tsvd: { officialApi: 'Python API', officialPath: '#cuml.TruncatedSVD' },
@@ -39,6 +40,7 @@ const FUNCTIONS = {
   cuml_logistic_regression: { officialApi: 'Python API', officialPath: '#cuml.LogisticRegression' },
   cuml_random_forest_classifier: { officialApi: 'Python API', officialPath: '#cuml.RandomForestClassifier' },
   cuml_random_forest_regressor: { officialApi: 'Python API', officialPath: '#cuml.RandomForestRegressor' },
+  cuml_forest_predict: { officialApi: 'ForestInference (nvForest)', officialPath: '#forest-inferencing' },
 };
 
 function loadSpecs() {

@@ -1,18 +1,22 @@
 use std::{cmp::Ordering, fmt, hash::Hash, sync::Arc};
 
 use arrow::datatypes::{DataType, FieldRef, SchemaRef};
+#[cfg(feature = "server")]
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::{
     common::{DFSchema, DFSchemaRef, Result},
     logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore},
 };
+#[cfg(feature = "server")]
+use query_engine::plan::MlForestModelDigest;
 use query_engine::plan::{
-    RelationIdType, ml_embedding_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema,
-    vector_pca_output_schema,
+    MlForestModelSnapshot, RelationIdType, ml_embedding_output_schema, ml_forest_output_schema,
+    ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
 };
 
 use super::{
     CumlOperation, CumlValidatedOptions, DenseVectorBinding,
-    error::{field_not_found, invalid_call, unsupported_type},
+    error::{field_not_found, invalid_call, invalid_call_error, unsupported_type},
     options::{options_from_named_values, validate_options},
 };
 use crate::gpu_functions::dense_relation::known_row_count;
@@ -22,11 +26,27 @@ pub struct CumlLogicalNode {
     operation: CumlOperation,
     inputs: Vec<LogicalPlan>,
     options: CumlValidatedOptions,
+    /// Model bound at planning; present exactly for `cuml_forest_predict`.
+    model: Option<Arc<MlForestModelSnapshot>>,
     schema: DFSchemaRef,
 }
 
 impl CumlLogicalNode {
+    /// Builds a node for an operation without a bound model.
+    /// `cuml_forest_predict` needs one and is rejected with `model_unbound`;
+    /// use [`Self::try_new_with_model`] for it.
     pub fn try_new(operation: CumlOperation, inputs: Vec<LogicalPlan>, options_json: &str) -> Result<Self> {
+        Self::try_new_with_model(operation, inputs, options_json, None)
+    }
+
+    /// `model` must be the snapshot bound for a `cuml_forest_predict` call and
+    /// `None` for every other operation.
+    pub fn try_new_with_model(
+        operation: CumlOperation,
+        inputs: Vec<LogicalPlan>,
+        options_json: &str,
+        model: Option<Arc<MlForestModelSnapshot>>,
+    ) -> Result<Self> {
         if inputs.len() != operation.descriptor().relation_roles.len() {
             return Err(invalid_call(
                 operation,
@@ -40,6 +60,23 @@ impl CumlLogicalNode {
             ));
         }
         let options = validate_options(operation, options_json)?;
+        match (operation, &model) {
+            (CumlOperation::ForestPredict, None) => {
+                return Err(invalid_call(
+                    operation,
+                    "model_unbound",
+                    "cuml_forest_predict requires a model bound during planning",
+                ));
+            },
+            (CumlOperation::ForestPredict, Some(_)) | (_, None) => {},
+            (_, Some(_)) => {
+                return Err(invalid_call(
+                    operation,
+                    "unexpected_model_binding",
+                    format!("{} does not accept a bound model", operation.descriptor().sql_function_name),
+                ));
+            },
+        }
         let mut ids = Vec::new();
         let mut dimensions = Vec::new();
         for (input, binding) in inputs.iter().zip(options.bindings()) {
@@ -156,6 +193,7 @@ impl CumlLogicalNode {
             if let Some(rows) = known_row_count(input)
                 && rows == 1
                 && role != "predict"
+                && operation != CumlOperation::ForestPredict
             {
                 return Err(invalid_call(
                     operation,
@@ -198,6 +236,18 @@ impl CumlLogicalNode {
                 format!("cuML training dimension {training} differs from predict dimension {predict}"),
             ));
         }
+        if let (Some(model), Some(Some(dimension))) = (&model, dimensions.first())
+            && *dimension != model.num_features()
+        {
+            return Err(invalid_call_error(
+                operation,
+                "forest_feature_count_mismatch",
+                format!("input has {dimension} features; the model expects {}", model.num_features()),
+            )
+            .with_log_safe_fact("expected", model.num_features())
+            .with_log_safe_fact("actual", dimension)
+            .into());
+        }
         let id_type = ids.last().expect("cuML requires a relation").clone();
         let output = match operation {
             CumlOperation::Tsvd => {
@@ -211,9 +261,12 @@ impl CumlLogicalNode {
                 ml_predictions_output_schema(id_type, DataType::Int32)
             },
             CumlOperation::RandomForestRegressor => ml_predictions_output_schema(id_type, DataType::Float32),
+            CumlOperation::ForestPredict => {
+                ml_forest_output_schema(id_type, model.as_ref().expect("forest model checked above").output())
+            },
         };
         let schema = Arc::new(DFSchema::try_from(output.as_ref().clone())?);
-        Ok(Self { operation, inputs, options, schema })
+        Ok(Self { operation, inputs, options, model, schema })
     }
 
     pub fn operation(&self) -> CumlOperation {
@@ -222,9 +275,31 @@ impl CumlLogicalNode {
     pub fn validated_options(&self) -> &CumlValidatedOptions {
         &self.options
     }
+    pub fn model(&self) -> Option<&Arc<MlForestModelSnapshot>> {
+        self.model.as_ref()
+    }
     pub fn output_schema(&self) -> SchemaRef {
         Arc::clone(self.schema.inner())
     }
+}
+
+#[cfg(feature = "server")]
+/// Digests of every forest model bound in `plan`, including subqueries, in
+/// pre-order. Two plans of one statement bind the same model bytes exactly
+/// when these sequences are equal.
+pub(crate) fn forest_model_digests(plan: &LogicalPlan) -> Vec<MlForestModelDigest> {
+    let mut digests = Vec::new();
+    plan.apply_with_subqueries(|node| {
+        if let LogicalPlan::Extension(extension) = node
+            && let Some(model) =
+                extension.node.as_any().downcast_ref::<CumlLogicalNode>().and_then(CumlLogicalNode::model)
+        {
+            digests.push(model.digest());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .expect("forest model digest collection is infallible");
+    digests
 }
 
 fn resolve_feature<'a>(
@@ -252,7 +327,10 @@ fn require_float32(operation: CumlOperation, role: &'static str, name: &str, fie
 
 impl PartialEq for CumlLogicalNode {
     fn eq(&self, other: &Self) -> bool {
-        self.operation == other.operation && self.inputs == other.inputs && self.options == other.options
+        self.operation == other.operation
+            && self.inputs == other.inputs
+            && self.options == other.options
+            && self.model == other.model
     }
 }
 impl Eq for CumlLogicalNode {}
@@ -261,14 +339,16 @@ impl Hash for CumlLogicalNode {
         self.operation.hash(state);
         self.inputs.hash(state);
         self.options.hash(state);
+        self.model.hash(state);
     }
 }
 impl PartialOrd for CumlLogicalNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.operation.descriptor().sql_function_name, &self.inputs, &self.options).partial_cmp(&(
+        (self.operation.descriptor().sql_function_name, &self.inputs, &self.options, &self.model).partial_cmp(&(
             other.operation.descriptor().sql_function_name,
             &other.inputs,
             &other.options,
+            &other.model,
         ))
     }
 }
@@ -293,7 +373,11 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
             self.operation.descriptor().sql_function_name,
             self.inputs.len(),
             self.options.canonical_json()
-        )
+        )?;
+        if let Some(model) = &self.model {
+            write!(f, ", model=sha256:{}", model.digest().short_hex())?;
+        }
+        Ok(())
     }
     fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
         if !exprs.is_empty() {
@@ -305,7 +389,7 @@ impl UserDefinedLogicalNodeCore for CumlLogicalNode {
         }
         let options_json =
             options_from_named_values(self.operation, &inputs, self.options.named_values(self.operation))?;
-        Self::try_new(self.operation, inputs, &options_json)
+        Self::try_new_with_model(self.operation, inputs, &options_json, self.model.clone())
     }
     fn supports_limit_pushdown(&self) -> bool {
         false

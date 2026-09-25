@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
 
@@ -453,8 +453,9 @@ fn validate_schema_supported(schema: &SchemaRef, operation: &'static str, ctx: A
 
 fn validate_output_names_unique(node: &QueryNode) -> Result<()> {
     let output_names = node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    let mut first_output_indexes = HashMap::with_capacity(output_names.len());
     for (duplicate_output_index, name) in output_names.iter().enumerate() {
-        if let Some(first_output_index) = output_names[..duplicate_output_index].iter().position(|seen| seen == name) {
+        if let Some(&first_output_index) = first_output_indexes.get(name) {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "query_engine.plan.validate_output_names",
@@ -468,6 +469,7 @@ fn validate_output_names_unique(node: &QueryNode) -> Result<()> {
             .with_fact("duplicate_output_index", duplicate_output_index)
             .with_fact("output_names", output_names.join(",")));
         }
+        first_output_indexes.insert(*name, duplicate_output_index);
     }
     Ok(())
 }

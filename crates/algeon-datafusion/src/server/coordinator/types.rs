@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use query_engine::runtime::ExecutionCancellation;
+use query_engine::{plan::MlForestModelDigest, runtime::ExecutionCancellation};
 
 use crate::server::{
     adapter_error::{Error, ErrorCode},
@@ -278,6 +278,9 @@ pub(crate) struct CoordinatorTicketPayload {
     pub(crate) attempt: Option<AlgeonAttempt>,
     pub(crate) started_at: Instant,
     pub(crate) deadline: Instant,
+    /// Forest models bound when the ticket was planned. DoGet replans the
+    /// statement and rejects it with `model_changed` when these differ.
+    pub(crate) forest_model_digests: Vec<MlForestModelDigest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

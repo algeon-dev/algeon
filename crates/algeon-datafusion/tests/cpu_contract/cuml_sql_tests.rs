@@ -1,13 +1,20 @@
 #[cfg(not(feature = "cuml"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{collections::BTreeSet, fs, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    fs, iter,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+#[cfg(feature = "cuml")]
+use std::{os::unix::fs::symlink, process::Command, sync::mpsc, thread, time::Duration};
 
 use algeon_datafusion::{
     cuml_sql::{
-        CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION, CUML_OPERATION_REGISTRY,
-        CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION, CUML_TSVD_FUNCTION,
-        CUML_UMAP_FUNCTION, CumlAlgoExec, CumlLogicalNode, CumlOperation, GpuOptionKind, MlRelationRole,
-        cuml_options_json_schema,
+        CUML_FOREST_PREDICT_FUNCTION, CUML_HDBSCAN_FUNCTION, CUML_LOGISTIC_REGRESSION_FUNCTION,
+        CUML_OPERATION_REGISTRY, CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION, CUML_RANDOM_FOREST_REGRESSOR_FUNCTION,
+        CUML_TSVD_FUNCTION, CUML_UMAP_FUNCTION, CumlAlgoExec, CumlLogicalNode, CumlModelStoreConfig, CumlOperation,
+        CumlSqlConfig, GpuOptionKind, MlRelationRole, cuml_options_json_schema,
     },
     error::{DataFusionErrorExt, ErrorCode},
     session::AlgeonSessionStateBuilderExt,
@@ -43,14 +50,23 @@ use datafusion::{
         SendableRecordBatchStream,
     },
 };
+#[cfg(feature = "cuml")]
+use query_engine::plan::MlForestModelDigest;
 use query_engine::plan::{
-    CumlOutputContract, VectorElementType, ml_embedding_output_schema, ml_hdbscan_output_schema,
-    ml_predictions_output_schema, vector_pca_output_schema,
+    CumlOutputContract, MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract,
+    MlForestPrecision, VectorElementType, ml_embedding_output_schema, ml_forest_output_schema,
+    ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
 };
+#[cfg(feature = "cuml")]
+use tokio::runtime::Builder;
 
 fn context() -> SessionContext {
+    context_with(CumlSqlConfig::default())
+}
+
+fn context_with(config: CumlSqlConfig) -> SessionContext {
     let ctx = SessionContext::new_with_state(
-        SessionStateBuilder::new_with_default_features().try_with_cuml_sql().unwrap().build(),
+        SessionStateBuilder::new_with_default_features().try_with_cuml_sql_config(config).unwrap().build(),
     );
     for (name, id, feature) in
         [("vectors", DataType::Int64, DataType::Float32), ("double_vectors", DataType::Int64, DataType::Float64)]
@@ -73,6 +89,16 @@ fn context() -> SessionContext {
     ]));
     ctx.register_table(
         "nullable_vectors",
+        Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![RecordBatch::new_empty(schema)]]).unwrap()),
+    )
+    .unwrap();
+    let schema = Arc::new(Schema::new(
+        iter::once(Field::new("id", DataType::Int64, false))
+            .chain((0..4).map(|index| Field::new(format!("d{index}"), DataType::Float32, false)))
+            .collect::<Vec<_>>(),
+    ));
+    ctx.register_table(
+        "forest_vectors",
         Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![RecordBatch::new_empty(schema)]]).unwrap()),
     )
     .unwrap();
@@ -125,7 +151,8 @@ fn registry_drives_names_roles_options_and_schema() {
             CUML_UMAP_FUNCTION,
             CUML_LOGISTIC_REGRESSION_FUNCTION,
             CUML_RANDOM_FOREST_CLASSIFIER_FUNCTION,
-            CUML_RANDOM_FOREST_REGRESSOR_FUNCTION
+            CUML_RANDOM_FOREST_REGRESSOR_FUNCTION,
+            CUML_FOREST_PREDICT_FUNCTION
         ]
     );
     for operation in CumlOperation::all() {
@@ -156,6 +183,8 @@ fn registry_drives_names_roles_options_and_schema() {
                     | CumlOperation::RandomForestRegressor
             ) {
                 serde_json::json!(["training", "predict"])
+            } else if operation == CumlOperation::ForestPredict {
+                serde_json::json!(["input", "model", "model_format"])
             } else {
                 serde_json::json!(["input"])
             }
@@ -209,6 +238,21 @@ async fn new_options_and_exact_row_count_have_structured_validation() {
         .create_logical_plan("SELECT CAST(1 AS BIGINT) AS id, CAST(1 AS REAL) AS d0, CAST(2 AS REAL) AS d1 LIMIT 0")
         .await
         .unwrap();
+    let model = Arc::new(
+        MlForestModelSnapshot::new(
+            b"source",
+            b"checkpoint".to_vec(),
+            MlForestModelFormat::XgboostJson,
+            MlForestModelFacts {
+                num_features: 2,
+                num_trees: 1,
+                native_output_stride: 1,
+                precision: MlForestPrecision::Single,
+            },
+            MlForestOutputContract::Score,
+        )
+        .unwrap(),
+    );
     for operation in CumlOperation::all().filter(|operation| {
         !matches!(
             operation,
@@ -221,16 +265,23 @@ async fn new_options_and_exact_row_count_have_structured_validation() {
             serde_json::json!({"n_components": 1})
         } else if operation == CumlOperation::Umap {
             serde_json::json!({"n_neighbors": 2})
+        } else if operation == CumlOperation::ForestPredict {
+            serde_json::json!({"model": "scorer.json", "model_format": "xgboost_json"})
         } else {
             serde_json::json!({"min_samples": 2, "min_cluster_size": 2})
         };
         let bound = |plan: &LogicalPlan| {
             let mut options = values.clone();
             options["input"] = serde_json::json!({"id":"id","vector":{"columns":["d0","d1"]}});
-            CumlLogicalNode::try_new(operation, vec![plan.clone()], &options.to_string())
+            let model = (operation == CumlOperation::ForestPredict).then(|| Arc::clone(&model));
+            CumlLogicalNode::try_new_with_model(operation, vec![plan.clone()], &options.to_string(), model)
         };
-        let error = bound(&row).unwrap_err();
-        assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("insufficient_input_rows"));
+        if operation == CumlOperation::ForestPredict {
+            bound(&row).expect("scoring accepts a single row");
+        } else {
+            let error = bound(&row).unwrap_err();
+            assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("insufficient_input_rows"));
+        }
         bound(&empty).expect("known empty input is valid");
     }
 }
@@ -316,6 +367,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
                 CumlOutputContract::HdbscanClusters => "hdbscan_clusters",
                 CumlOutputContract::Embedding => "embedding",
                 CumlOutputContract::Predictions => "predictions",
+                CumlOutputContract::ForestPrediction => "forest_prediction",
             }
         );
         let fields = result_schema["fields"].as_array().unwrap();
@@ -420,13 +472,18 @@ fn json_literal_for_docs(value: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn sql_schemas_match_ir_and_physical_nodes() {
-    let ctx = context();
-    for operation in CumlOperation::all() {
-        let logical = ctx
-            .state()
-            .create_logical_plan(&sql(operation.descriptor().sql_function_name, "vectors", 2))
-            .await
-            .unwrap();
+    let models = ForestModels::new();
+    let ctx = models.context();
+    // Without the cuml feature, forest binding fails before any model is read.
+    for operation in
+        CumlOperation::all().filter(|operation| cfg!(feature = "cuml") || *operation != CumlOperation::ForestPredict)
+    {
+        let statement = if operation == CumlOperation::ForestPredict {
+            forest_sql("xgb_binary_logistic.json", "xgboost_json", "")
+        } else {
+            sql(operation.descriptor().sql_function_name, "vectors", 2)
+        };
+        let logical = ctx.state().create_logical_plan(&statement).await.unwrap();
         let node = find_logical(&logical).expect("cuML logical node");
         assert_eq!(node.operation(), operation);
         assert_eq!(
@@ -440,6 +497,8 @@ async fn sql_schemas_match_ir_and_physical_nodes() {
                         ml_predictions_output_schema(DataType::Int64, DataType::Int32),
                     CumlOperation::RandomForestRegressor =>
                         ml_predictions_output_schema(DataType::Int64, DataType::Float32),
+                    CumlOperation::ForestPredict =>
+                        ml_forest_output_schema(DataType::Int64, MlForestOutputContract::Score),
                 }
                 .as_ref()
                 .clone()
@@ -466,14 +525,32 @@ impl QueryPlanner for OpaquePlanner {
 
 #[test]
 fn installation_is_idempotent_and_rejects_opaque_planners() {
-    let mut builder =
-        SessionStateBuilder::new_with_default_features().try_with_cuml_sql().unwrap().try_with_cuml_sql().unwrap();
+    let mut builder = SessionStateBuilder::new_with_default_features()
+        .try_with_cuml_sql()
+        .unwrap()
+        .try_with_cuml_sql_config(CumlSqlConfig::default())
+        .expect("try_with_cuml_sql equals the default config");
     assert!(builder.query_planner().is_some());
     let error = SessionStateBuilder::new_with_default_features()
         .with_query_planner(Arc::new(OpaquePlanner))
         .try_with_cuml_sql()
         .unwrap_err();
     assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("query_planner_conflict"));
+    let missing_root = tempfile::tempdir().unwrap().path().join("missing");
+    let error = SessionStateBuilder::new_with_default_features()
+        .try_with_cuml_sql_config(CumlSqlConfig { model_store: Some(CumlModelStoreConfig::new(missing_root)) })
+        .unwrap_err();
+    assert_eq!(error.find_algeon_error().unwrap().fact_value("reason"), Some("invalid_model_store"));
+
+    let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let store = |root: &tempfile::TempDir| CumlSqlConfig {
+        model_store: Some(CumlModelStoreConfig::new(root.path().to_path_buf())),
+    };
+    let installed =
+        SessionStateBuilder::new_with_default_features().try_with_cuml_sql_config(store(&roots[0])).unwrap();
+    let installed = installed.try_with_cuml_sql_config(store(&roots[0])).expect("equal model store is a no-op");
+    let error = installed.try_with_cuml_sql_config(store(&roots[1])).unwrap_err();
+    assert!(error.to_string().contains("conflicting GPU function family installation for 'cuml'"), "{error}");
 }
 
 #[tokio::test]
@@ -621,8 +698,12 @@ async fn catalog_reports_validation_paths_for_option_and_relation_fields() {
         .await
         .unwrap();
     assert_eq!(listed.iter().map(RecordBatch::num_rows).sum::<usize>(), CUML_OPERATION_REGISTRY.len());
+    let names = listed[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
     let available = listed[0].column(1).as_any().downcast_ref::<BooleanArray>().unwrap();
-    assert!((0..CUML_OPERATION_REGISTRY.len()).all(|index| available.value(index)));
+    assert!(
+        (0..CUML_OPERATION_REGISTRY.len())
+            .all(|index| available.value(index) == (names.value(index) != CUML_FOREST_PREDICT_FUNCTION))
+    );
     for (relation, components, code, path) in [
         ("vectors", 0, "missing_or_invalid_option", "options.n_components"),
         ("double_vectors", 1, "unsupported_type", "relations.input.fields.d0"),
@@ -735,4 +816,306 @@ impl ExecutionPlan for CountingChild {
         self.counter.fetch_add(1, Ordering::SeqCst);
         self.inner.execute(partition, context)
     }
+}
+
+/// Forest fixtures copied into a temporary models root, next to files the
+/// root must not expose.
+struct ForestModels {
+    directory: tempfile::TempDir,
+}
+
+impl ForestModels {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("models");
+        fs::create_dir(&root).unwrap();
+        for name in [
+            "xgb_binary_logistic.json",
+            "xgb_multiclass_softmax.json",
+            "xgb_multiclass_softprob.json",
+            "xgb_multi_target.json",
+            "corrupt.json",
+        ] {
+            fs::copy(forest_fixture(name), root.join(name)).unwrap();
+        }
+        Self { directory }
+    }
+
+    fn root(&self) -> PathBuf {
+        self.directory.path().join("models")
+    }
+
+    fn config(&self, max_model_bytes: u64) -> CumlSqlConfig {
+        CumlSqlConfig { model_store: Some(CumlModelStoreConfig { root: self.root(), max_model_bytes }) }
+    }
+
+    fn context(&self) -> SessionContext {
+        context_with(self.config(CumlModelStoreConfig::DEFAULT_MAX_MODEL_BYTES))
+    }
+}
+
+fn forest_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../components/cuml/algeon-cuml/tests/fixtures/forest").join(name)
+}
+
+fn forest_sql(model: &str, format: &str, extra: &str) -> String {
+    format!(
+        "SELECT * FROM cuml_forest_predict(input => (SELECT id, d0, d1, d2, d3 FROM forest_vectors), model => '{model}', model_format => '{format}'{extra})"
+    )
+}
+
+async fn forest_rejection(ctx: &SessionContext, statement: &str) -> (Option<String>, Option<String>) {
+    let error = ctx.state().create_logical_plan(statement).await.unwrap_err();
+    let typed = error.find_algeon_error().unwrap_or_else(|| panic!("{statement}: {error}"));
+    (typed.fact_value("reason").map(str::to_owned), typed.fact_value("rejection").map(str::to_owned))
+}
+
+#[cfg(feature = "cuml")]
+#[tokio::test]
+async fn forest_predict_binds_the_model_file_digest_and_output_contract() {
+    let models = ForestModels::new();
+    let ctx = models.context();
+    for (model, extra, output) in [
+        ("xgb_binary_logistic.json", "", MlForestOutputContract::Score),
+        ("xgb_multiclass_softprob.json", "", MlForestOutputContract::Vector(3)),
+        ("xgb_multiclass_softmax.json", ", output => 'class_index'", MlForestOutputContract::ClassIndex { classes: 3 }),
+    ] {
+        let logical = ctx.state().create_logical_plan(&forest_sql(model, "xgboost_json", extra)).await.unwrap();
+        let node = find_logical(&logical).unwrap();
+        let bound = node.model().expect("forest node carries its model");
+        let digest = MlForestModelDigest::of(&fs::read(forest_fixture(model)).unwrap());
+        assert_eq!(bound.digest(), digest, "{model}");
+        assert_eq!(bound.num_features(), 4);
+        assert_eq!(bound.output(), output, "{model}");
+        assert_eq!(
+            node.schema().as_ref(),
+            &DFSchema::try_from(ml_forest_output_schema(DataType::Int64, output).as_ref().clone()).unwrap()
+        );
+        assert!(
+            logical.display_indent().to_string().contains(&format!("model=sha256:{}", digest.short_hex())),
+            "{}",
+            logical.display_indent()
+        );
+    }
+}
+
+#[cfg(feature = "cuml")]
+#[tokio::test]
+async fn forest_predict_rewrites_reuse_the_planned_model_without_rereading_the_file() {
+    let models = ForestModels::new();
+    let ctx = models.context();
+    let logical =
+        ctx.state().create_logical_plan(&forest_sql("xgb_binary_logistic.json", "xgboost_json", "")).await.unwrap();
+    let node = find_logical(&logical).unwrap();
+    fs::write(models.root().join("xgb_binary_logistic.json"), b"not a model").unwrap();
+    let rewritten = node.with_exprs_and_inputs(Vec::new(), node.inputs().into_iter().cloned().collect()).unwrap();
+    assert_eq!(&rewritten, node);
+    assert_eq!(rewritten.model().unwrap().digest(), node.model().unwrap().digest());
+}
+
+#[cfg(feature = "cuml")]
+#[tokio::test]
+async fn forest_predict_resolves_models_beneath_the_root_opened_at_install() {
+    let models = ForestModels::new();
+    let ctx = models.context();
+    let installed = models.directory.path().join("installed");
+    fs::rename(models.root(), &installed).unwrap();
+    fs::create_dir(models.root()).unwrap();
+    fs::copy(forest_fixture("xgb_multiclass_softprob.json"), models.root().join("xgb_binary_logistic.json")).unwrap();
+    let logical =
+        ctx.state().create_logical_plan(&forest_sql("xgb_binary_logistic.json", "xgboost_json", "")).await.unwrap();
+    let bound = find_logical(&logical).unwrap().model().unwrap();
+    assert_eq!(bound.digest(), MlForestModelDigest::of(&fs::read(installed.join("xgb_binary_logistic.json")).unwrap()));
+}
+
+#[cfg(feature = "cuml")]
+#[tokio::test]
+async fn forest_predict_rejects_model_paths_that_are_not_regular_files_inside_the_root() {
+    let models = ForestModels::new();
+    let root = models.root();
+    fs::copy(forest_fixture("xgb_binary_logistic.json"), models.directory.path().join("outside.json")).unwrap();
+    symlink("../outside.json", root.join("escape.json")).unwrap();
+    symlink("../absent.json", root.join("dangling.json")).unwrap();
+    symlink(root.join("xgb_binary_logistic.json"), root.join("absolute_alias.json")).unwrap();
+    symlink("loop.json", root.join("loop.json")).unwrap();
+    symlink("xgb_binary_logistic.json", root.join("alias.json")).unwrap();
+    fs::create_dir(root.join("nested")).unwrap();
+    symlink("../xgb_binary_logistic.json", root.join("nested/up.json")).unwrap();
+    assert!(Command::new("mkfifo").arg(root.join("pipe.json")).status().unwrap().success());
+    let ctx = models.context();
+    let absolute = models.directory.path().join("outside.json").display().to_string();
+    let long_name = "m".repeat(256);
+    for (model, rejection) in [
+        ("../outside.json", "parent_component"),
+        ("nested/../xgb_binary_logistic.json", "parent_component"),
+        (absolute.as_str(), "absolute_path"),
+        ("escape.json", "outside_root"),
+        // Escaping symlinks are rejected before the target is looked up, so
+        // a missing outside target reports the same rejection.
+        ("dangling.json", "outside_root"),
+        ("absolute_alias.json", "outside_root"),
+        ("loop.json", "symlink_loop"),
+        (long_name.as_str(), "name_too_long"),
+        ("nested", "not_regular_file"),
+        ("missing.json", "not_found"),
+        ("xgb_binary_logistic.json/child", "not_found"),
+    ] {
+        assert_eq!(
+            forest_rejection(&ctx, &forest_sql(model, "xgboost_json", "")).await,
+            (Some("model_path_rejected".to_string()), Some(rejection.to_string())),
+            "{model}"
+        );
+    }
+    // Opening a FIFO without O_NONBLOCK waits for a writer, so a regression
+    // blocks the planner thread instead of failing this assertion.
+    let (sender, receiver) = mpsc::channel();
+    let pipe_ctx = models.context();
+    thread::spawn(move || {
+        let runtime = Builder::new_current_thread().build().unwrap();
+        sender
+            .send(runtime.block_on(forest_rejection(&pipe_ctx, &forest_sql("pipe.json", "xgboost_json", ""))))
+            .unwrap();
+    });
+    assert_eq!(
+        receiver.recv_timeout(Duration::from_secs(30)).expect("FIFO model path must not block planning"),
+        (Some("model_path_rejected".to_string()), Some("not_regular_file".to_string()))
+    );
+    ctx.state().create_logical_plan(&forest_sql("alias.json", "xgboost_json", "")).await.expect("in-root symlink");
+    ctx.state()
+        .create_logical_plan(&forest_sql("nested/up.json", "xgboost_json", ""))
+        .await
+        .expect("in-root symlink through '..'");
+
+    let size = fs::metadata(root.join("xgb_binary_logistic.json")).unwrap().len();
+    let bounded = context_with(models.config(size - 1));
+    let error = bounded
+        .state()
+        .create_logical_plan(&forest_sql("xgb_binary_logistic.json", "xgboost_json", ""))
+        .await
+        .unwrap_err();
+    let typed = error.find_algeon_error().unwrap();
+    assert_eq!(typed.fact_value("reason"), Some("model_too_large"));
+    assert_eq!(typed.fact_value("max_model_bytes"), Some((size - 1).to_string().as_str()));
+    context_with(models.config(size))
+        .state()
+        .create_logical_plan(&forest_sql("xgb_binary_logistic.json", "xgboost_json", ""))
+        .await
+        .expect("a model at max_model_bytes is accepted");
+}
+
+#[cfg(feature = "cuml")]
+#[tokio::test]
+async fn forest_predict_reports_structured_option_model_and_schema_rejections() {
+    let models = ForestModels::new();
+    let ctx = models.context();
+    let long = "m".repeat(1025);
+    for (statement, reason) in [
+        (
+            "SELECT * FROM cuml_forest_predict(input => (SELECT id, d0, d1, d2, d3 FROM forest_vectors), model => 'xgb_binary_logistic.json')".to_string(),
+            "missing_argument",
+        ),
+        (forest_sql(&long, "xgboost_json", ""), "missing_or_invalid_option"),
+        (forest_sql("xgb_binary_logistic.json", "onnx", ""), "missing_or_invalid_option"),
+        (forest_sql("corrupt.json", "xgboost_json", ""), "model_rejected"),
+        (forest_sql("xgb_multi_target.json", "xgboost_json", ""), "model_rejected"),
+        (forest_sql("xgb_binary_logistic.json", "lightgbm", ""), "model_rejected"),
+        (
+            forest_sql("xgb_binary_logistic.json", "xgboost_json", ", output => 'class_index'"),
+            "class_index_requires_multiple_outputs",
+        ),
+    ] {
+        assert_eq!(forest_rejection(&ctx, &statement).await.0.as_deref(), Some(reason), "{statement:.200}");
+    }
+    let error = ctx
+        .state()
+        .create_logical_plan(
+            "SELECT * FROM cuml_forest_predict(input => (SELECT id, d0, d1 FROM vectors), model => 'xgb_binary_logistic.json', model_format => 'xgboost_json')",
+        )
+        .await
+        .unwrap_err();
+    let typed = error.find_algeon_error().unwrap();
+    assert_eq!(typed.fact_value("reason"), Some("forest_feature_count_mismatch"));
+    assert_eq!((typed.fact_value("expected"), typed.fact_value("actual")), (Some("4"), Some("2")));
+
+    assert_eq!(
+        forest_rejection(&context(), &forest_sql("xgb_binary_logistic.json", "xgboost_json", "")).await.0.as_deref(),
+        Some("model_root_unconfigured")
+    );
+}
+
+#[cfg(feature = "cuml")]
+#[tokio::test]
+async fn forest_predict_catalog_validation_binds_models_and_reports_an_unconfigured_root() {
+    let models = ForestModels::new();
+    let validate = |ctx: SessionContext, options: serde_json::Value| async move {
+        let call = serde_json::json!({"relations": {"input": {"table": "forest_vectors"}}, "options": options});
+        let batches = ctx
+            .sql(&format!(
+                "SELECT error_code, output_schema_json, details_json FROM gpu_validate_call('cuml_forest_predict', '{call}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let column = |index: usize| {
+            let column = batches[0].column(index).as_any().downcast_ref::<StringArray>().unwrap();
+            (!column.is_null(0)).then(|| column.value(0).to_string())
+        };
+        let schema: serde_json::Value = serde_json::from_str(&column(1).unwrap()).unwrap();
+        let fields = schema["fields"]
+            .as_array()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|field| {
+                        format!("{}:{}", field["name"].as_str().unwrap(), field["data_type"].as_str().unwrap())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        (column(0), fields)
+    };
+    for (model, output, fields) in [
+        ("xgb_binary_logistic.json", "scores", &["row_ordinal:UInt64", "id:Int64", "prediction:Float32"][..]),
+        ("xgb_multiclass_softmax.json", "class_index", &["row_ordinal:UInt64", "id:Int64", "prediction:Int32"][..]),
+        (
+            "xgb_multiclass_softprob.json",
+            "scores",
+            &["row_ordinal:UInt64", "id:Int64", "output_0:Float32", "output_1:Float32", "output_2:Float32"][..],
+        ),
+    ] {
+        let options = serde_json::json!({"model": model, "model_format": "xgboost_json", "output": output});
+        assert_eq!(
+            validate(models.context(), options).await,
+            (None, fields.iter().map(|field| field.to_string()).collect())
+        );
+    }
+    let options = serde_json::json!({"model": "escape/../x.json", "model_format": "xgboost_json"});
+    assert_eq!(validate(models.context(), options).await.0.as_deref(), Some("model_path_rejected"));
+    let options = serde_json::json!({"model": "xgb_binary_logistic.json"});
+    assert_eq!(validate(models.context(), options).await.0.as_deref(), Some("missing_or_invalid_option"));
+
+    let unconfigured = context();
+    let listed = unconfigured
+        .sql("SELECT available, unavailable_reason FROM gpu_list_functions() WHERE function_name = 'cuml_forest_predict'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert!(!listed[0].column(0).as_any().downcast_ref::<BooleanArray>().unwrap().value(0));
+    assert_eq!(listed[0].column(1).as_any().downcast_ref::<StringArray>().unwrap().value(0), "model_root_unconfigured");
+    let options = serde_json::json!({"model": "xgb_binary_logistic.json", "model_format": "xgboost_json"});
+    assert_eq!(validate(unconfigured, options).await.0.as_deref(), Some("model_root_unconfigured"));
+}
+
+#[cfg(not(feature = "cuml"))]
+#[tokio::test]
+async fn forest_predict_rejects_a_disabled_cuml_feature_before_reading_the_model() {
+    let models = ForestModels::new();
+    assert_eq!(
+        forest_rejection(&models.context(), &forest_sql("missing.json", "xgboost_json", "")).await.0.as_deref(),
+        Some("required_feature_disabled")
+    );
 }

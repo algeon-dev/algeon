@@ -202,7 +202,6 @@ pub(super) fn validate_aggregate_root_operator_schemas(
 pub(super) struct RequiredScalarExpressions<'a> {
     pub(super) scan_projection: Option<&'a ProjectionExprs>,
     pub(super) table_schema: &'a SchemaRef,
-    pub(super) scan_output_schema: SchemaRef,
     pub(super) required_scan_output_columns: &'a [String],
     pub(super) filter: Option<&'a FilterExec>,
     pub(super) pre_aggregate_projection: Option<&'a ProjectionExec>,
@@ -214,9 +213,7 @@ pub(super) fn validate_required_scalar_expressions(
     inputs: RequiredScalarExpressions<'_>,
 ) -> Result<(), CapabilityReason> {
     if let Some(scan_projection) = inputs.scan_projection {
-        for projection_expr in
-            required_scan_projection(scan_projection, inputs.scan_output_schema, inputs.required_scan_output_columns)
-        {
+        for projection_expr in required_scan_projection(scan_projection, inputs.required_scan_output_columns) {
             validate_physical_expr_contract(projection_expr.expr, inputs.table_schema)?;
         }
     }

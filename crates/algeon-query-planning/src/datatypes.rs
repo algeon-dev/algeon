@@ -237,7 +237,8 @@ pub fn is_supported_arrow_cast(
             || is_supported_decimal_to_float64_cast(source_type, target_type)
             || is_supported_numeric_to_decimal_cast(source_type, target_type)
             || is_supported_decimal_to_integral_cast(source_type, target_type)
-            || is_supported_float64_to_int64_cast(source_type, target_type))
+            || is_supported_float64_to_int64_cast(source_type, target_type)
+            || is_supported_float64_to_float32_cast(source_type, target_type))
 }
 
 /// Returns whether the native engine may insert or preserve an implicit cast.
@@ -342,6 +343,12 @@ fn is_supported_decimal_to_integral_cast(source_type: &ArrowDataType, target_typ
 
 fn is_supported_float64_to_int64_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     matches!((source_type, target_type), (ArrowDataType::Float64, ArrowDataType::Int64))
+}
+
+/// IEEE round-to-nearest narrowing; values beyond the Float32 range become
+/// infinities in both Arrow and libcudf.
+fn is_supported_float64_to_float32_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    matches!((source_type, target_type), (ArrowDataType::Float64, ArrowDataType::Float32))
 }
 
 fn is_supported_decimal128(precision: u8, scale: i8) -> bool {

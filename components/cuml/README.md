@@ -12,6 +12,7 @@ bindgen.
 - `algeon-cuml` (`cuml`) provides resource-bound APIs for HDBSCAN, PCA, TSVD,
   QN logistic regression, random-forest classification/regression, UMAP, and
   nvForest inference over imported XGBoost, LightGBM, and Treelite models.
+  Fitted random forests predict through the same nvForest path.
   The Rust crate exposes only these algorithms, not the full cuML upstream API.
 - `cuml/` is the root-registered upstream source submodule.
 

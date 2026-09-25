@@ -11,6 +11,15 @@ pub(super) struct ServerFileOverlay {
     pub(super) admission: ServerAdmissionFileConfig,
     pub(super) native: ServerNativeFileConfig,
     pub(super) observability: ServerObservabilityFileConfig,
+    pub(super) models: ServerModelsFileConfig,
+}
+
+/// `[models]`: the directory `cuml_forest_predict` reads model files from.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerModelsFileConfig {
+    pub(super) root: Option<PathBuf>,
+    pub(super) max_model_bytes: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]

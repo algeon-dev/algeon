@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
-use cudf::{CudfType, Series, TypeId, frame::dataframe::GpuRecordBatch};
+use cudf::{CudfType, DenseMatrixLayout, PackedMatrix, Series, TypeId, frame::dataframe::GpuRecordBatch};
 use cuvs::{
     BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchAlgo, CagraSearchParams, CuvsResources,
     DeviceBuffer, DeviceElement, DistanceMetric, IvfFlatIndex, IvfFlatIndexParams, IvfFlatSearchParams,
@@ -1377,6 +1377,20 @@ fn with_relation_tensor<E: DeviceElement, T>(
                 },
             };
             require_vector_element::<E>(validated.element(), node_id, algorithm, role)?;
+            if validated.binding_id() != resources.binding_id() {
+                let packed = validated.pack_active_child_into_runtime(resources.runtime(), DenseMatrixLayout::RowMajor);
+                return with_copied_list_child_tensor(
+                    resources,
+                    packed,
+                    node_id,
+                    role,
+                    column,
+                    guard,
+                    input_rows,
+                    packed_bytes,
+                    body,
+                );
+            }
             let lease = match resources.activate_validated_fixed_size_list_tensor::<E>(&validated).map_err(|error| {
                 cuvs_query_error(PACK_OPERATION, "failed to activate the validated FixedSizeList tensor", error)
                     .with_fact("node_id", node_id)
@@ -1497,6 +1511,20 @@ fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
         guard.fail(&error);
         return Err(error);
     }
+    if validated.binding_id() != resources.binding_id() {
+        let packed = validated.pack_active_child_into_runtime(resources.runtime(), DenseMatrixLayout::RowMajor);
+        return with_copied_list_child_tensor(
+            resources,
+            packed,
+            node_id,
+            role,
+            column,
+            guard,
+            rows,
+            packed_bytes,
+            body,
+        );
+    }
     let lease = match resources.activate_validated_uniform_list_tensor::<E>(&validated).map_err(|error| {
         cuvs_query_error(PACK_OPERATION, "failed to activate the validated uniform List tensor", error)
             .with_fact("node_id", node_id)
@@ -1522,6 +1550,63 @@ fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
         (Ok(value), Ok(())) => Ok(value),
         (Ok(_), Err(error)) => Err(error),
     }
+}
+
+/// Copies a validated list child into the execution binding of `resources`.
+///
+/// Zero-copy tensor activation requires the list to be owned by the cuVS
+/// binding. A GPU-resident producer that ran on another execution lane owns
+/// its output on that lane's binding, so its active child is packed into the
+/// cuVS binding instead.
+#[expect(clippy::too_many_arguments, reason = "the copy keeps the caller's stage guard and diagnostics identity")]
+fn with_copied_list_child_tensor<E: DeviceElement, T>(
+    resources: &CuvsResources,
+    packed: cudf::Result<PackedMatrix>,
+    node_id: NodeId,
+    role: &'static str,
+    column: &str,
+    guard: RuntimeOperatorStageGuard,
+    rows: usize,
+    packed_bytes: u64,
+    body: impl FnOnce(&ValidatedDeviceTensor<'_, E>) -> Result<T>,
+) -> Result<T> {
+    let owned = packed
+        .map_err(|error| {
+            cudf_query_error(
+                PACK_OPERATION,
+                "failed to copy the vector list child into the cuVS execution binding",
+                error,
+            )
+        })
+        .and_then(|packed| {
+            OwnedMatrix::<E>::from_packed(resources, packed).map_err(|error| {
+                cuvs_query_error(PACK_OPERATION, "failed to adopt the copied vector list child", error)
+            })
+        })
+        .map_err(|error| {
+            error.with_fact("node_id", node_id).with_fact("relation_role", role).with_fact("column", column)
+        });
+    let owned = match owned {
+        Ok(owned) => owned,
+        Err(error) => {
+            guard.fail(&error);
+            return Err(error);
+        },
+    };
+    let tensor = match owned.as_validated_tensor(resources).map_err(|error| {
+        cuvs_query_error(PACK_OPERATION, "failed to bind the copied vector list matrix", error)
+            .with_fact("node_id", node_id)
+            .with_fact("relation_role", role)
+            .with_fact("column", column)
+    }) {
+        Ok(tensor) => tensor,
+        Err(error) => {
+            guard.fail(&error);
+            return Err(error);
+        },
+    };
+    guard.finish(Some(rows as u64), Some(packed_bytes));
+    body(&tensor)
 }
 
 fn uniform_list_vector_column<'a>(

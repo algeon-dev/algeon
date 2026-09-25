@@ -166,6 +166,7 @@ dependencies = [
  "algeon-cudf-sys",
  "algeon-cugraph",
  "algeon-cugraph-sys",
+ "algeon-cuml",
  "algeon-cuml-sys",
  "algeon-cuvs",
  "algeon-cuvs-sys",
@@ -181,6 +182,7 @@ dependencies = [
  "fnv",
  "futures",
  "hex",
+ "libc",
  "parquet",
  "proptest",
  "prost",
@@ -244,6 +246,7 @@ dependencies = [
  "parquet",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

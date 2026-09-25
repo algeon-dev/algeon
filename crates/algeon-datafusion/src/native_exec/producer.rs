@@ -101,6 +101,18 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
         None
     }
 
+    /// Names, in child order, under which this producer binds each child as a
+    /// GPU-resident relation input when that child is itself a producer.
+    ///
+    /// `Some` lets the final native optimizer replace a DataFusion child with a
+    /// lowered GPU-resident producer. `None` means the producer owns its
+    /// children's placement (cuGraph plans them in a nested session, native
+    /// fragments have no DataFusion children), so the optimizer leaves the
+    /// subtree unchanged.
+    fn native_relation_input_names(&self) -> Option<&[String]> {
+        None
+    }
+
     /// Rewrites this producer so it also performs a consumer plan it subsumes.
     ///
     /// Called when a composed plan has this producer as its only GPU-resident

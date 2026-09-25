@@ -1404,3 +1404,32 @@ fn parquet_missing_nullable_columns_are_represented_as_native_typed_nulls() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn projection_over_repartitioned_fetch_limited_coalesce_lowers_with_its_limit() {
+    use datafusion::physical_plan::{Partitioning, coalesce_partitions::CoalescePartitionsExec};
+
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-repartitioned-coalesce-fetch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let limited: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(scan).with_fetch(Some(2)));
+    let repartitioned: Arc<dyn ExecutionPlan> =
+        Arc::new(RepartitionExec::try_new(limited, Partitioning::RoundRobinBatch(4)).unwrap());
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("payload", &scan_schema).unwrap(), alias: "payload".to_string() }],
+            repartitioned,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let native = result.plans[0].to_string();
+    assert!(native.contains("Limit"), "{native}");
+
+    fs::remove_dir_all(dir).unwrap();
+}

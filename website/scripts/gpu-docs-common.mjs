@@ -206,7 +206,7 @@ export function densePresentation(spec) {
 }
 
 const RENDERED_OPTION_KEYS = new Set([
-  'type', 'default', 'enum', 'minimum', 'exclusiveMinimum', 'maximum', 'minLength', 'minItems',
+  'type', 'default', 'enum', 'minimum', 'exclusiveMinimum', 'maximum', 'minLength', 'maxLength', 'minItems',
   'oneOf', 'description', 'additionalProperties', 'properties', 'required',
 ]);
 
@@ -241,6 +241,7 @@ function optionConstraints(option) {
   if ('exclusiveMinimum' in option) constraints.push(`greater than ${option.exclusiveMinimum}`);
   if ('maximum' in option) constraints.push(`maximum ${option.maximum}`);
   if ('minLength' in option) constraints.push(`minimum string length ${option.minLength}`);
+  if ('maxLength' in option) constraints.push(`maximum string length ${option.maxLength}`);
   if ('minItems' in option) constraints.push(`at least ${option.minItems} item${option.minItems === 1 ? '' : 's'}`);
   if (option.oneOf) constraints.push('one of the documented vector-binding shapes');
   return constraints.join('; ');

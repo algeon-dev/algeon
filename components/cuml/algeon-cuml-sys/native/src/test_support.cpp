@@ -1,4 +1,5 @@
 #include "cuml_rust/test_support.h"
+#include "random_forest_internal.hpp"
 #include "shim_common.hpp"
 
 #include <cudf_rust/error_boundary.hpp>
@@ -7,6 +8,8 @@
 #include <treelite/c_api.h>
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -94,6 +97,31 @@ extern "C" cuml_status_t cuml_test_forest_gtil_predict(const uint8_t* checkpoint
                                        config.get()),
                    "GTIL predict");
     *out_written = elements;
+    return CUML_SUCCESS;
+  } CUML_RUST_CATCH
+}
+
+extern "C" cuml_status_t cuml_test_rf_treelite_checkpoint(cuml_rf_forest_t forest, uint8_t** out_checkpoint,
+                                                          size_t* out_len)
+{
+  cuml_clear_error();
+  if (forest == nullptr || out_checkpoint == nullptr || out_len == nullptr) {
+    return cuml_record_error(CUML_ERROR_NULL, "random forest checkpoint received a null argument");
+  }
+  *out_checkpoint = nullptr;
+  *out_len = 0;
+  CUML_RUST_TRY {
+    auto const model = cuml_rf_build_treelite(*forest);
+    // Treelite owns the serialized buffer until its next call; copy it out.
+    char const* serialized = nullptr;
+    std::size_t serialized_len = 0;
+    check_treelite(TreeliteSerializeModelToBytes(model.get(), &serialized, &serialized_len),
+                   "Treelite checkpoint serialize");
+    auto* copy = static_cast<std::uint8_t*>(std::malloc(serialized_len));
+    if (copy == nullptr) throw std::bad_alloc{};
+    std::memcpy(copy, serialized, serialized_len);
+    *out_checkpoint = copy;
+    *out_len = serialized_len;
     return CUML_SUCCESS;
   } CUML_RUST_CATCH
 }

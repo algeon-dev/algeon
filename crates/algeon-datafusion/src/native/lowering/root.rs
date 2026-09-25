@@ -83,7 +83,7 @@ pub(super) fn lower_slice1_plan(
     };
     let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
         let required_scan_projection =
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+            required_scan_projection(scan_projection, &column_requirements.scan_output_columns);
         required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema)
     });
 
@@ -92,7 +92,6 @@ pub(super) fn lower_slice1_plan(
     validate_required_scalar_expressions(RequiredScalarExpressions {
         scan_projection,
         table_schema: &table_schema,
-        scan_output_schema: source_exec.schema(),
         required_scan_output_columns: &column_requirements.scan_output_columns,
         filter,
         pre_aggregate_projection,
@@ -194,7 +193,7 @@ pub(super) fn lower_slice1_plan(
         && !zero_column_count_safe
     {
         let required_scan_projection =
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+            required_scan_projection(scan_projection, &column_requirements.scan_output_columns);
         if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;

@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::{
@@ -387,9 +390,16 @@ fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, 
     let Some(first_file) = files.first() else {
         return Ok(Arc::clone(file_scan.file_schema()));
     };
-    let first_schema = local_parquet_footer_schema(first_file.object_meta.location.as_ref())?;
+    let first_location = first_file.object_meta.location.as_ref();
+    let first_schema = local_parquet_footer_schema(first_location)?;
+    // Byte-range splits of one object share its footer, so each distinct object is parsed once.
+    let mut checked_locations = HashSet::from([first_location]);
     for file in files.iter().skip(1) {
-        let schema = local_parquet_footer_schema(file.object_meta.location.as_ref())?;
+        let location = file.object_meta.location.as_ref();
+        if !checked_locations.insert(location) {
+            continue;
+        }
+        let schema = local_parquet_footer_schema(location)?;
         if schema.as_ref() != first_schema.as_ref() {
             return Err(CapabilityReason::NativeSourceSchemaMapping);
         }

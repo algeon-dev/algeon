@@ -156,7 +156,7 @@ generate_cuml() {
         --allowlist-function '^cuml_test_.*' \
         --allowlist-type '^cuml_test_.*' \
         --allowlist-var '^CUML_TEST_.*' \
-        --blocklist-type '^cuml_(status_t|error_detail_t|matrix_layout_t|handle_t|rf_forest_t|rf_training_streams_t)$' \
+        --blocklist-type '^cuml_(status_t|error_detail_t|matrix_layout_t|handle_t|rf_forest|rf_forest_t|rf_training_streams_t)$' \
         --default-enum-style consts \
         --no-prepend-enum-name \
         --no-layout-tests \

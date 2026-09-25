@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
@@ -106,14 +109,16 @@ pub(super) fn project_scan_output_columns(
         return Ok(LoweredNativeInput::with_bindings(input_node, input_schema, input_bindings));
     }
 
+    let mut fields_by_name = HashMap::with_capacity(input_schema.fields().len());
+    for field in input_schema.fields() {
+        fields_by_name.entry(field.name().as_str()).or_insert(field);
+    }
     let mut expressions = Vec::with_capacity(selected_bindings.len());
     let mut fields = Vec::with_capacity(selected_bindings.len());
     for binding in &selected_bindings {
         expressions.push(NativeExpr::column(binding.native_name.as_str()));
-        let field = input_schema
-            .field_with_name(binding.native_name.as_str())
-            .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-        fields.push(field.clone());
+        let field = fields_by_name.get(binding.native_name.as_str()).ok_or(CapabilityReason::UnsupportedExpression)?;
+        fields.push(Arc::clone(field));
     }
     let schema = Arc::new(Schema::new(fields));
     let node = builder.add_projection(input_node, projection_outputs(expressions, &schema)?);
@@ -147,20 +152,17 @@ fn selected_source_bindings_in_frontend_order(
 }
 
 pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: SchemaRef) -> Vec<super::FieldBinding> {
-    let mut used_frontend_indices = BTreeSet::new();
+    // Each native field binds the lowest unused frontend index with its name, so duplicate names
+    // consume their frontend positions in order.
+    let mut frontend_indices_by_name = HashMap::<&str, VecDeque<usize>>::new();
+    for (index, frontend_field) in frontend_schema.fields().iter().enumerate() {
+        frontend_indices_by_name.entry(frontend_field.name().as_str()).or_default().push_back(index);
+    }
     schema
         .fields()
         .iter()
         .filter_map(|field| {
-            let frontend_index = frontend_schema
-                .fields()
-                .iter()
-                .enumerate()
-                .find(|(index, frontend_field)| {
-                    !used_frontend_indices.contains(index) && frontend_field.name() == field.name()
-                })
-                .map(|(index, _)| index)?;
-            used_frontend_indices.insert(frontend_index);
+            let frontend_index = frontend_indices_by_name.get_mut(field.name().as_str())?.pop_front()?;
             Some(super::FieldBinding {
                 frontend_index,
                 frontend_name: field.name().clone(),
@@ -324,21 +326,14 @@ pub(super) struct RequiredScanProjectionExpr<'a> {
 
 pub(super) fn required_scan_projection<'a>(
     projection: &'a ProjectionExprs,
-    scan_output_schema: SchemaRef,
     required_scan_output_columns: &[String],
 ) -> Vec<RequiredScanProjectionExpr<'a>> {
+    let required_scan_output_columns = required_scan_output_columns.iter().map(String::as_str).collect::<HashSet<_>>();
     projection
         .iter()
         .enumerate()
-        .filter(|projection_expr| {
-            let (_output_index, projection_expr) = projection_expr;
-            required_scan_output_columns.iter().any(|column| column == &projection_expr.alias)
-                || scan_output_schema.index_of(projection_expr.alias.as_str()).is_ok_and(|index| {
-                    scan_output_schema
-                        .fields()
-                        .get(index)
-                        .is_some_and(|field| required_scan_output_columns.iter().any(|column| column == field.name()))
-                })
+        .filter(|(_output_index, projection_expr)| {
+            required_scan_output_columns.contains(projection_expr.alias.as_str())
         })
         .map(|(output_index, projection_expr)| RequiredScanProjectionExpr {
             output_index,

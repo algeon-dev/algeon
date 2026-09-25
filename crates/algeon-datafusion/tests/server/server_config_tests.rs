@@ -8,6 +8,7 @@ use algeon_datafusion::cugraph_sql::CugraphGraphOptions;
 use algeon_datafusion::table_format::{self, TableFormatLakehouseCachePolicy};
 use algeon_datafusion::{
     backend::GpuDeviceMemoryLimit,
+    cuml_sql::CumlModelStoreConfig,
     error::ErrorCode,
     native_exec::AlgeonNativeExecutionConfig,
     planner::{AlgeonGpuExecutionMode, DataFusionCpuExecutionPolicy},
@@ -37,6 +38,7 @@ include!("server_config_tests/native_profile.rs");
 include!("server_config_tests/workspace.rs");
 include!("server_config_tests/feature_gates.rs");
 include!("server_config_tests/cugraph.rs");
+include!("server_config_tests/models.rs");
 include!("server_config_tests/iceberg.rs");
 
 #[test]

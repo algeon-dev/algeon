@@ -10,10 +10,12 @@ use query_engine::{
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::{
         CUML_OPERATION_REGISTRY, CumlOperation, CumlOutputContract, MlAlgorithm, MlAlgorithmParams, MlAlgorithmSpec,
-        MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlRelationRole,
-        MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, VectorElementType,
-        VectorRowIdBinding, canonicalize_cuml_options, ml_embedding_output_schema, ml_hdbscan_output_schema,
-        ml_predictions_output_schema, vector_pca_output_schema,
+        MlForestModelFacts, MlForestModelFormat, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision,
+        MlForestPredictParams, MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding,
+        MlRelationRole, MlTsvdParams, MlUmapParams, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder,
+        VectorElementType, VectorRowIdBinding, canonical_execution_scope_fingerprint, canonicalize_cuml_options,
+        ml_embedding_output_schema, ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema,
+        vector_pca_output_schema,
     },
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, SourceNode},
@@ -197,7 +199,8 @@ fn plan(algorithm: MlAlgorithm) -> QueryPlan {
         | MlAlgorithm::Umap
         | MlAlgorithm::LogisticRegression
         | MlAlgorithm::RandomForestClassifier
-        | MlAlgorithm::RandomForestRegressor => {
+        | MlAlgorithm::RandomForestRegressor
+        | MlAlgorithm::ForestPredict => {
             unreachable!("decomposition plan helper")
         },
     };
@@ -217,7 +220,8 @@ fn registry_and_options_are_operation_specific() {
             CumlOperation::Umap,
             CumlOperation::LogisticRegression,
             CumlOperation::RandomForestClassifier,
-            CumlOperation::RandomForestRegressor
+            CumlOperation::RandomForestRegressor,
+            CumlOperation::ForestPredict
         ]
     );
     assert_eq!(
@@ -228,7 +232,8 @@ fn registry_and_options_are_operation_specific() {
             "cuml_umap",
             "cuml_logistic_regression",
             "cuml_random_forest_classifier",
-            "cuml_random_forest_regressor"
+            "cuml_random_forest_regressor",
+            "cuml_forest_predict"
         ]
     );
     for operation in CumlOperation::all() {
@@ -242,6 +247,7 @@ fn registry_and_options_are_operation_specific() {
                 CumlOperation::LogisticRegression
                 | CumlOperation::RandomForestClassifier
                 | CumlOperation::RandomForestRegressor => CumlOutputContract::Predictions,
+                CumlOperation::ForestPredict => CumlOutputContract::ForestPrediction,
             }
         );
         assert_eq!(descriptor.vector_element_support, &[VectorElementType::Float32]);
@@ -268,6 +274,8 @@ fn registry_and_options_are_operation_specific() {
                 | CumlOperation::RandomForestRegressor
         ) {
             r#"{"training":{"id":"id","vector":{"columns":["x0","x1"]},"label":"label"},"predict":{"id":"id","vector":{"columns":["x0","x1"]}}}"#
+        } else if operation == CumlOperation::ForestPredict {
+            r#"{"input":{"id":"id","vector":{"columns":["x0","x1"]}},"model":"m.json","model_format":"xgboost_json"}"#
         } else if operation == CumlOperation::Tsvd {
             r#"{"input":{"id":"id","vector":{"columns":["x0","x1"]}},"n_components":1}"#
         } else {
@@ -572,4 +580,144 @@ fn ml_pipeline_keeps_relational_handoffs() {
     assert_eq!(ml_task.kind(), PipelineTaskKind::MlAlgorithm);
     let resource = pipeline.resources().iter().find(|resource| resource.id() == ml_task.input_resources()[0]).unwrap();
     assert_eq!(resource.producer(), filter_task.id());
+}
+
+const FOREST_FACTS: MlForestModelFacts =
+    MlForestModelFacts { num_features: 4, num_trees: 2, native_output_stride: 1, precision: MlForestPrecision::Single };
+
+fn forest_snapshot(source: &[u8], stride: usize, output: MlForestOutputContract) -> MlForestModelSnapshot {
+    MlForestModelSnapshot::new(
+        source,
+        b"checkpoint".to_vec(),
+        MlForestModelFormat::XgboostJson,
+        MlForestModelFacts { native_output_stride: stride, ..FOREST_FACTS },
+        output,
+    )
+    .unwrap()
+}
+
+fn forest_plan(dimensions: usize, model: MlForestModelSnapshot, output_schema: SchemaRef) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "input",
+        schema("id", DataType::Float32, dimensions),
+    )));
+    let binding = MlRelationBinding::new(
+        input,
+        VectorRowIdBinding::column("id"),
+        (0..dimensions).map(|index| format!("x{index}")),
+    );
+    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
+        MlAlgorithm::ForestPredict,
+        MlAlgorithmParams::ForestPredict(MlForestPredictParams { input: binding, model }),
+        output_schema,
+    ));
+    builder.finish_with_host_sink(root)
+}
+
+#[test]
+fn forest_model_option_is_bounded_text_and_format_is_required() {
+    let operation = CumlOperation::ForestPredict;
+    let schema = operation.descriptor().options_json_schema();
+    assert_eq!(schema["properties"]["model"]["type"], "string");
+    assert_eq!(schema["properties"]["model"]["minLength"], 1);
+    assert_eq!(schema["properties"]["model"]["maxLength"], 1024);
+    assert_eq!(schema["required"], serde_json::json!(["input", "model", "model_format"]));
+    let options = |model: &str, format: Option<&str>| {
+        let mut value = serde_json::json!({"input": {"id": "id", "vector": {"columns": ["x0"]}}, "model": model});
+        if let Some(format) = format {
+            value["model_format"] = serde_json::json!(format);
+        }
+        canonicalize_cuml_options(operation, &value.to_string())
+    };
+    // 1024 two-byte characters: the bound counts characters, as JSON Schema maxLength does.
+    let canonical = options(&"é".repeat(1024), Some("lightgbm")).unwrap();
+    assert_eq!(canonical["output"], "scores");
+    for (model, format, argument) in [
+        ("é".repeat(1025).as_str(), Some("lightgbm"), "model"),
+        ("", Some("lightgbm"), "model"),
+        ("m.json", None, "model_format"),
+        ("m.json", Some("onnx"), "model_format"),
+    ] {
+        let error = options(model, format).unwrap_err();
+        assert_eq!(
+            (error.code(), error.argument()),
+            ("missing_or_invalid_option", Some(argument)),
+            "{model} {format:?}"
+        );
+    }
+}
+
+#[test]
+fn forest_output_schemas_follow_the_snapshot_contract() {
+    for (stride, output, fields) in [
+        (1, MlForestOutputContract::Score, vec![("prediction", DataType::Float32)]),
+        (3, MlForestOutputContract::ClassIndex { classes: 3 }, vec![("prediction", DataType::Int32)]),
+        (
+            3,
+            MlForestOutputContract::Vector(3),
+            vec![("output_0", DataType::Float32), ("output_1", DataType::Float32), ("output_2", DataType::Float32)],
+        ),
+    ] {
+        let expected = ml_forest_output_schema(DataType::Int64, output);
+        assert_eq!(
+            expected
+                .fields()
+                .iter()
+                .map(|field| (field.name().as_str(), field.data_type().clone()))
+                .collect::<Vec<_>>(),
+            [vec![("row_ordinal", DataType::UInt64), ("id", DataType::Int64)], fields].concat()
+        );
+        assert!(expected.fields().iter().all(|field| !field.is_nullable()));
+        let plan = forest_plan(4, forest_snapshot(b"model", stride, output), Arc::clone(&expected));
+        preflight_query_plan(&plan).unwrap();
+        let text = plan.to_string();
+        assert!(text.contains("algorithm=forest_predict"), "{text}");
+        assert!(text.contains(&format!("output={output}")), "{text}");
+        let mismatched = if stride == 1 {
+            ml_forest_output_schema(DataType::Int64, MlForestOutputContract::ClassIndex { classes: 2 })
+        } else {
+            ml_forest_output_schema(DataType::Int64, MlForestOutputContract::Score)
+        };
+        let error =
+            preflight_query_plan(&forest_plan(4, forest_snapshot(b"model", stride, output), mismatched)).unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("unexpected_output_schema"));
+    }
+}
+
+#[test]
+fn forest_feature_count_mismatch_rejects_preflight_and_capability() {
+    let output = MlForestOutputContract::Score;
+    let plan = forest_plan(3, forest_snapshot(b"model", 1, output), ml_forest_output_schema(DataType::Int64, output));
+    let error = preflight_query_plan(&plan).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("forest_feature_count_mismatch"));
+    let root = plan
+        .capability_analysis(rapids_analysis_context())
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == plan.root_id())
+        .unwrap();
+    let CapabilityDecision::Rejected { reason, facts } = root.executable else { panic!("must reject") };
+    assert_eq!(reason, "unsupported_ml_algorithm_node_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("forest_feature_count_mismatch"));
+    assert_eq!(facts.get("expected").map(String::as_str), Some("4"));
+    assert_eq!(facts.get("actual").map(String::as_str), Some("3"));
+    assert_eq!(facts.get("validation_code").map(String::as_str), Some("invalid_plan"));
+    assert_eq!(facts.get("algorithm").map(String::as_str), Some("forest_predict"));
+}
+
+#[test]
+fn forest_plan_identity_tracks_model_bytes_without_embedding_them() {
+    let output = MlForestOutputContract::Score;
+    let plan_for = |source: &[u8]| {
+        forest_plan(4, forest_snapshot(source, 1, output), ml_forest_output_schema(DataType::Int64, output))
+    };
+    let original = plan_for(b"model bytes v1");
+    let fingerprint = canonical_execution_scope_fingerprint(&original);
+    assert_eq!(fingerprint, canonical_execution_scope_fingerprint(&plan_for(b"model bytes v1")));
+    assert_ne!(fingerprint, canonical_execution_scope_fingerprint(&plan_for(b"model bytes v2")));
+    let PlanNode::MlAlgorithm(node) = &original.root_node().kind else { panic!("forest root") };
+    let MlAlgorithmParams::ForestPredict(params) = &node.spec.params else { panic!("forest params") };
+    assert!(fingerprint.contains(&params.model.digest().to_hex()), "{fingerprint}");
+    assert!(original.to_string().contains(&format!("model=sha256:{} ", params.model.digest().short_hex())));
 }

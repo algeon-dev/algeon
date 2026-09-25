@@ -16,19 +16,11 @@ use crate::{
     native_exec::{child_inputs::NativeChildBinding, relation_function::add_projected_relation_source},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CuvsPlanSink {
-    HostArrow,
-    DeferredHostArrow,
-    GpuResident,
-}
-
 pub(super) fn lower_cuvs_query_plan(
     operation: CuvsOperation,
     options: &CuvsValidatedOptions,
     children: &[NativeChildBinding],
     output_schema: SchemaRef,
-    sink: CuvsPlanSink,
 ) -> Result<QueryPlan> {
     if children.len() != options.bindings().len() {
         return Err(invalid_call(
@@ -232,13 +224,7 @@ pub(super) fn lower_cuvs_query_plan(
                 error,
             ))
         })?;
-    Ok(match sink {
-        CuvsPlanSink::HostArrow => builder.finish_with_host_sink_schema(root, output_schema),
-        CuvsPlanSink::DeferredHostArrow => {
-            builder.finish_with_host_sink_schema(root, output_schema).clone_with_deferred_host_materialization_sink()
-        },
-        CuvsPlanSink::GpuResident => builder.finish_gpu_resident(root),
-    })
+    Ok(builder.finish_with_host_sink_schema(root, output_schema))
 }
 
 fn value<'a>(

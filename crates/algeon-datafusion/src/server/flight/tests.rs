@@ -788,7 +788,7 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let status = service
-        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement)
+        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement, None)
         .await
         .expect_err("read-only source schema should reject DDL registration");
 
@@ -829,7 +829,7 @@ async fn update_set_algeon_datafusion_key_is_rejected_loudly() {
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let status = service
-        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement)
+        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement, None)
         .await
         .expect_err("Flight update SET for algeon-datafusion keys should be rejected");
 
@@ -853,7 +853,7 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let count = service
-        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement)
+        .execute_update_sql(planning_lease, sql, None, UpdateStatementKind::Statement, None)
         .await
         .expect("plain DataFusion SET should keep existing update-lane behavior");
 
@@ -914,7 +914,13 @@ async fn prepared_update_shutdown_promotion_preserves_operation_and_request_meta
     assert_eq!(service.coordinator.begin_shutdown(Instant::now()).live_count(), 1);
 
     let status = service
-        .execute_update_sql(planning_lease, sql, Some(correlation_id.clone()), UpdateStatementKind::PreparedStatement)
+        .execute_update_sql(
+            planning_lease,
+            sql,
+            Some(correlation_id.clone()),
+            UpdateStatementKind::PreparedStatement,
+            None,
+        )
         .await
         .expect_err("shutdown must reject prepared update promotion");
 

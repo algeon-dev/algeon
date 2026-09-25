@@ -62,7 +62,7 @@ async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
     assert_eq!(exec.operation(), CuvsOperation::BruteForceKnn);
     assert_eq!(exec.children().len(), 2);
     assert_eq!(exec.schema().as_ref(), logical.schema().as_arrow());
-    let native = exec.native_plan().expect("typed native vector plan");
+    let native = exec.native_plan();
     let vector = native
         .nodes()
         .iter()

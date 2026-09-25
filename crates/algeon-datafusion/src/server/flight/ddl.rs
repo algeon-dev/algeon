@@ -10,6 +10,7 @@ impl DatafusionAlgeonFlightSqlService {
         sql: String,
         correlation_id: Option<String>,
         statement_kind: UpdateStatementKind,
+        expected_forest_model_digests: Option<Vec<MlForestModelDigest>>,
     ) -> Result<i64, Status> {
         let query_id = planning_lease.key().query_id().to_string();
         let sql: Arc<str> = sql.into();
@@ -160,6 +161,23 @@ impl DatafusionAlgeonFlightSqlService {
                 &query_id,
             );
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            coordinator_terminal.finish_captured("planning", &status, captured);
+            coordinator_terminal.wait_finished().await;
+            return Err(status);
+        }
+        if let Some(expected) = &expected_forest_model_digests
+            && let Err(error) =
+                verify_forest_model_identity(expected, &forest_model_digests(&plan), statement_kind.sql_operation())
+        {
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.planning_failed_adapter(&error);
+            }
+            let captured = CapturedError::from_adapter_error(&error);
+            let status = status_with_query_id_and_correlation_id(
+                adapter_error_status(error),
+                &query_id,
+                correlation_id.as_deref(),
+            );
             coordinator_terminal.finish_captured("planning", &status, captured);
             coordinator_terminal.wait_finished().await;
             return Err(status);

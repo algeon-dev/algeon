@@ -40,14 +40,22 @@ pub(super) struct PreparedStatementEntry {
     /// whether dedup applies.
     pub(super) no_result_ddl: bool,
     pub(super) execution_domain: StatementExecutionDomain,
+    /// Forest models bound when the statement was prepared. Each execution
+    /// replans and rejects the statement with `model_changed` when these differ.
+    pub(super) forest_model_digests: Vec<MlForestModelDigest>,
     /// Set after the first successful execution. Only consulted for
     /// `no_result_ddl` handles, to turn a repeat execution into a no-op.
     pub(super) executed: AtomicBool,
 }
 
 impl PreparedStatementEntry {
-    pub(super) fn new(sql: String, no_result_ddl: bool, execution_domain: StatementExecutionDomain) -> Self {
-        Self { sql, no_result_ddl, execution_domain, executed: AtomicBool::new(false) }
+    pub(super) fn new(
+        sql: String,
+        no_result_ddl: bool,
+        execution_domain: StatementExecutionDomain,
+        forest_model_digests: Vec<MlForestModelDigest>,
+    ) -> Self {
+        Self { sql, no_result_ddl, execution_domain, forest_model_digests, executed: AtomicBool::new(false) }
     }
 
     /// True when this is a no-result-set DDL handle that has already executed
@@ -243,7 +251,7 @@ mod tests {
     }
 
     fn entry() -> PreparedStatementEntry {
-        PreparedStatementEntry::new("SELECT 1".to_string(), false, StatementExecutionDomain::Data)
+        PreparedStatementEntry::new("SELECT 1".to_string(), false, StatementExecutionDomain::Data, Vec::new())
     }
 
     fn fill(store: &PreparedStatementStore, owner: &Owner, count: usize) {

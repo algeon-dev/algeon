@@ -511,6 +511,7 @@ pub fn algeon_datafusion::cugraph_sql::bfs_result_schema(&algeon_datafusion::cug
 pub fn algeon_datafusion::cugraph_sql::result_schema_for_params(algeon_datafusion::cugraph_sql::CugraphAlgorithm, &algeon_datafusion::cugraph_sql::CugraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub fn algeon_datafusion::cugraph_sql::stable_result_schema(algeon_datafusion::cugraph_sql::CugraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub mod algeon_datafusion::cuml_sql
+pub use algeon_datafusion::cuml_sql::CUML_FOREST_PREDICT_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_HDBSCAN_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_LOGISTIC_REGRESSION_FUNCTION
 pub use algeon_datafusion::cuml_sql::CUML_OPERATION_REGISTRY
@@ -533,9 +534,11 @@ impl datafusion_session::planner::ExtensionPlanner for algeon_datafusion::cuml_s
 pub fn algeon_datafusion::cuml_sql::CumlExtensionPlanner::plan_extension<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'life6, 'life7, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::planner::PhysicalPlanner, &'life2 dyn datafusion_expr::logical_plan::extension::UserDefinedLogicalNode, &'life3 [&'life4 datafusion_expr::logical_plan::plan::LogicalPlan], &'life5 [alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>], &'life6 dyn datafusion_session::session::Session, &'life7 datafusion_expr::physical_planning_context::PhysicalPlanningContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait, 'life6: 'async_trait, 'life7: 'async_trait
 pub struct algeon_datafusion::cuml_sql::CumlLogicalNode
 impl algeon_datafusion::cuml_sql::CumlLogicalNode
+pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::model(&self) -> core::option::Option<&alloc::sync::Arc<query_planning::plan::ml_forest::MlForestModelSnapshot>>
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::operation(&self) -> query_planning::plan::ml_algorithm::CumlOperation
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::output_schema(&self) -> arrow_schema::schema::SchemaRef
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::try_new(query_planning::plan::ml_algorithm::CumlOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
+pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::try_new_with_model(query_planning::plan::ml_algorithm::CumlOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str, core::option::Option<alloc::sync::Arc<query_planning::plan::ml_forest::MlForestModelSnapshot>>) -> datafusion_common::error::Result<Self>
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::validated_options(&self) -> &algeon_datafusion::cuml_sql::CumlValidatedOptions
 impl core::cmp::Eq for algeon_datafusion::cuml_sql::CumlLogicalNode
 impl core::cmp::PartialEq for algeon_datafusion::cuml_sql::CumlLogicalNode
@@ -552,6 +555,12 @@ pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::name(&self) -> &str
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::schema(&self) -> &datafusion_common::dfschema::DFSchemaRef
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::supports_limit_pushdown(&self) -> bool
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::with_exprs_and_inputs(&self, alloc::vec::Vec<datafusion_expr::expr::Expr>, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>) -> datafusion_common::error::Result<Self>
+pub struct algeon_datafusion::cuml_sql::CumlModelStoreConfig
+pub algeon_datafusion::cuml_sql::CumlModelStoreConfig::max_model_bytes: u64
+pub algeon_datafusion::cuml_sql::CumlModelStoreConfig::root: std::path::PathBuf
+impl algeon_datafusion::cuml_sql::CumlModelStoreConfig
+pub const algeon_datafusion::cuml_sql::CumlModelStoreConfig::DEFAULT_MAX_MODEL_BYTES: u64
+pub fn algeon_datafusion::cuml_sql::CumlModelStoreConfig::new(impl core::convert::Into<std::path::PathBuf>) -> Self
 pub struct algeon_datafusion::cuml_sql::CumlRelationBinding
 impl algeon_datafusion::cuml_sql::CumlRelationBinding
 pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::features(&self) -> &query_planning::plan::gpu_function_options::DenseVectorBinding
@@ -561,6 +570,8 @@ pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::relation_role(&self) ->
 pub struct algeon_datafusion::cuml_sql::CumlRelationPlanner
 impl datafusion_expr::planner::RelationPlanner for algeon_datafusion::cuml_sql::CumlRelationPlanner
 pub fn algeon_datafusion::cuml_sql::CumlRelationPlanner::plan_relation(&self, sqlparser::ast::query::TableFactor, &mut dyn datafusion_expr::planner::RelationPlannerContext) -> datafusion_common::error::Result<datafusion_expr::planner::RelationPlanning>
+pub struct algeon_datafusion::cuml_sql::CumlSqlConfig
+pub algeon_datafusion::cuml_sql::CumlSqlConfig::model_store: core::option::Option<algeon_datafusion::cuml_sql::CumlModelStoreConfig>
 pub struct algeon_datafusion::cuml_sql::CumlValidatedOptions
 impl algeon_datafusion::cuml_sql::CumlValidatedOptions
 pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::bindings(&self) -> &[algeon_datafusion::cuml_sql::CumlRelationBinding]
@@ -2010,6 +2021,7 @@ pub algeon_datafusion::server::ServerConfig::cugraph: core::option::Option<algeo
 pub algeon_datafusion::server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
 pub algeon_datafusion::server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
 pub algeon_datafusion::server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, query_runtime::runtime::backend_core::GpuMemoryOwnership)>
+pub algeon_datafusion::server::ServerConfig::models: core::option::Option<algeon_datafusion::cuml_sql::CumlModelStoreConfig>
 pub algeon_datafusion::server::ServerConfig::native_optimizer_config: algeon_datafusion::planner::AlgeonNativeOptimizerConfig
 pub algeon_datafusion::server::ServerConfig::observability: algeon_datafusion::server::ServerObservabilityConfig
 pub algeon_datafusion::server::ServerConfig::queue_policy: algeon_datafusion::backend::AlgeonGpuQueuePolicy
@@ -2140,12 +2152,14 @@ pub const algeon_datafusion::session::ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
 pub trait algeon_datafusion::session::AlgeonSessionStateBuilderExt
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cugraph_sql(self, algeon_datafusion::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuml_sql(self) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
+pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuml_sql_config(self, algeon_datafusion::cuml_sql::CumlSqlConfig) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::with_algeon_native(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
 pub fn algeon_datafusion::session::AlgeonSessionStateBuilderExt::with_algeon_native_rule(self, alloc::sync::Arc<algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule>) -> Self
 impl algeon_datafusion::session::AlgeonSessionStateBuilderExt for datafusion::execution::session_state::SessionStateBuilder
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cugraph_sql(self, algeon_datafusion::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuml_sql(self) -> datafusion_common::error::Result<Self>
+pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuml_sql_config(self, algeon_datafusion::cuml_sql::CumlSqlConfig) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_algeon_native(self, algeon_datafusion::planner::AlgeonNativeOptimizerConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_algeon_native_rule(self, alloc::sync::Arc<algeon_datafusion::planner::AlgeonNativePhysicalOptimizerRule>) -> Self

@@ -6,12 +6,15 @@ description: Canonical ID, Float32 features, and supervised label contracts for 
 
 # ML Inputs
 
-`cuml_tsvd`, `cuml_hdbscan`, and `cuml_umap` accept one `input` relation.
-`cuml_logistic_regression`, `cuml_random_forest_classifier`, and
-`cuml_random_forest_regressor` require both `training` and `predict` relations.
-Each relation argument is a parenthesized `SELECT`. For metadata-only
-`gpu_validate_call`, register tables or views with the corresponding schemas;
-validation does not scan rows.
+`cuml_tsvd`, `cuml_hdbscan`, `cuml_umap`, and `cuml_forest_predict` accept one
+`input` relation. `cuml_logistic_regression`, `cuml_random_forest_classifier`,
+and `cuml_random_forest_regressor` require both `training` and `predict`
+relations. `cuml_forest_predict` scores its `input` relation against a
+pretrained model rather than fitting one; its feature contract otherwise
+follows the wide or list shape below. Each relation argument is a
+parenthesized `SELECT`. For metadata-only `gpu_validate_call`, register
+tables or views with the corresponding schemas; validation does not scan
+rows.
 
 ## Identity and feature projection
 

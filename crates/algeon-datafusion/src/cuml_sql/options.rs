@@ -1,9 +1,11 @@
 use datafusion::{common::Result, logical_expr::LogicalPlan};
+use query_engine::plan::MlForestModelFormat;
 use serde_json::{Map, Value};
 
 use super::{
     CumlOperation, DenseVectorBinding, GpuOptionKind, MlRelationRole, canonicalize_cuml_options,
     error::{invalid_call, invalid_option},
+    model_store::{ForestModelReference, ForestOutputRequest},
 };
 use crate::gpu_functions::dense_relation::infer_dense_relation_binding;
 
@@ -46,6 +48,22 @@ impl CumlValidatedOptions {
     pub fn n_components(&self) -> Option<usize> {
         let canonical: Value = serde_json::from_str(&self.canonical_json).expect("validated cuML options contain JSON");
         canonical.get("n_components").and_then(Value::as_u64).map(|count| count as usize)
+    }
+
+    /// The forest model a `cuml_forest_predict` call names; `None` for other operations.
+    pub(super) fn forest_model_reference(&self) -> Option<ForestModelReference> {
+        let canonical: Value = serde_json::from_str(&self.canonical_json).expect("validated cuML options contain JSON");
+        let path = canonical.get("model")?.as_str().expect("validated model path").to_string();
+        let format = canonical["model_format"]
+            .as_str()
+            .and_then(MlForestModelFormat::from_option_value)
+            .expect("validated model format");
+        let output = match canonical["output"].as_str() {
+            Some("scores") => ForestOutputRequest::Scores,
+            Some("class_index") => ForestOutputRequest::ClassIndex,
+            _ => unreachable!("validated forest output"),
+        };
+        Some(ForestModelReference { path, format, output })
     }
 
     pub(super) fn named_values(&self, operation: CumlOperation) -> Map<String, Value> {

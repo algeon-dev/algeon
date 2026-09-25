@@ -26,7 +26,7 @@ pub(crate) fn install_gpu_function_family(
     let mut families = prior.as_ref().map(|catalog| catalog.families().to_vec()).unwrap_or_default();
 
     if let Some(existing) = families.iter().find(|existing| existing.family_id() == family.family_id()) {
-        if existing.descriptors() == family.descriptors() {
+        if family.same_installation(existing.as_ref()) {
             return Ok(());
         }
         return Err(install_error(format!(

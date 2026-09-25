@@ -245,17 +245,23 @@ impl ForestInferenceModel {
                 IMPORT,
             )
         })?;
+        Self::from_native(resources, raw, metadata, output, IMPORT)
+    }
+
+    /// Takes ownership of a model a native import returned on `resources`.
+    pub(crate) fn from_native(
+        resources: &CumlResources,
+        raw: cuml_sys::cuml_forest_model_t,
+        metadata: cuml_sys::cuml_forest_metadata_t,
+        output: ForestOutput,
+        op: &'static str,
+    ) -> Result<Self> {
         if raw.is_null() {
-            return Err(error(
-                ErrorCode::InvariantViolation,
-                FailurePhase::NativeCall,
-                IMPORT,
-                "import returned no model",
-            ));
+            return Err(error(ErrorCode::InvariantViolation, FailurePhase::NativeCall, op, "import returned no model"));
         }
         // Owning the handle first releases the device forest if a fact check fails.
         let native = NativeForest { raw: Some(raw), device: resources.device() };
-        let info = ForestModelInfo::from_native(metadata, IMPORT)?;
+        let info = ForestModelInfo::from_native(metadata, op)?;
         let kind = info.output_kind(output)?;
         Ok(Self {
             native,
@@ -470,7 +476,7 @@ fn narrow_finite(values: &Series) -> Result<Series> {
     Ok(narrowed)
 }
 
-fn empty_metadata() -> cuml_sys::cuml_forest_metadata_t {
+pub(crate) fn empty_metadata() -> cuml_sys::cuml_forest_metadata_t {
     cuml_sys::cuml_forest_metadata_t { num_features: 0, num_trees: 0, num_outputs: 0, precision: 0 }
 }
 

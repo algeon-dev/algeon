@@ -65,9 +65,7 @@ pub(super) fn lower_local_parquet_source_input(
 
     validate_schema(Arc::clone(&source_output_schema))?;
     if let Some(scan_projection) = scan_projection {
-        for projection_expr in
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns)
-        {
+        for projection_expr in required_scan_projection(scan_projection, &column_requirements.scan_output_columns) {
             validate_physical_expr_contract(projection_expr.expr, &table_schema)?;
         }
     }
@@ -92,7 +90,7 @@ pub(super) fn lower_local_parquet_source_input(
         local_parquet_files(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
     let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
         let required_scan_projection =
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+            required_scan_projection(scan_projection, &column_requirements.scan_output_columns);
         required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema)
     });
     let scan_only_row_predicate = filter.is_none()
@@ -183,7 +181,7 @@ pub(super) fn lower_local_parquet_source_input(
     };
     let (scan_output_node, scan_output_schema) = if let Some(scan_projection) = scan_projection {
         let required_scan_projection =
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+            required_scan_projection(scan_projection, &column_requirements.scan_output_columns);
         if filter.is_none()
             && required_scan_projection_needs_native_projection(
                 &required_scan_projection,

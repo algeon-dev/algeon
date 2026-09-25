@@ -29,4 +29,9 @@ unsafe extern "C" {
         output_capacity: usize,
         out_written: *mut usize,
     ) -> cuml_status_t;
+    pub fn cuml_test_rf_treelite_checkpoint(
+        forest: cuml_rf_forest_t,
+        out_checkpoint: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> cuml_status_t;
 }

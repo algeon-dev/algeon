@@ -35,6 +35,7 @@ impl ExtensionPlanner for CumlExtensionPlanner {
         CumlAlgoExec::try_new(
             node.operation(),
             node.validated_options().clone(),
+            node.model().cloned(),
             physical_inputs.to_vec(),
             node.output_schema(),
             native_execution_config,

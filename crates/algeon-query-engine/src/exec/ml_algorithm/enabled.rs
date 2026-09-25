@@ -1,11 +1,17 @@
+#[cfg(feature = "test-hooks")]
+use std::sync::{
+    Mutex, PoisonError,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use arrow::datatypes::DataType;
-use cudf::{DenseMatrixLayout, ExecutionBudgetRequest, Series, TypeId};
+use cudf::{DenseMatrixLayout, ExecutionBudgetRequest, PackedMatrix, Runtime, Series, TypeId};
 use cuml::{
-    ClusterSelectionMethod, CumlResources, DeviceMatrix, HdbscanFit, HdbscanParams, LogisticRegressionModel,
-    LogisticRegressionParams, OwnedFloat32Matrix, PcaSolver, RandomForestClassifier, RandomForestParams,
-    RandomForestRegressor, SplitCriterion, TsvdModel, TsvdParams, UmapInit, UmapModel, UmapParams,
+    ClusterSelectionMethod, CumlResources, DeviceMatrix, ForestInferenceModel, ForestOutput, ForestOutputKind,
+    ForestPrecision, HdbscanFit, HdbscanParams, LogisticRegressionModel, LogisticRegressionParams, OwnedFloat32Matrix,
+    PcaSolver, RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion, TsvdModel,
+    TsvdParams, UmapInit, UmapModel, UmapParams,
 };
 
 use super::assembly::{assemble_components, assemble_ml_output};
@@ -24,9 +30,10 @@ use crate::{
     },
     plan::{
         MlAlgorithm, MlAlgorithmNode, MlAlgorithmParams, MlClusterSelectionMethod, MlDecompositionSolver,
+        MlForestModelFacts, MlForestModelSnapshot, MlForestOutputContract, MlForestPrecision, MlForestPredictParams,
         MlHdbscanParams, MlLogisticRegressionParams, MlRandomForestParams, MlRelationBinding, MlSplitCriterion,
         MlTsvdParams, MlUmapInit, MlUmapParams, NodeId, QueryPlan, VectorRowIdBinding, ml_embedding_output_schema,
-        ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
+        ml_forest_output_schema, ml_hdbscan_output_schema, ml_predictions_output_schema, vector_pca_output_schema,
     },
     runtime::ExecutionContext,
 };
@@ -56,6 +63,7 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
         MlAlgorithmParams::Tsvd(params) => (&params.input, Some(params.n_components)),
         MlAlgorithmParams::Hdbscan(params) => (&params.input, None),
         MlAlgorithmParams::Umap(params) => (&params.input, Some(params.n_components)),
+        MlAlgorithmParams::ForestPredict(params) => (&params.input, None),
         MlAlgorithmParams::LogisticRegression(params) => (&params.predict, None),
         MlAlgorithmParams::RandomForestClassifier(params) | MlAlgorithmParams::RandomForestRegressor(params) => {
             (&params.predict, None)
@@ -79,20 +87,16 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
             .with_fact("node_id", node_id)
             .with_fact("reason", "missing_row_id_column")
     })?;
-    let expected = match ml.spec.algorithm {
-        MlAlgorithm::LogisticRegression | MlAlgorithm::RandomForestClassifier => {
-            ml_predictions_output_schema(id_field.data_type().clone(), DataType::Int32)
+    let id_type = id_field.data_type().clone();
+    let expected = match &ml.spec.params {
+        MlAlgorithmParams::LogisticRegression(_) | MlAlgorithmParams::RandomForestClassifier(_) => {
+            ml_predictions_output_schema(id_type, DataType::Int32)
         },
-        MlAlgorithm::RandomForestRegressor => {
-            ml_predictions_output_schema(id_field.data_type().clone(), DataType::Float32)
-        },
-        MlAlgorithm::Hdbscan => ml_hdbscan_output_schema(id_field.data_type().clone()),
-        MlAlgorithm::Umap => {
-            ml_embedding_output_schema(id_field.data_type().clone(), components.expect("UMAP dimension"))
-        },
-        MlAlgorithm::Tsvd => {
-            vector_pca_output_schema(id_field.data_type().clone(), components.expect("decomposition dimension"))
-        },
+        MlAlgorithmParams::RandomForestRegressor(_) => ml_predictions_output_schema(id_type, DataType::Float32),
+        MlAlgorithmParams::ForestPredict(params) => ml_forest_output_schema(id_type, params.model.output()),
+        MlAlgorithmParams::Hdbscan(_) => ml_hdbscan_output_schema(id_type),
+        MlAlgorithmParams::Umap(_) => ml_embedding_output_schema(id_type, components.expect("UMAP dimension")),
+        MlAlgorithmParams::Tsvd(_) => vector_pca_output_schema(id_type, components.expect("decomposition dimension")),
     };
     if ml.output_schema().as_ref() != expected.as_ref() {
         return Err(QueryError::new(
@@ -185,6 +189,9 @@ pub(in crate::exec) fn execute_ml_algorithm(
             RowMajorParams::Umap(params),
         ),
         MlAlgorithmParams::Tsvd(params) => execute_tsvd_ml(context, plan, node_id, inputs, &resources, version, params),
+        MlAlgorithmParams::ForestPredict(params) => {
+            execute_forest_predict(context, plan, node_id, inputs, &resources, params)
+        },
     }
 }
 
@@ -704,7 +711,7 @@ fn execute_random_forest(
         RuntimeOperatorStageKind::MlNative,
         identity
             .clone()
-            .with_strategy_label("predict_host_tree_walk")
+            .with_strategy_label("predict_nvforest")
             .with_vector_relation_role("predict")
             .with_vector_dimension(predict_dimension)
             .with_input_rows(predict.num_rows() as u64)
@@ -718,11 +725,27 @@ fn execute_random_forest(
     );
     let predicted = (|| {
         context.check_cancellation(NATIVE)?;
-        let result = match &model {
-            ForestModel::Classifier(forest) => forest.predict(resources, &predict_matrix),
-            ForestModel::Regressor(forest) => forest.predict(resources, &predict_matrix),
+        let mut forest = match &model {
+            ForestModel::Classifier(forest) => forest.forest_model(resources),
+            ForestModel::Regressor(forest) => forest.forest_model(resources),
         }
-        .map_err(|error| cuml_query_error(NATIVE, "failed to predict cuML RF", error))?;
+        .map_err(|error| cuml_query_error(NATIVE, "failed to import cuML RF into nvForest", error))?;
+        context.check_cancellation(NATIVE)?;
+        // into_series validates the output on the host, so the nvForest model
+        // and predict matrix outlive the kernel that reads them.
+        let series = forest
+            .predict(resources, &predict_matrix)
+            .and_then(|prediction| prediction.into_series())
+            .map_err(|error| cuml_query_error(NATIVE, "failed to predict cuML RF", error))?;
+        forest.close().map_err(|error| cuml_query_error(NATIVE, "failed to close nvForest model", error))?;
+        let [result]: [Series; 1] = series.try_into().map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::CudfInvariantViolation,
+                NATIVE,
+                "nvForest prediction series count differs from one",
+            )
+            .with_fact("reason", "invalid_native_output_contract")
+        })?;
         context.check_cancellation(NATIVE)?;
         Ok(result)
     })();
@@ -1057,5 +1080,323 @@ fn execute_row_major_ml(
             guard.fail(&error);
             Err(error)
         },
+    }
+}
+
+/// cuDF columns and packed matrices index elements with `i32`, which bounds
+/// both a forest batch's feature matrix and its prediction buffer.
+const FOREST_BATCH_ELEMENTS: usize = i32::MAX as usize;
+
+#[cfg(feature = "test-hooks")]
+static FOREST_BATCH_ELEMENT_LIMIT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "test-hooks")]
+static FOREST_AFTER_IMPORT_HOOK: Mutex<Option<fn(&ExecutionContext)>> = Mutex::new(None);
+
+/// Overrides the per-batch element bound of forest prediction; `None` restores it.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub fn set_forest_batch_element_limit_for_tests(limit: Option<usize>) {
+    FOREST_BATCH_ELEMENT_LIMIT.store(limit.unwrap_or(0), Ordering::SeqCst);
+}
+
+/// Runs `hook` after forest import and before the first prediction batch.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub fn set_forest_after_import_hook_for_tests(hook: Option<fn(&ExecutionContext)>) {
+    *FOREST_AFTER_IMPORT_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
+}
+
+fn forest_batch_element_limit() -> usize {
+    #[cfg(feature = "test-hooks")]
+    {
+        let limit = FOREST_BATCH_ELEMENT_LIMIT.load(Ordering::SeqCst);
+        if limit != 0 {
+            return limit;
+        }
+    }
+    FOREST_BATCH_ELEMENTS
+}
+
+/// Rows per prediction batch so that neither the feature matrix nor the
+/// prediction buffer exceeds `max_elements`; at least one row.
+fn forest_rows_per_batch(rows: usize, features: usize, stride: usize, max_elements: usize) -> usize {
+    (max_elements / features.max(stride).max(1)).min(rows).max(1)
+}
+
+fn ml_stage<T>(
+    context: &ExecutionContext,
+    kind: RuntimeOperatorStageKind,
+    identity: RuntimeOperatorStageIdentity,
+    run: impl FnOnce() -> Result<(T, Option<u64>, Option<u64>)>,
+) -> Result<T> {
+    let (observation, execution_id, parent) = stage_context_from_execution(context);
+    let guard = RuntimeOperatorStageGuard::start(observation, execution_id, parent, kind, identity);
+    match run() {
+        Ok((value, rows, bytes)) => {
+            guard.finish(rows, bytes);
+            Ok(value)
+        },
+        Err(error) => {
+            guard.fail(&error);
+            Err(error)
+        },
+    }
+}
+
+fn forest_output_contract(kind: ForestOutputKind) -> MlForestOutputContract {
+    match kind {
+        ForestOutputKind::Score => MlForestOutputContract::Score,
+        ForestOutputKind::ClassIndex { classes } => MlForestOutputContract::ClassIndex { classes },
+        ForestOutputKind::Vector(width) => MlForestOutputContract::Vector(width),
+    }
+}
+
+/// Planning proved the snapshot with the same importer; a difference here
+/// means the checkpoint or the native library changed underneath the plan.
+fn verify_forest_snapshot(model: &ForestInferenceModel, snapshot: &MlForestModelSnapshot) -> Result<()> {
+    let info = model.info();
+    let imported = MlForestModelFacts {
+        num_features: info.num_features,
+        num_trees: info.num_trees,
+        native_output_stride: info.native_output_stride,
+        precision: match info.precision {
+            ForestPrecision::Single => MlForestPrecision::Single,
+            ForestPrecision::Double => MlForestPrecision::Double,
+        },
+    };
+    let output = forest_output_contract(model.output_kind());
+    if imported == snapshot.facts() && output == snapshot.output() {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::InternalInvariantViolation,
+        NATIVE,
+        "imported forest facts differ from the planned snapshot",
+    )
+    .with_fact("reason", "forest_snapshot_mismatch")
+    .with_fact("model_digest", snapshot.digest())
+    .with_fact("planned_facts", format!("{:?} output={}", snapshot.facts(), snapshot.output()))
+    .with_fact("imported_facts", format!("{imported:?} output={output}")))
+}
+
+/// Consumes the Float32 matrix so its device copy is released before the
+/// native call reads the Float64 copy.
+fn widen_forest_batch(runtime: &Runtime, packed: PackedMatrix) -> Result<PackedMatrix> {
+    runtime
+        .widen_packed_matrix_to_float64(&packed)
+        .map_err(|error| cudf_query_error(NATIVE, "failed to widen forest features to Float64", error))
+}
+
+fn execute_forest_predict(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    resources: &CumlResources,
+    params: &MlForestPredictParams,
+) -> Result<GpuDataFrame> {
+    let algorithm = MlAlgorithm::ForestPredict.as_str();
+    let binding = &params.input;
+    let snapshot = &params.model;
+    let input = relation_input_for(&ML_OPERATIONS, inputs, binding.input, node_id, "input")?;
+    let rows = input.num_rows();
+    let element = relation_element_type_for(
+        &ML_OPERATIONS,
+        plan,
+        inputs,
+        binding.input,
+        &binding.features,
+        node_id,
+        algorithm,
+        "input",
+    )?;
+    if element != TypeId::Float32 {
+        return Err(QueryError::new(QueryErrorCode::UnsupportedType, EXECUTE, "cuML requires Float32 features")
+            .with_fact("node_id", node_id)
+            .with_fact("reason", "unsupported_feature_type")
+            .with_fact("element", element.name())
+            .with_fact("supported_types", "Float32"));
+    }
+    let facts = snapshot.facts();
+    let features = facts.num_features;
+    let output = snapshot.output();
+    let width = output.width();
+    let digest = snapshot.digest().short_hex();
+    // Identity stages report the nvForest version the cuML shim compiled against.
+    let version = cuml::forest_inference_version()
+        .map_err(|error| cuml_query_error(EXECUTE, "failed to read the nvForest version", error))?;
+    let identity = RuntimeOperatorStageIdentity::new()
+        .with_node_id(node_id.to_string())
+        .with_ml_algorithm(algorithm)
+        .with_execution_binding_id(resources.binding_id().get())
+        .with_device_ordinal(resources.device().ordinal())
+        .with_native_version(version.0, version.1, version.2)
+        .with_matrix_layout("row_major")
+        .with_vector_relation_role("input")
+        .with_vector_dimension(features);
+    let request = match output {
+        MlForestOutputContract::ClassIndex { .. } => ForestOutput::ClassIndex,
+        MlForestOutputContract::Score | MlForestOutputContract::Vector(_) => ForestOutput::Scores,
+    };
+    let mut model = ml_stage(
+        context,
+        RuntimeOperatorStageKind::MlNative,
+        identity
+            .clone()
+            .with_strategy_label(format!("forest_import:{digest}:{}", facts.precision))
+            .with_input_bytes(snapshot.checkpoint().len() as u64),
+        || {
+            context.check_cancellation(NATIVE)?;
+            let model = ForestInferenceModel::import(resources, snapshot.checkpoint(), request)
+                .map_err(|error| cuml_query_error(NATIVE, "failed to import forest model", error))?;
+            verify_forest_snapshot(&model, snapshot)?;
+            Ok((model, None, None))
+        },
+    )?;
+    #[cfg(feature = "test-hooks")]
+    if let Some(hook) = *FOREST_AFTER_IMPORT_HOOK.lock().unwrap_or_else(PoisonError::into_inner) {
+        hook(context);
+    }
+    context.check_cancellation(NATIVE)?;
+    let batch_rows = forest_rows_per_batch(rows, features, facts.native_output_stride, forest_batch_element_limit());
+    let mut predictions: Vec<Vec<Series>> = (0..width).map(|_| Vec::new()).collect();
+    for (batch_index, offset) in (0..rows).step_by(batch_rows).enumerate() {
+        let len = batch_rows.min(rows - offset);
+        let sliced = if len == rows {
+            None
+        } else {
+            Some(GpuDataFrame::new(input.frame().slice(offset, len).map_err(|error| {
+                cudf_query_error(EXECUTE, "failed to slice the forest input batch", error)
+                    .with_fact("offset", offset)
+                    .with_fact("rows", len)
+            })?))
+        };
+        let batch = sliced.as_ref().unwrap_or(input);
+        let (packed, dimension) = pack_dense_relation_for(
+            &ML_OPERATIONS,
+            context,
+            resources.runtime(),
+            plan,
+            node_id,
+            "input",
+            algorithm,
+            binding.input,
+            &binding.features,
+            batch,
+            TypeId::Float32,
+            DenseMatrixLayout::RowMajor,
+            identity.clone().with_chunk_index(batch_index).with_input_rows(len as u64),
+            RuntimeOperatorStageKind::MlPack,
+        )?;
+        if dimension != features {
+            return Err(invalid(
+                node_id,
+                "forest_feature_count_mismatch",
+                "forest feature count differs from the model",
+            )
+            .with_fact("expected", features)
+            .with_fact("actual", dimension));
+        }
+        let packed = match facts.precision {
+            MlForestPrecision::Single => packed,
+            MlForestPrecision::Double => widen_forest_batch(resources.runtime(), packed)?,
+        };
+        let validated =
+            packed.validate().map_err(|error| cudf_query_error(NATIVE, "invalid forest input matrix", error))?;
+        let matrix = match facts.precision {
+            MlForestPrecision::Single => DeviceMatrix::from_validated(&validated),
+            MlForestPrecision::Double => DeviceMatrix::from_validated_float64(&validated),
+        }
+        .map_err(|error| cuml_query_error(NATIVE, "invalid forest input matrix", error))?;
+        let input_bytes = match facts.precision {
+            MlForestPrecision::Single => matrix_bytes_for::<f32>(&ML_OPERATIONS, len, features, node_id, "input")?,
+            MlForestPrecision::Double => matrix_bytes_for::<f64>(&ML_OPERATIONS, len, features, node_id, "input")?,
+        };
+        // nvForest writes `native_output_stride` values per row in the model's
+        // precision before the output contract selects `width` columns.
+        let stride = facts.native_output_stride;
+        let output_bytes = match facts.precision {
+            MlForestPrecision::Single => matrix_bytes_for::<f32>(&ML_OPERATIONS, len, stride, node_id, "prediction")?,
+            MlForestPrecision::Double => matrix_bytes_for::<f64>(&ML_OPERATIONS, len, stride, node_id, "prediction")?,
+        };
+        let identity = identity
+            .clone()
+            .with_chunk_index(batch_index)
+            .with_strategy_label(format!("forest_predict:{digest}"))
+            .with_input_rows(len as u64)
+            .with_input_bytes(input_bytes);
+        let series = ml_stage(context, RuntimeOperatorStageKind::MlNative, identity, || {
+            context.check_cancellation(NATIVE)?;
+            // into_series validates the output on the host, so the model and
+            // input matrix outlive the kernel that reads them.
+            let series = model
+                .predict(resources, &matrix)
+                .and_then(|prediction| prediction.into_series())
+                .map_err(|error| cuml_query_error(NATIVE, "failed to predict with the forest model", error))?;
+            context.check_cancellation(NATIVE)?;
+            Ok((series, Some(len as u64), Some(output_bytes)))
+        })?;
+        if series.len() != width {
+            return Err(QueryError::new(
+                QueryErrorCode::CudfInvariantViolation,
+                NATIVE,
+                "forest prediction series count differs from the planned output",
+            )
+            .with_fact("reason", "invalid_native_output_contract")
+            .with_fact("expected", width)
+            .with_fact("actual", series.len()));
+        }
+        for (column, values) in predictions.iter_mut().zip(series) {
+            column.push(values);
+        }
+    }
+    // Closing here, before assembly, releases the device forest while the
+    // attempt's allocation domain is still open.
+    model.close().map_err(|error| cuml_query_error(NATIVE, "failed to close forest model", error))?;
+    let prediction_type = match output {
+        MlForestOutputContract::ClassIndex { .. } => TypeId::Int32,
+        MlForestOutputContract::Score | MlForestOutputContract::Vector(_) => TypeId::Float32,
+    };
+    ml_stage(context, RuntimeOperatorStageKind::MlAssemble, identity.with_input_rows(rows as u64), || {
+        context.check_cancellation(ML_OPERATIONS.assemble)?;
+        let columns = predictions
+            .into_iter()
+            .enumerate()
+            .map(|(index, batches)| {
+                let name = match output {
+                    MlForestOutputContract::Vector(_) => format!("output_{index}"),
+                    MlForestOutputContract::Score | MlForestOutputContract::ClassIndex { .. } => {
+                        "prediction".to_owned()
+                    },
+                };
+                let series = match <[Series; 1]>::try_from(batches) {
+                    Ok([series]) => series,
+                    Err(batches) => Series::concat(&batches.iter().collect::<Vec<_>>()).map_err(|error| {
+                        cudf_query_error(ML_OPERATIONS.assemble, "failed to concatenate forest batches", error)
+                    })?,
+                };
+                Ok((name, series))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let output = assemble_ml_output(context, input, binding, columns, prediction_type)?;
+        context.check_cancellation(ML_OPERATIONS.assemble)?;
+        let bytes = output.device_allocated_size_bytes()?;
+        Ok((output, Some(rows as u64), Some(bytes)))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::forest_rows_per_batch;
+
+    #[test]
+    fn forest_batches_bound_both_the_feature_matrix_and_the_prediction_buffer() {
+        let max = i32::MAX as usize;
+        assert_eq!(forest_rows_per_batch(10, 4, 1, max), 10);
+        assert_eq!(forest_rows_per_batch(1 << 30, 4, 1, max), max / 4);
+        assert_eq!(forest_rows_per_batch(1 << 30, 4, 2538, max), max / 2538);
+        assert_eq!(forest_rows_per_batch(10, 4, 3, 12), 3);
+        assert_eq!(forest_rows_per_batch(10, 5, 1, 4), 1);
+        assert_eq!(forest_rows_per_batch(0, 4, 1, max), 1);
     }
 }

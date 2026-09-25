@@ -14,6 +14,7 @@ pub const ALGEON_PARQUET_DIR_ENV: &str = "ALGEON_PARQUET_DIR";
 
 pub mod clickbench;
 pub mod error;
+pub mod forest;
 pub mod graph;
 pub mod metadata;
 pub mod tpcds;

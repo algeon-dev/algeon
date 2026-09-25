@@ -8,12 +8,12 @@ pub type _bindgen_ty_1 = core::ffi::c_uint;
 pub type cuml_error_failure_source_t = core::ffi::c_uint;
 pub type cuml_matrix_layout_t = core::ffi::c_uint;
 pub type cuml_handle_t = *mut cuml_handle;
-pub type cuml_rf_training_streams_t = *mut cuml_rf_training_streams;
-pub type cuml_rf_forest_t = *mut cuml_rf_forest;
 pub type cuml_forest_format_t = core::ffi::c_uint;
 pub type cuml_forest_precision_t = core::ffi::c_uint;
 pub type cuml_forest_output_t = core::ffi::c_uint;
 pub type cuml_forest_model_t = *mut cuml_forest_model;
+pub type cuml_rf_training_streams_t = *mut cuml_rf_training_streams;
+pub type cuml_rf_forest_t = *mut cuml_rf_forest;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cuml_error_detail_t {
@@ -50,16 +50,6 @@ pub struct cuml_umap_params_t {
     pub random_state: u64,
 }
 #[repr(C)]
-#[derive(Debug)]
-pub struct cuml_rf_training_streams {
-    _unused: [u8; 0],
-}
-#[repr(C)]
-#[derive(Debug)]
-pub struct cuml_rf_forest {
-    _unused: [u8; 0],
-}
-#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cuml_forest_metadata_t {
     pub num_features: i32,
@@ -70,6 +60,16 @@ pub struct cuml_forest_metadata_t {
 #[repr(C)]
 #[derive(Debug)]
 pub struct cuml_forest_model {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct cuml_rf_training_streams {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct cuml_rf_forest {
     _unused: [u8; 0],
 }
 pub const CUML_SUCCESS: cuml_status_t = 0;
@@ -294,6 +294,33 @@ unsafe extern "C" {
         params: *const cuml_umap_params_t,
         output: *mut f32,
     ) -> cuml_status_t;
+    pub fn cuml_forest_inspect(
+        bytes: *const u8,
+        len: usize,
+        format: cuml_forest_format_t,
+        out_metadata: *mut cuml_forest_metadata_t,
+        out_checkpoint: *mut *mut u8,
+        out_checkpoint_len: *mut usize,
+    ) -> cuml_status_t;
+    pub fn cuml_forest_bytes_free(bytes: *mut u8) -> cuml_status_t;
+    pub fn cuml_forest_import(
+        handle: cuml_handle_t,
+        checkpoint: *const u8,
+        len: usize,
+        output: cuml_forest_output_t,
+        out_model: *mut cuml_forest_model_t,
+        out_metadata: *mut cuml_forest_metadata_t,
+    ) -> cuml_status_t;
+    pub fn cuml_forest_predict(
+        handle: cuml_handle_t,
+        model: cuml_forest_model_t,
+        input: *const core::ffi::c_void,
+        rows: i32,
+        columns: i32,
+        output: *mut core::ffi::c_void,
+    ) -> cuml_status_t;
+    pub fn cuml_forest_close(model: cuml_forest_model_t) -> cuml_status_t;
+    pub fn cuml_forest_inference_version_get(major: *mut i32, minor: *mut i32, patch: *mut i32) -> cuml_status_t;
     pub fn cuml_rf_training_streams_create(
         handle: cuml_handle_t,
         count: i32,
@@ -352,48 +379,11 @@ unsafe extern "C" {
         input_row_major: i32,
         out_forest: *mut cuml_rf_forest_t,
     ) -> cuml_status_t;
-    pub fn cuml_rf_classifier_predict(
+    pub fn cuml_rf_forest_import(
         handle: cuml_handle_t,
         forest: cuml_rf_forest_t,
-        input: *const f32,
-        rows: i32,
-        columns: i32,
-        predictions: *mut i64,
-    ) -> cuml_status_t;
-    pub fn cuml_rf_regressor_predict(
-        handle: cuml_handle_t,
-        forest: cuml_rf_forest_t,
-        input: *const f32,
-        rows: i32,
-        columns: i32,
-        predictions: *mut f32,
-    ) -> cuml_status_t;
-    pub fn cuml_rf_forest_destroy(forest: cuml_rf_forest_t) -> cuml_status_t;
-    pub fn cuml_forest_inspect(
-        bytes: *const u8,
-        len: usize,
-        format: cuml_forest_format_t,
-        out_metadata: *mut cuml_forest_metadata_t,
-        out_checkpoint: *mut *mut u8,
-        out_checkpoint_len: *mut usize,
-    ) -> cuml_status_t;
-    pub fn cuml_forest_bytes_free(bytes: *mut u8) -> cuml_status_t;
-    pub fn cuml_forest_import(
-        handle: cuml_handle_t,
-        checkpoint: *const u8,
-        len: usize,
-        output: cuml_forest_output_t,
         out_model: *mut cuml_forest_model_t,
         out_metadata: *mut cuml_forest_metadata_t,
     ) -> cuml_status_t;
-    pub fn cuml_forest_predict(
-        handle: cuml_handle_t,
-        model: cuml_forest_model_t,
-        input: *const core::ffi::c_void,
-        rows: i32,
-        columns: i32,
-        output: *mut core::ffi::c_void,
-    ) -> cuml_status_t;
-    pub fn cuml_forest_close(model: cuml_forest_model_t) -> cuml_status_t;
-    pub fn cuml_forest_inference_version_get(major: *mut i32, minor: *mut i32, patch: *mut i32) -> cuml_status_t;
+    pub fn cuml_rf_forest_destroy(forest: cuml_rf_forest_t) -> cuml_status_t;
 }

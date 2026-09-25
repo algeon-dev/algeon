@@ -262,6 +262,7 @@ impl DatafusionAlgeonFlightSqlService {
             native_cancellation,
             mut attempt,
             started_at,
+            forest_model_digests: planned_forest_model_digests,
             ..
         } = ticket;
         let sql: Arc<str> = sql.into();
@@ -525,6 +526,19 @@ impl DatafusionAlgeonFlightSqlService {
         if let Err(error) =
             reject_drop_object_type_mismatch(&query_ctx, &logical_plan, ticket_kind.sql_operation()).await
         {
+            if let Some(attempt) = attempt.as_ref() {
+                attempt.planning_failed_adapter(&error);
+            }
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            coordinator_terminal.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
+        if let Err(error) = verify_forest_model_identity(
+            &planned_forest_model_digests,
+            &forest_model_digests(&logical_plan),
+            ticket_kind.sql_operation(),
+        ) {
             if let Some(attempt) = attempt.as_ref() {
                 attempt.planning_failed_adapter(&error);
             }

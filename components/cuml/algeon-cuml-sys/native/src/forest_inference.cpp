@@ -1,4 +1,5 @@
 #include "cuml_rust/forest_inference.h"
+#include "forest_inference_internal.hpp"
 #include "shim_common.hpp"
 
 #include <nvforest/detail/exceptions.hpp>
@@ -39,11 +40,6 @@ constexpr auto k_max_elements = std::uint64_t{std::numeric_limits<nvforest::inde
 // GPU tree alignment recommended by nvForest's importer for 128-byte cache lines.
 constexpr auto k_gpu_align_bytes = nvforest::index_type{128};
 
-struct treelite_model_deleter {
-  void operator()(void* model) const noexcept { TreeliteFreeModel(model); }
-};
-using treelite_model = std::unique_ptr<void, treelite_model_deleter>;
-
 void check_treelite(int status, char const* operation)
 {
   if (status != 0) {
@@ -52,7 +48,7 @@ void check_treelite(int status, char const* operation)
   }
 }
 
-treelite_model load_source(std::uint8_t const* bytes, std::size_t len, cuml_forest_format_t format)
+cuml_treelite_model load_source(std::uint8_t const* bytes, std::size_t len, cuml_forest_format_t format)
 {
   auto const* chars = reinterpret_cast<char const*>(bytes);
   TreeliteModelHandle raw = nullptr;
@@ -81,7 +77,7 @@ treelite_model load_source(std::uint8_t const* bytes, std::size_t len, cuml_fore
       break;
     default: throw std::invalid_argument("forest model format is unsupported");
   }
-  return treelite_model{raw};
+  return cuml_treelite_model{raw};
 }
 
 // nvForest exceptions derive from std::exception only; translate them into
@@ -119,6 +115,34 @@ cuml_forest_metadata_t metadata_of(nvforest::forest_model& forest)
 }
 
 }  // namespace
+
+cuml_forest_model_t cuml_forest_import_treelite(cuml_handle_t handle, TreeliteModelHandle model,
+                                                cuml_forest_output_t output, cuml_forest_metadata_t* out_metadata)
+{
+  if (output != CUML_FOREST_OUTPUT_SCORES && output != CUML_FOREST_OUTPUT_CLASS_INDEX) {
+    throw std::invalid_argument("forest output request is unsupported");
+  }
+  int device = 0;
+  auto const device_status = cudaGetDevice(&device);
+  if (device_status != cudaSuccess) throw rmm::cuda_error(cudaGetErrorString(device_status));
+  auto stream = cuml_handle_raft(handle).get_stream().value();
+  auto result = std::make_unique<cuml_forest_model>();
+  // Native precision keeps double thresholds exact; nvForest's device owning
+  // buffers allocate through the current RMM resource on this stream.
+  result->forest = nvforest_call([&] {
+    return nvforest::import_from_treelite_handle(model, nvforest::tree_layout::breadth_first, k_gpu_align_bytes,
+                                                 std::nullopt, nvforest::device_type::gpu, device, stream);
+  });
+  result->metadata = metadata_of(result->forest);
+  if (output == CUML_FOREST_OUTPUT_CLASS_INDEX) {
+    if (result->metadata.num_outputs < 2) {
+      throw std::invalid_argument("class index output requires a model with at least two outputs");
+    }
+    result->forest.set_row_postprocessing(nvforest::row_op::max_index);
+  }
+  *out_metadata = result->metadata;
+  return result.release();
+}
 
 extern "C" cuml_status_t cuml_forest_inspect(const uint8_t* bytes, size_t len, cuml_forest_format_t format,
                                              cuml_forest_metadata_t* out_metadata,
@@ -175,31 +199,8 @@ extern "C" cuml_status_t cuml_forest_import(cuml_handle_t handle, const uint8_t*
     return cuml_record_error(CUML_ERROR_NULL, "forest import received a null argument");
   }
   CUML_RUST_TRY {
-    if (output != CUML_FOREST_OUTPUT_SCORES && output != CUML_FOREST_OUTPUT_CLASS_INDEX) {
-      throw std::invalid_argument("forest output request is unsupported");
-    }
     auto model = load_source(checkpoint, len, CUML_FOREST_FORMAT_TREELITE_CHECKPOINT);
-    int device = 0;
-    auto const device_status = cudaGetDevice(&device);
-    if (device_status != cudaSuccess) throw rmm::cuda_error(cudaGetErrorString(device_status));
-    auto stream = cuml_handle_raft(handle).get_stream().value();
-    auto result = std::make_unique<cuml_forest_model>();
-    // Native precision keeps double thresholds exact; nvForest's device owning
-    // buffers allocate through the current RMM resource on this stream.
-    result->forest = nvforest_call([&] {
-      return nvforest::import_from_treelite_handle(model.get(), nvforest::tree_layout::breadth_first,
-                                                   k_gpu_align_bytes, std::nullopt,
-                                                   nvforest::device_type::gpu, device, stream);
-    });
-    result->metadata = metadata_of(result->forest);
-    if (output == CUML_FOREST_OUTPUT_CLASS_INDEX) {
-      if (result->metadata.num_outputs < 2) {
-        throw std::invalid_argument("class index output requires a model with at least two outputs");
-      }
-      result->forest.set_row_postprocessing(nvforest::row_op::max_index);
-    }
-    *out_metadata = result->metadata;
-    *out_model = result.release();
+    *out_model = cuml_forest_import_treelite(handle, model.get(), output, out_metadata);
     return CUML_SUCCESS;
   } CUML_RUST_CATCH
 }

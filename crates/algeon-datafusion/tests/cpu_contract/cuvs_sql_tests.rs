@@ -9,6 +9,8 @@ use std::{
 
 #[cfg(feature = "cugraph")]
 use algeon_datafusion::cugraph_sql::CugraphAlgoExec;
+#[cfg(feature = "cugraph")]
+use algeon_datafusion::native_exec::AlgeonNativeComposedGpuProducerExec;
 use algeon_datafusion::{
     cuvs_sql::{
         CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,
@@ -1295,6 +1297,29 @@ async fn cugraph_reaches_cuvs_as_a_direct_gpu_resident_producer() {
         cugraph.downcast_ref::<CugraphAlgoExec>().is_some(),
         "the projected child must retain the typed GPU-resident producer"
     );
+}
+
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn native_rule_lowers_a_cugraph_relation_input_into_a_composed_gpu_producer() {
+    let ctx = fixtures::cuvs_cugraph_native_context();
+    let sql = format!(
+        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
+             dataset => (SELECT vertex AS id, x, y FROM cugraph_force_atlas2(edges => (SELECT src, dst FROM edges))), \
+             queries => (SELECT query_id AS id, d0, d1 FROM query_vectors), \
+             k => 1, metric => 'cosine')"
+    );
+    let logical = logical_plan(&ctx, &sql).await;
+    let physical = ctx.state().create_physical_plan(&logical).await.expect("combined cuGraph/cuVS physical plan");
+    let cuvs = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+    let dataset = cuvs.children()[0];
+    assert!(
+        dataset.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some(),
+        "the projected cuGraph input must lower into a composed GPU producer: {}",
+        dataset.name()
+    );
+    let [graph] = dataset.children()[..] else { panic!("one GPU-resident input under the composed producer") };
+    assert!(graph.downcast_ref::<CugraphAlgoExec>().is_some(), "{}", graph.name());
 }
 
 #[cfg(feature = "cugraph")]

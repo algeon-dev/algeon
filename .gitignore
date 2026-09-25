@@ -39,7 +39,14 @@ __pycache__/
 /fixture/iceberg-local/.loader-data/
 /fixture/iceberg-local/.ivy-cache/
 fixture/amazon_reviews_2023
-fixture/ember2024
+
+# EMBER2024 fixture: raw JSONL, model, and vectorized/Parquet data are host-provisioned
+# and gitignored; prepare.py, prepare.sh, and README.md are versioned.
+/fixture/ember2024/*
+!/fixture/ember2024/.gitkeep
+!/fixture/ember2024/README.md
+!/fixture/ember2024/prepare.py
+!/fixture/ember2024/prepare.sh
 
 # private documentation
 /docs/
@@ -48,6 +55,7 @@ fixture/ember2024
 # Local fixture data. The small cuGraph parity corpus under fixture/graph/cugraph
 # is versioned; generated and host-provisioned data is not.
 /fixture/tpc-h/data
+/fixture/tpc-h/models
 /fixture/tpc-ds/data
 fixture/graph/citation_network
 /crates/bench/calibration/*.tsv

@@ -13,11 +13,16 @@ fixture/
   tpc-h/
     generate.py                      # TPC-H generator
     data/sf<N>/parquet/              # local, gitignored benchmark data
+    models/                          # local, gitignored forest models
   tpc-ds/
     generate.py                      # TPC-DS generator
     data/sf<N>/parquet/              # local, gitignored benchmark data
   tpc/parquet_layout.py              # shared TPC layout/verification logic
   clickbench/data/                   # local, gitignored ClickBench layouts
+  ember2024/
+    prepare.py                       # models, download, vectorize, Parquet export
+    prepare.sh                       # venv-resolving entrypoint
+    parquet/<split>.parquet          # local, gitignored id + f0..f2567 + label export
   graph/
     cugraph/                         # cuGraph parity corpus and oracle JSON
     demo/                            # local Citation Network Parquet
@@ -56,6 +61,28 @@ compression, and monotonic row-group statistics. The files deliberately omit
 Parquet footer sorting-column metadata: physical ordering is for pruning
 statistics, not an output-ordering promise to DataFusion.
 
+### Lineitem forest model
+
+`forest_predict` and `scripts/dev/bench_forest_stage0.py` score
+`tpc-h/models/lineitem_xgboost_500t_d8.json` (override with
+`ALGEON_FOREST_LINEITEM_MODEL`). No versioned script trains it; the stage 0
+model is an XGBoost regressor trained on all 59,986,052 rows of
+`tpc-h/data/sf10/parquet/lineitem.parquet`, with features `l_orderkey`,
+`l_partkey`, `l_suppkey`, `l_linenumber`, `l_quantity`, `l_discount`, and
+`l_tax` (in that order, each cast to Float32) and target `l_extendedprice`:
+
+```python
+import numpy as np, pyarrow.parquet as pq, xgboost as xgb
+
+features = ["l_orderkey", "l_partkey", "l_suppkey", "l_linenumber", "l_quantity", "l_discount", "l_tax"]
+table = pq.read_table("fixture/tpc-h/data/sf10/parquet/lineitem.parquet", columns=features + ["l_extendedprice"])
+x = np.column_stack([table.column(c).to_numpy().astype(np.float32) for c in features])
+y = table.column("l_extendedprice").to_numpy().astype(np.float32)
+model = xgb.XGBRegressor(n_estimators=500, max_depth=8, tree_method="hist", device="cuda")
+model.fit(x, y)
+model.save_model("fixture/tpc-h/models/lineitem_xgboost_500t_d8.json")
+```
+
 ## ClickBench
 
 Fetch the official layouts into its own fixture directory:
@@ -66,6 +93,22 @@ fixture/fixture.sh clickbench fetch --layout both --out ./fixture/clickbench/dat
 
 `--layout single` writes `hits.parquet`; `--layout partitioned` writes
 `partitioned/hits_0.parquet` through `hits_99.parquet`.
+
+## EMBER2024
+
+`ember2024/prepare.py` downloads the 14 pretrained EMBER2024 LightGBM models
+and the raw weekly JSONL archives via `thrember`, vectorizes them into
+`X_*.dat` / `y_*.dat`, and exports a requested split as Parquet
+(`id` + `f0..f2567` + `label`, all non-nullable) in bounded-RAM row-group
+chunks. Each step is skipped if its output already exists (`--force`
+overrides). See `fixture/ember2024/README.md` for the full flow, the venv
+setup (`~/.venvs/forest`, no `uvx` dependency), and a documented row-count
+anomaly in the upstream `train`/`test` archives.
+
+```bash
+fixture/fixture.sh ember2024 prepare --split test --split challenge
+fixture/fixture.sh ember2024 prepare --split train --rows 1000000 --force
+```
 
 ## Graph fixtures
 
