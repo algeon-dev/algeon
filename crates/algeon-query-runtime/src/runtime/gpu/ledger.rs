@@ -919,21 +919,49 @@ pub struct MemoryGrant {
 #[doc(hidden)]
 pub struct ResidentOwnerLease {
     inner: Arc<ResidentOwnerLeaseInner>,
+    // Keep-alive set on the lease a reader holds; the reader's completion is
+    // recorded when its last clone drops.
+    _reader: Option<Arc<ResidentReader>>,
 }
 
 struct ResidentOwnerLeaseInner {
     grant: MemoryGrant,
     bytes: u64,
     owner_id: u64,
-    completion_fence: Mutex<Option<ResidentCompletionFence>>,
+    completion_fences: Mutex<ResidentCompletionFences>,
 }
 
-/// The producing stream of a resident output and an event recorded on it
-/// when the output was published, which a frozen owner's final release
-/// waits on. The pooled stream itself may already run another query.
+/// One completion event per stream that produced or read a resident output,
+/// each recorded after that stream's last use of it. A frozen owner's final
+/// release waits on every one; the pooled streams themselves may already run
+/// another query.
+#[derive(Default)]
+struct ResidentCompletionFences {
+    fences: Vec<ResidentCompletionFence>,
+    // The first reader whose completion could not be recorded. The final
+    // release cannot prove that reader finished, so it closes admission.
+    record_failure: Option<String>,
+}
+
 struct ResidentCompletionFence {
     stream_identity: usize,
     event: CudaEvent,
+}
+
+/// A reader of a resident output on `stream`. Its drop records the stream's
+/// completion, so the owner's final release waits for the reads it enqueued.
+struct ResidentReader {
+    owner: Arc<ResidentOwnerLeaseInner>,
+    stream: CudaStream,
+}
+
+impl Drop for ResidentReader {
+    fn drop(&mut self) {
+        if let Err(error) = self.owner.record_completion(&self.stream) {
+            let mut fences = self.owner.completion_fences.lock().unwrap_or_else(PoisonError::into_inner);
+            fences.record_failure.get_or_insert_with(|| format!("resident reader completion failed: {error}"));
+        }
+    }
 }
 
 struct MemoryGrantInner {
@@ -1352,8 +1380,9 @@ impl MemoryGrant {
                 grant: MemoryGrant { inner: Arc::clone(&self.inner), resource_epoch },
                 bytes,
                 owner_id,
-                completion_fence: Mutex::new(None),
+                completion_fences: Mutex::new(ResidentCompletionFences::default()),
             }),
+            _reader: None,
         })
     }
 
@@ -1373,34 +1402,21 @@ impl MemoryGrant {
 }
 
 impl ResidentOwnerLease {
-    /// Fences this owner's release on the work `stream` has enqueued so far,
-    /// the stream that produced the owned output. A later call from the same
-    /// stream moves the fence to cover the work enqueued since.
-    pub(crate) fn set_completion_fence(&self, stream: &CudaStream) -> Result<()> {
-        let operation = "query_engine.runtime.gpu.frozen_resident_lease.completion_fence";
-        let mut completion_fence = self.inner.completion_fence.lock().map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::InternalInvariantViolation,
-                operation,
-                "frozen resident completion fence mutex was poisoned",
-            )
-        })?;
-        if let Some(existing) = completion_fence.as_ref()
-            && existing.stream_identity != stream.identity()
-        {
-            return Err(QueryError::new(
-                QueryErrorCode::InternalInvariantViolation,
-                operation,
-                "a resident owner cannot be rebound to a different completion stream",
-            )
-            .with_fact("existing_stream", existing.stream_identity)
-            .with_fact("replacement_stream", stream.identity()));
+    /// Fences this owner's release on the work `stream` has enqueued so far.
+    /// A later call from the same stream moves its fence to cover the work
+    /// enqueued since.
+    pub(crate) fn record_completion(&self, stream: &CudaStream) -> Result<()> {
+        self.inner.record_completion(stream)
+    }
+
+    /// A lease for a reader on `stream`. When the lease and every clone of it
+    /// have dropped, the owner's release also waits for the work `stream`
+    /// had enqueued by then.
+    pub(crate) fn for_reader(&self, stream: CudaStream) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            _reader: Some(Arc::new(ResidentReader { owner: Arc::clone(&self.inner), stream })),
         }
-        let event = stream.record_completion_event().map_err(|error| {
-            cudf_query_error(operation, "failed to record the resident output's completion event", error)
-        })?;
-        *completion_fence = Some(ResidentCompletionFence { stream_identity: stream.identity(), event });
-        Ok(())
     }
 
     pub(crate) fn set_backing_allocation_pointers(&self, mut pointers: Vec<usize>) {
@@ -1459,20 +1475,53 @@ impl ResidentOwnerLease {
     }
 }
 
+impl ResidentOwnerLeaseInner {
+    fn record_completion(&self, stream: &CudaStream) -> Result<()> {
+        let operation = "query_engine.runtime.gpu.frozen_resident_lease.completion_fence";
+        let mut completion_fences = self.completion_fences.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                operation,
+                "frozen resident completion fence mutex was poisoned",
+            )
+        })?;
+        // Recorded under the lock, so a stream's newer event never loses to
+        // an older one recorded concurrently.
+        let event = stream.record_completion_event().map_err(|error| {
+            cudf_query_error(operation, "failed to record the resident output's completion event", error)
+        })?;
+        let stream_identity = stream.identity();
+        match completion_fences.fences.iter_mut().find(|fence| fence.stream_identity == stream_identity) {
+            Some(fence) => fence.event = event,
+            None => completion_fences.fences.push(ResidentCompletionFence { stream_identity, event }),
+        }
+        Ok(())
+    }
+
+    /// Waits for every recorded completion; returns the first failure.
+    fn wait_for_completions(&mut self) -> Option<String> {
+        let completion_fences = match self.completion_fences.get_mut() {
+            Ok(completion_fences) => completion_fences,
+            Err(_error) => return Some("frozen resident completion fence mutex was poisoned".to_string()),
+        };
+        if completion_fences.fences.is_empty() {
+            return Some("frozen resident owner reached final release without a completion fence".to_string());
+        }
+        let mut failure = completion_fences.record_failure.take();
+        for fence in &completion_fences.fences {
+            if let Err(error) =
+                fence.event.synchronize_for_teardown("query_engine.runtime.gpu.frozen_resident_lease.drop")
+            {
+                failure.get_or_insert_with(|| format!("frozen resident completion fence failed: {error}"));
+            }
+        }
+        failure
+    }
+}
+
 impl Drop for ResidentOwnerLeaseInner {
     fn drop(&mut self) {
-        let cleanup_failure = match (self.grant.is_frozen_resident(), self.completion_fence.get_mut()) {
-            (false, _) => None,
-            (true, Ok(Some(fence))) => fence
-                .event
-                .synchronize_for_teardown("query_engine.runtime.gpu.frozen_resident_lease.drop")
-                .err()
-                .map(|error| format!("frozen resident completion fence failed: {error}")),
-            (true, Ok(None)) => {
-                Some("frozen resident owner reached final release without a completion fence".to_string())
-            },
-            (true, Err(_error)) => Some("frozen resident completion fence mutex was poisoned".to_string()),
-        };
+        let cleanup_failure = if self.grant.is_frozen_resident() { self.wait_for_completions() } else { None };
         if let Some(reason) = cleanup_failure {
             let ledger = DeviceLedger { inner: Arc::clone(&self.grant.inner.ledger) };
             if let Err(error) = ledger.close_admission_if_open(reason) {

@@ -170,7 +170,7 @@ impl QueryHandle {
     async fn reserve_auxiliary_stream(
         &self,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<StreamSlot> {
         let operation = "query_engine.query_service.context.stream_acquire";
         let service = self.lifetime.service()?;
@@ -193,7 +193,7 @@ impl QueryHandle {
         .await
     }
 
-    fn context_stream_acquire_deadline(&self, cancellation: &ExecutionCancellation) -> Instant {
+    fn context_stream_acquire_deadline(&self, cancellation: &ExecutionCancellation) -> Option<Instant> {
         self.queue_bounds.wait_deadline(Instant::now(), cancellation.deadline())
     }
 
@@ -319,7 +319,7 @@ impl QueryHandle {
         cancellation: ExecutionCancellation,
         stream_scope: RuntimeStreamLeaseScope,
         setup_claim: ContextSetupClaim,
-        stream_acquire_deadline: Instant,
+        stream_acquire_deadline: Option<Instant>,
         auxiliary_reservation: Option<AuxiliaryReservation>,
     ) -> Result<AdmittedQueryContext> {
         let operation = "query_engine.query_service.context";
@@ -390,7 +390,7 @@ impl QueryHandle {
         device: &DeviceContext,
         template: ExecutionContext,
         stream_scope: RuntimeStreamLeaseScope,
-        stream_acquire_deadline: Instant,
+        stream_acquire_deadline: Option<Instant>,
         auxiliary_reservation: Option<AuxiliaryReservation>,
     ) -> Result<ExecutionContext> {
         let operation = "query_engine.query_service.context.stream_acquire";

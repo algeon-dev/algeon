@@ -4,7 +4,9 @@
 use std::sync::{Barrier, mpsc};
 use std::{
     cell::Cell,
-    fmt, mem,
+    fmt,
+    future::pending,
+    mem,
     pin::{Pin, pin},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError,
@@ -539,7 +541,7 @@ impl ServiceStreamPool {
     pub(crate) fn acquire_observed_with_cancellation_deadline(
         &self,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
         operation: &'static str,
         observation: RuntimeObservationHandle,
         scope: RuntimeStreamLeaseScope,
@@ -557,13 +559,13 @@ impl ServiceStreamPool {
     pub(crate) fn acquire_observed_with_cancellation_deadline_and_class(
         &self,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
         operation: &'static str,
         observation: RuntimeObservationHandle,
         scope: RuntimeStreamLeaseScope,
         permit_class: StreamPermitClass,
     ) -> Result<StreamLease> {
-        self.acquire_inner(Some(cancellation), Some(deadline), operation, observation, scope, permit_class)
+        self.acquire_inner(Some(cancellation), deadline, operation, observation, scope, permit_class)
     }
 
     pub(crate) fn acquire_observed_with_cancellation(
@@ -652,14 +654,13 @@ impl ServiceStreamPool {
     pub(crate) async fn reserve_async(
         &self,
         cancellation: &ExecutionCancellation,
-        deadline: Instant,
+        deadline: Option<Instant>,
         operation: &'static str,
         observation: RuntimeObservationHandle,
         scope: RuntimeStreamLeaseScope,
         permit_class: StreamPermitClass,
     ) -> Result<StreamSlot> {
-        let request =
-            SlotRequest::new(self, Some(cancellation), Some(deadline), operation, observation, scope, permit_class);
+        let request = SlotRequest::new(self, Some(cancellation), deadline, operation, observation, scope, permit_class);
         loop {
             let available = self.inner.available.notified();
             let mut available = pin!(available);
@@ -667,11 +668,17 @@ impl ServiceStreamPool {
                 SlotOrWait::Slot(slot) => return Ok(slot),
                 SlotOrWait::Wait(waiting) => waiting,
             };
+            let deadline_elapsed = async {
+                match deadline {
+                    Some(deadline) => sleep_until(deadline.into()).await,
+                    None => pending().await,
+                }
+            };
             tokio::select! {
                 biased;
                 () = available => {},
                 () = cancellation.cancelled_or_expired() => {},
-                () = sleep_until(deadline.into()) => {},
+                () = deadline_elapsed => {},
             }
         }
     }
@@ -1858,7 +1865,7 @@ mod tests {
             started_sender.send(()).unwrap();
             waiter_pool.acquire_observed_with_cancellation_deadline(
                 &waiter_cancellation,
-                Instant::now() + Duration::from_secs(1),
+                Some(Instant::now() + Duration::from_secs(1)),
                 "query_engine.service_stream_pool.test_observed_cancel",
                 observation,
                 RuntimeStreamLeaseScope::for_plan(PlanExecutionId::new("stream-plan"))
@@ -1969,7 +1976,7 @@ mod permit_class_tests {
             sender.send(()).unwrap();
             second_pool.acquire_observed_with_cancellation_deadline_and_class(
                 &ExecutionCancellation::new(),
-                Instant::now() + std::time::Duration::from_millis(200),
+                Some(Instant::now() + std::time::Duration::from_millis(200)),
                 "query_engine.service_stream_pool.test_root_wait",
                 RuntimeObservationHandle::disabled(),
                 RuntimeStreamLeaseScope::default(),
@@ -2003,7 +2010,7 @@ mod permit_class_tests {
             sender.send(()).unwrap();
             second_pool.acquire_observed_with_cancellation_deadline_and_class(
                 &ExecutionCancellation::new(),
-                Instant::now() + std::time::Duration::from_millis(200),
+                Some(Instant::now() + std::time::Duration::from_millis(200)),
                 "query_engine.service_stream_pool.test_aux_wait",
                 RuntimeObservationHandle::disabled(),
                 RuntimeStreamLeaseScope::default(),

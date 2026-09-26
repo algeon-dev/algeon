@@ -368,7 +368,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
     assert!(first_worker_pools[0].pool_id > 0);
     assert_eq!(first_worker_pools[0].pool_id, second_worker_pools[0].pool_id);
     assert_eq!(first_worker_pools[0].device_ordinal, backend.devices()[0].device_ordinal());
-    assert_eq!(first_worker_pools[0].worker_count, 1);
+    assert_eq!(first_worker_pools[0].worker_count, 2);
 
     let dir = FlightSqlTempfileBuilder::new().prefix("algeon-datafusion-cloned-session-backend-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");

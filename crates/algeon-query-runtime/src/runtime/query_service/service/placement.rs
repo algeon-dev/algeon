@@ -64,7 +64,7 @@ impl QueryService {
     /// hold the admission mutex, while direct placement already owns a pending
     /// notification set. Returning only ordinals whose ledgers transitioned
     /// keeps notification outside those critical sections.
-    pub(in crate::runtime::query_service::service) fn reconcile_native_admission_health(&self) -> Result<Vec<usize>> {
+    pub(in crate::runtime::query_service) fn reconcile_native_admission_health(&self) -> Result<Vec<usize>> {
         let Some(resources) = &self.inner.resources else {
             return Ok(Vec::new());
         };

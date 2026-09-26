@@ -45,7 +45,7 @@ fn test_backend(device: DeviceId) -> GpuBackendCore {
             .with_default_query_limit_bytes(QUERY_LIMIT_BYTES)
             .with_source_work_per_attempt(1)
             .with_max_active_attempts(2)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 2, 2)),
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 3, 2)),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: STATIC_PARTITION_BYTES },
     );
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller))

@@ -9,9 +9,16 @@ use std::{
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
-use tokio::{runtime::Handle, sync::Semaphore, task::JoinHandle};
+use tokio::{
+    runtime::Handle,
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::JoinHandle,
+};
 
-use super::{GpuExecutionQueryTracker, PoolCounters, RUN_OPERATION, SHUTDOWN_OPERATION, supervisor::RuntimeSupervisor};
+use super::{
+    GpuExecutionJobKind, GpuExecutionQueryTracker, PoolCounters, RUN_OPERATION, SHUTDOWN_OPERATION,
+    supervisor::RuntimeSupervisor,
+};
 use crate::runtime::deadline::{DeadlineMutexLockError, deadline_remaining, mutex_lock_until};
 
 pub(super) struct GpuExecutionPoolInner {
@@ -23,6 +30,9 @@ pub(super) struct GpuExecutionPoolInner {
     pub(super) submissions_closed: AtomicBool,
     pub(super) submission_gate: Mutex<()>,
     pub(super) concurrency: Arc<Semaphore>,
+    /// Seats outside the reserved lifecycle workers, taken first by the jobs
+    /// that may not use the reserve.
+    pub(super) execution_workers: Arc<Semaphore>,
     pub(super) lifecycle_job_permits: Arc<Semaphore>,
     pub(super) execution_job_permits: Arc<Semaphore>,
     pub(super) release_cleanup_permits: Arc<Semaphore>,
@@ -56,6 +66,10 @@ impl GpuExecutionPoolInner {
             return Err(pool_closed_error(self.device_ordinal));
         }
         Ok(self.handle.spawn(future))
+    }
+
+    pub(super) fn worker_seats(&self) -> WorkerSeats {
+        WorkerSeats { workers: Arc::clone(&self.concurrency), execution: Arc::clone(&self.execution_workers) }
     }
 
     pub(super) fn close_submissions(&self) -> Result<()> {
@@ -144,5 +158,33 @@ impl PoolDrain {
             }
         }
         Ok(())
+    }
+}
+
+/// The pool's worker semaphores, as a spawned job takes them.
+pub(super) struct WorkerSeats {
+    workers: Arc<Semaphore>,
+    execution: Arc<Semaphore>,
+}
+
+/// The worker one running job holds.
+pub(super) struct WorkerSeat {
+    _execution: Option<OwnedSemaphorePermit>,
+    _worker: OwnedSemaphorePermit,
+}
+
+impl WorkerSeats {
+    /// Waits for a worker `kind` may run on. A job outside the lifecycle
+    /// reserve takes an execution seat before a worker, so it can never hold
+    /// the last worker the reserve keeps for lifecycle jobs.
+    pub(super) async fn occupy(self, kind: GpuExecutionJobKind) -> WorkerSeat {
+        const OPEN: &str = "GPU execution pool semaphore must remain open while jobs are live";
+        let execution = if kind.runs_outside_lifecycle_reserve() {
+            Some(self.execution.acquire_owned().await.expect(OPEN))
+        } else {
+            None
+        };
+        let worker = self.workers.acquire_owned().await.expect(OPEN);
+        WorkerSeat { _execution: execution, _worker: worker }
     }
 }

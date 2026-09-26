@@ -21,6 +21,7 @@ use datafusion::{
 };
 use futures::{StreamExt, TryStreamExt, stream::iter};
 use query_engine::{
+    error::QueryError,
     native_error::cudf_query_error,
     runtime::{
         ExecutionCancellation, ExecutionContext,
@@ -251,14 +252,18 @@ fn contains_gpu_resident_producer(plan: &dyn ExecutionPlan) -> bool {
         || plan.children().into_iter().any(|child| contains_gpu_resident_producer(child.as_ref()))
 }
 
+const HOST_INPUT_STAGING: &str = "algeon_datafusion.native_multi_child.host_input_staging";
+
 fn check_cancellation(cancellation: &ExecutionCancellation) -> Result<()> {
-    cancellation.check("algeon_datafusion.native_multi_child.host_input_staging").map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "algeon_datafusion.native_multi_child.host_input_staging",
-            "multi-child accelerator input staging was cancelled",
-            error,
-        ))
-    })
+    cancellation.check(HOST_INPUT_STAGING).map_err(staging_cancelled)
+}
+
+fn staging_cancelled(error: QueryError) -> DataFusionError {
+    DataFusionError::from(Error::from_native(
+        HOST_INPUT_STAGING,
+        "multi-child accelerator input staging was cancelled",
+        error,
+    ))
 }
 
 /// Stages one ordinary child's partitions with every partition in flight, in stable order.
@@ -314,7 +319,7 @@ async fn stage_child_partition(
     let mut batches = Vec::new();
     while let Some(batch) = tokio::select! {
         batch = stream.try_next() => batch?,
-        () = cancellation.cancelled_or_expired() => None,
+        error = cancellation.terminated(HOST_INPUT_STAGING) => return Err(staging_cancelled(error)),
     } {
         check_cancellation(cancellation)?;
         let batch = batch.project(&spec.projection).map_err(DataFusionError::from)?;

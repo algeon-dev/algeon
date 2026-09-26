@@ -84,7 +84,7 @@ fn observed_job_states(owner: &RuntimeObservationOwner) -> Vec<GpuJobLifecycleSt
 
 #[test]
 fn process_exit_joins_an_orphaned_gpu_execution_supervisor() {
-    let pool = GpuExecutionPool::new(usize::MAX - 4, 1).unwrap();
+    let pool = GpuExecutionPool::new(usize::MAX - 4, 2).unwrap();
     let supervisor = Arc::clone(&pool.inner.supervisor);
 
     drop(pool);
@@ -95,7 +95,7 @@ fn process_exit_joins_an_orphaned_gpu_execution_supervisor() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn observed_job_defines_worker_and_records_host_lifecycle() {
-    let pool = GpuExecutionPool::new(0, 1).unwrap();
+    let pool = GpuExecutionPool::new(0, 2).unwrap();
     let owner = RuntimeObservationOwner::new("gpu-job-success", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
 
     let value = pool.run_observed(GpuExecutionJobKind::QueryExecution, owner.handle(), async { 7_u8 }).await.unwrap();
@@ -113,7 +113,7 @@ async fn observed_job_defines_worker_and_records_host_lifecycle() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn execution_context_setup_uses_execution_capacity_without_changing_its_observation_kind() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 8, 2, 1, 1, GpuExecutionQueryTracker::new())
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 8, 3, 1, 1, GpuExecutionQueryTracker::new())
         .unwrap();
     let release = Arc::new(Semaphore::new(0));
     let task_release = Arc::clone(&release);
@@ -164,7 +164,7 @@ async fn execution_context_setup_uses_execution_capacity_without_changing_its_ob
 
 #[tokio::test(flavor = "current_thread")]
 async fn opaque_executor_lease_forwards_only_awaited_execution() {
-    let pool = GpuExecutionPool::new(18, 1).unwrap();
+    let pool = GpuExecutionPool::new(18, 2).unwrap();
     let lease = GpuExecutorLease::from_pool(pool);
     assert_eq!(lease.run(GpuExecutionJobKind::QueryExecution, async { 7_u8 }).await.unwrap(), 7);
 
@@ -181,7 +181,7 @@ async fn opaque_executor_lease_forwards_only_awaited_execution() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn observed_job_abort_records_one_cancel_terminal() {
-    let pool = GpuExecutionPool::new(0, 1).unwrap();
+    let pool = GpuExecutionPool::new(0, 2).unwrap();
     let owner = RuntimeObservationOwner::new("gpu-job-cancel", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let task = {
         let pool = pool.clone();
@@ -217,7 +217,7 @@ async fn observed_job_abort_records_one_cancel_terminal() {
 
 #[test]
 fn dropping_woken_outer_after_child_finished_emits_no_post_terminal_cancel() {
-    let pool = GpuExecutionPool::new(0, 1).unwrap();
+    let pool = GpuExecutionPool::new(0, 2).unwrap();
     let owner = RuntimeObservationOwner::new(
         "gpu-job-finished-before-outer-drop",
         None,
@@ -257,7 +257,7 @@ fn dropping_woken_outer_after_child_finished_emits_no_post_terminal_cancel() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
-    let pool = GpuExecutionPool::new(0, 1).unwrap();
+    let pool = GpuExecutionPool::new(0, 2).unwrap();
     let owner =
         RuntimeObservationOwner::new("gpu-inline-cancel", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
     let (started_tx, started_rx) = oneshot::channel();
@@ -312,7 +312,7 @@ async fn dropping_polled_reentrant_job_records_one_observed_cancellation() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
-    let pool = GpuExecutionPool::new(0, 1).unwrap();
+    let pool = GpuExecutionPool::new(0, 2).unwrap();
     let owner =
         RuntimeObservationOwner::new("gpu-inline-panic", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
     let nested_pool = pool.clone();
@@ -347,19 +347,20 @@ async fn panicking_reentrant_job_records_exactly_one_panic_terminal() {
 }
 
 #[test]
-fn zero_worker_count_is_structured() {
-    let error = GpuExecutionPool::new(7, 0).unwrap_err();
+fn a_pool_without_a_worker_outside_the_lifecycle_reserve_is_structured() {
+    let error = GpuExecutionPool::new(7, RESERVED_LIFECYCLE_WORKERS).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("device_ordinal"), Some("7"));
-    assert_eq!(error.fact_value("worker_count"), Some("0"));
-    assert_eq!(error.fact_value("reason"), Some("zero"));
+    assert_eq!(error.fact_value("worker_count"), Some("1"));
+    assert_eq!(error.fact_value("reserved_lifecycle_workers"), Some("1"));
+    assert_eq!(error.fact_value("reason"), Some("below_lifecycle_reserve"));
 }
 
 #[test]
 fn snapshots_identify_the_shared_pool_instance_across_clones() {
-    let pool = GpuExecutionPool::new(7, 1).unwrap();
+    let pool = GpuExecutionPool::new(7, 2).unwrap();
     let clone = pool.clone();
-    let distinct_pool = GpuExecutionPool::new(7, 1).unwrap();
+    let distinct_pool = GpuExecutionPool::new(7, 2).unwrap();
 
     assert_eq!(pool.snapshot().pool_id, clone.snapshot().pool_id);
     assert_ne!(pool.snapshot().pool_id, distinct_pool.snapshot().pool_id);
@@ -367,7 +368,7 @@ fn snapshots_identify_the_shared_pool_instance_across_clones() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 2, 4, GpuExecutionQueryTracker::new()).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 3, 2, 4, GpuExecutionQueryTracker::new()).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let heartbeat = Arc::new(AtomicUsize::new(0));
     let stop_heartbeat = Arc::new(AtomicBool::new(false));
@@ -438,7 +439,7 @@ async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
 /// how many queries are executing.
 #[tokio::test(flavor = "current_thread")]
 async fn query_counters_track_root_query_jobs_and_not_the_auxiliary_work_they_issue() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 2, 4, GpuExecutionQueryTracker::new()).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 3, 2, 4, GpuExecutionQueryTracker::new()).unwrap();
     let nested_pool = pool.clone();
     let observed = pool
         .run(GpuExecutionJobKind::QueryExecution, async move {
@@ -478,7 +479,7 @@ fn wait_until_sync(mut predicate: impl FnMut() -> bool) {
 
 #[test]
 fn blocking_submit_saturates_fast_with_typed_error_on_min_pool() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let first = pool
         .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), {
@@ -510,7 +511,7 @@ fn blocking_submit_saturates_fast_with_typed_error_on_min_pool() {
 /// rather than failing on a slot the finished worker still holds.
 #[test]
 fn blocking_join_resolves_only_after_the_class_slot_is_released() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let worker = pool
         .submit_blocking(GpuExecutionJobKind::AttemptWork, RuntimeObservationHandle::disabled(), {
@@ -535,7 +536,7 @@ fn blocking_join_resolves_only_after_the_class_slot_is_released() {
 #[test]
 fn blocking_completion_notifies_in_finish_order_after_releasing_capacity() {
     let pool =
-        GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 12, 2, 1, 2, GpuExecutionQueryTracker::new())
+        GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 12, 3, 1, 2, GpuExecutionQueryTracker::new())
             .unwrap();
     let gate = Arc::new(BlockingGate::default());
     let (entered_sender, entered_receiver) = mpsc::channel();
@@ -602,7 +603,7 @@ fn blocking_completion_notifies_in_finish_order_after_releasing_capacity() {
 /// concurrent close could complete) while the worker is still parked.
 #[test]
 fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let service_epoch = QueryServiceEpoch::new(None);
     let query_epoch = QueryResourceEpoch::new(None);
     let anchor =
@@ -656,7 +657,7 @@ fn blocking_worker_holds_the_resource_epoch_until_the_job_finishes() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn blocking_completion_survives_release_cleanup_saturation() {
-    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 1, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let (release_sender, release_receiver) = oneshot::channel::<()>();
     pool.spawn_release_cleanup_observed_with_completion(
         RuntimeObservationHandle::disabled(),
@@ -684,7 +685,7 @@ async fn blocking_completion_survives_release_cleanup_saturation() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn width_one_spawned_child_reentrant_run_stays_on_the_same_thread() {
-    let pool = GpuExecutionPool::new(1, 1).unwrap();
+    let pool = GpuExecutionPool::new(1, 2).unwrap();
     let nested_pool = pool.clone();
     let (outer_thread, inner_thread) = pool
         .run(GpuExecutionJobKind::QueryExecution, async move {
@@ -707,7 +708,7 @@ async fn width_one_spawned_child_reentrant_run_stays_on_the_same_thread() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn reentrant_same_class_submission_is_bounded_instead_of_bypassing_the_pool() {
-    let pool = GpuExecutionPool::new(1, 1).unwrap();
+    let pool = GpuExecutionPool::new_with_tracker_and_classes(1, 2, 1, 1, GpuExecutionQueryTracker::new()).unwrap();
     let nested_pool = pool.clone();
 
     let nested = pool
@@ -725,7 +726,7 @@ async fn reentrant_same_class_submission_is_bounded_instead_of_bypassing_the_poo
 
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_run_aborts_job_and_releases_counters_and_resources() {
-    let pool = GpuExecutionPool::new(2, 1).unwrap();
+    let pool = GpuExecutionPool::new(2, 2).unwrap();
     let dropped = Arc::new(AtomicBool::new(false));
     let task = {
         let pool = pool.clone();
@@ -752,7 +753,7 @@ async fn dropping_run_aborts_job_and_releases_counters_and_resources() {
 
 #[test]
 fn completion_runs_without_drain_lock_and_precedes_zero_counter_transition() {
-    let pool = GpuExecutionPool::new(28, 1).unwrap();
+    let pool = GpuExecutionPool::new(28, 2).unwrap();
     let drain = Arc::clone(&pool.inner.drain);
     let completion_gate = Arc::new(BlockingGate::default());
     let completion_gate_for_job = Arc::clone(&completion_gate);
@@ -792,14 +793,14 @@ fn completion_runs_without_drain_lock_and_precedes_zero_counter_transition() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn final_pool_drop_is_safe_inside_current_thread_runtime() {
-    let pool = GpuExecutionPool::new(3, 1).unwrap();
+    let pool = GpuExecutionPool::new(3, 2).unwrap();
     pool.run(GpuExecutionJobKind::Cleanup, async {}).await.unwrap();
     drop(pool);
 }
 
 #[test]
 fn composed_cleanup_closes_drains_exits_and_joins() {
-    let pool = GpuExecutionPool::new(29, 1).unwrap();
+    let pool = GpuExecutionPool::new(29, 2).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     pool.close_and_wait_until(deadline).unwrap();
     pool.join_supervisor().unwrap();
@@ -809,7 +810,7 @@ fn composed_cleanup_closes_drains_exits_and_joins() {
 
 #[test]
 fn supervisor_shutdown_closes_cancels_drains_and_joins() {
-    let pool = GpuExecutionPool::new(30, 1).unwrap();
+    let pool = GpuExecutionPool::new(30, 2).unwrap();
     let dropped = Arc::new(AtomicBool::new(false));
     let started = Arc::new(AtomicBool::new(false));
     let future_started = Arc::clone(&started);
@@ -840,7 +841,7 @@ fn supervisor_shutdown_closes_cancels_drains_and_joins() {
 
 #[test]
 fn blocked_worker_times_out_then_supervisor_joins_after_late_success() {
-    let pool = GpuExecutionPool::new(31, 1).unwrap();
+    let pool = GpuExecutionPool::new(31, 2).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let job_gate = Arc::clone(&gate);
     let (started_sender, started_receiver) = mpsc::sync_channel(0);
@@ -869,7 +870,7 @@ fn blocked_worker_times_out_then_supervisor_joins_after_late_success() {
 
 #[test]
 fn supervisor_teardown_panic_is_permanent_and_still_joinable() {
-    let pool = GpuExecutionPool::new(32, 1).unwrap();
+    let pool = GpuExecutionPool::new(32, 2).unwrap();
     pool.inner.supervisor.control.panic_during_teardown.store(true, Ordering::Release);
     let deadline = Instant::now() + Duration::from_secs(5);
     let error = pool.close_and_wait_until(deadline).unwrap_err();
@@ -882,7 +883,7 @@ fn supervisor_teardown_panic_is_permanent_and_still_joinable() {
 
 #[test]
 fn observed_join_panic_wins_after_an_earlier_cleanup_deadline() {
-    let pool = GpuExecutionPool::new(33, 1).unwrap();
+    let pool = GpuExecutionPool::new(33, 2).unwrap();
     let gate = Arc::new(BlockingGate::default());
     let job_gate = Arc::clone(&gate);
     let (started_sender, started_receiver) = mpsc::sync_channel(0);
@@ -913,7 +914,7 @@ fn observed_join_panic_wins_after_an_earlier_cleanup_deadline() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn panicked_jobs_are_structured_permanent_internal_errors() {
-    let pool = GpuExecutionPool::new(6, 1).unwrap();
+    let pool = GpuExecutionPool::new(6, 2).unwrap();
     let error = pool.run(GpuExecutionJobKind::QueryExecution, async { panic!("test panic") }).await.unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::Internal);
@@ -927,8 +928,8 @@ async fn panicked_jobs_are_structured_permanent_internal_errors() {
 #[tokio::test(flavor = "current_thread")]
 async fn shared_tracker_records_exact_cross_device_peak() {
     let tracker = GpuExecutionQueryTracker::new();
-    let first = GpuExecutionPool::new_with_tracker(4, 1, tracker.clone()).unwrap();
-    let second = GpuExecutionPool::new_with_tracker(5, 1, tracker.clone()).unwrap();
+    let first = GpuExecutionPool::new_with_tracker(4, 2, tracker.clone()).unwrap();
+    let second = GpuExecutionPool::new_with_tracker(5, 2, tracker.clone()).unwrap();
     let gate = Arc::new(BlockingGate::default());
 
     let first_job = {

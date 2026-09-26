@@ -15,7 +15,7 @@
         "max_active_attempts": 2,
         "installation": {
           "stream_pool_size": 6,
-          "worker_count": 2,
+          "worker_count": 3,
           "lane_count": 2
         }
       },
@@ -30,7 +30,7 @@
         "max_active_attempts": 2,
         "installation": {
           "stream_pool_size": 6,
-          "worker_count": 2,
+          "worker_count": 3,
           "lane_count": 2
         }
       }

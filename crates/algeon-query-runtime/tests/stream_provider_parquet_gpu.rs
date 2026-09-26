@@ -31,7 +31,7 @@ fn test_service() -> QueryService {
                 .with_default_query_limit_bytes(4 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(2)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 2, 2)),
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 3, 2)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
     )

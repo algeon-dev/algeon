@@ -4,7 +4,7 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     let service = runtime_test_service_with_profiles(
         config,
         QueueBounds::default(),
-        vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 1, 1)],
+        vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 2, 1)],
     )
     .unwrap();
 
@@ -134,7 +134,7 @@ fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
                 .with_default_query_limit_bytes(8 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(1)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1))
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 2, 1))
                 .with_cache_cap_bytes(CACHE_CAP_BYTES),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
@@ -269,17 +269,28 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
     let handle = Arc::new(service.admit_query().expect("admission"));
     let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
-    assert_eq!(pool.snapshot().worker_count, 1);
+    assert_eq!(pool.snapshot().worker_count, 2);
 
+    // Execution work holds every worker but the one reserved for lifecycle
+    // jobs, and a release cleanup holds that one, so root context setup (a
+    // lifecycle job) queues.
     let release = Arc::new(Semaphore::new(0));
-    let blocker_release = Arc::clone(&release);
-    let (blocker_started_tx, blocker_started_rx) = oneshot::channel();
-    pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
-        let _ = blocker_started_tx.send(());
-        let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
-    })
-    .expect("auxiliary blocker submits");
-    blocker_started_rx.await.expect("auxiliary blocker starts");
+    let blocker = |release: Arc<Semaphore>, started: oneshot::Sender<()>| async move {
+        let _ = started.send(());
+        let _permit = release.acquire_owned().await.expect("blocker release semaphore remains open");
+    };
+    let (execution_started_tx, execution_started_rx) = oneshot::channel();
+    pool.spawn(GpuExecutionJobKind::AttemptWork, blocker(Arc::clone(&release), execution_started_tx))
+        .expect("execution blocker submits");
+    execution_started_rx.await.expect("execution blocker starts");
+    let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+    pool.spawn_release_cleanup_observed_with_completion(
+        RuntimeObservationHandle::disabled(),
+        blocker(Arc::clone(&release), cleanup_started_tx),
+        || {},
+    )
+    .expect("cleanup blocker submits");
+    cleanup_started_rx.await.expect("cleanup blocker starts");
 
     let acquiring_handle = Arc::clone(&handle);
     let acquisition = tokio::spawn(async move { acquiring_handle.acquire_context_async().await });
@@ -292,7 +303,7 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
     acquisition.abort();
     assert!(acquisition.await.expect_err("aborted root setup task must not complete").is_cancelled());
 
-    release.add_permits(1);
+    release.add_permits(2);
     let admitted_context = timeout(Duration::from_secs(10), handle.acquire_context_async())
         .await
         .expect("a subsequent acquisition must not wait on an abandoned root claim")
@@ -340,7 +351,7 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     let device = resources.devices.context_by_ordinal(0).expect("device context");
     let handle = Arc::new(service.admit_query().expect("admission"));
     let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
-    assert_eq!(pool.snapshot().worker_count, 1);
+    assert_eq!(pool.snapshot().worker_count, 2);
 
     let release = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
@@ -351,6 +362,20 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     })
     .expect("worker blocker submits");
     blocker_started_rx.await.expect("worker blocker starts");
+    // A release cleanup holds the reserved lifecycle worker, so context setup
+    // finds no worker either.
+    let lifecycle_release = Arc::clone(&release);
+    let (lifecycle_started_tx, lifecycle_started_rx) = oneshot::channel();
+    pool.spawn_release_cleanup_observed_with_completion(
+        RuntimeObservationHandle::disabled(),
+        async move {
+            let _ = lifecycle_started_tx.send(());
+            let _permit = lifecycle_release.acquire_owned().await.expect("blocker release semaphore remains open");
+        },
+        || {},
+    )
+    .expect("lifecycle worker blocker submits");
+    lifecycle_started_rx.await.expect("lifecycle worker blocker starts");
 
     let deadline = Instant::now() + Duration::from_millis(100);
     let cancellation = ExecutionCancellation::with_deadline(Some(deadline));
@@ -364,7 +389,7 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     }
 
     sleep_until(TokioInstant::from_std(deadline)).await;
-    release.add_permits(1);
+    release.add_permits(2);
     let error = timeout(Duration::from_secs(10), acquisition)
         .await
         .expect("queued context setup returns after the worker is released")
@@ -770,7 +795,7 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     let handle = service.admit_query().unwrap();
     let admitted_context = handle.acquire_context().unwrap();
     let pool = admitted_context.context().gpu_execution_pool().expect("counted GPU execution pool");
-    assert_eq!(pool.snapshot().worker_count, 1);
+    assert_eq!(pool.snapshot().worker_count, 2);
     let release = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release);
     let (blocker_started_tx, blocker_started_rx) = oneshot::channel();
@@ -841,7 +866,7 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
         .unwrap()
         .gpu_execution_pool_for_device(0)
         .expect("service owns the device GPU execution pool");
-    assert_eq!(pool.snapshot().worker_count, 1);
+    assert_eq!(pool.snapshot().worker_count, 2);
 
     let release_blocker = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release_blocker);
@@ -885,6 +910,48 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
     drop(admitted);
 }
 
+/// Query execution cannot occupy the worker reserved for lifecycle jobs, so
+/// a placed admission builds its envelope while every other worker runs
+/// execution work, inside its queue deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn placed_admission_builds_its_envelope_while_execution_workers_are_busy() {
+    let service = runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(300) },
+        vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 2, 6, 3, 2)],
+    )
+    .expect("runtime-backed service with three workers");
+    let pool = service
+        .inner
+        .resources
+        .as_ref()
+        .unwrap()
+        .gpu_execution_pool_for_device(0)
+        .expect("service owns the device GPU execution pool");
+    let release_blockers = Arc::new(Semaphore::new(0));
+    let (started_tx, mut started_rx) = unbounded_channel();
+    for _ in 0..3 {
+        let release = Arc::clone(&release_blockers);
+        let started = started_tx.clone();
+        pool.spawn(GpuExecutionJobKind::AttemptWork, async move {
+            let _ = started.send(());
+            let _permit = release.acquire_owned().await.expect("blocker release stays open");
+        })
+        .expect("execution blocker queues on the service pool");
+    }
+    for _ in 0..2 {
+        started_rx.recv().await.expect("an execution blocker starts");
+    }
+
+    let admitted = timeout(Duration::from_secs(5), service.admit_async())
+        .await
+        .expect("the admission resolves")
+        .expect("context setup runs on the reserved lifecycle worker before the queue deadline");
+    drop(admitted);
+    release_blockers.add_permits(3);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn root_context_release_waits_for_busy_gpu_worker() {
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");
@@ -899,7 +966,7 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
         .unwrap()
         .gpu_execution_pool_for_device(0)
         .expect("service owns the device GPU execution pool");
-    assert_eq!(pool.snapshot().worker_count, 1);
+    assert_eq!(pool.snapshot().worker_count, 2);
     let release_blocker = Arc::new(Semaphore::new(0));
     let blocker_release = Arc::clone(&release_blocker);
     let (started_tx, started_rx) = oneshot::channel();
@@ -939,7 +1006,7 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2).expect("two-worker guaranteed service");
     let handle = service.admit_query().unwrap();
     let retained_pool = handle.gpu_execution_pool().expect("counted query-handle GPU execution pool");
-    assert_eq!(retained_pool.snapshot().worker_count, 2);
+    assert_eq!(retained_pool.snapshot().worker_count, 3);
     let job_pool = retained_pool.clone();
     let release = Arc::new(Semaphore::new(0));
     let job_release = Arc::clone(&release);
@@ -1071,11 +1138,15 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (finished_tx, finished_rx) = std::sync::mpsc::channel();
 
-    for _ in 0..worker_count {
+    // One cleanup holds the reserved lifecycle worker; execution work holds
+    // every other worker.
+    let mut blocker_kinds = vec![GpuExecutionJobKind::Cleanup];
+    blocker_kinds.resize(worker_count, GpuExecutionJobKind::AttemptWork);
+    for kind in blocker_kinds {
         let started_tx = started_tx.clone();
         let finished_tx = finished_tx.clone();
         let release = Arc::clone(&release.semaphore);
-        pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+        pool.spawn(kind, async move {
             started_tx.send(()).expect("cleanup blocker start receiver remains live");
             let _permit = release.acquire_owned().await.expect("cleanup blocker semaphore remains open");
             finished_tx.send(()).expect("cleanup finish receiver remains live");

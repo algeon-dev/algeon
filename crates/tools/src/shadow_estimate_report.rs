@@ -184,7 +184,7 @@ fn build_attempt_backend(
         GpuBackendDeviceProfile::new(0)
             .with_memory_limit(device_memory_limit)
             .with_max_active_attempts(1)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 2, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     Ok(AlgeonGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device]).build()?)

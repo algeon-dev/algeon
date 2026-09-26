@@ -732,25 +732,13 @@ fn expected_profile_bounds(profile: &AlgeonGpuDeviceProfile) -> Result<AlgeonGpu
     if let Some(bounds) = profile.installation_bounds() {
         return Ok(bounds);
     }
-    let auxiliary = profile.max_active_attempts().checked_mul(profile.source_work_per_attempt()).ok_or_else(|| {
+    profile.derived_installation_bounds().map_err(|_error| {
         ServerError::builder_validation(
             "server_backend_admission_conflict",
-            "configured source-work capacity overflowed while validating an injected backend",
+            "configured device capacity overflowed while validating an injected backend",
         )
         .with_fact("device_ordinal", profile.device_ordinal())
-    })?;
-    let stream_pool_size = profile.max_active_attempts().checked_add(auxiliary).ok_or_else(|| {
-        ServerError::builder_validation(
-            "server_backend_admission_conflict",
-            "configured stream capacity overflowed while validating an injected backend",
-        )
-        .with_fact("device_ordinal", profile.device_ordinal())
-    })?;
-    Ok(AlgeonGpuDeviceInstallationBounds::new(
-        stream_pool_size,
-        profile.max_active_attempts(),
-        profile.max_active_attempts(),
-    ))
+    })
 }
 
 fn compare_profile_field(

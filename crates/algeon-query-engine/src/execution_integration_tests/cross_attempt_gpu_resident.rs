@@ -13,7 +13,10 @@ use arrow::{
     datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema},
     record_batch::RecordBatch,
 };
-use cudf::DataFrame as CudfDataFrame;
+use cudf::{
+    DataFrame as CudfDataFrame,
+    testing::event::{event_synchronize_count_for_test, reset_event_observation_for_test},
+};
 use parquet::{arrow as parquet_arrow, file::properties as parquet_properties};
 
 fn pagerank_plan(edge_schema: Arc<ArrowSchema>) -> plan::QueryPlan {
@@ -80,7 +83,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
                 .with_default_query_limit_bytes(CAPACITY_BYTES)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(1)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1)),
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 2, 1)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
     )
@@ -229,6 +232,110 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).unwrap();
 }
 
+fn context_stream_identity(context: &ExecutionContext) -> usize {
+    context.shared_runtime().expect("context runtime").stream().identity()
+}
+
+/// A frozen resident output read by another attempt on its own stream is
+/// released only after that stream's reads complete: the final release waits
+/// on the reader stream's completion event as well as the producer's.
+#[test]
+fn frozen_resident_release_waits_for_a_reader_on_another_stream() {
+    let service = try_guaranteed_runtime_test_service_with_concurrency(2)
+        .expect("runtime-backed service with two same-device attempt lanes");
+    let edge_schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("src", ArrowDataType::Int32, false),
+        ArrowField::new("dst", ArrowDataType::Int32, false),
+    ]));
+    let plan = pagerank_plan(Arc::clone(&edge_schema));
+    let mut evidence = admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    evidence.attest_cugraph_graph_execution_scope(&plan);
+    let admit = || {
+        service
+            .admit_query_with_request(
+                QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone()),
+            )
+            .expect("attempt admission")
+    };
+
+    let producer = admit();
+    let producer_context = producer.acquire_context().expect("producer context");
+    let producer_stream = context_stream_identity(producer_context.context());
+    let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2, 2])),
+            Arc::new(Int32Array::from(vec![1, 2, 0, 3])),
+        ],
+    )
+    .unwrap();
+    let edges = runtime::resident::GpuDataFrame::new(
+        CudfDataFrame::from_record_batch(producer_runtime.as_ref(), &batch).expect("edge upload"),
+    );
+    let resident_lease = producer_context
+        .context()
+        .memory_grant()
+        .expect("producer grant access")
+        .expect("producer grant")
+        .retain_resident_owner(edges.device_allocated_size_bytes().expect("resident edge bytes"))
+        .expect("resident edges fit the producer cap");
+    let resident = runtime::resident::GpuResultHandle::new_with_resident_owner(
+        producer_context.context(),
+        edges,
+        Arc::clone(&edge_schema),
+        resident_lease,
+    )
+    .expect("resident edge owner");
+    let mut inputs = runtime::resident::GpuResidentInputMap::new();
+    inputs.insert("edges".to_string(), resident);
+    drop(producer_runtime);
+    drop(producer_context);
+    producer.commit_test_attempt(observability::RuntimeTerminalOutcome::Succeeded);
+    drop(producer);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = service.device_ledger_reports().unwrap().remove(0);
+        if snapshot.active_attempts == 0 && snapshot.frozen_resident_bytes > 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the producer's resident output freezes");
+        thread::yield_now();
+    }
+
+    // The pool hands out its most recently returned stream first, so the
+    // holder takes the producer's stream and the reader runs on another one.
+    let holder = admit();
+    let holder_context = holder.acquire_context().expect("holder context");
+    assert_eq!(context_stream_identity(holder_context.context()), producer_stream);
+    let reader = admit();
+    let reader_context = reader.acquire_context().expect("reader context");
+    assert_ne!(context_stream_identity(reader_context.context()), producer_stream);
+    let result = execute_plan(reader_context.context(), &plan, Some(&inputs)).expect("the reader borrows the edges");
+    assert_eq!(result.metrics().boundary.gpu_resident_input_handoffs, 1);
+    drop(result);
+    for (context, attempt) in [(reader_context, reader), (holder_context, holder)] {
+        drop(context);
+        attempt.end_test_attempt();
+        drop(attempt);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while service.device_ledger_reports().unwrap().remove(0).active_attempts != 0 {
+        assert!(Instant::now() < deadline, "the reader and holder attempts end");
+        thread::yield_now();
+    }
+
+    reset_event_observation_for_test();
+    drop(inputs);
+    assert_eq!(service.device_ledger_reports().unwrap().remove(0).frozen_resident_bytes, 0);
+    assert_eq!(
+        event_synchronize_count_for_test(),
+        2,
+        "the final release waits on the producer's and the reader's completion events"
+    );
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).unwrap();
+}
+
 #[test]
 fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_without_copy() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2)
@@ -356,7 +463,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
                 .with_default_query_limit_bytes(8 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(8)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 8, 8))
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 9, 8))
                 .with_cache_cap_bytes(CACHE_CAP_BYTES),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
@@ -491,7 +598,7 @@ fn warm_graph_executes_in_attempt_domain_and_survives_failed_cleanup() {
                 .with_default_query_limit_bytes(8 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(8)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 8, 8))
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 9, 8))
                 .with_cache_cap_bytes(CACHE_CAP_BYTES),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
@@ -608,7 +715,7 @@ fn mixed_graph_attempts_overlap_with_independent_domains_and_parity() {
                 .with_default_query_limit_bytes(8 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(8)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 8, 8))
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 9, 8))
                 .with_cache_cap_bytes(CACHE_CAP_BYTES),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
@@ -871,7 +978,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
                 .with_default_query_limit_bytes(384 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(1)
-                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1)),
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 2, 1)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         )],
     )

@@ -51,7 +51,8 @@ fn backend_draft_with_limits_and_queue_bounds(
             .with_max_active_attempts(max_active_attempts)
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
                 stream_pool_size,
-                max_active_attempts,
+                // One worker is reserved for lifecycle jobs.
+                max_active_attempts + 1,
                 max_active_attempts,
             )),
         GpuMemoryOwnership::WholeDeviceExclusive,
@@ -257,7 +258,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert_eq!(startup.lane_count, 2);
     assert_eq!(startup.resource_profile.root_lane_count, 2);
     assert_eq!(startup.resource_profile.root_stream_count, 2);
-    assert_eq!(startup.worker_count, 2);
+    assert_eq!(startup.worker_count, 3);
 
     let first = Arc::new(
         session
@@ -518,7 +519,7 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     assert!(first_worker_pools[0].pool_id > 0);
     assert_eq!(first_worker_pools[0].pool_id, second_worker_pools[0].pool_id);
     assert_eq!(first_worker_pools[0].device_ordinal, device.ordinal());
-    assert_eq!(first_worker_pools[0].worker_count, 1);
+    assert_eq!(first_worker_pools[0].worker_count, 2);
 
     let first = first_session.admit_query().unwrap();
     let first_sequence = first.admission_sequence();

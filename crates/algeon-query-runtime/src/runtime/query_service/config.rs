@@ -32,10 +32,14 @@ impl QueueBounds {
 
     /// The latest instant a wait that starts at `start` may last: `max_wait`
     /// after `start`, or the caller's `requested` deadline when that is
-    /// earlier.
-    pub(crate) fn wait_deadline(&self, start: Instant, requested: Option<Instant>) -> Instant {
-        let configured = start.checked_add(self.max_wait).unwrap_or(start);
-        requested.map_or(configured, |requested| requested.min(configured))
+    /// earlier. A `max_wait` too long to add to `start` sets no limit of its
+    /// own.
+    pub(crate) fn wait_deadline(&self, start: Instant, requested: Option<Instant>) -> Option<Instant> {
+        let configured = start.checked_add(self.max_wait);
+        match (requested, configured) {
+            (Some(requested), Some(configured)) => Some(requested.min(configured)),
+            (requested, configured) => requested.or(configured),
+        }
     }
 
     pub(super) fn validate(&self) -> Result<()> {

@@ -251,7 +251,7 @@ mod tests {
     use crate::runtime::gpu_execution_pool::GpuExecutionPool;
 
     fn test_executor() -> (GpuExecutionPool, GpuExecutorLease) {
-        let pool = GpuExecutionPool::new(0, 1).expect("test device executor");
+        let pool = GpuExecutionPool::new(0, 2).expect("test device executor");
         let executor = GpuExecutorLease::from_pool(pool.clone());
         (pool, executor)
     }
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn submit_returns_independent_workers_that_each_join_once() {
-        let pool = GpuExecutionPool::new(0, 2).expect("test device executor");
+        let pool = GpuExecutionPool::new(0, 3).expect("test device executor");
         let executor = GpuExecutorLease::from_pool(pool);
         let first = SupervisedWorker::submit(
             ExecutionCancellation::new(),

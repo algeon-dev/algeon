@@ -67,12 +67,13 @@ fn build_lane_backend() -> Result<GpuBackendCore> {
         ..QueryExecutionConfig::default()
     };
     let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
-    // Two forks per attempt back two execution lanes; two blocking workers let
-    // both lanes run at once instead of queueing behind one worker.
+    // Two forks per attempt back two execution lanes; two execution workers,
+    // beside the worker reserved for lifecycle jobs, let both lanes run at once
+    // instead of queueing behind one worker.
     let device = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(0)
             .with_max_active_attempts(1)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 2, 2))
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 3, 2))
             .with_source_work_per_attempt(2),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );

@@ -393,11 +393,11 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-    assert_eq!(error.fact_value("queued_queries"), Some("1"));
+    assert_eq!(error.fact_value("queued_queries"), Some("0"), "the expired waiter is not a queue member");
     assert_eq!(
         QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
         QueryAdmissionOutcome::Capacity {
-            queued_queries: Some(1),
+            queued_queries: Some(0),
             queue_capacity: Some(8),
             max_queue_wait: Some(Duration::from_millis(20)),
         }
@@ -405,26 +405,48 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 }
 
 #[test]
-fn queue_timeout_reports_the_queue_length_at_sweep() {
+fn a_queue_timeout_ends_only_its_own_waiter_and_reports_the_members_left() {
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
-        250,
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+        100,
         1,
-        2,
+        1,
     );
     let _active = service.admit_query().unwrap();
     let mut first = service.enqueue_admission().unwrap();
     let mut second = service.enqueue_admission().unwrap();
+    let mut live = service.enqueue_admission().unwrap();
     service.expire_waiter(&mut first);
     service.expire_waiter(&mut second);
 
-    for waiter in [&mut first, &mut second] {
-        let error = waiter.try_admit().unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-        assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-        assert_eq!(error.fact_value("queued_queries"), Some("2"));
-    }
+    let error = first.try_admit().unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(error.fact_value("queued_queries"), Some("1"), "only the live waiter is a queue member");
+    assert_eq!(service.queued_len(), 2, "the other expired waiter stays queued until its own step");
+
+    let error = second.try_admit().unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(error.fact_value("queued_queries"), Some("1"));
+    assert!(live.try_admit().expect("the live waiter keeps waiting").is_none());
+    assert_eq!(service.queued_len(), 1);
+}
+
+#[test]
+fn a_max_wait_past_the_clock_range_sets_no_queue_deadline() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::MAX },
+        100,
+        1,
+        1,
+    );
+    let _active = service.admit_query().unwrap();
+    let mut waiter = service.enqueue_admission().expect("the waiter queues");
+
+    assert!(waiter.try_admit().expect("the waiter has no queue deadline").is_none());
+    assert_eq!(service.queued_len(), 1);
 }
 
 #[test]
@@ -457,7 +479,7 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     // Keep the queued request's service deadline in the future so the sweep
     // retains it, while the waiter deadline drives the selected-but-blocked
     // timeout branch below.
-    waiter.deadline = Instant::now();
+    waiter.deadline = Some(Instant::now());
     let error = waiter.try_admit().expect_err("saturated ordinal one reports a memory-grant timeout");
 
     // This service is backed by the real installed devices, so the grant size

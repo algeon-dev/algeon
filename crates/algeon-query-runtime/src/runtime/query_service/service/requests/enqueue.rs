@@ -109,19 +109,21 @@ impl QueryService {
             if let Some(handle) = waiter.try_admit_async().await? {
                 return Ok(handle);
             }
-            let remaining_wait = waiter.remaining_wait();
-            if remaining_wait.is_zero() {
-                continue;
-            }
             // `try_admit` reports cancellation and the queue deadline; each
             // of them, like a ledger transition, ends this wait.
-            let _ = time::timeout(remaining_wait, async {
+            let wake = async {
                 tokio::select! {
                     () = &mut notified => {},
                     () = waiter.execution_cancellation.cancelled_or_expired() => {},
                 }
-            })
-            .await;
+            };
+            match waiter.remaining_wait() {
+                Some(remaining_wait) if remaining_wait.is_zero() => continue,
+                Some(remaining_wait) => {
+                    let _ = time::timeout(remaining_wait, wake).await;
+                },
+                None => wake.await,
+            }
         }
     }
 
@@ -236,7 +238,7 @@ impl QueryService {
             deadline,
             execution_cancellation: execution_cancellation.clone(),
             terminal: QueuedAdmissionTerminal::default(),
-            device_state_validated: false,
+            validated_generation: None,
         };
         let terminal = request.terminal.clone();
         {

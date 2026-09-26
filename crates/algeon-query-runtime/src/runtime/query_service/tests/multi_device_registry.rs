@@ -8,6 +8,7 @@ use query_planning::error::QueryErrorCode;
 use crate::runtime::{
     GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
     GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
+    gpu_execution_pool::RESERVED_LIFECYCLE_WORKERS,
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -56,7 +57,7 @@ fn test_device_profiles(
                     .with_max_active_attempts(max_active_attempts)
                     .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
                         stream_pool_size,
-                        max_active_attempts,
+                        max_active_attempts + RESERVED_LIFECYCLE_WORKERS,
                         max_active_attempts,
                     )),
                 GpuMemoryOwnership::WholeDeviceExclusive,
@@ -500,7 +501,7 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
     let mut waiter = service.enqueue_admission().unwrap();
 
     let expired = std::time::Instant::now();
-    waiter.deadline = expired;
+    waiter.deadline = Some(expired);
     service
         .inner
         .admission
@@ -510,7 +511,7 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
         .iter_mut()
         .find(|request| request.admission_request_id == waiter.admission_request_id)
         .expect("queued request")
-        .deadline = expired;
+        .deadline = Some(expired);
     let error = waiter.try_admit().unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);

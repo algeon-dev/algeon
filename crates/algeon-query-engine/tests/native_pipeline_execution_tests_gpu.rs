@@ -129,7 +129,7 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
         GpuBackendDeviceProfile::new(0)
             .with_max_active_attempts(1)
             .with_source_work_per_attempt(4)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(5, 1, 1)),
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(5, 2, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller)).build()

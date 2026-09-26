@@ -63,5 +63,5 @@ pub(in crate::exec) fn read_gpu_resident_source(
     metrics.record_input_batch(handle.num_rows() as u64);
 
     metrics.record_gpu_resident_input_handoff();
-    Ok(handle.clone().into_gpu_frame())
+    handle.read_on(context)
 }

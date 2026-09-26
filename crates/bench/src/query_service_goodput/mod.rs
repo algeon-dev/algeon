@@ -122,7 +122,8 @@ fn build_backend(config: &GoodputConfig) -> Result<AlgeonGpuBackend, Box<dyn Err
         .with_max_active_attempts(config.max_active_attempts)
         .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(
             config.stream_pool_size(),
-            config.max_active_attempts,
+            // One worker is reserved for lifecycle jobs.
+            config.max_active_attempts + 1,
             config.lane_count(),
         ));
     let devices = AlgeonGpuDeviceConfig::homogeneous(

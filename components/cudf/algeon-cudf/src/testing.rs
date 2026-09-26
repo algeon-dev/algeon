@@ -57,6 +57,30 @@ pub mod device_copy {
     }
 }
 
+pub mod event {
+    use cudf_sys::{
+        CUDF_SUCCESS,
+        test_support::{cudf_test_event_reset_observation, cudf_test_event_synchronize_call_count},
+    };
+
+    /// Clears the process-wide CUDA event observation counters.
+    pub fn reset_event_observation_for_test() {
+        // SAFETY: the hook only resets process-wide test counters.
+        unsafe { cudf_test_event_reset_observation() };
+    }
+
+    /// CUDA event synchronizations since the last reset. The count is
+    /// process-wide, so an exact assertion relies on each test running in its
+    /// own process, which is the nextest default.
+    pub fn event_synchronize_count_for_test() -> i32 {
+        let mut count = 0;
+        // SAFETY: `count` is a valid output location for the hook.
+        let status = unsafe { cudf_test_event_synchronize_call_count(&mut count) };
+        assert_eq!(status, CUDF_SUCCESS, "the event observation hook reads its counter");
+        count
+    }
+}
+
 pub mod concatenate {
     use crate::{core::Result, ops::concatenate};
 

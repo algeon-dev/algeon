@@ -75,14 +75,14 @@ fn backend_device_config_preserves_static_partitions_and_installation_bounds() {
         AlgeonGpuDeviceConfig::new(
             AlgeonGpuDeviceProfile::new(0)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 })
-                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(4, 2, 2)),
+                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(4, 3, 2)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         ),
         AlgeonGpuDeviceConfig::new(
             AlgeonGpuDeviceProfile::new(2)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 })
                 .with_max_active_attempts(1)
-                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(2, 1, 1)),
+                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(2, 2, 1)),
             GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 },
         ),
     ];
@@ -95,11 +95,11 @@ fn backend_device_config_preserves_static_partitions_and_installation_bounds() {
     );
     assert_eq!(
         backend.devices[0].profile().installation_bounds(),
-        Some(AlgeonGpuDeviceInstallationBounds::new(4, 2, 2))
+        Some(AlgeonGpuDeviceInstallationBounds::new(4, 3, 2))
     );
     assert_eq!(
         backend.devices[1].profile().installation_bounds(),
-        Some(AlgeonGpuDeviceInstallationBounds::new(2, 1, 1))
+        Some(AlgeonGpuDeviceInstallationBounds::new(2, 2, 1))
     );
 }
 
@@ -112,7 +112,7 @@ fn backend_validation_projection_keeps_device_configs_independent() {
                 .with_default_query_limit_bytes(512)
                 .with_source_work_per_attempt(1)
                 .with_max_active_attempts(2)
-                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(4, 2, 2))
+                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(4, 3, 2))
                 .with_telemetry(false),
             GpuMemoryOwnership::WholeDeviceExclusive,
         ),
@@ -123,7 +123,7 @@ fn backend_validation_projection_keeps_device_configs_independent() {
                 .with_default_query_limit_bytes(1024)
                 .with_source_work_per_attempt(3)
                 .with_max_active_attempts(1)
-                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(4, 1, 1)),
+                .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(4, 2, 1)),
             GpuMemoryOwnership::WholeDeviceExclusive,
         ),
     ];
@@ -175,7 +175,7 @@ fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
             .with_default_query_limit_bytes(512)
             .with_source_work_per_attempt(2)
             .with_max_active_attempts(2)
-            .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(6, 2, 2))
+            .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(6, 3, 2))
             .with_device_capabilities(capabilities.clone())
             .with_telemetry(false),
         GpuMemoryOwnership::WholeDeviceExclusive,
@@ -187,7 +187,7 @@ fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
             .with_default_query_limit_bytes(1024)
             .with_source_work_per_attempt(1)
             .with_max_active_attempts(1)
-            .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(2, 1, 1))
+            .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(2, 2, 1))
             .with_telemetry(true),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 },
     );
@@ -198,7 +198,7 @@ fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
     assert_eq!(first.default_query_limit_bytes(), Some(512));
     assert_eq!(first.source_work_per_attempt(), 2);
     assert_eq!(first.max_active_attempts(), 2);
-    assert_eq!((first.stream_pool_size(), first.worker_count(), first.lane_count()), (6, 2, 2));
+    assert_eq!((first.stream_pool_size(), first.worker_count(), first.lane_count()), (6, 3, 2));
     assert_eq!(first.profile().device_capabilities(), &capabilities);
 
     assert_eq!(second.device_ordinal(), 3);
@@ -207,7 +207,7 @@ fn backend_profile_binding_preserves_each_ordinal_local_envelope() {
     assert_eq!(second.default_query_limit_bytes(), Some(1024));
     assert_eq!(second.source_work_per_attempt(), 1);
     assert_eq!(second.max_active_attempts(), 1);
-    assert_eq!((second.stream_pool_size(), second.worker_count(), second.lane_count()), (2, 1, 1));
+    assert_eq!((second.stream_pool_size(), second.worker_count(), second.lane_count()), (2, 2, 1));
     assert_eq!(second.memory_ownership(), GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
     assert_ne!(first.profile().device_capabilities(), second.profile().device_capabilities());
 }

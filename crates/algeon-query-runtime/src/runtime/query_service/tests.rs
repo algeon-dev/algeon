@@ -18,7 +18,7 @@ use cudf::{
 };
 use query_planning::admission::AttemptCapabilityEvidence;
 use tokio::{
-    sync::{Barrier as TokioBarrier, Semaphore, oneshot},
+    sync::{Barrier as TokioBarrier, Semaphore, mpsc::unbounded_channel, oneshot},
     task::yield_now,
     time::{Instant as TokioInstant, sleep_until, timeout},
 };

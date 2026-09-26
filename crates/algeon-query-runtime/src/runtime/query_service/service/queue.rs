@@ -312,6 +312,52 @@ impl QueryService {
         }
     }
 
+    /// The device-state rejection of `request`, if a ledger transition since
+    /// its last check made it impossible. A request is checked when it enters
+    /// the queue and again after each transition that can make it impossible.
+    pub(in crate::runtime::query_service) fn revalidate_queued_request_device_state(
+        &self,
+        request: &mut AdmissionRequest,
+    ) -> Option<QueryError> {
+        let generation = self.inner.queue_revalidation_generation.load(Ordering::Acquire);
+        if request.validated_generation == Some(generation) {
+            return None;
+        }
+        match self.all_compatible_devices_closed_error(&request.compatible_devices) {
+            Ok(Some(error)) => Some(error),
+            Ok(None) => {
+                match self.reject_impossible_requirements(
+                    &request.device_entries,
+                    &[],
+                    request.requested_query_cap_bytes,
+                ) {
+                    Ok(()) => {
+                        request.validated_generation = Some(generation);
+                        None
+                    },
+                    Err(error) if error.code() == QueryErrorCode::QueryBudgetUnavailable => Some(error),
+                    Err(error) => {
+                        eprintln!(
+                            "[query-engine] warning: failed to revalidate queued resident capacity; retaining waiter: {error}"
+                        );
+                        None
+                    },
+                }
+            },
+            Err(error) => {
+                eprintln!("[query-engine] warning: failed to evaluate queued-device health; retaining waiter: {error}");
+                None
+            },
+        }
+    }
+
+    /// Waiters that are queue members: neither cancelled nor past their
+    /// deadline.
+    pub(in crate::runtime::query_service) fn queue_member_count_locked(&self, state: &AdmissionState) -> usize {
+        let now = Instant::now();
+        state.queued.iter().filter(|request| request.is_queue_member(now)).count()
+    }
+
     pub(in crate::runtime::query_service) fn abandon_queued_request_locked(
         &self,
         state: &mut AdmissionState,
@@ -405,68 +451,45 @@ impl QueryService {
         let mut expired = Vec::new();
         let mut cancelled = Vec::new();
         let mut queued = state.take_queued_requests();
-        let queued_before_sweep = queued.len();
         let mut retained = VecDeque::with_capacity(queued.len());
         while let Some(request) = queued.pop_front() {
             if request.execution_cancellation.is_cancelled() {
                 let _ =
                     request.terminal.record(admission_cancellation_or_deadline_error(&request.execution_cancellation));
                 cancelled.push(request);
-            } else if request.deadline <= now {
-                let disposition = request.terminal.record(service_overloaded_error(
-                    "queue_wait_elapsed",
-                    queued_before_sweep,
-                    self.inner.queue_bounds.max_waiters,
-                ));
-                expired.push((request, disposition));
+            } else if request.deadline.is_some_and(|deadline| deadline <= now) {
+                expired.push(request);
             } else {
                 retained.push_back(request);
             }
         }
+        // The queue depth an expired waiter reports is the queue's members
+        // when it ended: the waiters neither cancelled nor expired.
+        let members = retained.len();
+        let expired = expired
+            .into_iter()
+            .map(|request| {
+                let disposition = request.terminal.record(service_overloaded_error(
+                    "queue_wait_elapsed",
+                    members,
+                    self.inner.queue_bounds.max_waiters,
+                ));
+                (request, disposition)
+            })
+            .collect::<Vec<_>>();
         state.replace_queued_requests(retained);
 
         // Device health and resident capacity change only through ledger
         // transitions. A request is checked once when it enters the queue and
         // again after a transition that can make it impossible; the
         // reconciliation above may itself have closed a ledger.
-        let revalidate_all = self.inner.queue_needs_revalidation.swap(false, Ordering::AcqRel);
         let mut terminated = Vec::new();
         let mut queued = state.take_queued_requests();
         let mut retained = VecDeque::with_capacity(queued.len());
         while let Some(mut request) = queued.pop_front() {
-            if request.device_state_validated && !revalidate_all {
-                retained.push_back(request);
-                continue;
-            }
-            match self.all_compatible_devices_closed_error(&request.compatible_devices) {
-                Ok(Some(error)) => {
-                    terminated.push((request, error));
-                },
-                Ok(None) => match self.reject_impossible_requirements(
-                    &request.device_entries,
-                    &[],
-                    request.requested_query_cap_bytes,
-                ) {
-                    Ok(()) => {
-                        request.device_state_validated = true;
-                        retained.push_back(request);
-                    },
-                    Err(error) if error.code() == QueryErrorCode::QueryBudgetUnavailable => {
-                        terminated.push((request, error));
-                    },
-                    Err(error) => {
-                        eprintln!(
-                            "[query-engine] warning: failed to revalidate queued resident capacity; retaining waiter: {error}"
-                        );
-                        retained.push_back(request);
-                    },
-                },
-                Err(error) => {
-                    eprintln!(
-                        "[query-engine] warning: failed to evaluate queued-device health; retaining waiter: {error}"
-                    );
-                    retained.push_back(request);
-                },
+            match self.revalidate_queued_request_device_state(&mut request) {
+                Some(error) => terminated.push((request, error)),
+                None => retained.push_back(request),
             }
         }
         state.replace_queued_requests(retained);
@@ -535,10 +558,16 @@ impl QueryService {
         state: &mut AdmissionState,
     ) -> Result<Option<(usize, usize)>> {
         let pending_barrier = self.pending_preflight_min(state);
+        let now = Instant::now();
         let mut devices_claimed_by_older_waiters = BTreeSet::new();
         for (position, request) in state.queued.iter().enumerate() {
             if pending_barrier.is_some_and(|pending| request.submission_seq >= pending) {
                 break;
+            }
+            // A cancelled or expired waiter is no longer a queue member: it
+            // claims no device ahead of younger waiters.
+            if !request.is_queue_member(now) {
+                continue;
             }
             if let Some(best) = self.best_eligible_device_for_excluding(request, &devices_claimed_by_older_waiters)? {
                 return Ok(Some((position, best)));
@@ -610,7 +639,9 @@ impl QueryService {
         // The fallback drive exists only to preserve the memory-blocked
         // timeout taxonomy. The selected device ledger owns the only active
         // attempt limit, so this path never consults a global controller cap.
-        let Some(first) = state.queued.front() else {
+        let now = Instant::now();
+        let Some((position, first)) = state.queued.iter().enumerate().find(|(_, request)| request.is_queue_member(now))
+        else {
             return Ok(None);
         };
         if self.pending_preflight_min(state).is_some_and(|pending| first.submission_seq >= pending) {
@@ -630,12 +661,12 @@ impl QueryService {
                 first.compatible_devices.iter().copied(),
                 first.requested_query_cap_bytes,
             )?;
-            return Ok(candidates.into_iter().next().map(|candidate| (0, candidate.candidate.ordinal)));
+            return Ok(candidates.into_iter().next().map(|candidate| (position, candidate.candidate.ordinal)));
         }
         for device in first.compatible_devices.iter().copied() {
             first.requirement_for_device(device)?;
             if self.is_device_admission_healthy(device)? {
-                return Ok(Some((0, device)));
+                return Ok(Some((position, device)));
             }
         }
         Ok(None)

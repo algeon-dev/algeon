@@ -13,7 +13,7 @@ default_query_limit_bytes = 268435456
 source_work_per_attempt = 2
 max_active_attempts = 4
 stream_pool_size = 12
-worker_count = 4
+worker_count = 5
 lane_count = 4
 
 [[admission.device_profiles]]
@@ -25,7 +25,7 @@ default_query_limit_bytes = 268435456
 source_work_per_attempt = 2
 max_active_attempts = 4
 stream_pool_size = 12
-worker_count = 4
+worker_count = 5
 lane_count = 4
 
 [[admission.device_profiles]]
@@ -37,7 +37,7 @@ default_query_limit_bytes = 268435456
 source_work_per_attempt = 2
 max_active_attempts = 4
 stream_pool_size = 12
-worker_count = 4
+worker_count = 5
 lane_count = 4
 
 [[admission.device_profiles]]
@@ -49,7 +49,7 @@ default_query_limit_bytes = 268435456
 source_work_per_attempt = 2
 max_active_attempts = 4
 stream_pool_size = 12
-worker_count = 4
+worker_count = 5
 lane_count = 4
 
 [native]

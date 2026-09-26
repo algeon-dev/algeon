@@ -43,7 +43,7 @@ async fn run() -> anyhow::Result<()> {
     let profile = AlgeonGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_MEMORY_LIMIT_BYTES })
         .with_max_active_attempts(2)
-        .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(8, 2, 2));
+        .with_installation_bounds(AlgeonGpuDeviceInstallationBounds::new(8, 3, 2));
     let device = AlgeonGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = AlgeonGpuBackend::builder()
         .with_native_execution_config(AlgeonNativeExecutionConfig::default())

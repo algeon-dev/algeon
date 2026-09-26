@@ -5,6 +5,7 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
+    mem,
     sync::Arc,
 };
 
@@ -18,6 +19,7 @@ use cudf::{
         ColumnMemoryIdentity, GpuRecordBatch, HostBatchCursor as CudfHostBatchCursor, HostBatchCursorConfig,
         InfoDetail, PreparedHostBatch as CudfPreparedHostBatch,
     },
+    runtime::CudaStream,
 };
 use query_planning::{
     error::{QueryError, QueryErrorCode, Result},
@@ -75,6 +77,10 @@ struct RetainedSourceOwner {
 }
 
 impl RetainedSourceOwner {
+    fn for_reader(self, stream: &CudaStream) -> Self {
+        Self { owner: self.owner.for_reader(stream.clone()), column_identities: self.column_identities }
+    }
+
     fn retain_for(&self, output_identities: &HashSet<ColumnMemoryIdentity>) -> Option<Self> {
         let column_identities: HashSet<_> = self.column_identities.intersection(output_identities).copied().collect();
         (!column_identities.is_empty()).then(|| Self { owner: self.owner.clone(), column_identities })
@@ -136,6 +142,14 @@ impl GpuDataFrame {
         let mut output = Self::new_with_residency(frame, resident_owner, source.source_cache_pin.clone());
         output.retained_source_owners = retained_source_owners;
         Ok(output)
+    }
+
+    fn read_on_stream(&mut self, stream: &CudaStream) {
+        self.resident_owner = self.resident_owner.take().map(|owner| owner.for_reader(stream.clone()));
+        self.retained_source_owners = mem::take(&mut self.retained_source_owners)
+            .into_iter()
+            .map(|retained| retained.for_reader(stream))
+            .collect();
     }
 
     fn new_with_resident_owner(frame: DataFrame, resident_owner: Option<ResidentOwnerLease>) -> Self {
@@ -447,7 +461,7 @@ impl GpuResultHandle {
         } = frame.into_frame_and_residency();
         let resident_owner = resident_owner.or(frame_resident_owner);
         if let Some(owner) = &resident_owner {
-            owner.set_completion_fence(context.runtime()?.stream())?;
+            owner.record_completion(context.runtime()?.stream())?;
             owner.set_backing_allocation_pointers(frame.backing_allocation_pointers().map_err(|error| {
                 cudf_query_error(
                     "query_engine.gpu_result_handle",
@@ -485,6 +499,17 @@ impl GpuResultHandle {
     /// Borrow the underlying GPU cuDF frame.
     pub fn frame(&self) -> &DataFrame {
         self.batch.frame()
+    }
+
+    /// Borrows this result as a frame read on `context`'s stream. Once that
+    /// frame and every frame derived from it have dropped, the resident
+    /// owner's final release also waits for the work the stream had enqueued
+    /// by then.
+    pub fn read_on(&self, context: &ExecutionContext) -> Result<GpuDataFrame> {
+        let stream = context.runtime()?.stream().clone();
+        let mut frame = self.clone().into_gpu_frame();
+        frame.read_on_stream(&stream);
+        Ok(frame)
     }
 
     /// Consume the handle and return its GPU frame wrapper.
@@ -677,6 +702,12 @@ impl GpuResultHandle {
             graph_residency,
             producer_execution: _,
         } = self;
+        // The cursor gathers its batches on the result's stream after the
+        // owner bound it.
+        let stream = runtime.stream().clone();
+        let resident_owner = resident_owner.map(|owner| owner.for_reader(stream.clone()));
+        let retained_source_owners =
+            retained_source_owners.into_iter().map(|retained| retained.for_reader(&stream)).collect();
         let cursor = batch.into_host_batch_cursor(config).map_err(|error| {
             cudf_query_error(
                 "query_engine.host_batch_cursor.create",
@@ -1408,7 +1439,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
-        source.resident_owner.as_ref().unwrap().set_completion_fence(runtime.stream()).unwrap();
+        source.resident_owner.as_ref().unwrap().record_completion(runtime.stream()).unwrap();
         grant.freeze_resident(source_bytes).unwrap();
 
         let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
@@ -1437,7 +1468,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (source, source_bytes) = frame_with_resident_owner(&runtime, &grant, "id", vec![1, 2, 3]);
-        source.resident_owner.as_ref().unwrap().set_completion_fence(runtime.stream()).unwrap();
+        source.resident_owner.as_ref().unwrap().record_completion(runtime.stream()).unwrap();
         grant.freeze_resident(source_bytes).unwrap();
 
         let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();

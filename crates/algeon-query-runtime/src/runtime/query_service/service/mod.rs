@@ -71,11 +71,11 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     pub(in crate::runtime::query_service) admission: Mutex<AdmissionState>,
     pub(in crate::runtime::query_service) admission_available: Condvar,
     pub(in crate::runtime::query_service) admission_notify: Notify,
-    /// Set by a ledger transition that can make a queued request impossible
-    /// (an admission close or a frozen-resident publish); the next queue
-    /// sweep consumes it and revalidates every queued request against device
-    /// health and resident capacity.
-    pub(in crate::runtime::query_service) queue_needs_revalidation: AtomicBool,
+    /// Advanced by each ledger transition that can make a queued request
+    /// impossible (an admission close or a frozen-resident publish); a request
+    /// rechecks device health and resident capacity when the generation it
+    /// was checked at is older.
+    pub(in crate::runtime::query_service) queue_revalidation_generation: AtomicU64,
     /// Bounded domain-to-attempt state used only after allocator callbacks
     /// return. Callback writers never acquire this engine lock.
     pub(in crate::runtime::query_service) allocator_event_correlation: Mutex<AllocatorEventCorrelationIndex>,

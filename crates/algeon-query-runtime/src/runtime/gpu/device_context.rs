@@ -2,7 +2,9 @@
 
 use std::{sync, sync::Arc};
 
-use cudf::runtime::{DeviceHealthStatus, device_health_snapshot};
+use cudf::runtime::{
+    DeviceFaultObservation, DeviceHealthSnapshot, DeviceHealthStatus, device_health_snapshot, observe_device_faults,
+};
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{
@@ -34,6 +36,9 @@ struct DeviceContextInner {
     ledger: Arc<DeviceLedger>,
     facts: DeviceFacts,
     lane_permits: Arc<DeviceLanePermits>,
+    // Keep-alive registration: a fault reported for this device closes the
+    // ledger at once, as a ledger transition that wakes queued admissions.
+    _fault_observation: DeviceFaultObservation,
 }
 
 impl DeviceContext {
@@ -150,7 +155,15 @@ impl DeviceContext {
         }
         let lane_permits =
             sync::Arc::new(DeviceLanePermits::new(device.ordinal(), ledger.profile().max_active_attempts));
-        Ok(Self {
+        let fault_ledger = Arc::downgrade(&ledger);
+        let fault_observation = observe_device_faults(device, move |health| {
+            if let Some(ledger) = fault_ledger.upgrade()
+                && let Err(error) = close_admission_for_fault(&ledger, health)
+            {
+                eprintln!("[query-engine] warning: failed to close admission after a device fault: {error}");
+            }
+        });
+        let context = Self {
             inner: Arc::new(DeviceContextInner {
                 device,
                 stream_pool,
@@ -161,8 +174,12 @@ impl DeviceContext {
                 ledger,
                 facts,
                 lane_permits,
+                _fault_observation: fault_observation,
             }),
-        })
+        };
+        // A fault reported before the observer was registered is folded in now.
+        context.synchronize_native_admission_health()?;
+        Ok(context)
     }
 
     /// CUDA device served by this context.
@@ -217,16 +234,7 @@ impl DeviceContext {
     /// process-lifetime fault state and synchronously closes this device's
     /// ledger before placement can issue another grant.
     pub(crate) fn synchronize_native_admission_health(&self) -> Result<bool> {
-        let health = device_health_snapshot(self.inner.device);
-        if health.status() != DeviceHealthStatus::Unhealthy {
-            return Ok(false);
-        }
-        self.inner.ledger.close_admission_if_open(format!(
-            "persistent CUDA fault on device {} (fault_count={}, first_fault={:?})",
-            self.inner.device.ordinal(),
-            health.fault_count(),
-            health.first_fault()
-        ))
+        close_admission_for_fault(&self.inner.ledger, device_health_snapshot(self.inner.device))
     }
 
     /// Attempts one immutable grant admission against this device's ledger.
@@ -244,4 +252,18 @@ impl DeviceContext {
         }
         self.inner.ledger.try_admit_for_attempt(waiter_id, attempt_id, requested_query_cap_bytes)
     }
+}
+
+/// Closes the device's admission when `health` reports a persistent fault;
+/// returns whether this call closed it.
+fn close_admission_for_fault(ledger: &DeviceLedger, health: DeviceHealthSnapshot) -> Result<bool> {
+    if health.status() != DeviceHealthStatus::Unhealthy {
+        return Ok(false);
+    }
+    ledger.close_admission_if_open(format!(
+        "persistent CUDA fault on device {} (fault_count={}, first_fault={:?})",
+        health.device().ordinal(),
+        health.fault_count(),
+        health.first_fault()
+    ))
 }

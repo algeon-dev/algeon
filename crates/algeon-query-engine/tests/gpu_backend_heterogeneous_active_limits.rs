@@ -40,7 +40,8 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
                 .with_max_active_attempts(max_active_attempts)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
                     max_active_attempts.saturating_mul(3),
-                    max_active_attempts,
+                    // One worker is reserved for lifecycle jobs.
+                    max_active_attempts + 1,
                     max_active_attempts,
                 )),
             GpuMemoryOwnership::WholeDeviceExclusive,
@@ -92,7 +93,8 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
                 .with_max_active_attempts(max_active_attempts)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
                     max_active_attempts.saturating_mul(3),
-                    max_active_attempts,
+                    // One worker is reserved for lifecycle jobs.
+                    max_active_attempts + 1,
                     max_active_attempts,
                 )),
             GpuMemoryOwnership::WholeDeviceExclusive,

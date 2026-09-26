@@ -15,7 +15,7 @@ fn device(ordinal: usize) -> GpuBackendDeviceConfig {
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_LIMIT_BYTES })
             .with_default_query_limit_bytes(DEVICE_QUERY_LIMIT_BYTES)
             .with_max_active_attempts(1)
-            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 2, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     )
 }

@@ -453,7 +453,6 @@ impl NativeOutputPublication {
     }
 }
 
-/// Interval at which a host-staging wait re-reads the cancellation flag.
 #[cfg(test)]
 mod tests {
     use std::{
