@@ -226,10 +226,8 @@ impl DatafusionAlgeonFlightSqlService {
         };
 
         // `execute_logical_plan` has already completed every supported update
-        // action. In particular, DataFusion materializes CTAS input there and
-        // returns an empty DataFrame. Re-executing that placeholder under the
-        // same attempt would create a second native admission after the CTAS
-        // handle consumed the attempt's one post-cleanup finalizer.
+        // action (DataFusion materializes CTAS input there), so the statement
+        // finishes without a result stream.
         if let Some(attempt) = attempt.as_ref() {
             attempt.complete_without_result_stream();
         }

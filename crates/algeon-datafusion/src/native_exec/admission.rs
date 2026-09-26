@@ -8,25 +8,21 @@ static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 
 use std::{
     any::Any,
-    collections::{HashMap, HashSet},
     fmt::{self, Formatter},
-    pin::Pin,
+    mem,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
-    task::{Context, Poll},
     time::Duration,
 };
 
-use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, Statistics, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
     physical_expr::PhysicalExpr,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream, SendableRecordBatchStream,
-        StatisticsArgs, StatisticsContext, coalesce_partitions::CoalescePartitionsExec,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream, StatisticsArgs,
+        StatisticsContext, coalesce_partitions::CoalescePartitionsExec,
     },
 };
-use futures::Stream;
 use query_engine::{
     admission::AttemptCapabilityEvidence,
     attempt::{
@@ -42,7 +38,7 @@ use tokio::sync::Notify;
 
 use crate::{
     attempt::execute_in_internal_attempt,
-    error::{DataFusionErrorExt, Error, ErrorCode},
+    error::{Error, ErrorCode},
     native_exec::metrics::NativeExecutionMetricsCapture,
     planner::native::Invocation,
 };
@@ -127,13 +123,16 @@ impl TicketQueryHandle {
     ) -> QueryEngineResult<AdmittedQueryContext> {
         self.0.acquire_context_with_cancellation_async(cancellation).await
     }
-
-    fn finish(&self) {
-        self.0.finish()
-    }
 }
 
-/// Lazy admission ticket shared by every native node emitted in one optimize pass.
+/// The one admission ticket of an attempt's invocation.
+///
+/// Every native fragment the attempt executes, including sequential
+/// executions such as a CTAS input and its result, admits through this
+/// ticket and shares the one grant it obtains. The grant belongs to the
+/// attempt: the runtime releases it once the attempt's outcome is terminal
+/// and no fragment is still running, so a fragment's stream ending releases
+/// nothing.
 #[derive(Debug)]
 pub(crate) struct QueryAdmissionTicket {
     attempt: AttemptTicketBinding,
@@ -148,14 +147,24 @@ pub(crate) struct QueryAdmissionTicket {
     /// Prepared fragments may refine evidence while the outer DataFusion
     /// stream already owns this ticket but before admission starts.
     rebound_capability_evidence: Mutex<Option<AttemptCapabilityEvidence>>,
-    state: Mutex<TicketState>,
+    admission: Mutex<TicketAdmission>,
     notify: Arc<Notify>,
 }
 
+/// The attempt's one admission as fragments reach it.
+#[derive(Debug, Default)]
+struct TicketAdmission {
+    handle: Option<Arc<TicketQueryHandle>>,
+    admitting: bool,
+    admission_facts_recorded: bool,
+}
+
+/// The ticket of one DataFusion execution of a native admission root, with
+/// the occurrence round of that execution.
 #[derive(Debug)]
 struct ActiveQueryAdmissionTicket {
     ticket: Arc<QueryAdmissionTicket>,
-    round_task_context: Arc<TaskContext>,
+    execution_round: AttemptExecutionRound,
 }
 
 pub(crate) fn query_admission_ticket_from_task_context(
@@ -168,11 +177,11 @@ pub(crate) fn query_admission_ticket_from_task_context(
 }
 
 /// The ticket that native work in `task_context` admits under: the active
-/// execution round's ticket, else the ticket its invocation minted.
+/// execution's ticket, else the ticket its invocation minted.
 ///
 /// DataFusion executes CTAS inside `execute_logical_plan`, before the attempt
 /// can decorate a physical plan, so the inner plan's task context carries the
-/// invocation but no active round ticket.
+/// invocation but no active execution ticket.
 pub(crate) fn invocation_admission_ticket(task_context: &TaskContext) -> Option<Arc<QueryAdmissionTicket>> {
     query_admission_ticket_from_task_context(task_context)
         .or_else(|| Invocation::of_task(task_context).and_then(Invocation::minted_admission_ticket).map(Arc::clone))
@@ -193,10 +202,13 @@ pub(crate) struct AttemptTicketBinding {
     pub(crate) admission_binding: AttemptAdmissionBinding,
     pub(crate) cancellation: AttemptCancellation,
     /// Exact cap supplied by the invocation owner, if any. It is copied into
-    /// every query-service admission request for this attempt.
+    /// the attempt's query-service admission request.
     pub(crate) requested_query_cap_bytes: Option<u64>,
 }
 
+/// Starts one DataFusion execution under `ticket`: the returned task context
+/// carries the ticket and a fresh occurrence round. A task context already
+/// executing under a ticket keeps it.
 pub(crate) fn task_context_with_query_admission_ticket(
     task_context: Arc<TaskContext>,
     ticket: Arc<QueryAdmissionTicket>,
@@ -205,9 +217,11 @@ pub(crate) fn task_context_with_query_admission_ticket(
         return task_context;
     }
 
+    let execution_round = AttemptExecutionRound::new(
+        ticket.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned()),
+    );
     let mut session_config = task_context.session_config().clone();
-    session_config
-        .set_extension(Arc::new(ActiveQueryAdmissionTicket { ticket, round_task_context: Arc::clone(&task_context) }));
+    session_config.set_extension(Arc::new(ActiveQueryAdmissionTicket { ticket, execution_round }));
     Arc::new(TaskContext::new(
         task_context.task_id(),
         task_context.session_id(),
@@ -220,24 +234,6 @@ pub(crate) fn task_context_with_query_admission_ticket(
     ))
 }
 
-#[derive(Debug)]
-struct TicketState {
-    rounds: HashMap<usize, TicketRound>,
-    admitting: HashSet<usize>,
-    next_epoch: u64,
-}
-
-#[derive(Debug)]
-struct TicketRound {
-    _task_context: Arc<TaskContext>,
-    handle: Option<Arc<TicketQueryHandle>>,
-    active_contexts: usize,
-    active_streams: usize,
-    epoch: u64,
-    admission_facts_recorded: bool,
-    execution_round: AttemptExecutionRound,
-}
-
 /// Context acquired through a [`QueryAdmissionTicket`].
 #[derive(Debug)]
 pub(crate) struct TicketAdmissionContext {
@@ -245,7 +241,6 @@ pub(crate) struct TicketAdmissionContext {
     task_context: Arc<TaskContext>,
     admission_facts: QueryAdmissionFacts,
     record_admission_facts: bool,
-    _guard: QueryAdmissionTicketContextGuard,
 }
 
 impl TicketAdmissionContext {
@@ -266,33 +261,10 @@ impl TicketAdmissionContext {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct QueryAdmissionTicketContextGuard {
-    ticket: Arc<QueryAdmissionTicket>,
-    task_key: usize,
-    epoch: u64,
-    released: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct QueryAdmissionExecutionRoundGuard {
-    ticket: Arc<QueryAdmissionTicket>,
-    task_key: usize,
-    epoch: u64,
-    released: bool,
-}
-
-#[derive(Debug)]
-struct QueryAdmissionPendingContextGuard {
-    ticket: Arc<QueryAdmissionTicket>,
-    task_key: usize,
-    epoch: u64,
-    released: bool,
-}
-
+/// Clears an in-flight admission that ends without a handle, so a waiting
+/// fragment does not wait on it forever.
 struct TicketAdmitResetGuard {
     ticket: Arc<QueryAdmissionTicket>,
-    task_key: usize,
     disarmed: bool,
 }
 
@@ -310,7 +282,7 @@ impl QueryAdmissionTicket {
             source,
             attempt_capability_evidence,
             rebound_capability_evidence: Mutex::new(None),
-            state: Mutex::new(TicketState { rounds: HashMap::new(), admitting: HashSet::new(), next_epoch: 0 }),
+            admission: Mutex::new(TicketAdmission::default()),
             notify: Arc::new(Notify::new()),
         })
     }
@@ -337,16 +309,12 @@ impl QueryAdmissionTicket {
         if !self.has_execution_manifest() {
             return Ok(None);
         }
-        let task_key = Self::task_key(task_context);
-        let execution_round = {
-            let state = self.lock_state().map_err(|error| {
-                DataFusionError::from(Error::from_native(
-                    "algeon_datafusion.native_exec.host_occurrence",
-                    "failed to inspect the invocation occurrence state",
-                    error,
-                ))
-            })?;
-            state.rounds.get(&task_key).map(|round| round.execution_round.clone()).ok_or_else(|| {
+        let execution_round = task_context
+            .session_config()
+            .get_extension::<ActiveQueryAdmissionTicket>()
+            .filter(|active| Arc::ptr_eq(&active.ticket, self))
+            .map(|active| active.execution_round.clone())
+            .ok_or_else(|| {
                 DataFusionError::from(
                     Error::new(
                         ErrorCode::InvalidExecutionPlan,
@@ -357,8 +325,7 @@ impl QueryAdmissionTicket {
                     .with_log_safe_fact("occurrence_id", occurrence_id)
                     .with_log_safe_fact("producer_identity", producer_identity),
                 )
-            })?
-        };
+            })?;
         execution_round.begin_host_occurrence(occurrence_id, producer_identity, plan).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "algeon_datafusion.native_exec.host_occurrence",
@@ -398,20 +365,14 @@ impl QueryAdmissionTicket {
 
     /// Atomically extends this ticket's evidence before admission starts.
     /// Prepared fragments contribute deltas so one preparation cannot replace
-    /// another fragment's scope or the final invocation manifest.
+    /// another fragment's scope or the final invocation manifest. Once the
+    /// attempt has started its admission, a fragment's evidence must already
+    /// be part of what it admits: the attempt has no second claim.
     pub(crate) fn extend_capability_evidence_before_admission(
         &self,
         fragments: impl IntoIterator<Item = AttemptCapabilityEvidence>,
     ) -> QueryEngineResult<()> {
-        let state = self.lock_state()?;
-        if !state.admitting.is_empty() || state.rounds.values().any(|round| round.handle.is_some()) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "algeon_datafusion.native_exec.admission_ticket",
-                "cannot extend query admission capability evidence after admission has started",
-            )
-            .with_fact("reason", "capability_evidence_extension_after_admission"));
-        }
+        let admission = self.lock_admission()?;
         let mut rebound = self.rebound_capability_evidence.lock().map_err(|_| {
             QueryError::new(
                 QueryErrorCode::Internal,
@@ -420,10 +381,20 @@ impl QueryAdmissionTicket {
             )
             .with_fact("reason", "capability_evidence_rebind_lock_poisoned")
         })?;
-        let evidence = AttemptCapabilityEvidence::aggregate(
-            rebound.as_ref().or(self.attempt_capability_evidence.as_ref()).cloned().into_iter().chain(fragments),
-        )?;
-        *rebound = Some(evidence);
+        let current = rebound.as_ref().or(self.attempt_capability_evidence.as_ref()).cloned();
+        if admission.admitting || admission.handle.is_some() {
+            let admitted = current.unwrap_or_default();
+            if fragments.into_iter().all(|fragment| admitted.covers(&fragment)) {
+                return Ok(());
+            }
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "algeon_datafusion.native_exec.admission_ticket",
+                "cannot extend query admission capability evidence after admission has started",
+            )
+            .with_fact("reason", "capability_evidence_extension_after_admission"));
+        }
+        *rebound = Some(AttemptCapabilityEvidence::aggregate(current.into_iter().chain(fragments))?);
         Ok(())
     }
 
@@ -445,25 +416,6 @@ impl QueryAdmissionTicket {
             .with_fact("reason", "composed_schedule_projection_record_failed")
             .with_fact("lifecycle_error", error.to_string())
         })
-    }
-
-    /// Captures a native failure while it is still borrowed by this adapter
-    /// path.  This is deliberately record-only: the post-cleanup finalizer
-    /// remains the sole admitted terminal/seal authority.
-    fn record_attempt_native_failure(&self, error: &QueryError) {
-        self.attempt.handle.record_native_failure(error);
-    }
-
-    /// Extracts an engine error from a returned DataFusion error before the
-    /// admission round releases an admitted handle.  The outer attempt owner
-    /// still receives the unchanged DataFusion error and remains responsible
-    /// for ordinary non-admitted terminalization.
-    fn record_attempt_datafusion_failure(&self, error: &DataFusionError) {
-        let Some(error) = error.find_algeon_error() else { return };
-        let Some(native) = error.source_error().and_then(|source| source.downcast_ref::<QueryError>()) else {
-            return;
-        };
-        self.record_attempt_native_failure(native);
     }
 
     /// The cancellation of the attempt this ticket admits under.
@@ -490,112 +442,45 @@ impl QueryAdmissionTicket {
         NativeExecutionMetricsCapture::coordinated(self.attempt.admission_binding.observation_handle())
     }
 
-    pub(crate) fn begin_execution_round(
-        self: &Arc<Self>,
-        task_context: Arc<TaskContext>,
-    ) -> QueryEngineResult<QueryAdmissionExecutionRoundGuard> {
-        let task_key = Self::task_key(&task_context);
-        let execution_manifest =
-            self.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned());
-        let mut state = self.lock_state()?;
-        let stale_rounds = Self::remove_stale_rounds_locked(&mut state);
-        let epoch = if let Some(round) = state.rounds.get_mut(&task_key) {
-            round.active_streams = round.active_streams.saturating_add(1);
-            round.epoch
-        } else {
-            state.next_epoch = state.next_epoch.saturating_add(1);
-            let epoch = state.next_epoch;
-            state.rounds.insert(
-                task_key,
-                TicketRound {
-                    _task_context: Arc::clone(&task_context),
-                    handle: None,
-                    active_contexts: 0,
-                    active_streams: 1,
-                    epoch,
-                    admission_facts_recorded: false,
-                    execution_round: AttemptExecutionRound::new(execution_manifest),
-                },
-            );
-            epoch
-        };
-        drop(state);
-        self.finish_orphaned_rounds(stale_rounds);
-        Ok(QueryAdmissionExecutionRoundGuard { ticket: Arc::clone(self), task_key, epoch, released: false })
-    }
-
+    /// Acquires an execution context under the attempt's one admission,
+    /// admitting it the first time a fragment asks.
     pub(crate) async fn acquire_context(
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
     ) -> QueryEngineResult<TicketAdmissionContext> {
-        let task_key = Self::task_key(&task_context);
-        let execution_manifest =
-            self.current_capability_evidence().and_then(|evidence| evidence.execution_manifest().cloned());
         loop {
             let notify = Arc::clone(&self.notify);
             let notified = notify.notified_owned();
             tokio::pin!(notified);
-            let (action, stale_rounds) = {
-                let mut state = self.lock_state()?;
-                let stale_rounds = Self::remove_stale_rounds_locked(&mut state);
-                let action = if let Some(round) = state.rounds.get_mut(&task_key)
-                    && let Some(handle) = round.handle.as_ref().cloned()
-                {
-                    let epoch = round.epoch;
-                    round.active_contexts = round.active_contexts.saturating_add(1);
-                    TicketAcquireAction::Reuse { handle, epoch }
-                } else {
-                    notified.as_mut().enable();
-                    if state.admitting.contains(&task_key) {
+            let action = {
+                let mut admission = self.lock_admission()?;
+                match admission.handle.as_ref() {
+                    Some(handle) => TicketAcquireAction::Reuse(Arc::clone(handle)),
+                    None if admission.admitting => {
+                        notified.as_mut().enable();
                         TicketAcquireAction::Wait
-                    } else {
-                        if !state.rounds.contains_key(&task_key) {
-                            state.next_epoch = state.next_epoch.saturating_add(1);
-                            let epoch = state.next_epoch;
-                            state.rounds.insert(
-                                task_key,
-                                TicketRound {
-                                    _task_context: Arc::clone(&task_context),
-                                    handle: None,
-                                    active_contexts: 0,
-                                    active_streams: 0,
-                                    epoch,
-                                    admission_facts_recorded: false,
-                                    execution_round: AttemptExecutionRound::new(execution_manifest.clone()),
-                                },
-                            );
-                        }
-                        let epoch = state.rounds.get(&task_key).expect("ticket round was just established").epoch;
-                        state.admitting.insert(task_key);
-                        TicketAcquireAction::Admit { epoch }
-                    }
-                };
-                (action, stale_rounds)
+                    },
+                    None => {
+                        admission.admitting = true;
+                        TicketAcquireAction::Admit
+                    },
+                }
             };
-            self.finish_orphaned_rounds(stale_rounds);
-
-            match action {
-                TicketAcquireAction::Reuse { handle, epoch } => {
-                    return self.acquire_from_handle(handle, task_key, epoch, Arc::clone(&task_context)).await;
-                },
+            let handle = match action {
+                TicketAcquireAction::Reuse(handle) => handle,
+                TicketAcquireAction::Admit => self.admit().await?,
                 TicketAcquireAction::Wait => {
                     notified.await;
                     continue;
                 },
-                TicketAcquireAction::Admit { epoch } => {
-                    return self.admit_and_acquire_context(task_key, Arc::clone(&task_context), epoch).await;
-                },
-            }
+            };
+            return self.acquire_from_handle(handle, task_context).await;
         }
     }
 
-    async fn admit_and_acquire_context(
-        self: &Arc<Self>,
-        task_key: usize,
-        task_context: Arc<TaskContext>,
-        epoch: u64,
-    ) -> QueryEngineResult<TicketAdmissionContext> {
-        let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), task_key, disarmed: false };
+    /// Requests the attempt's one admission. Callers set `admitting` first.
+    async fn admit(self: &Arc<Self>) -> QueryEngineResult<Arc<TicketQueryHandle>> {
+        let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), disarmed: false };
         let request = QueryAdmissionRequest::new(self.attempt.admission_binding.clone())
             .with_execution_cancellation(self.attempt_cancellation());
         let request = match self.attempt.requested_query_cap_bytes {
@@ -610,182 +495,67 @@ impl QueryAdmissionTicket {
             Some(deadline) => request.with_queue_deadline(deadline),
             None => request,
         };
-        let handle_result = self
-            .source
-            .session
-            .admit_async_with_request(request)
-            .await
-            .map(|handle| TicketQueryHandle(Arc::new(handle)));
-        let handle = match handle_result {
-            Ok(handle) => Arc::new(handle),
+        let handle = match self.source.session.admit_async_with_request(request).await {
+            Ok(handle) => Arc::new(TicketQueryHandle(Arc::new(handle))),
             Err(error) => {
                 self.terminalize_attempt_admission_error(&error);
                 reset_guard.reset();
                 return Err(error);
             },
         };
-
-        let epoch = {
-            let mut state = match self.lock_state() {
-                Ok(state) => state,
-                Err(error) => {
-                    reset_guard.disarmed = true;
-                    self.record_attempt_native_failure(&error);
-                    drop(handle);
-                    return Err(error);
-                },
-            };
-            state.admitting.remove(&task_key);
-            let Some(round) = state.rounds.get_mut(&task_key) else {
-                reset_guard.disarmed = true;
-                self.notify.notify_waiters();
-                let error = QueryError::new(
-                    QueryErrorCode::Internal,
-                    "algeon_datafusion.native_exec.admission_ticket",
-                    "query admission ticket execution round disappeared during admission",
-                );
-                self.record_attempt_native_failure(&error);
-                drop(state);
-                drop(handle);
-                return Err(error);
-            };
-            if round.epoch != epoch {
-                reset_guard.disarmed = true;
-                self.notify.notify_waiters();
-                let error = QueryError::new(
-                    QueryErrorCode::Internal,
-                    "algeon_datafusion.native_exec.admission_ticket",
-                    "query admission ticket execution round changed during admission",
-                );
-                self.record_attempt_native_failure(&error);
-                drop(state);
-                drop(handle);
-                return Err(error);
-            }
-            round.handle = Some(Arc::clone(&handle));
-            round.active_contexts = round.active_contexts.saturating_add(1);
-            reset_guard.disarmed = true;
-            self.notify.notify_waiters();
-            epoch
-        };
-        self.acquire_from_handle(handle, task_key, epoch, task_context).await
+        let mut admission = self.lock_admission()?;
+        admission.admitting = false;
+        admission.handle = Some(Arc::clone(&handle));
+        reset_guard.disarmed = true;
+        self.notify.notify_waiters();
+        Ok(handle)
     }
 
     async fn acquire_from_handle(
-        self: &Arc<Self>,
+        &self,
         handle: Arc<TicketQueryHandle>,
-        task_key: usize,
-        epoch: u64,
         task_context: Arc<TaskContext>,
     ) -> QueryEngineResult<TicketAdmissionContext> {
-        let mut pending_guard =
-            QueryAdmissionPendingContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false };
         match handle.acquire_context_with_cancellation_async(self.attempt_cancellation()).await {
             Ok(admission_context) => {
-                pending_guard.released = true;
                 let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
                 let _ = self.attempt.handle.record_physical_execution_started();
                 Ok(TicketAdmissionContext {
                     admission_context,
                     task_context,
                     admission_facts,
-                    record_admission_facts: self.mark_admission_facts_recorded(task_key, epoch),
-                    _guard: QueryAdmissionTicketContextGuard {
-                        ticket: Arc::clone(self),
-                        task_key,
-                        epoch,
-                        released: false,
-                    },
+                    record_admission_facts: self.mark_admission_facts_recorded(),
                 })
             },
             Err(error) => {
                 self.terminalize_attempt_admission_error(&error);
-                self.record_attempt_native_failure(&error);
+                self.attempt.handle.record_native_failure(&error);
                 Err(error)
             },
         }
     }
 
-    fn mark_admission_facts_recorded(&self, task_key: usize, epoch: u64) -> bool {
-        let Ok(mut state) = self.state.lock() else {
+    /// Whether the caller is the first context of the attempt to record the
+    /// admission facts.
+    fn mark_admission_facts_recorded(&self) -> bool {
+        let Ok(mut admission) = self.admission.lock() else {
             tracing::warn!("failed to mark poisoned query admission ticket facts state");
             return false;
         };
-        let Some(round) = state.rounds.get_mut(&task_key) else {
-            return false;
-        };
-        if round.epoch != epoch || round.admission_facts_recorded {
-            return false;
-        }
-        round.admission_facts_recorded = true;
-        true
+        !mem::replace(&mut admission.admission_facts_recorded, true)
     }
 
-    fn release_epoch_context(self: &Arc<Self>, task_key: usize, epoch: u64, force: bool) {
-        let Ok(mut state) = self.state.lock() else {
-            tracing::warn!("failed to release poisoned query admission ticket state");
-            return;
-        };
-        let Some(round) = state.rounds.get_mut(&task_key) else {
-            return;
-        };
-        if round.epoch != epoch || round.active_contexts == 0 {
-            return;
-        }
-        round.active_contexts -= 1;
-        let remove = round.active_contexts == 0 && (force || round.active_streams == 0);
-        let removed = remove.then(|| state.rounds.remove(&task_key)).flatten();
-        if removed.is_some() {
-            self.notify.notify_waiters();
-        }
-        drop(state);
-        self.finish_round(removed);
-    }
-
-    fn release_execution_round(self: &Arc<Self>, task_key: usize, epoch: u64) {
-        let Ok(mut state) = self.state.lock() else {
-            tracing::warn!("failed to release poisoned query admission execution round state");
-            return;
-        };
-        let Some(round) = state.rounds.get_mut(&task_key) else {
-            return;
-        };
-        if round.epoch != epoch || round.active_streams == 0 {
-            return;
-        }
-        round.active_streams -= 1;
-        let remove = round.active_streams == 0 && round.active_contexts == 0;
-        let removed = remove.then(|| state.rounds.remove(&task_key)).flatten();
-        if removed.is_some() {
-            self.notify.notify_waiters();
-        }
-        drop(state);
-        self.finish_round(removed);
-    }
-
-    fn finish_round(&self, round: Option<TicketRound>) {
-        if let Some(handle) = round.and_then(|round| round.handle) {
-            handle.finish();
-        }
-    }
-
-    fn finish_orphaned_rounds(&self, rounds: Vec<TicketRound>) {
-        for round in rounds {
-            self.finish_round(Some(round));
-        }
-    }
-
-    fn reset_admitting(&self, task_key: usize) {
-        let Ok(mut state) = self.state.lock() else {
+    fn reset_admitting(&self) {
+        let Ok(mut admission) = self.admission.lock() else {
             tracing::warn!("failed to reset poisoned query admission ticket state");
             return;
         };
-        state.admitting.remove(&task_key);
+        admission.admitting = false;
         self.notify.notify_waiters();
     }
 
-    fn lock_state(&self) -> QueryEngineResult<MutexGuard<'_, TicketState>> {
-        self.state.lock().map_err(|_error| {
+    fn lock_admission(&self) -> QueryEngineResult<MutexGuard<'_, TicketAdmission>> {
+        self.admission.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,
                 "algeon_datafusion.native_exec.admission_ticket",
@@ -793,83 +563,19 @@ impl QueryAdmissionTicket {
             )
         })
     }
-
-    fn task_key(task_context: &Arc<TaskContext>) -> usize {
-        task_context
-            .session_config()
-            .get_extension::<ActiveQueryAdmissionTicket>()
-            .map(|extension| Arc::as_ptr(&extension.round_task_context) as usize)
-            .unwrap_or_else(|| Arc::as_ptr(task_context) as usize)
-    }
-
-    fn remove_stale_rounds_locked(state: &mut TicketState) -> Vec<TicketRound> {
-        let stale_keys = state
-            .rounds
-            .iter()
-            .filter_map(|(task_key, round)| {
-                (round.active_contexts == 0 && round.active_streams == 0).then_some(*task_key)
-            })
-            .collect::<Vec<_>>();
-        stale_keys.into_iter().filter_map(|task_key| state.rounds.remove(&task_key)).collect()
-    }
-}
-
-impl Drop for QueryAdmissionTicket {
-    fn drop(&mut self) {
-        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
-        for handle in state.rounds.drain().filter_map(|(_, round)| round.handle) {
-            handle.finish();
-        }
-    }
 }
 
 enum TicketAcquireAction {
-    Reuse { handle: Arc<TicketQueryHandle>, epoch: u64 },
-    Admit { epoch: u64 },
+    Reuse(Arc<TicketQueryHandle>),
+    Admit,
     Wait,
-}
-
-impl Drop for QueryAdmissionTicketContextGuard {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        self.ticket.release_epoch_context(self.task_key, self.epoch, false);
-    }
-}
-
-impl Drop for QueryAdmissionPendingContextGuard {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        self.ticket.release_epoch_context(self.task_key, self.epoch, true);
-    }
-}
-
-impl QueryAdmissionExecutionRoundGuard {
-    fn record_datafusion_error(&self, error: &DataFusionError) {
-        self.ticket.record_attempt_datafusion_failure(error);
-    }
-}
-
-impl Drop for QueryAdmissionExecutionRoundGuard {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        self.ticket.release_execution_round(self.task_key, self.epoch);
-    }
 }
 
 impl TicketAdmitResetGuard {
     fn reset(&mut self) {
         if !self.disarmed {
             self.disarmed = true;
-            self.ticket.reset_admitting(self.task_key);
+            self.ticket.reset_admitting();
         }
     }
 }
@@ -924,17 +630,7 @@ impl NativeAdmissionExec {
         context: Arc<TaskContext>,
         ticket: Arc<QueryAdmissionTicket>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        let context = task_context_with_query_admission_ticket(context, Arc::clone(&ticket));
-        let round_guard = ticket.begin_execution_round(Arc::clone(&context)).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "algeon_datafusion.native_exec.admission_round",
-                "failed to begin backend query-service admission execution round",
-                error,
-            ))
-        })?;
-        let stream =
-            self.input.execute(partition, context).inspect_err(|error| round_guard.record_datafusion_error(error))?;
-        Ok(Box::pin(NativeAdmissionRoundStream::new(stream, round_guard)))
+        self.input.execute(partition, task_context_with_query_admission_ticket(context, ticket))
     }
 
     /// The attempt ticket of the invocation `context` carries, minted from
@@ -1038,38 +734,6 @@ impl ExecutionPlan for NativeAdmissionExec {
 
     fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
         StatisticsContext::new().compute(self.input.as_ref(), &StatisticsArgs::new().with_partition(partition))
-    }
-}
-
-struct NativeAdmissionRoundStream {
-    inner: SendableRecordBatchStream,
-    round_guard: QueryAdmissionExecutionRoundGuard,
-}
-
-impl NativeAdmissionRoundStream {
-    fn new(inner: SendableRecordBatchStream, round_guard: QueryAdmissionExecutionRoundGuard) -> Self {
-        Self { inner, round_guard }
-    }
-}
-
-impl Unpin for NativeAdmissionRoundStream {}
-
-impl Stream for NativeAdmissionRoundStream {
-    type Item = DataFusionResult<RecordBatch>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        let polled = this.inner.as_mut().poll_next(cx);
-        if let Poll::Ready(Some(Err(error))) = &polled {
-            this.round_guard.record_datafusion_error(error);
-        }
-        polled
-    }
-}
-
-impl RecordBatchStream for NativeAdmissionRoundStream {
-    fn schema(&self) -> SchemaRef {
-        self.inner.schema()
     }
 }
 

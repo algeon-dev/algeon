@@ -421,8 +421,12 @@ impl QueryHandle {
 
     /// Requests admission release before dropping the handle.
     ///
-    /// Runtime-backed services complete GPU resource destruction on the
-    /// selected device executor before waking queued admissions.
+    /// The attempt requests this itself once its outcome is terminal, and the
+    /// release waits for contexts still running, so work run under an attempt
+    /// never calls it. A caller that releases a grant early ends a still-live
+    /// attempt as `Dropped`. Runtime-backed services complete GPU resource
+    /// destruction on the selected device executor before waking queued
+    /// admissions.
     pub fn finish(&self) {
         self.lifetime.request_release();
     }

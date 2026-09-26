@@ -12,7 +12,8 @@ The embedded backend example runs one process with two frontends:
 - Arrow Flight SQL for ad-hoc SQL, metadata, prepared statements, and cancel.
 
 Both frontends share one `AlgeonGpuBackend` and one base `SessionContext`. REST
-requests use the backend-installed session's plan-scoped admission tickets.
+pipelines run plain DataFusion `collect()` calls, so each native execution
+runs as one internal attempt with one admission ticket.
 Flight SQL statements issue Flight tickets first and acquire GPU admission only
 when a native plan starts executing. Native work from both paths draws slots and
 memory grants from the same query-service ledger, which is exposed by

@@ -57,17 +57,14 @@ use super::{
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
     observability::CapturedError,
 };
-use crate::{
-    attempt::server_internal::AlgeonAttemptServerExt,
-    server::{
-        adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
-        adapter_session::{
-            ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
-        },
-        cuml_sql::forest_model_digests,
-        gpu_coverage::{ExplainGpuOutputMode, coverage_batch, coverage_schema, parse_explain_gpu, validate_query},
-        planner::native::{Invocation, InvocationExecution},
+use crate::server::{
+    adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
+    adapter_session::{
+        ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
     },
+    cuml_sql::forest_model_digests,
+    gpu_coverage::{ExplainGpuOutputMode, coverage_batch, coverage_schema, parse_explain_gpu, validate_query},
+    planner::native::{Invocation, InvocationExecution},
 };
 
 mod correlation;

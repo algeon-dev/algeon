@@ -215,8 +215,7 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
     .unwrap();
     let evidence = AttemptCapabilityEvidence::empty().with_execution_manifest(manifest).unwrap();
     let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), Some(evidence));
-    let task_context = Arc::new(TaskContext::default());
-    let _round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
+    let task_context = task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ticket));
 
     let error = ticket
         .begin_host_occurrence(&task_context, "gpu-second", "gpu-second", &second_plan)
@@ -239,9 +238,8 @@ fn host_occurrence_dependencies_complete_once_and_fail_closed_on_drop() {
         Some("host_occurrence_duplicate_execution")
     );
 
-    drop(_round);
-    let next_task_context = Arc::new(TaskContext::default());
-    let _next_round = ticket.begin_execution_round(Arc::clone(&next_task_context)).unwrap();
+    let next_task_context =
+        task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ticket));
     ticket
         .begin_host_occurrence(&next_task_context, "gpu-first", "gpu-first", &first_plan)
         .expect("a new invocation round has independent occurrence state")
@@ -268,11 +266,23 @@ async fn ticket_evidence_extension_preserves_independent_fragment_deltas() {
     assert!(evidence.execution_scopes().iter().any(|scope| scope.matches(&second_plan)));
 
     let context = ticket.acquire_context(Arc::new(TaskContext::default())).await.expect("the combined evidence admits");
-    let error = ticket
+    ticket
         .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&first_plan)])
-        .expect_err("evidence is immutable after admission starts");
+        .expect("evidence the admission already covers extends nothing");
+    let third_plan = resident_host_plan("third-fragment");
+    let error = ticket
+        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&third_plan)])
+        .expect_err("the admitted evidence is fixed once admission starts");
     assert_eq!(error.fact_value("reason"), Some("capability_evidence_extension_after_admission"));
+
+    // The admission belongs to the attempt, not to the fragment that
+    // acquired the context: once that context ends, the attempt still has no
+    // second claim to admit new evidence under.
     drop(context);
+    let error = ticket
+        .extend_capability_evidence_before_admission([AttemptCapabilityEvidence::for_query_plan(&third_plan)])
+        .expect_err("a finished fragment does not reopen the admitted evidence");
+    assert_eq!(error.fact_value("reason"), Some("capability_evidence_extension_after_admission"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -287,7 +297,7 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default(),
     );
-    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
+    let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     assert!(ticket.attempt_capability_evidence().is_none());
 
     let context = ticket
@@ -300,11 +310,17 @@ async fn admission_ticket_forwards_opaque_evidence_and_releases_real_ledger_gran
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
 
     drop(context);
+    assert_eq!(
+        backend.backend().admission_snapshot().unwrap().active_queries,
+        1,
+        "the grant belongs to the attempt, not to the context"
+    );
+    drop(attempt);
     let (_next_attempt, next_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let next_context =
         timeout(std::time::Duration::from_secs(5), next_ticket.acquire_context(Arc::new(TaskContext::default())))
             .await
-            .expect("dropping the context must eventually return the real ledger grant")
+            .expect("ending the attempt must eventually return the real ledger grant")
             .expect("released capacity must admit the next attempt");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
     drop(next_context);
@@ -326,7 +342,7 @@ async fn admission_ticket_propagates_attempt_cancellation_to_admission() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admission_failure_clears_round_state_and_ends_the_attempt_admission() {
+async fn admission_failure_clears_the_in_flight_admission_and_ends_the_attempt_admission() {
     let backend = InstalledTestGpuBackend::new();
     let (attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     attempt.cancellation().cancel();
@@ -339,29 +355,25 @@ async fn admission_failure_clears_round_state_and_ends_the_attempt_admission() {
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
 
     {
-        let state = ticket.state.lock().expect("ticket state mutex");
-        assert!(state.admitting.is_empty(), "a failed admission must not strand its in-flight marker");
-        assert_eq!(state.rounds.len(), 1, "the failed task round is retained only until the next acquisition");
-        let round = state.rounds.values().next().expect("failed round is registered");
-        assert_eq!(round.active_contexts, 0);
-        assert_eq!(round.active_streams, 0);
-        assert!(round.handle.is_none(), "a rejected admission cannot retain a query handle");
+        let admission = ticket.admission.lock().expect("ticket admission mutex");
+        assert!(!admission.admitting, "a failed admission must not strand its in-flight marker");
+        assert!(admission.handle.is_none(), "a rejected admission cannot retain a query handle");
     }
 
     let retry = timeout(Duration::from_secs(5), ticket.acquire_context(Arc::new(TaskContext::default())))
         .await
-        .expect("a retry must not wait on the rejected round")
+        .expect("a retry must not wait on the rejected admission")
         .expect_err("an attempt admits at most once");
     assert_eq!(retry.fact_value("reason"), Some("attempt_admission_already_claimed"));
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
 
-    let state = ticket.state.lock().expect("ticket state mutex");
-    assert!(state.admitting.is_empty(), "a refused claim must not strand its in-flight marker");
-    assert!(state.rounds.values().all(|round| round.handle.is_none()));
+    let admission = ticket.admission.lock().expect("ticket admission mutex");
+    assert!(!admission.admitting, "a refused claim must not strand its in-flight marker");
+    assert!(admission.handle.is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_context_drops() {
+async fn pending_context_cancellation_keeps_the_shared_grant_until_the_attempt_ends() {
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::new(
             SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
@@ -383,26 +395,26 @@ async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_cont
         .expect_err("a cancelled secondary context must not consume another context lease");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
-    {
-        let state = ticket.state.lock().expect("ticket state mutex");
-        let round = state.rounds.values().next().expect("the shared task round remains live");
-        assert_eq!(round.active_contexts, 1, "the failed secondary acquire must release only its own context slot");
-        assert_eq!(round.active_streams, 0);
-    }
 
     drop(first_context);
+    assert_eq!(
+        backend.backend().admission_snapshot().unwrap().active_queries,
+        1,
+        "a cancelled attempt keeps its grant until its outcome is committed"
+    );
+    drop(attempt);
     let (_replacement_attempt, replacement_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let replacement =
         timeout(Duration::from_secs(5), replacement_ticket.acquire_context(Arc::new(TaskContext::default())))
             .await
-            .expect("the grant must be returned after the last context drops")
+            .expect("the grant must be returned once the attempt ends")
             .expect("released capacity must admit a replacement attempt");
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 1);
     drop(replacement);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capacity() {
+async fn admission_deadline_cancels_a_waiter_without_leaking_admission_state_or_capacity() {
     let backend = InstalledTestGpuBackend::with_config(
         AlgeonNativeExecutionConfig::new(
             SourceChunking::try_new(64 * 1024 * 1024, 2, 3, 1).expect("valid source chunking"),
@@ -412,7 +424,7 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
             .with_max_active_attempts(1),
         AlgeonGpuQueuePolicy::default().with_max_queue_wait(Duration::from_secs(1)),
     );
-    let (_holder_attempt, holder) = attempt_ticket_for_test(admission_source(&backend), None);
+    let (holder_attempt, holder) = attempt_ticket_for_test(admission_source(&backend), None);
     let held_context = holder
         .acquire_context(Arc::new(TaskContext::default()))
         .await
@@ -435,12 +447,13 @@ async fn admission_deadline_cancels_a_waiter_without_leaking_round_state_or_capa
     assert_eq!(snapshot.active_queries, 1, "the holder still owns the only grant");
     assert_eq!(snapshot.queued_queries, 0, "a cancelled waiter must be removed from the queue");
     {
-        let state = waiter.state.lock().expect("waiter ticket state mutex");
-        assert!(state.admitting.is_empty(), "deadline cleanup must clear the in-flight marker");
-        assert!(state.rounds.values().all(|round| round.handle.is_none()));
+        let admission = waiter.admission.lock().expect("waiter ticket admission mutex");
+        assert!(!admission.admitting, "deadline cleanup must clear the in-flight marker");
+        assert!(admission.handle.is_none());
     }
 
     drop(held_context);
+    drop(holder_attempt);
     let (_replacement_attempt, replacement_ticket) = attempt_ticket_for_test(admission_source(&backend), None);
     let replacement =
         timeout(Duration::from_secs(5), replacement_ticket.acquire_context(Arc::new(TaskContext::default())))
@@ -666,60 +679,4 @@ fn dropping_stream_without_polling_reports_dropped_once() {
     let stream = exec.execute(0, Arc::new(TaskContext::default())).expect("synthetic stream starts");
     drop(stream);
     assert_eq!(sole_internal_attempt_report(&backend).outcome, RuntimeTerminalOutcome::Dropped);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn one_attempt_ticket_keeps_its_round_alive_until_all_streams_drop() {
-    let backend = InstalledTestGpuBackend::new();
-    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
-    let observed_ticket = Arc::new(Mutex::new(None));
-    let exec = admission_exec(&backend, lifecycle_exec(LifecyclePlanBehavior::Success, Arc::clone(&observed_ticket)));
-    let task_context = task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), Arc::clone(&ticket));
-
-    let mut first = exec.execute(0, Arc::clone(&task_context)).expect("first stream starts");
-    let mut second = exec.execute(0, Arc::clone(&task_context)).expect("second stream reuses the ticket");
-    assert_eq!(*observed_ticket.lock().expect("test ticket observation mutex"), Some(ticket.id()));
-
-    assert!(first.next().await.is_none());
-    drop(first);
-    assert_eq!(
-        ticket.state.lock().expect("ticket state mutex").rounds.len(),
-        1,
-        "one live stream keeps the shared execution round alive"
-    );
-
-    assert!(second.next().await.is_none());
-    drop(second);
-    assert!(ticket.state.lock().expect("ticket state mutex").rounds.is_empty());
-}
-
-#[test]
-fn context_ticket_guard_release_waits_for_the_execution_round() {
-    let backend = InstalledTestGpuBackend::new();
-    let (_attempt, ticket) = attempt_ticket_for_test(admission_source(&backend), None);
-    let task_context = Arc::new(TaskContext::default());
-    let round = ticket.begin_execution_round(Arc::clone(&task_context)).expect("execution round starts");
-
-    {
-        let mut state = ticket.state.lock().expect("ticket state mutex");
-        let ticket_round = state.rounds.get_mut(&round.task_key).expect("round is registered");
-        assert_eq!(ticket_round.active_streams, 1);
-        ticket_round.active_contexts = 1;
-    }
-    let context_guard = QueryAdmissionTicketContextGuard {
-        ticket: Arc::clone(&ticket),
-        task_key: round.task_key,
-        epoch: round.epoch,
-        released: false,
-    };
-    drop(context_guard);
-
-    {
-        let state = ticket.state.lock().expect("ticket state mutex");
-        let ticket_round = state.rounds.get(&round.task_key).expect("stream still owns the round");
-        assert_eq!(ticket_round.active_contexts, 0);
-        assert_eq!(ticket_round.active_streams, 1);
-    }
-    drop(round);
-    assert!(ticket.state.lock().expect("ticket state mutex").rounds.is_empty());
 }

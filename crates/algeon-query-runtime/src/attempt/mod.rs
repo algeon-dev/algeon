@@ -8,7 +8,7 @@ pub use cancellation::AttemptCancellation;
 #[doc(hidden)]
 pub use execution::{AttemptExecutionRound, AttemptHostOccurrence};
 pub(crate) use lifecycle::{AttemptLifecycle, AttemptLifecycleError};
-pub(crate) use owner::{AttemptAdmission, AttemptReportPublisher};
+pub(crate) use owner::{AdmittedGrantRelease, AttemptAdmission, AttemptReportPublisher};
 pub use owner::{
     AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptBegin, AttemptCompletion, AttemptCompletionFactory,
     AttemptHandle, AttemptOwner, BeginAttemptRequest,
