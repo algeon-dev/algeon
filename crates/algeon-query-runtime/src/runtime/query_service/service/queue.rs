@@ -425,10 +425,19 @@ impl QueryService {
         }
         state.replace_queued_requests(retained);
 
+        // Device health and resident capacity change only through ledger
+        // transitions. A request is checked once when it enters the queue and
+        // again after a transition that can make it impossible; the
+        // reconciliation above may itself have closed a ledger.
+        let revalidate_all = self.inner.queue_needs_revalidation.swap(false, Ordering::AcqRel);
         let mut terminated = Vec::new();
         let mut queued = state.take_queued_requests();
         let mut retained = VecDeque::with_capacity(queued.len());
-        while let Some(request) = queued.pop_front() {
+        while let Some(mut request) = queued.pop_front() {
+            if request.device_state_validated && !revalidate_all {
+                retained.push_back(request);
+                continue;
+            }
             match self.all_compatible_devices_closed_error(&request.compatible_devices) {
                 Ok(Some(error)) => {
                     terminated.push((request, error));
@@ -438,7 +447,10 @@ impl QueryService {
                     &[],
                     request.requested_query_cap_bytes,
                 ) {
-                    Ok(()) => retained.push_back(request),
+                    Ok(()) => {
+                        request.device_state_validated = true;
+                        retained.push_back(request);
+                    },
                     Err(error) if error.code() == QueryErrorCode::QueryBudgetUnavailable => {
                         terminated.push((request, error));
                     },

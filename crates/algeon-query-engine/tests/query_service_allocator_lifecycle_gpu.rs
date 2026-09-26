@@ -327,11 +327,9 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     // can create the root stream/domain envelope, and no lane has been released.
     assert!(
         session
-            .enqueue_admission_with_request(
+            .try_admit_query_with_request(
                 QueryAdmissionRequest::test_attempt().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES)
             )
-            .unwrap()
-            .try_admit()
             .unwrap()
             .is_none(),
         "two live attempts must exhaust exactly the two configured attempt lanes",
@@ -428,12 +426,7 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
     assert_eq!(ledger.active_attempts, 2);
     assert_eq!(ledger.live_grants_bytes, derived.saturating_mul(2));
     assert!(
-        session
-            .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt())
-            .unwrap()
-            .try_admit()
-            .unwrap()
-            .is_none(),
+        session.try_admit_query_with_request(QueryAdmissionRequest::test_attempt()).unwrap().is_none(),
         "two derived defaults fill the lanes and the query share; a third queues"
     );
 

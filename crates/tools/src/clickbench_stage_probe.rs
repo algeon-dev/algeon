@@ -134,7 +134,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
                 let binding = attempt.admission_binding();
                 let observation = binding.observation_handle();
                 let query_handle =
-                    Arc::new(backend.session().admit_query_with_request(QueryAdmissionRequest::new(binding))?);
+                    Arc::new(backend.session().admit_async_with_request(QueryAdmissionRequest::new(binding)).await?);
                 let verdict = probe_native_observed(
                     query_id,
                     &root,

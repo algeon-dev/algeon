@@ -63,12 +63,7 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     }
     assert_eq!(placed, [2, 1], "device 0 holds its cap of two and device 1 holds its cap of one");
     assert!(
-        session
-            .enqueue_admission_with_request(QueryAdmissionRequest::test_attempt())
-            .unwrap()
-            .try_admit()
-            .unwrap()
-            .is_none(),
+        session.try_admit_query_with_request(QueryAdmissionRequest::test_attempt()).unwrap().is_none(),
         "the device-1 cap remains one instead of inheriting device 0's cap of two",
     );
 

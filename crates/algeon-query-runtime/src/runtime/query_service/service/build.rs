@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -37,7 +37,7 @@ use crate::runtime::{
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
     context::{DeviceRuntime, QueryServiceEpoch},
     gpu::{
-        DeviceOwnerToken, normalize_device_ordinals,
+        DeviceOwnerToken, LedgerTransitionKind, normalize_device_ordinals,
         registry::{
             DeviceRegistry, DeviceRegistryCapacityPolicy, DeviceRegistryConfig, DeviceRegistryInstallProfile,
             DeviceRegistryMemoryPartition, ResolvedDeviceInstallPlans,
@@ -299,6 +299,7 @@ impl QueryService {
             admission: Mutex::new(AdmissionState::default()),
             admission_available: Condvar::new(),
             admission_notify: Notify::new(),
+            queue_needs_revalidation: AtomicBool::new(false),
             allocator_event_correlation: Mutex::new(AllocatorEventCorrelationIndex::default()),
             #[cfg(test)]
             shutdown_waiters: AtomicUsize::new(0),
@@ -321,9 +322,12 @@ impl QueryService {
         register_shared_device_admission_waiters(&inner)?;
         let service = Self { inner };
         // Grant releases wake this service's queue and any sibling services
-        // sharing the device. Release observers run only after the ledger
-        // state lock is released; the admission invariant forbids grant drops
-        // while the admission mutex is held.
+        // sharing the device; the admission invariant forbids grant drops
+        // while the admission mutex is held. An admission close or a
+        // frozen-resident publish can happen under this service's admission
+        // mutex (health folding during placement or a queue sweep), so it
+        // only marks this queue for revalidation and wakes it. Each sibling
+        // service registers its own observer on a shared ledger.
         let ledgers = service
             .inner
             .resources
@@ -343,9 +347,15 @@ impl QueryService {
             });
         for ledger in ledgers {
             let weak = Arc::downgrade(&service.inner);
-            ledger.register_release_observer(Arc::new(move |transition| {
-                notify_shared_device_admission_available(transition.snapshot.device_ordinal);
+            ledger.register_admission_observer(Arc::new(move |transition| {
+                let released = transition.kind == LedgerTransitionKind::GrantReleased;
+                if released {
+                    notify_shared_device_admission_available(transition.snapshot.device_ordinal);
+                }
                 if let Some(inner) = weak.upgrade() {
+                    if !released {
+                        inner.queue_needs_revalidation.store(true, Ordering::Release);
+                    }
                     inner.notify_admission_available();
                 }
             }))?;

@@ -81,10 +81,6 @@ impl PendingDeviceSlotNotifications {
         self.device_ordinals.push(device_ordinal);
     }
 
-    pub(super) fn has_pending(&self) -> bool {
-        !self.device_ordinals.is_empty()
-    }
-
     pub(super) fn notify(&mut self) {
         self.device_ordinals.sort_unstable();
         self.device_ordinals.dedup();

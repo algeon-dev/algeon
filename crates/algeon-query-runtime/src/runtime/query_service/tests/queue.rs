@@ -610,6 +610,31 @@ fn query_service_close_wakes_waiting_admission() {
     assert_eq!(error.fact_value("reason"), Some("admission_closed"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_the_only_device_rejects_a_waiting_admission_without_other_admission_activity() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+        64 * 1024 * 1024,
+        1024,
+        1,
+    );
+    let _active = service.admit_query().unwrap();
+    let queued_service = service.clone();
+    let queued = tokio::spawn(async move { queued_service.admit_async().await });
+    wait_for_queued_len(&service, 1);
+
+    let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only service ledger");
+    ledger.close_admission("unknown-isolation backend failure: injected").unwrap();
+
+    let error = time::timeout(Duration::from_secs(2), queued)
+        .await
+        .expect("closing the waiter's only device ends its wait")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
+}
+
 #[test]
 fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
     let service = test_service(1, 8);

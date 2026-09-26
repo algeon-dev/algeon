@@ -281,7 +281,7 @@ fn grant_release_completes_after_the_ledger_lock_is_poisoned() {
     let released_live_bytes = Arc::new(Mutex::new(Vec::new()));
     let observed_live_bytes = Arc::clone(&released_live_bytes);
     ledger
-        .register_release_observer(Arc::new(move |transition| {
+        .register_admission_observer(Arc::new(move |transition| {
             observed_live_bytes.lock().expect("release log").push(transition.snapshot.live_grants_bytes);
         }))
         .unwrap();

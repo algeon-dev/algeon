@@ -232,11 +232,12 @@ pub(crate) struct LedgerTransition {
 /// In-lock observer of one atomic ledger transition.
 pub(crate) type LedgerTransitionObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
 
-/// Post-lock observer of a grant release.
+/// Post-lock observer of a transition that changes what queued admission can
+/// do: a grant release, an admission close, or a frozen-resident publish.
 ///
-/// Release observers preserve the queue wakeup ordering: the grant has left
-/// the ledger and the state mutex is no longer held when they run.
-pub(crate) type LedgerReleaseObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
+/// It runs after the transition committed and the ledger state mutex was
+/// released, so it may wake or revalidate admission queues.
+pub(crate) type LedgerAdmissionObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
 
 /// Per-device versioned immutable-grant ledger.
 #[derive(Clone)]
@@ -251,9 +252,9 @@ struct DeviceLedgerInner {
     // Arc while the ledger state mutex is held; it must never clone a Vec or
     // allocate on an admission/resource update path.
     transition_observers: Mutex<Arc<[LedgerTransitionObserver]>>,
-    // Release observers are outside the state mutex, but share the same
+    // Admission observers are outside the state mutex, but share the same
     // allocation-free dispatch rule as transition observers.
-    release_observers: Mutex<Arc<[LedgerReleaseObserver]>>,
+    admission_observers: Mutex<Arc<[LedgerAdmissionObserver]>>,
 }
 
 const MAX_LEDGER_TRANSITION_OBSERVER_DEPTH: usize = 64;
@@ -370,7 +371,7 @@ impl DeviceLedger {
                     pinned_bytes: 0,
                 }),
                 transition_observers: Mutex::new(Arc::from([])),
-                release_observers: Mutex::new(Arc::from([])),
+                admission_observers: Mutex::new(Arc::from([])),
             }),
         }
     }
@@ -473,15 +474,27 @@ impl DeviceLedger {
             .ok()
     }
 
-    fn release_observers(&self) -> Option<Arc<[LedgerReleaseObserver]>> {
+    fn admission_observers(&self) -> Option<Arc<[LedgerAdmissionObserver]>> {
         self.inner
-            .release_observers
+            .admission_observers
             .lock()
             .map(|observers| Arc::clone(&observers))
             .map_err(|_error| {
-                eprintln!("[query-engine] warning: device ledger release-observer mutex was poisoned");
+                eprintln!("[query-engine] warning: device ledger admission-observer mutex was poisoned");
             })
             .ok()
+    }
+
+    /// Delivers `transition` to the admission observers. The caller has
+    /// released the ledger state mutex.
+    fn notify_admission_observers(&self, transition: &LedgerTransition) {
+        if let Some(observers) = self.admission_observers() {
+            for observer in observers.iter() {
+                if catch_unwind(AssertUnwindSafe(|| observer(transition))).is_err() {
+                    eprintln!("[query-engine] warning: device ledger admission observer panicked");
+                }
+            }
+        }
     }
 
     fn bump_sequence_and_notify_locked(
@@ -519,15 +532,16 @@ impl DeviceLedger {
         Ok(())
     }
 
-    /// Registers an additive post-lock grant-release observer.
+    /// Registers an additive post-lock [`LedgerAdmissionObserver`].
     ///
-    /// The observer runs only after a grant release has committed and the
-    /// ledger mutex has been released. This preserves the queue-wakeup
-    /// contract without conflating it with atomic state observation.
-    pub(crate) fn register_release_observer(&self, observer: LedgerReleaseObserver) -> Result<()> {
-        let mut registered = self.inner.release_observers.lock().map_err(|_error| {
-            QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger release-observer mutex was poisoned")
-                .with_fact("reason", "release_observer_mutex_poisoned")
+    /// It runs only after a grant release, an admission close, or a
+    /// frozen-resident publish has committed and the ledger mutex has been
+    /// released. This preserves the queue-wakeup contract without conflating
+    /// it with atomic state observation.
+    pub(crate) fn register_admission_observer(&self, observer: LedgerAdmissionObserver) -> Result<()> {
+        let mut registered = self.inner.admission_observers.lock().map_err(|_error| {
+            QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger admission-observer mutex was poisoned")
+                .with_fact("reason", "admission_observer_mutex_poisoned")
         })?;
         let mut next = Vec::with_capacity(registered.len().saturating_add(1));
         next.extend(registered.iter().cloned());
@@ -640,7 +654,10 @@ impl DeviceLedger {
             DeviceAdmissionHealth::Closed { generation, .. } => generation.saturating_add(1),
         };
         state.health = DeviceAdmissionHealth::Closed { reason: reason.into(), generation };
-        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
+        let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
+        // Admission observers wake service queues, so they run outside the ledger lock.
+        drop(state);
+        self.notify_admission_observers(&transition);
         Ok(generation)
     }
 
@@ -656,7 +673,10 @@ impl DeviceLedger {
             return Ok(false);
         }
         state.health = DeviceAdmissionHealth::Closed { reason: reason.into(), generation: 1 };
-        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
+        let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
+        // Admission observers wake service queues, so they run outside the ledger lock.
+        drop(state);
+        self.notify_admission_observers(&transition);
         Ok(true)
     }
 
@@ -761,15 +781,9 @@ impl DeviceLedger {
             state.frozen_resident_bytes = state.frozen_resident_bytes.saturating_sub(resident_bytes);
         }
         let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantReleased);
-        // Release observers lock service admission mutexes, so they run outside the ledger lock.
+        // Admission observers lock service admission mutexes, so they run outside the ledger lock.
         drop(state);
-        if let Some(observers) = self.release_observers() {
-            for observer in observers.iter() {
-                if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
-                    eprintln!("[query-engine] warning: device ledger release observer panicked");
-                }
-            }
-        }
+        self.notify_admission_observers(&transition);
     }
 
     /// Attempts to charge bytes retained by an evictable cache.
@@ -1209,7 +1223,10 @@ impl MemoryGrant {
             .get_mut(&self.inner.identity.generation)
             .expect("grant existence was checked under the same ledger lock")
             .frozen_resident_bytes = Some(resident_bytes);
-        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantFrozenResident);
+        let transition = ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantFrozenResident);
+        // Admission observers wake service queues, so they run outside the ledger lock.
+        drop(state);
+        ledger.notify_admission_observers(&transition);
         Ok(())
     }
 

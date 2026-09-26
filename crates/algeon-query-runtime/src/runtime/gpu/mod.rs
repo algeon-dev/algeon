@@ -16,10 +16,9 @@ pub(crate) use inventory::device_budget_bytes_from_facts;
 pub(crate) use inventory::{AlgeonGpuInventory, AlgeonNvmlTelemetry, GpuInventory, GpuTelemetry};
 pub use inventory::{DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus};
 pub(crate) use lanes::{DeviceLanePermit, DeviceWorkerScope};
-#[cfg(test)]
-pub(crate) use ledger::LedgerTransitionKind;
 pub(crate) use ledger::{
-    DeviceAdmissionHealth, DeviceLedger, GrantIdentity, LedgerSnapshot, LedgerTransition, MemoryGrant,
+    DeviceAdmissionHealth, DeviceLedger, GrantIdentity, LedgerSnapshot, LedgerTransition, LedgerTransitionKind,
+    MemoryGrant,
 };
 pub use ledger::{DeviceLedgerGrantRow, DeviceLedgerReport};
 pub use memory_failure::DeviceMemoryFailureReport;

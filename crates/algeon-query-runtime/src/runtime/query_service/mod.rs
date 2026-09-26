@@ -43,9 +43,8 @@ mod service;
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(test, feature = "test-hooks"))]
-#[doc(hidden)]
-pub use admission::QueryAdmissionWaiter;
+#[cfg(test)]
+use admission::QueryAdmissionWaiter;
 use admission::QueryCompletion;
 #[cfg(test)]
 use admission::{AdmissionState, DeviceAdmissionEntries};
