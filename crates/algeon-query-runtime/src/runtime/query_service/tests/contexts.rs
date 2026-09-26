@@ -116,7 +116,6 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("attempt terminalizes");
     drop(context);
-    handle.finish();
     drop(handle);
     completion.wait_timeout(Duration::from_secs(10)).expect("attempt report publishes after cleanup");
 }
@@ -151,7 +150,7 @@ fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
     assert_eq!(graph.cache_allocation_domain().capacity_bytes(), CACHE_CAP_BYTES);
 
     drop(context);
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("cache-enabled service drains");
 }
@@ -159,7 +158,7 @@ fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
 fn query_service_released_handle_rejects_context_acquisition() {
     let service = runtime_test_service(1, 8);
     let handle = service.admit_query().unwrap();
-    handle.finish();
+    handle.end_test_attempt();
 
     let error = handle.acquire_context().unwrap_err();
 
@@ -212,7 +211,7 @@ fn admitted_context_gate_rejects_changed_scope_evidence() {
         assert_eq!(error.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
 
         drop(admitted);
-        handle.finish();
+        handle.end_test_attempt();
         drop(handle);
         assert_quiescent(&service);
     }
@@ -252,7 +251,7 @@ async fn release_racing_root_context_binding_returns_a_structured_error_without_
         assert!(Instant::now() < deadline, "root context setup consumes its binding");
         yield_now().await;
     }
-    handle.finish();
+    handle.end_test_attempt();
     gate.open();
 
     let error = acquire
@@ -300,7 +299,7 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
         .expect("a subsequent acquisition establishes the root context");
 
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
     drop(pool);
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
@@ -326,7 +325,7 @@ fn expired_deadline_stops_secondary_stream_acquisition_before_consuming_a_permit
     assert_eq!(device.stream_pool().class_counters(), counters_before, "no auxiliary stream permit was consumed");
 
     drop(root_context);
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     service
         .wait_for_stream_pools_idle(Duration::from_secs(10))
@@ -386,14 +385,14 @@ async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_
     );
     drop(recovery_context);
 
-    handle.finish();
+    handle.end_test_attempt();
     drop(pool);
     drop(handle);
     service
         .wait_for_stream_pools_idle(Duration::from_secs(10))
         .expect("deadline expiry does not cancel admission cleanup");
     let replacement = service.admit_query().expect("cleanup returns the expired attempt's admission capacity");
-    replacement.finish();
+    replacement.end_test_attempt();
     drop(replacement);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
@@ -417,7 +416,7 @@ fn finished_query_rejects_context_derivations_until_escaped_context_drops() {
     let escaped_context = admitted_context.context().clone();
     drop(admitted_context);
 
-    handle.finish();
+    handle.end_test_attempt();
 
     for error in [
         escaped_context.runtime().unwrap_err(),
@@ -447,7 +446,7 @@ fn finish_vs_runtime_derivation_is_linearizable_and_releases_once() {
         let finish_barrier = Arc::clone(&barrier);
         let finish = std::thread::spawn(move || {
             finish_barrier.wait();
-            finish_handle.finish();
+            finish_handle.end_test_attempt();
         });
         let derive_barrier = Arc::clone(&barrier);
         let derive = std::thread::spawn(move || {
@@ -637,7 +636,7 @@ fn execution_budget_token_retains_query_domain_until_drop() {
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(1).with_boundary("query_epoch_retention"))
         .expect("query-domain execution budget token");
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
 
     assert!(
         service.try_admit_query().unwrap().is_none(),
@@ -654,7 +653,7 @@ fn retained_service_stream_pool_keeps_query_admitted_and_rejects_post_finish_acq
     let admitted_context = handle.acquire_context().unwrap();
     let retained_pool = admitted_context.context().service_stream_pool();
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
 
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
     let error = retained_pool.acquire().expect_err("closed query epoch must reject stream acquisition");
@@ -682,7 +681,7 @@ fn acquired_service_stream_and_derived_runtime_hold_query_until_last_counted_dro
     drop(shared_runtime);
     drop(retained_pool);
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
 
     let error = stream_lease.runtime().expect_err("query finish must reject new runtime derivation from the lease");
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
@@ -711,7 +710,7 @@ fn cloned_memory_grant_and_resident_owner_hold_query_and_reject_post_finish_work
         retained_grant.retain_resident_owner(1).expect("resident owner is recorded").expect("positive owner bytes");
     drop(grant);
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
 
     assert_eq!(retained_grant.budget_bytes(), 8 * 1024 * 1024, "immutable grant budget survives epoch closure");
     assert!(service.try_admit_query().unwrap().is_none());
@@ -743,7 +742,7 @@ async fn cloned_gpu_pool_job_holds_query_and_rejects_post_finish_submission() {
     started_rx.await.expect("GPU job starts");
     drop(pool);
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
 
     let spawn_error = retained_pool
         .spawn(GpuExecutionJobKind::AttemptWork, async {})
@@ -794,7 +793,7 @@ async fn queued_gpu_pool_job_retains_query_without_parking_cleanup_on_worker_per
     }
 
     drop(admitted_context);
-    handle.finish();
+    handle.end_test_attempt();
     drop(pool);
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
@@ -809,7 +808,7 @@ async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
     let handle = service.admit_query().unwrap();
     let retained_pool = handle.gpu_execution_pool().expect("counted query-handle GPU execution pool");
 
-    handle.finish();
+    handle.end_test_attempt();
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
     let spawn_error = retained_pool
@@ -865,7 +864,7 @@ async fn admission_without_runtime_context_releases_through_the_device_executor(
         yield_now().await;
     }
 
-    direct.finish();
+    direct.end_test_attempt();
     drop(direct);
     // The release owns the envelope's root stream and domain, so it queues
     // behind the blocked device executor and must not unblock the queued
@@ -919,7 +918,7 @@ async fn root_context_release_waits_for_busy_gpu_worker() {
         yield_now().await;
     }
 
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     assert!(
         timeout(Duration::from_millis(250), &mut queued).await.is_err(),
@@ -955,7 +954,7 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     });
     started_rx.await.expect("GPU job starts");
 
-    handle.finish();
+    handle.end_test_attempt();
     drop(retained_pool);
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
 
@@ -1018,7 +1017,6 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("execution commits its terminal outcome");
     drop(context);
-    handle.finish();
     drop(handle);
     assert!(!completion.is_ready(), "terminal outcome alone cannot release the running execution job");
     assert_eq!(

@@ -232,10 +232,10 @@ fn compile_cugraph_admission_ticket(
             })
         });
         if !graph_is_covered || !edge_is_covered {
-            ticket.extend_capability_evidence_before_admission(fragment_evidence_items).map_err(|error| {
+            ticket.bind_fragment_evidence(fragment_evidence_items).map_err(|error| {
                 DataFusionError::from(Error::from_native(
                     "algeon_datafusion.cugraph_sql.graph_ticket_ask",
-                    "failed to bind prepared graph evidence before invocation admission",
+                    "failed to bind prepared graph evidence to the invocation admission",
                     error,
                 ))
             })?;

@@ -470,7 +470,7 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     assert_eq!(error.fact_value("device_live_grants_bytes"), Some(active_grant.as_str()));
     assert_eq!(error.fact_value("device_admissible_query_cap_bytes"), Some("1:0"));
 
-    active.finish();
+    active.end_test_attempt();
     drop(active);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }

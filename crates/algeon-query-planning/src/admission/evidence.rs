@@ -2,7 +2,9 @@
 //!
 //! This evidence answers two questions and no others: which device
 //! capabilities the plan requires, and whether the plan about to execute is
-//! the plan that was admitted. Memory sizing is not represented here. The
+//! the plan that was admitted. The first decides placement once, when the
+//! attempt claims its grant; the answer to the second grows as fragments
+//! planned after the claim join that grant. Memory sizing is not represented here. The
 //! query domain's allocator is the single arbiter of a query's allocation
 //! limit, so a planning-time byte model would be a second, weaker source of
 //! truth that can only reject work the allocator would have admitted.
@@ -139,12 +141,7 @@ impl AttemptCapabilityEvidence {
     #[doc(hidden)]
     pub fn with_execution_manifest(mut self, manifest: AttemptExecutionManifest) -> Result<Self> {
         if self.execution_manifest.is_some() {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "query_engine.admission.evidence",
-                "an admitted attempt has more than one execution manifest",
-            )
-            .with_fact("reason", "duplicate_execution_manifest"));
+            return Err(duplicate_execution_manifest_error());
         }
         self.execution_manifest = Some(manifest);
         Ok(self)
@@ -213,34 +210,50 @@ impl AttemptCapabilityEvidence {
     pub fn aggregate<I: IntoIterator<Item = Self>>(evidence: I) -> Result<Self> {
         let mut aggregate = Self::empty();
         for one in evidence {
-            for capability in one.required_capabilities {
-                if !aggregate.required_capabilities.contains(&capability) {
-                    aggregate.required_capabilities.push(capability);
-                }
+            if one.execution_manifest.is_some() && aggregate.execution_manifest.is_some() {
+                return Err(duplicate_execution_manifest_error());
             }
-            for scope in one.attested_cugraph_graph_execution_scopes {
-                if !aggregate.attested_cugraph_graph_execution_scopes.contains(&scope) {
-                    aggregate.attested_cugraph_graph_execution_scopes.push(scope);
-                }
-            }
-            for scope in one.execution_scopes {
-                if !aggregate.execution_scopes.contains(&scope) {
-                    aggregate.execution_scopes.push(scope);
-                }
-            }
-            if let Some(manifest) = one.execution_manifest {
-                if aggregate.execution_manifest.is_some() {
-                    return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedPlanShape,
-                        "query_engine.admission.evidence",
-                        "an admitted attempt has more than one execution manifest",
-                    )
-                    .with_fact("reason", "duplicate_execution_manifest"));
-                }
-                aggregate.execution_manifest = Some(manifest);
-            }
+            aggregate.union(&one);
         }
         Ok(aggregate)
+    }
+
+    /// Adds a fragment planned after the attempt's claim. Placement was fixed
+    /// by the claim and is not revisited here: the caller first checks the
+    /// fragment's capabilities against the granted device. The fragment's
+    /// capabilities and plan identity then join this evidence. The attempt
+    /// keeps one execution manifest, so a fragment's manifest must be the one
+    /// already bound, if any.
+    #[doc(hidden)]
+    pub fn join(&mut self, fragment: &Self) -> Result<()> {
+        if let (Some(bound), Some(manifest)) = (&self.execution_manifest, &fragment.execution_manifest)
+            && bound != manifest
+        {
+            return Err(duplicate_execution_manifest_error());
+        }
+        self.union(fragment);
+        Ok(())
+    }
+
+    fn union(&mut self, other: &Self) {
+        for capability in &other.required_capabilities {
+            if !self.required_capabilities.contains(capability) {
+                self.required_capabilities.push(*capability);
+            }
+        }
+        for scope in &other.attested_cugraph_graph_execution_scopes {
+            if !self.attested_cugraph_graph_execution_scopes.contains(scope) {
+                self.attested_cugraph_graph_execution_scopes.push(scope.clone());
+            }
+        }
+        for scope in &other.execution_scopes {
+            if !self.execution_scopes.contains(scope) {
+                self.execution_scopes.push(scope.clone());
+            }
+        }
+        if self.execution_manifest.is_none() {
+            self.execution_manifest.clone_from(&other.execution_manifest);
+        }
     }
 
     #[doc(hidden)]
@@ -342,6 +355,15 @@ impl AttemptCapabilityEvidence {
         .with_fact("reason", "admitted_capability_scope_mismatch")
         .with_fact("plan_scope", execution_scope))
     }
+}
+
+fn duplicate_execution_manifest_error() -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "query_engine.admission.evidence",
+        "an admitted attempt has more than one execution manifest",
+    )
+    .with_fact("reason", "duplicate_execution_manifest")
 }
 
 pub fn capability_labels(capabilities: &[ExecutionCapability]) -> String {

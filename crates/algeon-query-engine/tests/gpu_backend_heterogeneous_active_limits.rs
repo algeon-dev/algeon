@@ -70,9 +70,9 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     let snapshots = session.device_admission_snapshots().unwrap();
     assert_eq!(snapshots.iter().map(|snapshot| snapshot.process_active_query_slots).collect::<Vec<_>>(), vec![2, 1]);
 
-    first.finish();
-    second.finish();
-    third.finish();
+    first.end_test_attempt();
+    second.end_test_attempt();
+    third.end_test_attempt();
     core.close_and_wait(Duration::from_secs(5)).unwrap();
 }
 

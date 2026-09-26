@@ -626,7 +626,6 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
     let metrics = metrics.snapshot();
     assert!(matches!(result, Ok(QueryOutput::HostArrow(_))));
     assert!(plan_observation.is_none(), "one plan must not seal its query observation");
-    context._handle.finish();
     drop(context);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let snapshot = loop {

@@ -1382,7 +1382,7 @@ mod tests {
 
             drop(publication);
             drop(admitted);
-            attempt.finish();
+            attempt.end_test_attempt();
         }
     }
 }

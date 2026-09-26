@@ -79,7 +79,7 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
         "pre-sweep reconciliation closes the faulted device ledger before selecting a healthy device"
     );
     assert_eq!(scope.health_snapshot(unhealthy).fault_count(), 1);
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     service
         .wait_for_stream_pools_idle(Duration::from_secs(10))
@@ -104,7 +104,7 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
         "the waiter remains queued behind the healthy device instead of failing on device zero"
     );
     assert_eq!(service.admission_snapshot().expect("admission snapshot").queued_queries, 1);
-    active.finish();
+    active.end_test_attempt();
     drop(active);
     // `finish` schedules destruction of the device-backed envelope on its
     // selected GPU executor. The immutable grant becomes reusable only after
@@ -118,7 +118,7 @@ fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
         .expect("healthy capacity release wakes the waiter")
         .expect("waiter admits on device one after release");
     assert_eq!(admitted_after_release.device_ordinal(), 1);
-    admitted_after_release.finish();
+    admitted_after_release.end_test_attempt();
     drop(admitted_after_release);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }

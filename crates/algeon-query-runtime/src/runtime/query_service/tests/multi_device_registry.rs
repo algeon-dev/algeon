@@ -129,7 +129,7 @@ fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
         let retained_ordinal = 1 - released_ordinal;
         let (released, released_context) = active[released_ordinal].take().expect("selected device has one query");
         drop(released_context);
-        released.finish();
+        released.end_test_attempt();
         drop(released);
         service
             .wait_for_stream_pools_quiescent(&[(retained_ordinal, 1)], Duration::from_secs(5))
@@ -145,7 +145,7 @@ fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
     for entry in &mut active {
         let (handle, context) = entry.take().unwrap();
         drop(context);
-        handle.finish();
+        handle.end_test_attempt();
         drop(handle);
     }
     service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
@@ -375,7 +375,7 @@ fn per_device_active_limit_waits_for_escaped_context_after_handle_finish() {
     let admitted_context = first.acquire_context().unwrap();
     let retained_context = admitted_context.context().clone();
     drop(admitted_context);
-    first.finish();
+    first.end_test_attempt();
 
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
     assert!(
@@ -404,7 +404,7 @@ fn escaped_query_anchor_blocks_only_its_selected_device() {
     let admitted_context = first.acquire_context().unwrap();
     let escaped_context = admitted_context.context().clone();
     drop(admitted_context);
-    first.finish();
+    first.end_test_attempt();
 
     let second = service.try_admit_query().unwrap().expect("other device remains available");
     assert_eq!(second.device_ordinal(), 1);

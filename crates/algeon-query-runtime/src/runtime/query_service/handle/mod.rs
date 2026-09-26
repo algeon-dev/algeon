@@ -1,5 +1,7 @@
 //! Bounded native query-service admission handle.
 
+#[cfg(any(test, feature = "test-hooks"))]
+use std::sync::{Mutex, PoisonError};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -10,6 +12,8 @@ use super::{
     resources::QueryServiceResources,
     *,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::attempt::AttemptOwner;
 use crate::{
     metrics::TraceId,
     observability::{AttemptAdmissionWaitFact, RuntimeStreamLeaseScope},
@@ -48,6 +52,10 @@ pub struct QueryHandle {
     pub(super) device_budget_bytes: u64,
     pub(super) device_ordinal: usize,
     pub(super) lifetime: Arc<QueryHandleLifetime>,
+    /// The attempt of a test request, owned by its handle: dropping the
+    /// handle ends the attempt, whose terminal commit releases the grant.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) test_attempt: Mutex<Option<AttemptOwner>>,
 }
 
 impl QueryHandle {
@@ -81,6 +89,38 @@ impl QueryHandle {
     /// CUDA device ordinal selected for this query.
     pub fn device_ordinal(&self) -> usize {
         self.device_ordinal
+    }
+
+    /// Ends this handle's test attempt as `Dropped` while the handle stays
+    /// alive; the attempt's terminal commit then releases the grant.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn end_test_attempt(&self) {
+        let owner = self.test_attempt.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(owner);
+    }
+
+    /// Commits `outcome` for this handle's test attempt, as a frontend does
+    /// for the attempt it owns; the commit then releases the grant.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn commit_test_attempt(&self, outcome: RuntimeTerminalOutcome) {
+        let owner = self.test_attempt.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(owner) = owner {
+            owner.commit_terminal(outcome).expect("a test attempt commits one terminal outcome");
+        }
+    }
+
+    /// Joins a fragment planned after this attempt's claim to its grant.
+    ///
+    /// The fragment runs under the same grant when the granted device
+    /// provides every capability it requires; its plan identity is then added
+    /// to what the attempt may execute. The queue and the ledger do not
+    /// change. A device that lacks a capability, or a released handle,
+    /// returns a typed error.
+    pub fn join_fragment(&self, fragment: &AttemptRequirement) -> Result<()> {
+        let service = QueryService { inner: self.lifetime.service()? };
+        service.join_admitted_fragment(self.device_ordinal, &self.lifetime.admitted_plan_identities, fragment)
     }
 
     /// Immutable attempt and ledger generation committed for this admission.
@@ -430,7 +470,7 @@ impl QueryHandle {
             attempt,
             #[cfg(feature = "cugraph")]
             cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
-            capability_evidence: self.lifetime.admitted_capability_evidence.clone(),
+            plan_identities: Arc::clone(&self.lifetime.admitted_plan_identities),
             memory_control_policy: memory_control_policy_for_grant(self.memory_control_policy(), &memory_grant),
             auxiliary_slots: Arc::clone(&self.lifetime.attempt_auxiliary_slots),
             allocation_domain,
@@ -459,28 +499,6 @@ impl QueryHandle {
             Ok(())
         })?;
         Ok(context)
-    }
-
-    /// Requests admission release before dropping the handle.
-    ///
-    /// The attempt requests this itself once its outcome is terminal, and the
-    /// release waits for contexts still running, so work run under an attempt
-    /// never calls it. A caller that releases a grant early ends a still-live
-    /// attempt as `Dropped`. Runtime-backed services complete GPU resource
-    /// destruction on the selected device executor before waking queued
-    /// admissions.
-    pub fn finish(&self) {
-        self.lifetime.request_release();
-    }
-
-    fn release_once(&self) {
-        self.lifetime.request_release();
-    }
-}
-
-impl Drop for QueryHandle {
-    fn drop(&mut self) {
-        self.release_once();
     }
 }
 

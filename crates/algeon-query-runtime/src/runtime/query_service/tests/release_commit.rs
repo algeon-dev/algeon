@@ -62,7 +62,6 @@ fn assert_legal_resident_output(
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
 
-    admitted.finish();
     drop(admitted);
     wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), case);
     let report = completion.try_report().expect("published attempt report");
@@ -203,7 +202,6 @@ fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescen
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
 
-    admitted.finish();
     drop(admitted);
     wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), "retained resident report");
     let report = completion.try_report().expect("published attempt report");
@@ -310,16 +308,15 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
     assert_eq!(counters.snapshot().reports_ready, 1, "exactly one attempt report is ready");
-    admitted.finish();
     drop(admitted);
 }
 
-/// An admitted attempt can reach query-handle release without an EOF or an
-/// outer wrapper terminalizing it first. The release capability must establish
-/// the fallback outcome before its cleanup/capacity commit, otherwise the
-/// report would lack finalization facts.
+/// The attempt owns its grant. Dropping the query handle neither releases
+/// the grant nor ends the attempt; an attempt abandoned without a terminal
+/// commit ends as `Dropped`, and that commit releases the grant before the
+/// report publishes.
 #[test]
-fn unterminalized_admitted_release_commits_fallback_before_report() {
+fn dropping_the_handle_keeps_the_grant_until_the_attempt_ends() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
@@ -347,12 +344,15 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
         .admit_query_with_request(QueryAdmissionRequest::new(attempt_owner.admission_binding()))
         .expect("admission succeeds");
 
-    // Deliberately omit `AttemptOwner::commit_terminal`: this is the
-    // no-EOF/drop fallback that previously tried to commit cleanup first.
-    handle.finish();
     drop(handle);
+    assert!(!attempt_handle.is_terminal(), "dropping the handle does not end the attempt");
+    assert!(!completion.is_ready(), "dropping the handle publishes no report");
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1, "the attempt still holds its grant");
 
-    let report = completion.wait_timeout(Duration::from_secs(1)).expect("fallback report is published");
+    // Deliberately omit `AttemptOwner::commit_terminal`: the abandoned
+    // attempt's drop commits `Dropped`, which releases the grant.
+    drop(attempt_owner);
+    let report = completion.wait_timeout(Duration::from_secs(1)).expect("the dropped attempt's report is published");
     assert_eq!(report.outcome, RuntimeTerminalOutcome::Dropped);
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
@@ -401,12 +401,11 @@ fn terminal_commit_releases_the_admitted_grant_while_the_handle_is_held() {
     drop(handle);
 }
 
-/// The release fallback becomes terminal before its physical cleanup job can
-/// run. A GPU-worker barrier makes the pre-cleanup window observable: report
-/// publication remains deferred, but a later execution terminalization cannot
-/// replace the already-resolved fallback outcome.
+/// Only the attempt's terminal commit starts the release, and the report
+/// publishes after the release's physical cleanup. A GPU-worker barrier makes
+/// the pre-cleanup window observable.
 #[tokio::test(flavor = "current_thread")]
-async fn unterminalized_release_resolves_fallback_before_gpu_cleanup_starts() {
+async fn terminal_commit_releases_and_publishes_after_gpu_cleanup() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for fallback ordering");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = Arc::new(AttemptBackendCounters::default());
@@ -448,28 +447,24 @@ async fn unterminalized_release_resolves_fallback_before_gpu_cleanup_starts() {
     .expect("cleanup blocker queues on the service pool");
     started_rx.await.expect("cleanup blocker starts");
 
-    handle.finish();
     drop(handle);
 
-    assert!(attempt_handle.is_terminal(), "release establishes fallback before its GPU cleanup task runs");
-    assert!(
-        attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).is_err(),
-        "a later execution outcome cannot race the established release fallback"
-    );
+    assert!(!attempt_handle.is_terminal(), "dropping the handle does not end the attempt");
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("the attempt commits its own outcome");
     assert!(!completion.is_ready(), "report publication remains behind the physical cleanup fence");
 
     release_blocker.add_permits(1);
     finished_rx.await.expect("cleanup blocker finishes");
-    let report = completion.wait_timeout(Duration::from_secs(10)).expect("cleanup publishes the fallback report");
-    assert_eq!(report.outcome, RuntimeTerminalOutcome::Dropped);
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("cleanup publishes the attempt report");
+    assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 
-/// Abandoning the handle (no explicit finish) drives the same commit order:
-/// seal before capacity reuse.
+/// An attempt abandoned without a terminal commit drives the same commit
+/// order: seal before capacity reuse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn abandoned_handle_keeps_report_before_reuse_order() {
+async fn abandoned_attempt_keeps_report_before_reuse_order() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for abandoned release ordering");
     let attempt_owner = observed_attempt("abandoned-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
     let binding = attempt_owner.admission_binding();
@@ -487,7 +482,8 @@ async fn abandoned_handle_keeps_report_before_reuse_order() {
     }
 
     let gate = first.lifetime.arm_release_commit_gate();
-    let release = std::thread::spawn(move || drop(first));
+    drop(first);
+    let release = std::thread::spawn(move || drop(attempt_owner));
     wait_until(Instant::now() + Duration::from_secs(10), || gate.entered(), "abandoned release reaches the barrier");
     assert!(binding.observation_handle().sealed_snapshot().is_none());
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
@@ -503,7 +499,7 @@ async fn abandoned_handle_keeps_report_before_reuse_order() {
         binding.observation_handle().sealed_snapshot().is_some(),
         "receiver abandonment does not change the commit order"
     );
-    admitted.finish();
+    admitted.end_test_attempt();
     drop(admitted);
 }
 
@@ -670,8 +666,8 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     second_release_tx.send(()).expect("second job release signal");
     second_job.await.expect("second job joins").expect("second GPU job completes");
     drop(second_context);
-    second.finish();
     drop(second);
+    drop(second_owner);
     wait_until(
         Instant::now() + Duration::from_secs(10),
         || {
@@ -857,7 +853,6 @@ async fn cancelling_one_active_attempt_releases_only_its_own_differently_capped_
     drop(surviving_executor);
     drop(surviving_context);
     surviving_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("surviving terminal commit");
-    surviving.finish();
     drop(surviving);
     wait_until(
         Instant::now() + Duration::from_secs(10),
@@ -1032,7 +1027,6 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
     attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
 
-    admitted.finish();
     drop(admitted);
     wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), "resident mismatch report");
     let report = completion.try_report().expect("published attempt report");
@@ -1088,7 +1082,6 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     ));
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
-    handle.finish();
     drop(handle);
     let report = completion.wait_timeout(Duration::from_secs(1)).expect("finalized report publishes");
     assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::Released);
@@ -1153,7 +1146,6 @@ fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
     assert!(!completion.is_ready());
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
-    first.finish();
     drop(first);
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("the first admission publishes the report");
     assert_eq!(report.outcome, RuntimeTerminalOutcome::Succeeded);
@@ -1161,7 +1153,6 @@ fn second_admission_claim_is_rejected_before_queue_or_ledger_changes() {
     assert!(report.primary_failure.is_none(), "the rejected claim records no primary failure");
 
     let independent = service.admit_query().expect("the fleet still admits independent attempts");
-    independent.finish();
     drop(independent);
 }
 
@@ -1210,7 +1201,6 @@ fn owner_terminal_during_admission_publishes_one_report_and_keeps_ledgers_open()
     assert!(matches!(device.ledger().health(), Ok(DeviceAdmissionHealth::Open)));
     service.set_admission_transaction_probe(AdmissionTransactionProbe::disabled());
     let independent = service.admit_query().expect("the fleet still admits independent attempts");
-    independent.finish();
     drop(independent);
 }
 
@@ -1229,8 +1219,9 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
     drop(first.acquire_context().expect("context"));
 
     device.stream_pool().fail_next_synchronization_for_test();
-    first.finish();
     drop(first);
+    // The abandoned attempt ends as `Dropped`, which releases its grant.
+    drop(attempt_owner);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     wait_until(
@@ -1312,7 +1303,6 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
         "injected execution failure before device-local cleanup fault",
     );
     attempt_owner.commit_query_error(&execution_error).expect("attempt failure records before cleanup");
-    handle.finish();
     drop(handle);
 
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("faulted attempt report seals");
@@ -1338,7 +1328,6 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
 
     let replacement = service.admit_query().expect("healthy alternate admits a new attempt");
     assert_eq!(replacement.device_ordinal(), 1, "the quarantined device cannot be selected again");
-    replacement.finish();
     drop(replacement);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("two-device service drains");
 }
@@ -1380,7 +1369,6 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
         "injected primary error before abandoned cleanup",
     );
     attempt_owner.commit_query_error(&primary_error).expect("primary error records before cleanup");
-    handle.finish();
     drop(handle);
 
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("abandoned-handoff report seals");
@@ -1478,7 +1466,6 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
             error_status: AttemptFailureStatus::Temporary,
         })
         .expect("OOM outcome commits");
-    first.finish();
     drop(first);
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1497,7 +1484,6 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
     );
 
     let second = service.admit_query().expect("capacity is reusable after the OOM report");
-    second.finish();
     drop(second);
 }
 
@@ -1545,7 +1531,6 @@ fn oom_release_projects_truthful_resource_evidence() {
     );
     assert_eq!(terminal_error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     attempt_owner.commit_query_error(&terminal_error).expect("terminal OOM outcome");
-    handle.finish();
     drop(handle);
 
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("OOM report publishes");
@@ -1763,7 +1748,7 @@ fn disposition_mapping_matches_isolation_rules() {
     assert_eq!(disposition, CapacityCommitDisposition::HealthyReuse);
     assert!(usage.is_none());
 
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }

@@ -8,7 +8,7 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync,
-    sync::{Arc, Condvar, Mutex, MutexGuard, Weak, atomic::Ordering},
+    sync::{Arc, Condvar, Mutex, MutexGuard, atomic::Ordering},
     task::{Context, Poll, Waker},
     thread,
     time::{Duration, Instant},
@@ -280,8 +280,8 @@ impl CompletionState {
 ///
 /// The attempt owns its admission: every native fragment it executes shares
 /// the one grant, so the grant is released when the attempt's outcome turns
-/// terminal, not when one fragment's stream ends. The release itself waits
-/// for fragments still running.
+/// terminal, not when one fragment's stream ends or its query handle drops.
+/// The release itself waits for fragments still running.
 pub(crate) trait AdmittedGrantRelease: Send + Sync {
     fn request_release(&self);
 }
@@ -292,11 +292,9 @@ struct AttemptState {
     lifecycle: AttemptLifecycle,
     completion: CompletionState,
     /// Bound when admission publishes a grant; taken by the terminal commit.
-    admitted_release: Option<Weak<dyn AdmittedGrantRelease>>,
-    /// The first non-success outcome a native plan of this attempt finished
-    /// with, or `Succeeded`. It stands in for the release fallback when the
-    /// grant is released before the attempt commits its own outcome.
-    plan_outcome: Option<RuntimeTerminalOutcome>,
+    /// The attempt holds the release strongly, so the grant outlives every
+    /// query handle of the attempt until the attempt is terminal.
+    admitted_release: Option<Arc<dyn AdmittedGrantRelease>>,
 }
 
 /// State shared by the attempt core and its completion receivers. Receivers
@@ -369,7 +367,7 @@ impl AttemptCore {
     /// terminal. The hook is taken under the attempt lock and called after
     /// it is released.
     fn release_admitted_grant(&self) {
-        let release = self.shared.lock().admitted_release.take().and_then(|release| release.upgrade());
+        let release = self.shared.lock().admitted_release.take();
         if let Some(release) = release {
             release.request_release();
         }
@@ -641,7 +639,6 @@ impl AttemptOwner {
                     receivers: 0,
                 },
                 admitted_release: None,
-                plan_outcome: None,
             }),
             changed: Condvar::new(),
         });
@@ -807,13 +804,19 @@ impl AttemptOwner {
 impl Drop for AttemptOwner {
     fn drop(&mut self) {
         let report_ready = self.0.core.lock_lifecycle().is_ready();
-        if !report_ready {
-            let _ = self.commit_terminal(if thread::panicking() {
-                RuntimeTerminalOutcome::Panicked
-            } else {
-                RuntimeTerminalOutcome::Dropped
-            });
+        if report_ready {
+            return;
         }
+        if thread::panicking() {
+            let _ = self.commit_terminal(RuntimeTerminalOutcome::Panicked);
+            return;
+        }
+        // An attempt dropped after its cancellation took effect ends with
+        // that cancellation, not as an abandoned `Dropped` attempt.
+        let _ = match self.0.core.cancellation.check("query_engine.attempt.owner_drop") {
+            Err(cancellation) => self.commit_query_error(&cancellation),
+            Ok(()) => self.commit_terminal(RuntimeTerminalOutcome::Dropped),
+        };
     }
 }
 
@@ -987,13 +990,9 @@ impl AttemptFinalizer {
         &self,
         fallback: RuntimeTerminalOutcome,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
-        // The result stream may have already committed the primary terminal
-        // outcome before its owned admission handle begins GPU cleanup. The
-        // linear finalizer must resolve that existing outcome, not contend
-        // with the public terminal writer and manufacture a second commit.
-        // A finished plan's outcome is more specific than the release
-        // fallback.
-        let fallback = self.0.shared.lock().plan_outcome.clone().unwrap_or(fallback);
+        // Only the attempt's terminal commit requests the release, so the
+        // committed outcome is already in place; the linear finalizer
+        // resolves it rather than manufacturing a second commit.
         Ok(self.0.canonical_terminal_outcome(fallback))
     }
 
@@ -1061,7 +1060,7 @@ impl AttemptAdmission {
     /// Ties the release of this admission's grant to the attempt's terminal
     /// outcome. Returns whether the outcome is already terminal, in which case
     /// the caller requests the release itself.
-    pub(crate) fn bind_grant_release(&self, release: Weak<dyn AdmittedGrantRelease>) -> bool {
+    pub(crate) fn bind_grant_release(&self, release: Arc<dyn AdmittedGrantRelease>) -> bool {
         let mut state = self.0.0.shared.lock();
         if state.lifecycle.terminal_outcome().is_some() {
             return true;
@@ -1103,17 +1102,6 @@ impl AttemptHandle {
     /// Recording access to the attempt's observation, without seal authority.
     pub(crate) fn observation(&self) -> RuntimeObservationHandle {
         self.0.observation.handle()
-    }
-
-    /// Retains a finished native plan's outcome. The first non-success
-    /// outcome stays; it is the release fallback when the grant is released
-    /// before the attempt commits its own outcome.
-    pub(crate) fn record_plan_outcome(&self, outcome: RuntimeTerminalOutcome) {
-        let mut state = self.0.shared.lock();
-        state.plan_outcome = Some(match state.plan_outcome.take() {
-            None | Some(RuntimeTerminalOutcome::Succeeded) => outcome,
-            Some(existing) => existing,
-        });
     }
 
     /// The attempt-scoped cooperative cancellation signal and deadline.
@@ -1401,10 +1389,6 @@ mod tests {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
         let completion = begin.completion.completion();
         native_disposition(&begin);
-        begin.owner.handle().record_plan_outcome(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::Internal,
-            error_status: AttemptFailureStatus::Permanent,
-        });
 
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Cancelled).unwrap();
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report published");
@@ -1569,6 +1553,16 @@ mod tests {
         );
         let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(report.outcome, RuntimeTerminalOutcome::Dropped));
+    }
+
+    #[test]
+    fn dropping_a_cancelled_owner_commits_the_cancellation() {
+        let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+        let completion = begin.completion.completion();
+        begin.owner.cancellation().cancel();
+        drop(begin.owner);
+        let report = completion.wait_timeout(Duration::from_secs(1)).expect("drop publishes the report");
+        assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use super::{
     admission_rejection, record_admission_lifecycle,
 };
 #[cfg(any(test, feature = "test-hooks"))]
-use crate::runtime::deadline::block_until;
+use crate::{attempt::AttemptOwner, runtime::deadline::block_until};
 use crate::{
     attempt::{AdmittedGrantRelease, AttemptAdmission, AttemptHandle, AttemptLifecycleError, AttemptReportPublisher},
     observability::{
@@ -47,6 +47,9 @@ pub(crate) struct QueryAdmissionWaiter {
     pub(super) execution_cancellation: ExecutionCancellation,
     pub(super) terminal: QueuedAdmissionTerminal,
     pub(super) queued: bool,
+    /// The owner of a test attempt, handed to the handle this waiter admits.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) test_attempt: Option<AttemptOwner>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -528,7 +531,7 @@ impl QueryCompletion {
     /// Ties the grant's release to the claimed attempt's terminal outcome.
     /// Returns whether the outcome is already terminal, so the caller
     /// requests the release itself.
-    pub(super) fn bind_grant_release(&self, release: Weak<dyn AdmittedGrantRelease>) -> bool {
+    pub(super) fn bind_grant_release(&self, release: Arc<dyn AdmittedGrantRelease>) -> bool {
         self.attempt_admission.as_ref().is_some_and(|admission| admission.bind_grant_release(release))
     }
 
@@ -815,9 +818,18 @@ impl QueryAdmissionWaiter {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
         match self.try_place()? {
-            Some(commit) => self.service.commit_placed_admission(commit).map(Some),
+            Some(commit) => {
+                self.service.commit_placed_admission(commit).map(|handle| Some(self.own_test_attempt(handle)))
+            },
             None => Ok(None),
         }
+    }
+
+    /// Hands a test attempt's owner to the handle admitted for it.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn own_test_attempt(&mut self, handle: QueryHandle) -> QueryHandle {
+        *handle.test_attempt.lock().unwrap_or_else(PoisonError::into_inner) = self.test_attempt.take();
+        handle
     }
 
     /// [`Self::try_admit`] for an async caller: a placed admission builds its
@@ -827,10 +839,13 @@ impl QueryAdmissionWaiter {
     /// envelope and the ticket roll back on drop, and the completion recovers
     /// the attempt's terminal outcome.
     pub(crate) async fn try_admit_async(&mut self) -> Result<Option<QueryHandle>> {
-        match self.try_place()? {
-            Some(commit) => self.service.commit_placed_admission_async(commit).await.map(Some),
-            None => Ok(None),
-        }
+        let Some(commit) = self.try_place()? else {
+            return Ok(None);
+        };
+        let handle = self.service.commit_placed_admission_async(commit).await?;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let handle = self.own_test_attempt(handle);
+        Ok(Some(handle))
     }
 
     /// Places this queued admission if it is runnable, returning the commit

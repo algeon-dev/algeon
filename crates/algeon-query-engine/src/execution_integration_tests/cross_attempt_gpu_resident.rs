@@ -155,7 +155,6 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     drop(producer_runtime);
     drop(producer_context);
     producer_owner.commit_terminal(observability::RuntimeTerminalOutcome::Succeeded).unwrap();
-    producer.finish();
     drop(producer);
 
     let producer_report =
@@ -193,7 +192,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         "unexpected tiny-cap failure: {tiny_error:?}"
     );
     drop(tiny_context);
-    tiny.finish();
+    tiny.end_test_attempt();
     drop(tiny);
 
     for plan in [&pagerank, &bfs] {
@@ -210,7 +209,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
         drop(result);
         drop(consumer_context);
-        consumer.finish();
+        consumer.end_test_attempt();
         drop(consumer);
         assert_eq!(inputs.get("edges").unwrap().placement(), resident_placement);
         assert_eq!(
@@ -335,8 +334,8 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
     drop(consumer_runtime);
     drop(producer_context);
     drop(consumer_context);
-    producer_attempt.finish();
-    consumer_attempt.finish();
+    producer_attempt.end_test_attempt();
+    consumer_attempt.end_test_attempt();
     drop(producer_attempt);
     drop(consumer_attempt);
     service
@@ -438,7 +437,6 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt_owner
         .commit_terminal(observability::RuntimeTerminalOutcome::Succeeded)
         .expect("primary attempt outcome commits before release");
-    attempt.finish();
     drop(attempt);
     let sealed = completion.wait_timeout(Duration::from_secs(10)).expect("sealed attempt report");
     let evidence = sealed.resource_evidence.expect("admitted cache attempt retains sealed resource evidence");
@@ -799,11 +797,10 @@ fn execute_pagerank_attempt(
         attempt_owner
             .commit_terminal(observability::RuntimeTerminalOutcome::Succeeded)
             .expect("terminal outcome commits");
-        attempt.finish();
         drop(attempt);
         completion.wait_timeout(Duration::from_secs(10)).expect("sealed attempt report");
     } else {
-        attempt.finish();
+        attempt_owner.commit_terminal(observability::RuntimeTerminalOutcome::Dropped).unwrap();
         drop(attempt);
     }
     let result = result?;
@@ -947,7 +944,6 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
 
     drop(producer_context);
     attempt_owner.commit_terminal(observability::RuntimeTerminalOutcome::Succeeded).unwrap();
-    producer.finish();
     drop(producer);
 
     let report = completion.wait_timeout(Duration::from_secs(10)).expect("producer report");

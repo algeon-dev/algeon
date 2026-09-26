@@ -9,6 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
     fmt,
+    sync::Arc,
 };
 
 use serde_json::{Value, json};
@@ -18,7 +19,9 @@ use crate::{
     triage::TriageCode,
 };
 
-type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
+// Shared so an error can be cloned: one failure may be reported to every
+// party waiting on the operation that failed.
+type SharedSourceError = Arc<dyn StdError + Send + Sync + 'static>;
 
 /// Native query-engine result type.
 pub type Result<T> = std::result::Result<T, QueryError>;
@@ -562,7 +565,7 @@ pub(crate) const fn attempt_failure_code_for_query_error(code: QueryErrorCode) -
 /// or another explicit overwrite path, never a second [`QueryError::with_fact`].
 /// The native engine reserves `cudf_code`, `cudf_kind`, `cudf_status`,
 /// `cudf_operation`, and `cudf_message` for wrapped `cudf::Error` facts.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
     collision_keys: BTreeSet<&'static str>,
@@ -613,8 +616,10 @@ impl Facts {
 }
 
 /// Structured native-engine error with stable classification and facts.
+#[derive(Clone)]
 pub struct QueryError(Box<QueryErrorRepr>);
 
+#[derive(Clone)]
 struct QueryErrorRepr {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
@@ -624,7 +629,7 @@ struct QueryErrorRepr {
     facts: Box<Facts>,
     cugraph_allocation_source: Option<CugraphAllocationSource>,
     graph_cache_scope_peak_bytes: Option<u64>,
-    source: Option<BoxedSourceError>,
+    source: Option<SharedSourceError>,
     cleanup_deadline_elapsed: bool,
 }
 
@@ -791,7 +796,7 @@ impl QueryError {
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
         if self.0.source.is_none() {
-            self.0.source = Some(Box::new(source));
+            self.0.source = Some(Arc::new(source));
         }
         self
     }

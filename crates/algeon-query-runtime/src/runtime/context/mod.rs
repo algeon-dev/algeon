@@ -47,6 +47,7 @@ mod scope;
 mod standalone;
 mod stream_pool;
 
+pub(in crate::runtime) use admitted::AdmittedPlanIdentities;
 pub(crate) use auxiliary_slots::{AttemptAuxiliaryPermit, AttemptAuxiliarySlots};
 pub use cancellation::ExecutionCancellation;
 pub(crate) use epoch::{
@@ -173,7 +174,7 @@ impl RuntimeExecutionObservationLifecycle {
         // finishes only its own execution; a standalone owner seals the query.
         let inner = match &context.query {
             QueryScope::Admitted(admitted) => RuntimeExecutionObservationLifecycleInner::Plan(
-                RuntimePlanExecutionLifecycle::from_attempt(admitted.attempt.clone(), plan_execution_id),
+                RuntimePlanExecutionLifecycle::from_attempt(&admitted.attempt, plan_execution_id),
             ),
             QueryScope::Standalone(query) => match &query.observation_owner {
                 Some(owner) => RuntimeExecutionObservationLifecycleInner::Query(RuntimeQueryLifecycle::from_owner(

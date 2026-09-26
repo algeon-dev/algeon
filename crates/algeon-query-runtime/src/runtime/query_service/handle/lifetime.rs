@@ -17,7 +17,7 @@ use tokio::sync::watch;
 
 use super::{
     super::{
-        super::context::{AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch},
+        super::context::{AdmittedPlanIdentities, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch},
         *,
     },
     release::{QueryHandleRelease, QueryHandleReleaseGuard},
@@ -139,7 +139,9 @@ pub(in crate::runtime::query_service) struct QueryHandleLifetime {
     pub(super) query_epoch: QueryResourceEpoch,
     root_context_setup: RootContextSetupCoordinator,
     pub(super) attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
-    pub(super) admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
+    /// Placement was fixed when the claim was placed; these identities grow
+    /// as fragments planned after the claim join the grant.
+    pub(super) admitted_plan_identities: Arc<AdmittedPlanIdentities>,
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
     #[cfg(test)]
@@ -162,8 +164,8 @@ impl QueryHandleLifetime {
     #[doc(hidden)]
     pub(in crate::runtime::query_service) fn admitted_capability_evidence_for_test(
         &self,
-    ) -> Option<&AttemptRequirement> {
-        self.admitted_capability_evidence.as_deref()
+    ) -> Option<Arc<AttemptRequirement>> {
+        self.admitted_plan_identities.current()
     }
 
     #[expect(
@@ -177,7 +179,7 @@ impl QueryHandleLifetime {
         attempt_id: AttemptId,
         completion: QueryCompletion,
         envelope: AdmissionEnvelope,
-        admitted_capability_evidence: Option<Arc<AttemptRequirement>>,
+        admitted_capability_evidence: Option<AttemptRequirement>,
         admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
         compatible_devices: Vec<usize>,
     ) -> Arc<Self> {
@@ -192,10 +194,7 @@ impl QueryHandleLifetime {
             );
         let attempt_auxiliary_slots = AttemptAuxiliarySlots::new(device_ordinal, attempt_auxiliary_capacity);
         let service_epoch_user = service.service_epoch.retain_existing_user();
-        let mut attempt_already_terminal = false;
         let lifetime = Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
-            let release: Weak<dyn AdmittedGrantRelease> = Weak::<QueryHandleLifetime>::clone(weak);
-            attempt_already_terminal = completion.bind_grant_release(release);
             let weak_lifetime = Weak::clone(weak);
             let on_query_idle = Arc::new(move || {
                 if let Some(lifetime) = weak_lifetime.upgrade() {
@@ -224,7 +223,7 @@ impl QueryHandleLifetime {
                 query_epoch: QueryResourceEpoch::new(Some(on_query_idle)),
                 root_context_setup: RootContextSetupCoordinator::new(),
                 attempt_auxiliary_slots,
-                admitted_capability_evidence,
+                admitted_plan_identities: Arc::new(AdmittedPlanIdentities::new(admitted_capability_evidence)),
                 #[cfg(test)]
                 release_commit_gate: Mutex::new(None),
                 #[cfg(test)]
@@ -233,6 +232,13 @@ impl QueryHandleLifetime {
                 root_context_binding_gate: Mutex::new(None),
             }
         });
+        // The attempt, not this handle, holds the release: only its terminal
+        // commit returns the grant.
+        let release: Arc<dyn AdmittedGrantRelease> = Arc::clone(&lifetime) as Arc<dyn AdmittedGrantRelease>;
+        let attempt_already_terminal = match &*lifetime.lock_state() {
+            LifetimeState::Active(resources) => resources.completion.bind_grant_release(release),
+            LifetimeState::Releasing(_) | LifetimeState::Released => unreachable!("a new handle lifetime is active"),
+        };
         if attempt_already_terminal {
             lifetime.request_release();
         }

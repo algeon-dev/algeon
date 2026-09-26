@@ -254,7 +254,7 @@ fn leased_context_preserves_activated_deferred_resident_phase() {
     drop(second);
     drop(lease);
     drop(admitted);
-    attempt.finish();
+    attempt.end_test_attempt();
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn deferred_resident_activation_rejects_same_schema_producer_substitution() {
     assert_eq!(error.fact_value("input_name"), Some("left"));
     drop(inputs);
     drop(admitted);
-    attempt.finish();
+    attempt.end_test_attempt();
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn deferred_resident_activation_rejects_a_missing_occurrence() {
     assert_eq!(error.fact_value("input_name"), Some("right"));
     drop(inputs);
     drop(admitted);
-    attempt.finish();
+    attempt.end_test_attempt();
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn unscoped_upload_does_not_skip_scoped_resident_validation() {
     assert_eq!(error.fact_value("input_name"), Some("right"));
     drop(inputs);
     drop(admitted);
-    attempt.finish();
+    attempt.end_test_attempt();
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn deferred_resident_activation_accepts_repeated_execution_with_fresh_frames() {
     drop(second);
     drop(first);
     drop(admitted);
-    attempt.finish();
+    attempt.end_test_attempt();
 }
 
 #[test]

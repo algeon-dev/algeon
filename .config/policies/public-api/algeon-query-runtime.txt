@@ -1993,16 +1993,14 @@ pub fn query_runtime::runtime::QueryHandle::admission_wait_fact(&self) -> core::
 pub fn query_runtime::runtime::QueryHandle::aggregate_strategy_execution_options(&self) -> query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub fn query_runtime::runtime::QueryHandle::device_budget_bytes(&self) -> u64
 pub fn query_runtime::runtime::QueryHandle::device_ordinal(&self) -> usize
-pub fn query_runtime::runtime::QueryHandle::finish(&self)
 pub fn query_runtime::runtime::QueryHandle::gpu_executor(&self) -> query_planning::error::Result<query_runtime::runtime::GpuExecutorLease>
 pub fn query_runtime::runtime::QueryHandle::grant_identity(&self) -> query_planning::error::Result<query_runtime::runtime::gpu::ledger::GrantIdentity>
+pub fn query_runtime::runtime::QueryHandle::join_fragment(&self, &query_planning::admission::evidence::AttemptCapabilityEvidence) -> query_planning::error::Result<()>
 pub fn query_runtime::runtime::QueryHandle::memory_control_policy(&self) -> query_planning::execution_contracts::MemoryControlPolicy
 pub fn query_runtime::runtime::QueryHandle::source_chunk_planning_mode(&self) -> query_planning::execution_contracts::SourceChunkPlanningMode
 pub fn query_runtime::runtime::QueryHandle::source_chunk_planning_options(&self) -> query_planning::chunk::policy::SourceChunkPlanningOptions
 pub fn query_runtime::runtime::QueryHandle::source_scheduler_policy(&self) -> query_planning::execution_contracts::SourceSchedulerPolicy
 pub fn query_runtime::runtime::QueryHandle::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
-impl core::ops::drop::Drop for query_runtime::runtime::QueryHandle
-pub fn query_runtime::runtime::QueryHandle::drop(&mut self)
 pub struct query_runtime::runtime::QueryServiceAdmissionSnapshot
 pub query_runtime::runtime::QueryServiceAdmissionSnapshot::active_queries: usize
 pub query_runtime::runtime::QueryServiceAdmissionSnapshot::queue_high_watermark: usize

@@ -112,8 +112,8 @@ fn same_device_attempt_routes_overlap_parquet_reads_and_drain_after_failure() {
         });
     });
 
-    first.finish();
-    second.finish();
+    first.end_test_attempt();
+    second.end_test_attempt();
     drop(fixture_runtime);
     drop(first);
     drop(second);

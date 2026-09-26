@@ -580,10 +580,10 @@ impl DatafusionAlgeonFlightSqlService {
             entry.mark_executed();
         }
         if completes_eagerly_without_result_stream {
-            // DataFusion executes DDL from `execute_logical_plan`; CTAS in
-            // particular has already consumed its native result stream and
-            // its attempt's sole finalizer. Planning the returned empty
-            // DataFrame would manufacture a second native admission.
+            // DataFusion executes DDL from `execute_logical_plan`; a CTAS
+            // input has already run under this statement's attempt. The
+            // returned DataFrame is the statement's empty result, so the
+            // attempt commits here instead of planning and executing it.
             if let Some(attempt) = attempt.as_ref() {
                 attempt.complete_without_result_stream();
             }

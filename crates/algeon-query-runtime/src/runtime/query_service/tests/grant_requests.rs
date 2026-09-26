@@ -68,7 +68,6 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 
     assert_eq!(handle.grant_identity().unwrap().attempt_id, attempt_id);
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
-    handle.finish();
     drop(handle);
     completion
         .wait_timeout(std::time::Duration::from_secs(1))
@@ -91,7 +90,7 @@ fn eager_device_entries_share_capability_requirement_for_fit_grant_and_execution
         admitted.handle.lifetime.admitted_device_requirement_for_test(admitted.handle.device_ordinal()),
         Some(&evidence),
     );
-    assert_eq!(admitted.handle.lifetime.admitted_capability_evidence_for_test(), Some(&evidence),);
+    assert_eq!(admitted.handle.lifetime.admitted_capability_evidence_for_test().as_deref(), Some(&evidence));
     drop(admitted);
 }
 
@@ -144,6 +143,57 @@ fn plan_capability_evidence_missing_from_exact_device_profile_is_rejected_before
 }
 
 #[test]
+fn fragment_requiring_a_capability_the_granted_device_lacks_cannot_join_the_grant() {
+    use query_planning::admission::CUGRAPH_GRAPH_EXECUTION_CAPABILITY;
+
+    use crate::runtime::{DeviceCapabilities, DeviceCapability};
+
+    let service = AdmissionTestController::new_with_device_capabilities(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
+    )
+    .unwrap();
+    let claimed = explicit_sink_capability_evidence();
+    let admitted = service
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(claimed.clone()),
+        )
+        .unwrap()
+        .expect("a claim without capability requirements admits");
+    let before = service.admission_snapshot().unwrap();
+    let ledgers = service.device_ledger_reports().unwrap();
+
+    let mut graph_fragment = AttemptRequirement::for_query_plan(&explicit_sink_plan("graph-input"));
+    graph_fragment.required_capabilities = vec![CUGRAPH_GRAPH_EXECUTION_CAPABILITY];
+    let error = admitted.handle.join_fragment(&graph_fragment).expect_err("the granted device has no cuGraph");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("reason"), Some("granted_device_capability_unavailable"));
+    assert_eq!(error.fact_value("required_capabilities"), Some("cugraph_graph_execution"));
+    assert_eq!(service.admission_snapshot().unwrap(), before, "a refused fragment does not touch the queue");
+    assert_eq!(service.device_ledger_reports().unwrap(), ledgers, "a refused fragment does not touch the ledger");
+    assert_eq!(
+        admitted.handle.lifetime.admitted_capability_evidence_for_test().as_deref(),
+        Some(&claimed),
+        "a refused fragment adds no plan identity"
+    );
+
+    let plain_fragment = AttemptRequirement::for_query_plan(&explicit_sink_plan("plain-input"));
+    admitted.handle.join_fragment(&plain_fragment).expect("a fragment without capability requirements joins");
+    assert_eq!(service.admission_snapshot().unwrap(), before, "joining does not touch the queue");
+    assert_eq!(service.device_ledger_reports().unwrap(), ledgers, "joining does not touch the ledger");
+    assert!(
+        admitted
+            .handle
+            .lifetime
+            .admitted_capability_evidence_for_test()
+            .expect("the claim's evidence is admitted")
+            .covers(&plain_fragment)
+    );
+}
+
+#[test]
 fn submitted_plan_evidence_survives_admission_while_internal_placement_requirement_does_not_become_execution_evidence()
 {
     let service = AdmissionTestController::new(QueryExecutionConfig::default(), QueueBounds::default()).unwrap();
@@ -154,7 +204,7 @@ fn submitted_plan_evidence_survives_admission_while_internal_placement_requireme
         )
         .unwrap()
         .expect("submitted evidence admits on an all-modeled test profile");
-    assert_eq!(submitted.handle.lifetime.admitted_capability_evidence_for_test(), Some(&evidence),);
+    assert_eq!(submitted.handle.lifetime.admitted_capability_evidence_for_test().as_deref(), Some(&evidence));
     drop(submitted);
 
     let placement_only = service

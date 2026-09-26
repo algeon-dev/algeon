@@ -51,6 +51,8 @@ fn opaque_activity_token_lives_until_query_service_release_finishes() {
     assert_eq!(drops.load(Ordering::SeqCst), 0, "admission cannot release the activity token early");
 
     drop(handle);
+    assert_eq!(drops.load(Ordering::SeqCst), 0, "dropping the handle releases nothing");
+    drop(attempt);
 
     assert_eq!(drops.load(Ordering::SeqCst), 1, "final query-service cleanup releases the activity exactly once");
 }
@@ -77,7 +79,7 @@ fn finished_handle_releases_runtime_service_ownership_before_activity_drop() {
         .expect("activity-bearing query admits");
     drop(service);
 
-    handle.finish();
+    drop(attempt);
 
     // The admitted envelope owns GPU resources, so the release;
     // including the activity drop; completes on the device executor. Wait
@@ -129,7 +131,9 @@ fn query_service_observes_enqueue_admit_and_release_under_one_admission_id() {
     let handle = waiter.try_admit().expect("admission attempt succeeds").expect("capacity admits query");
     let admission_request_id = handle.admission_request_id();
 
+    // The attempt's end, not the handle's drop, releases the admission.
     drop(handle);
+    drop(attempt);
 
     assert_eq!(observation.query_id().map(|query_id| query_id.as_str()), Some("external-query"));
     assert_eq!(observation.trace_id().map(|trace_id| trace_id.as_str()), Some("external-trace"));
@@ -212,13 +216,14 @@ fn shared_owner_seals_only_after_admission_release_and_query_cleanup() {
         .try_admit_query_with_request(QueryAdmissionRequest::new(attempt.admission_binding()))
         .expect("admission attempt succeeds")
         .expect("capacity admits query");
-    let lifecycle = RuntimePlanExecutionLifecycle::from_attempt(attempt.handle(), PlanExecutionId::new("shared-plan"));
+    let lifecycle = RuntimePlanExecutionLifecycle::from_attempt(&attempt.handle(), PlanExecutionId::new("shared-plan"));
 
     lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
     assert!(observation.sealed_snapshot().is_none(), "plan completion must not seal a shared query owner");
 
+    attempt.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
     drop(handle);
-    let snapshot = observation.sealed_snapshot().expect("final handle cleanup seals the shared owner");
+    let snapshot = observation.sealed_snapshot().expect("the attempt's release and cleanup seal the shared owner");
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
     let released = snapshot
         .events()
@@ -569,9 +574,8 @@ fn query_service_context_uses_pre_admission_observation_identity() {
         "external-context-query"
     );
 
-    attempt.handle().record_plan_outcome(RuntimeTerminalOutcome::Succeeded);
     drop(admitted_context);
-    handle.finish();
+    attempt.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
     drop(handle);
     service.wait_for_stream_pools_idle(Duration::from_secs(1)).expect("stream pool becomes idle");
     let snapshot = wait_for_sealed_observation(&observation);
@@ -637,12 +641,11 @@ fn blocked_stream_cleanup_delays_query_seal_and_service_quiescence() {
         .expect("admission attempt succeeds")
         .expect("query admits");
     let admitted_context = handle.acquire_context().expect("context acquisition succeeds");
-    attempt.handle().record_plan_outcome(RuntimeTerminalOutcome::Succeeded);
     drop(admitted_context);
 
     let stream_pool = service.inner.resources.as_ref().unwrap().devices.context_by_ordinal(0).unwrap().stream_pool();
     let cleanup_blocker = block_stream_cleanup_thread_for_test(stream_pool);
-    handle.finish();
+    attempt.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
     drop(handle);
 
     assert!(observation.sealed_snapshot().is_none(), "blocked stream cleanup keeps observation live");

@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 use std::sync;
+#[cfg(any(test, feature = "test-hooks"))]
+use std::sync::Mutex;
 use std::{
     collections::BTreeMap,
     sync::{Arc, MutexGuard, atomic::Ordering},
@@ -675,7 +677,7 @@ impl QueryService {
             execution_cancellation,
             admission_wait_fact,
         } = publication;
-        let admitted_capability_evidence = submitted_plan_capability_evidence.map(Arc::new);
+        let admitted_capability_evidence = submitted_plan_capability_evidence;
         envelope.register_allocator_domain_attempt(attempt_id);
         if let Err(error) = execution_cancellation.check("query_engine.query_service.admission_transaction.publish") {
             envelope.preaccount_rollback_cleanup(&mut state);
@@ -814,6 +816,8 @@ impl QueryService {
             admission_wait_fact,
             device_budget_bytes,
             device_ordinal,
+            #[cfg(any(test, feature = "test-hooks"))]
+            test_attempt: Mutex::new(None),
         })
     }
 }

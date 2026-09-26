@@ -226,7 +226,7 @@ async fn canonical_default_allocator_admits_a_hard_query_domain() {
     let context = handle.acquire_context().unwrap();
     assert!(context.context().attempt_allocation_domain_id().is_some());
     drop(context);
-    handle.finish();
+    handle.end_test_attempt();
     drop(handle);
     drop(session);
     let close = core.close_and_wait(Duration::from_secs(10)).unwrap();
@@ -379,8 +379,8 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
 
     drop(first_context);
     drop(second_context);
-    first.finish();
-    second.finish();
+    first.end_test_attempt();
+    second.end_test_attempt();
     drop(first);
     drop(second);
     drop(session);
@@ -470,8 +470,8 @@ async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
 
     drop(first_context);
     drop(second_context);
-    first.finish();
-    second.finish();
+    first.end_test_attempt();
+    second.end_test_attempt();
     drop(first);
     drop(second);
     drop(session);
@@ -541,7 +541,7 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
         sleep(Duration::from_millis(25)).await;
     }
 
-    first.finish();
+    first.end_test_attempt();
     drop(first);
     let queued = timeout(Duration::from_secs(10), queued)
         .await
@@ -549,7 +549,7 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
         .expect("queued cloned-session task must not panic")
         .expect("queued cloned-session admission must succeed");
     assert!(queued.admission_sequence() > first_sequence);
-    queued.finish();
+    queued.end_test_attempt();
     drop(queued);
 
     let deadline = Instant::now() + Duration::from_secs(10);

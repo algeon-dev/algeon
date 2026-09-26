@@ -234,7 +234,7 @@ impl AdmissionTestHandle {
     }
 
     fn finish(&self) {
-        self.handle.finish();
+        self.handle.end_test_attempt();
     }
 }
 
