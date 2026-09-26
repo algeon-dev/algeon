@@ -16,6 +16,7 @@ use super::{
 };
 use crate::server::{
     backend::{AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, AlgeonGpuQueuePolicy, GpuMemoryOwnership},
+    coordinator::QueryCoordinatorConfig,
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     cuml_sql::CumlModelStoreConfig,
     native_exec::{AlgeonNativeExecutionConfig, SourceChunking},
@@ -223,7 +224,8 @@ impl ServerConfig {
             models,
         };
         config.validate_gpu_device_profiles()?;
-        // Reject an explicit capture budget below the admission bounds at load time.
+        config.validate_admission_within_live_query_capacity()?;
+        // Reject a default capture budget that overflows at load time.
         config.active_logical_capture_budget_bytes()?;
         Ok(config)
     }
@@ -233,6 +235,31 @@ impl ServerConfig {
     pub(crate) fn active_logical_capture_budget_bytes(&self) -> Result<u64> {
         self.observability
             .active_logical_capture_budget_bytes(admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles))
+    }
+
+    /// Logical capture bytes of every attempt this config's admission bounds
+    /// hold at once.
+    pub(crate) fn admission_logical_capture_bytes(&self) -> u64 {
+        self.observability
+            .admission_logical_capture_bytes(admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles))
+    }
+
+    /// The coordinator registers at most `MAX_LIVE_QUERIES` queries. Admission
+    /// must hold fewer attempts, so registration never refuses a query that
+    /// admission would accept.
+    fn validate_admission_within_live_query_capacity(&self) -> Result<()> {
+        let admission_live_attempts = admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles);
+        let max_live_queries = QueryCoordinatorConfig::MAX_LIVE_QUERIES;
+        if admission_live_attempts < u64::try_from(max_live_queries).unwrap_or(u64::MAX) {
+            return Ok(());
+        }
+        Err(ServerError::invalid_config(
+            ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
+            "admission bounds must hold fewer attempts than the server registers live queries",
+        )
+        .with_fact("reason", "admission_exceeds_live_query_capacity")
+        .with_fact("admission_live_attempts", admission_live_attempts)
+        .with_fact("max_live_queries", max_live_queries))
     }
 
     /// Prove that the public config struct still carries one profile for each

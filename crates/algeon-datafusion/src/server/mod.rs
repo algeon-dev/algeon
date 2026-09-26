@@ -813,6 +813,7 @@ fn log_server_config_snapshot(config: &ServerConfig, active_logical_capture_budg
         observability_per_query_max_records = config.observability.per_query_max_records,
         observability_per_query_max_bytes = config.observability.per_query_max_bytes,
         observability_active_logical_capture_max_bytes = active_logical_capture_budget_bytes,
+        observability_admission_logical_capture_bytes = config.admission_logical_capture_bytes(),
         observability_global_sealed_max_count = config.observability.global_sealed_max_count,
         observability_global_sealed_max_bytes = config.observability.global_sealed_max_bytes,
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),

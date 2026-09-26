@@ -64,7 +64,7 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
                     query_id: Some(query_id.clone()),
                     trace_context: correlation_id.clone(),
                     deadline: None,
-                    observation: self.runtime_observation_config,
+                    observation: planning_lease.observation_config(),
                 }) {
                     Ok(attempt) => attempt,
                     Err(begin_error) => {

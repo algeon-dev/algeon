@@ -30,7 +30,7 @@ impl QueryKey {
     }
 }
 
-/// The coordinator observation generation a test-held activity lease binds to.
+/// The coordinator observation generation a test-held observation handle binds to.
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ObservationId(pub(crate) Arc<str>);
@@ -51,15 +51,19 @@ pub(crate) struct QueryCoordinatorConfig {
 }
 
 impl QueryCoordinatorConfig {
+    /// Registered queries the coordinator holds at once, live or finalizing.
+    /// Server config requires admission to hold fewer attempts, so admission,
+    /// not registration, refuses an overloaded server.
+    pub(crate) const MAX_LIVE_QUERIES: usize = 1024;
+
     /// `max_active_logical_capture_bytes` is the budget the server resolved
     /// from `config` and its admission bounds.
     pub(crate) fn from_observability(
         config: &ServerObservabilityConfig,
         max_active_logical_capture_bytes: u64,
     ) -> Self {
-        let max_live_queries = 1024;
         Self {
-            max_live_queries,
+            max_live_queries: Self::MAX_LIVE_QUERIES,
             max_ticketed_queries: 1024,
             max_active_logical_capture_bytes,
             per_query_capture_max_bytes: config.per_query_max_bytes,
@@ -93,7 +97,6 @@ pub(crate) fn logical_capture_reservation_bytes(
 pub(crate) enum QueryCoordinatorErrorKind {
     RegistrationCapacity,
     DuplicateLiveQueryId,
-    LogicalCaptureBytes,
     TicketCapacity,
     UnknownQuery,
     StaleGeneration,
@@ -110,7 +113,6 @@ impl QueryCoordinatorErrorKind {
         match self {
             Self::RegistrationCapacity => "registration_capacity",
             Self::DuplicateLiveQueryId => "duplicate_live_query_id",
-            Self::LogicalCaptureBytes => "logical_capture_bytes",
             Self::TicketCapacity => "ticket_capacity",
             Self::UnknownQuery => "unknown_query",
             Self::StaleGeneration => "stale_generation",
@@ -153,7 +155,6 @@ impl QueryCoordinatorError {
         let code = match self.kind {
             QueryCoordinatorErrorKind::RegistrationCapacity
             | QueryCoordinatorErrorKind::DuplicateLiveQueryId
-            | QueryCoordinatorErrorKind::LogicalCaptureBytes
             | QueryCoordinatorErrorKind::TicketCapacity
             | QueryCoordinatorErrorKind::ArtifactEgressCapacity => ErrorCode::ServiceOverloaded,
             QueryCoordinatorErrorKind::UnknownQuery | QueryCoordinatorErrorKind::TicketExpired => {
@@ -327,6 +328,9 @@ pub(crate) enum RetainedUnavailableReason {
     FinalizationPanicked,
     CaptureTruncated,
     CounterOverflow,
+    /// The active logical capture budget could not hold the query's capture
+    /// when it registered, so it ran without one.
+    ActiveCaptureBudget,
 }
 
 impl RetainedUnavailableReason {
@@ -342,6 +346,7 @@ impl RetainedUnavailableReason {
             Self::FinalizationPanicked => "finalization_panicked",
             Self::CaptureTruncated => "capture_budget",
             Self::CounterOverflow => "counter_overflow",
+            Self::ActiveCaptureBudget => "active_capture_budget",
         }
     }
 }

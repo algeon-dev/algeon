@@ -453,7 +453,6 @@ impl QueryCoordinator {
                     let logical_capture_bytes = std::mem::take(&mut record.logical_capture_bytes);
                     record.terminal_outcome = Some(QueryTerminalOutcome::ShutdownTimeout);
                     record.active_leases = 0;
-                    record.active_activities = 0;
                     record.finalization_claim = None;
                     record.phase = if output.bundle.is_some() { QueryPhase::Retained } else { QueryPhase::Tombstone };
                     record.retained = output.bundle;

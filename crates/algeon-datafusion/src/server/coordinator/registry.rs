@@ -44,7 +44,6 @@ pub(crate) struct QueryRecord {
     pub(crate) terminal: Option<QueryTerminal>,
     pub(crate) terminal_outcome: Option<QueryTerminalOutcome>,
     pub(crate) active_leases: usize,
-    pub(crate) active_activities: usize,
     pub(crate) observation_owner: Option<RuntimeObservationOwner>,
     /// Flight attempt reports are immutable handoffs from the actual attempt
     /// owner. `None` remains valid when an attempt never begins, but records
@@ -200,17 +199,6 @@ impl QueryCoordinator {
         observation_config: RuntimeObservationConfig,
         create_runtime_observation_owner: bool,
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
-        let logical_capture_bytes = logical_capture_reservation_bytes(
-            observation_config.limits().max_retained_bytes,
-            self.config.per_query_capture_max_bytes,
-            self.config.per_query_artifact_max_bytes,
-        )
-        .ok_or_else(|| {
-            QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::LogicalCaptureBytes,
-                "per-query observation capture reservation overflows u64",
-            )
-        })?;
         if !state.accepting {
             return Err(QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::RegistrationCapacity,
@@ -244,19 +232,20 @@ impl QueryCoordinator {
                 "maximum live query count reached",
             ));
         }
-        let Some(next_active_capture_bytes) = state.active_logical_capture_bytes.checked_add(logical_capture_bytes)
-        else {
-            return Err(QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::LogicalCaptureBytes,
-                "active logical observation capture accounting overflowed",
-            ));
-        };
-        if next_active_capture_bytes > self.config.max_active_logical_capture_bytes {
-            return Err(QueryCoordinatorError::new(
-                QueryCoordinatorErrorKind::LogicalCaptureBytes,
-                "active logical observation capture budget exhausted",
-            ));
-        }
+        // Admission is the only overload arbiter. A query whose capture the
+        // active budget cannot hold registers without one: it reserves no
+        // bytes, keeps no SQL text, and its attempt records nothing.
+        let logical_capture_bytes = logical_capture_reservation_bytes(
+            observation_config.limits().max_retained_bytes,
+            self.config.per_query_capture_max_bytes,
+            self.config.per_query_artifact_max_bytes,
+        )
+        .filter(|bytes| {
+            state
+                .active_logical_capture_bytes
+                .checked_add(*bytes)
+                .is_some_and(|next| next <= self.config.max_active_logical_capture_bytes)
+        });
         let generation = state.next_generation.checked_add(1).ok_or_else(|| {
             QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::GenerationExhausted,
@@ -267,6 +256,23 @@ impl QueryCoordinator {
         let key = QueryKey { query_id: Arc::from(query_id.as_str()), generation };
         #[cfg(test)]
         let observation_id = ObservationId(Arc::from(format!("{query_id}:{generation}")));
+        let (observation_config, captured, unavailable) = match logical_capture_bytes {
+            Some(_) => {
+                let captured = CapturedQuery::new(
+                    query_id.clone(),
+                    sql,
+                    correlation_id,
+                    Instant::now(),
+                    self.config.per_query_capture_max_bytes,
+                    observation_config.limits().max_retained_records,
+                );
+                (observation_config, Some(captured), None)
+            },
+            None => {
+                (RuntimeObservationConfig::bounded(0, 0), None, Some(RetainedUnavailableReason::ActiveCaptureBudget))
+            },
+        };
+        let logical_capture_bytes = logical_capture_bytes.unwrap_or(0);
         let owner = create_runtime_observation_owner.then(|| {
             RuntimeObservationOwner::new(
                 RuntimeQueryId::new(query_id.clone()),
@@ -274,16 +280,8 @@ impl QueryCoordinator {
                 observation_config,
             )
         });
-        let captured = CapturedQuery::new(
-            query_id.clone(),
-            sql,
-            correlation_id,
-            Instant::now(),
-            self.config.per_query_capture_max_bytes,
-            observation_config.limits().max_retained_records,
-        );
         let hot = Arc::new(QueryHotCounters::default());
-        state.active_logical_capture_bytes = next_active_capture_bytes;
+        state.active_logical_capture_bytes += logical_capture_bytes;
         state.current.insert(query_id, key.clone());
         state.records.insert(
             key.clone(),
@@ -291,12 +289,11 @@ impl QueryCoordinator {
                 key: key.clone(),
                 #[cfg(test)]
                 observation_id: observation_id.clone(),
-                captured: Some(captured),
+                captured,
                 phase: QueryPhase::Planning,
                 terminal: None,
                 terminal_outcome: None,
                 active_leases: 1,
-                active_activities: 0,
                 observation_owner: owner,
                 attempt_report: None,
                 attempt_outcome: None,
@@ -310,7 +307,7 @@ impl QueryCoordinator {
                 ticket: None,
                 execution_cancellation: None,
                 retained: None,
-                unavailable: None,
+                unavailable,
                 retention_deadline: None,
                 retention_order: None,
                 tombstone_deadline: None,
@@ -324,6 +321,7 @@ impl QueryCoordinator {
             #[cfg(test)]
             observation_id,
             hot,
+            observation_config,
             attempt_report_handoff_registered: std::cell::Cell::new(false),
             released: false,
         })
@@ -436,7 +434,6 @@ impl QueryCoordinator {
             Self::bump_capture_version(record);
             record.terminal_outcome.is_some()
                 && record.active_leases == 0
-                && record.active_activities == 0
                 && !matches!(record.phase, QueryPhase::Retained | QueryPhase::Tombstone)
         };
         self.notify.notify_waiters();
