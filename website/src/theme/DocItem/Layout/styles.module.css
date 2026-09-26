@@ -49,6 +49,16 @@
   z-index: 1;
 }
 
+.pinnedTocTitle {
+  padding: 0 0 0.5rem 1rem;
+  border-left: 1px solid var(--ifm-toc-border-color);
+  color: var(--ifm-font-color-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .tocCollapseLineButton {
   position: absolute;
   left: 0;

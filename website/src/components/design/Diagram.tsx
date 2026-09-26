@@ -1,19 +1,30 @@
 import React, {useState} from 'react';
 import styles from './styles.module.css';
+import {
+  HAND, SANS, handTextWidth, sansTextWidth,
+  sketchHead, sketchLine, sketchPath, sketchRoundRect, sketchRoundRectLayers,
+} from './sketch';
 
 /**
- * Interactive system diagrams for the Design page.
+ * Hand-drawn system diagrams for the docs (Excalidraw-style).
  *
- * SVG with a computed layout: every label is monospace, so text widths are
- * deterministic (chars × advance width) and boxes are sized to their content;
- * nothing can wrap or overlap. Figures scale down proportionally on narrow
- * viewports (viewBox), with a legibility floor after which the container
- * scrolls horizontally.
+ * SVG with a computed layout. Titles are set in Excalifont, whose glyph
+ * advance widths are tabulated in excalifontMetrics.ts; notes and labels use
+ * the page's own sans face for legibility at small sizes, with a conservative
+ * width estimate. Either way text widths are deterministic on the server and
+ * in the browser, so boxes are sized to their content and nothing wraps or
+ * overlaps. Shapes are drawn by rough.js through sketch.ts with seeds derived
+ * from node ids, so hydration reproduces the same strokes. Figures scale down
+ * proportionally on narrow viewports (viewBox), with a legibility floor after
+ * which the container scrolls horizontally.
  *
- * Two shapes:
+ * Shapes:
  * - SystemDiagram: a lane-based DAG (host / GPU swim lanes, fork & merge
  *   edges, optional region underlays for shared invariants).
  * - StackDiagram: a top-down layering with optional boundary dividers.
+ * - ArchitectureDiagram: the overview page's fixed component map.
+ * - FlowDiagram: a left-to-right pipeline with optional bands and return
+ *   rails, for the "one statement" story on the overview and in the blog.
  *
  * Nodes carrying a `detail` are clickable (and keyboard-focusable); the
  * selected node's detail renders in an HTML panel under the SVG, so the
@@ -43,8 +54,6 @@ export interface DiagramNode {
   boundary?: string;
 }
 
-const MONO = 'var(--ag-dg-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)';
-
 export const COLOR = {
   border: 'var(--ag-dg-border-strong, #c3c9d4)',
   surface: 'var(--ag-dg-surface, #ffffff)',
@@ -67,22 +76,36 @@ export const TONE: Record<Tone, string> = {
   plain: 'var(--ag-dg-border-strong, #c3c9d4)',
 };
 
-// Monospace advance width as a fraction of font size. Common stacks sit at
-// 0.55–0.61; 0.62 over-estimates slightly so boxes never run tight.
-const CH = 0.62;
+export type Face = 'hand' | 'sans';
 
-const KIND = {size: 10, lh: 15, track: 0.07};
-const NAME = {size: 13.5, lh: 19};
-const NOTE = {size: 11.5, lh: 16};
-export const LABEL = {size: 10.5, track: 0.03}; // edge / lane / region labels
-const PAD_X = 15;
-const PAD_Y = 12;
-export const EDGE = 1; // stroke bleed margin around the drawing
-
-export function textWidth(text: string, font: {size: number; track?: number}): number {
-  const track = font.track ?? 0;
-  return text.length * font.size * CH + Math.max(0, text.length - 1) * track * font.size;
+export interface FontSpec {
+  size: number;
+  lh: number;
+  face: Face;
+  track?: number;
 }
+
+// Three scales. Titles are hand-lettered; everything a reader has to parse at
+// a glance (type prefixes, notes, edge labels) is the page's sans face.
+const KIND: FontSpec = {size: 10.5, lh: 16, face: 'sans', track: 0.08};
+const NAME: FontSpec = {size: 17, lh: 23, face: 'hand'};
+const NOTE: FontSpec = {size: 12.5, lh: 18, face: 'sans'};
+export const LABEL: FontSpec = {size: 12, lh: 16, face: 'sans', track: 0.01}; // edge / lane / region labels
+const PAD_X = 16;
+const PAD_Y = 12;
+export const EDGE = 2; // stroke bleed margin around the drawing
+const INK = COLOR.fg;
+const EDGE_WIDTH = 1.4;
+const BOX_RADIUS = 14;
+const GROUP_RADIUS = 18;
+
+export function textWidth(text: string, font: FontSpec): number {
+  return font.face === 'hand'
+    ? handTextWidth(text, font.size, font.track ?? 0)
+    : sansTextWidth(text, font.size, font.track ?? 0);
+}
+
+const fontFamily = (font: FontSpec) => (font.face === 'hand' ? HAND : SANS);
 
 function noteLines(node: DiagramNode): string[] {
   if (!node.note) return [];
@@ -92,9 +115,9 @@ function noteLines(node: DiagramNode): string[] {
 /** Font/padding bundle so the same Box renders at compact (Design DAG) or
  * glanceable (Overview/Flow) scale. */
 export interface BoxFonts {
-  kind: {size: number; lh: number; track: number};
-  name: {size: number; lh: number};
-  note: {size: number; lh: number};
+  kind: FontSpec;
+  name: FontSpec;
+  note: FontSpec;
   padX: number;
   padY: number;
 }
@@ -112,9 +135,11 @@ export function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS):
   return {w: Math.ceil(w) + 2 * fonts.padX, h: h + 2 * fonts.padY};
 }
 
-/** One node box: hairline rect, tone accent bar, mono text block, optional interactivity. */
-export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS, kindColor,
-  borderColor = COLOR.border, borderWidth = 1}: {
+/** One node box: sketched rounded outline, hachure tint in the node's tone
+ * over an opaque surface, hand-lettered title with sans notes, optional
+ * interactivity. */
+export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS,
+  borderColor = INK, borderWidth = 1.5}: {
   node: DiagramNode;
   x: number;
   y: number;
@@ -123,13 +148,13 @@ export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS
   selected?: boolean;
   onSelect?: () => void;
   fonts?: BoxFonts;
-  kindColor?: string;
   borderColor?: string;
   borderWidth?: number;
 }) {
   const notes = noteLines(node);
   const tone = node.tone ?? 'plain';
   const toneColor = TONE[tone];
+  const tinted = tone !== 'plain';
   const clickable = Boolean(onSelect);
   const contentH = (node.kind ? fonts.kind.lh : 0) + fonts.name.lh + notes.length * fonts.note.lh;
   let lineY = y + (h - contentH) / 2;
@@ -137,28 +162,37 @@ export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS
   const lines: React.ReactNode[] = [];
   if (node.kind) {
     lines.push(
-      <text key="kind" x={tx} y={lineY + fonts.kind.lh * 0.74} fontSize={fonts.kind.size}
-        letterSpacing={`${fonts.kind.track}em`}
-        fill={kindColor ?? (tone === 'plain' ? COLOR.subtle : toneColor)}>
+      <text key="kind" x={tx} y={lineY + fonts.kind.lh * 0.76} fontSize={fonts.kind.size}
+        fontFamily={fontFamily(fonts.kind)} letterSpacing={`${fonts.kind.track ?? 0}em`}
+        fill={COLOR.muted}>
         {node.kind.toUpperCase()}
       </text>,
     );
     lineY += fonts.kind.lh;
   }
   lines.push(
-    <text key="name" x={tx} y={lineY + fonts.name.lh * 0.72} fontSize={fonts.name.size} fontWeight={600} fill={COLOR.fg}>
+    <text key="name" x={tx} y={lineY + fonts.name.lh * 0.74} fontSize={fonts.name.size}
+      fontFamily={fontFamily(fonts.name)} fill={COLOR.fg}>
       {node.name}
     </text>,
   );
   lineY += fonts.name.lh;
   notes.forEach((line, i) => {
     lines.push(
-      <text key={`note-${i}`} x={tx} y={lineY + fonts.note.lh * 0.72} fontSize={fonts.note.size} fill={COLOR.muted}>
+      <text key={`note-${i}`} x={tx} y={lineY + fonts.note.lh * 0.74} fontSize={fonts.note.size}
+        fontFamily={fontFamily(fonts.note)} fill={COLOR.muted}>
         {line}
       </text>,
     );
     lineY += fonts.note.lh;
   });
+  const {fill, outline} = sketchRoundRectLayers(`box:${node.kind ?? ''}:${node.name}`, x, y, w, h, BOX_RADIUS, {
+    stroke: selected ? toneColor : borderColor,
+    strokeWidth: selected ? borderWidth + 0.8 : borderWidth,
+    fill: tinted ? toneColor : undefined,
+    className: styles.boxRect,
+  });
+  const r = Math.min(BOX_RADIUS - 2, w / 2, h / 2);
   return (
     <g
       className={clickable ? styles.nodeClickable : undefined}
@@ -178,33 +212,46 @@ export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS
             }
           : undefined
       }>
-      <rect className={styles.boxRect} x={x} y={y} width={w} height={h} rx={6}
-        fill={COLOR.surface} stroke={selected ? toneColor : borderColor}
-        strokeWidth={selected ? 1.4 : borderWidth} />
-      {selected ? (
-        <rect x={x} y={y} width={w} height={h} rx={6} fill={toneColor} opacity={0.07} pointerEvents="none" />
+      {/* Opaque surface first, so lane bands and edges never show through the
+          text and a click anywhere inside the box reaches the group; the
+          hachure sits on top at low opacity, the way a lightly shaded
+          Excalidraw box reads. */}
+      <rect x={x + 2} y={y + 2} width={w - 4} height={h - 4} rx={r} fill={COLOR.surface} />
+      {tinted ? (
+        <>
+          <rect className={styles.boxTint} x={x + 2} y={y + 2} width={w - 4} height={h - 4} rx={r}
+            fill={toneColor} pointerEvents="none" />
+          <g className={styles.boxHatch} pointerEvents="none">{fill}</g>
+        </>
       ) : null}
-      {tone !== 'plain' ? (
-        <line x1={x + 1.25} y1={y + 6} x2={x + 1.25} y2={y + h - 6}
-          stroke={toneColor} strokeWidth={2.5} strokeLinecap="round" />
-      ) : null}
+      {outline}
       {lines}
     </g>
   );
 }
 
-export function Arrowhead({x, y, stroke}: {x: number; y: number; stroke: string}) {
+/** Edge label with a surface-colored backing so it stays legible over lines. */
+export function BackedLabel({x, y, text, fill = COLOR.muted}: {x: number; y: number; text: string; fill?: string}) {
+  const w = textWidth(text, LABEL);
   return (
-    <path d={`M ${x - 5.5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5.5} ${y + 4}`}
-      fill="none" stroke={stroke} strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
+    <g>
+      <rect x={x - w / 2 - 5} y={y - 11} width={w + 10} height={15} rx={4}
+        fill={COLOR.surface} opacity={0.92} />
+      <text x={x} y={y} fontSize={LABEL.size} fontFamily={SANS} letterSpacing={`${LABEL.track ?? 0}em`}
+        textAnchor="middle" fill={fill}>
+        {text}
+      </text>
+    </g>
   );
 }
 
-export function Figure({caption, svgW, svgH, minW, interactive, ariaLabel, center, children, panel}: {
+export function Figure({caption, svgW, svgH, minW, maxW, interactive, ariaLabel, center, children, panel}: {
   caption?: React.ReactNode;
   svgW: number;
   svgH: number;
   minW: number;
+  /** Displayed width cap in CSS px; defaults to the drawing's own width. */
+  maxW?: number;
   interactive?: boolean;
   ariaLabel?: string;
   center?: boolean;
@@ -215,11 +262,10 @@ export function Figure({caption, svgW, svgH, minW, interactive, ariaLabel, cente
     <div className={styles.figure}>
       <figure style={{margin: 0}}>
         <div className={styles.scroll}>
-          <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" role={interactive ? 'group' : undefined}
-            aria-hidden={interactive ? undefined : true}
-            aria-label={interactive ? ariaLabel : undefined}
-            style={{maxWidth: svgW, minWidth: Math.min(svgW, minW), display: 'block',
-              margin: center ? '0 auto' : undefined, fontFamily: MONO}}>
+          <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" role={interactive ? 'group' : 'img'}
+            aria-label={ariaLabel}
+            style={{maxWidth: maxW ?? svgW, minWidth: Math.min(maxW ?? svgW, minW), display: 'block',
+              margin: center ? '0 auto' : undefined, fontFamily: SANS}}>
             {children}
           </svg>
         </div>
@@ -264,7 +310,7 @@ function DetailPanel({node}: {node: DiagramNode}) {
 
 export interface SystemLane {
   id: string;
-  /** Short mono gutter label, e.g. "host" / "gpu". */
+  /** Short gutter label, e.g. "host" / "gpu". */
   label: string;
   /** Tints the lane band. */
   tone?: Tone;
@@ -284,7 +330,7 @@ export interface SystemEdge {
 }
 
 export interface SystemRegion {
-  /** Mono label drawn inside the region's top-left corner. */
+  /** Label drawn inside the region's top-left corner. */
   label: string;
   /** Node ids the region encloses. */
   nodes: string[];
@@ -301,8 +347,8 @@ export interface SystemDiagramProps {
 }
 
 const LANE_PAD = 16;
-const REGION_HEAD = 28; // headroom above nodes for the region label
-const REGION_FOOT = 10;
+const REGION_HEAD = 30; // headroom above nodes for the region label
+const REGION_FOOT = 12;
 const MIN_GAP = 56;
 
 /**
@@ -396,10 +442,10 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
         return (
           <g key={lane.id}>
             {lane.tone ? (
-              <rect x={0} y={top} width={svgW} height={h} fill={TONE[lane.tone]} opacity={0.04} />
+              <rect x={0} y={top} width={svgW} height={h} fill={TONE[lane.tone]} opacity={0.05} />
             ) : null}
-            <text x={10} y={top + h / 2 + 3.5} fontSize={KIND.size} letterSpacing={`${KIND.track}em`}
-              fill={lane.tone ? TONE[lane.tone] : COLOR.subtle} opacity={0.9}>
+            <text x={10} y={top + h / 2 + 4} fontSize={KIND.size} letterSpacing={`${KIND.track}em`}
+              fill={COLOR.muted}>
               {lane.label.toUpperCase()}
             </text>
           </g>
@@ -407,24 +453,28 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
       })}
       {/* lane separators */}
       {lanes.slice(1).map((lane) => (
-        <line key={`sep-${lane.id}`} x1={0} y1={laneTop.get(lane.id)!} x2={svgW} y2={laneTop.get(lane.id)!}
-          stroke={COLOR.border} strokeWidth={1} strokeDasharray="2 5" opacity={0.7} />
+        <g key={`sep-${lane.id}`} opacity={0.7}>
+          {sketchLine(`sep:${lane.id}`, 0, laneTop.get(lane.id)!, svgW, laneTop.get(lane.id)!,
+            {stroke: COLOR.border, strokeWidth: 1, dashed: true, roughness: 0.5})}
+        </g>
       ))}
       {/* regions */}
       {regions.map((region, i) => {
         const rs = region.nodes.map((id) => rect.get(id)!);
-        const rx = Math.min(...rs.map((r) => r.x)) - 10;
+        const rx = Math.min(...rs.map((r) => r.x)) - 12;
         const ry = Math.min(...rs.map((r) => r.y)) - REGION_HEAD;
-        const rw = Math.max(...rs.map((r) => r.x + r.w)) + 10 - rx;
+        const rw = Math.max(...rs.map((r) => r.x + r.w)) + 12 - rx;
         const rh = Math.max(...rs.map((r) => r.y + r.h)) + REGION_FOOT - ry;
         const toneColor = TONE[region.tone ?? 'plain'];
         return (
           <g key={`region-${i}`}>
-            <rect x={rx} y={ry} width={rw} height={rh} rx={8} fill={toneColor} opacity={0.05} />
-            <rect x={rx} y={ry} width={rw} height={rh} rx={8} fill="none"
-              stroke={toneColor} strokeWidth={1} strokeDasharray="5 4" opacity={0.55} />
-            <text x={rx + 10} y={ry + 16} fontSize={LABEL.size} letterSpacing={`${LABEL.track}em`}
-              fill={toneColor}>
+            <rect x={rx} y={ry} width={rw} height={rh} rx={GROUP_RADIUS} fill={toneColor} opacity={0.06} />
+            <g opacity={0.7}>
+              {sketchRoundRect(`region:${region.label}`, rx, ry, rw, rh, GROUP_RADIUS,
+                {stroke: toneColor, strokeWidth: 1.2, dashed: true})}
+            </g>
+            <text x={rx + 14} y={ry + 18} fontSize={LABEL.size} letterSpacing={`${LABEL.track}em`}
+              fill={COLOR.muted}>
               {region.label}
             </text>
           </g>
@@ -439,29 +489,17 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
         const dx = b.x;
         const dy = b.cy;
         const connected = selectedId === e.from || selectedId === e.to;
-        const stroke = connected && selected ? TONE[selected.tone ?? 'plain'] : COLOR.border;
-        const dash = e.dashed ? '5 4' : undefined;
-        const labelText = (lx: number, ly: number) => {
-          if (!e.label) return null;
-          const lw = textWidth(e.label, LABEL);
-          return (
-            <g>
-              <rect x={lx - lw / 2 - 5} y={ly - 9.5} width={lw + 10} height={13} rx={3}
-                fill={COLOR.surface} opacity={0.92} />
-              <text x={lx} y={ly} fontSize={LABEL.size} letterSpacing={`${LABEL.track}em`}
-                textAnchor="middle" fill={connected && selected ? stroke : COLOR.subtle}>
-                {e.label}
-              </text>
-            </g>
-          );
-        };
+        const stroke = connected && selected ? TONE[selected.tone ?? 'plain'] : INK;
+        const style = {stroke, strokeWidth: connected ? EDGE_WIDTH + 0.5 : EDGE_WIDTH, dashed: e.dashed};
+        const seed = `edge:${e.from}->${e.to}`;
+        const label = (lx: number, ly: number) =>
+          e.label ? <BackedLabel x={lx} y={ly} text={e.label} fill={connected && selected ? stroke : COLOR.muted} /> : null;
         if (byId.get(e.from)!.lane === byId.get(e.to)!.lane) {
           return (
             <g key={`edge-${i}`}>
-              <line x1={sx} y1={sy} x2={dx - 1} y2={dy} stroke={stroke} strokeWidth={connected ? 1.25 : 1}
-                strokeDasharray={dash} />
-              <Arrowhead x={dx} y={dy} stroke={stroke} />
-              {labelText((sx + dx) / 2, sy - 7)}
+              {sketchLine(seed, sx, sy, dx - 1, dy, style)}
+              {sketchHead(`${seed}:head`, dx, dy, 'right', style)}
+              {label((sx + dx) / 2, sy - 9)}
             </g>
           );
         }
@@ -472,11 +510,9 @@ export function SystemDiagram({ariaLabel, lanes, nodes, edges, regions = [], cap
         const seg2 = Math.abs(dx - midX);
         return (
           <g key={`edge-${i}`}>
-            <path d={elbowPath(sx, sy, midX, dy, dx)}
-              fill="none" stroke={stroke} strokeWidth={connected ? 1.25 : 1}
-              strokeDasharray={dash} strokeLinejoin="round" />
-            <Arrowhead x={dx} y={dy} stroke={stroke} />
-            {seg2 >= seg1 ? labelText((midX + dx) / 2, dy - 7) : labelText((sx + midX) / 2, sy - 7)}
+            {sketchPath(seed, elbowPath(sx, sy, midX, dy, dx), style)}
+            {sketchHead(`${seed}:head`, dx, dy, 'right', style)}
+            {seg2 >= seg1 ? label((midX + dx) / 2, dy - 9) : label((sx + midX) / 2, sy - 9)}
           </g>
         );
       })}
@@ -506,10 +542,10 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   const interactive = nodes.some((n) => n.detail);
   const [selectedIdx, setSelectedIdx] = useState<number>(nodes.findIndex((n) => n.detail));
   const sizes = nodes.map((n) => measureNode(n));
-  const boxW = Math.max(380, ...sizes.map((s) => s.w));
+  const boxW = Math.max(400, ...sizes.map((s) => s.w));
   const svgW = boxW + 2 * EDGE;
-  const GAP = 12;
-  const BOUNDARY_H = 24;
+  const GAP = 14;
+  const BOUNDARY_H = 26;
   const parts: React.ReactNode[] = [];
   let y = EDGE;
   nodes.forEach((node, i) => {
@@ -524,14 +560,13 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
       const midY = y + GAP / 2 + BOUNDARY_H / 2;
       const labelW = textWidth(node.boundary, LABEL);
       const gapHalf = labelW / 2 + 12;
+      const style = {stroke: TONE.foreign, strokeWidth: 1.2, dashed: true};
       parts.push(
         <g key={`d${i}`}>
-          <line x1={EDGE} y1={midY} x2={svgW / 2 - gapHalf} y2={midY}
-            stroke={TONE.foreign} strokeWidth={1} strokeDasharray="5 4" />
-          <line x1={svgW / 2 + gapHalf} y1={midY} x2={svgW - EDGE} y2={midY}
-            stroke={TONE.foreign} strokeWidth={1} strokeDasharray="5 4" />
+          {sketchLine(`boundary:${i}:l`, EDGE, midY, svgW / 2 - gapHalf, midY, style)}
+          {sketchLine(`boundary:${i}:r`, svgW / 2 + gapHalf, midY, svgW - EDGE, midY, style)}
           <text x={svgW / 2} y={midY + LABEL.size * 0.36} fontSize={LABEL.size}
-            letterSpacing={`${LABEL.track}em`} textAnchor="middle" fill={TONE.foreign}>
+            letterSpacing={`${LABEL.track}em`} textAnchor="middle" fill={COLOR.muted}>
             {node.boundary}
           </text>
         </g>,
@@ -542,86 +577,65 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
   const selected = interactive && selectedIdx >= 0 ? nodes[selectedIdx] : undefined;
   return (
     <Figure caption={caption} svgW={svgW} svgH={y + EDGE} minW={420} interactive={interactive} center
-      ariaLabel={interactive ? (ariaLabel ?? 'Interactive stack diagram') : undefined}
+      ariaLabel={ariaLabel ?? 'Stack diagram'}
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
       {parts}
     </Figure>
   );
 }
 
-const ARCH_KIND = {size: 11.5, lh: 18, track: 0.07};
-const ARCH_NAME = {size: 17, lh: 25};
-const ARCH_NOTE = {size: 13, lh: 19};
+/* ======================= ArchitectureDiagram ======================= */
+
 const ARCH_FONTS: BoxFonts = {
-  kind: ARCH_KIND,
-  name: ARCH_NAME,
-  note: ARCH_NOTE,
+  kind: {size: 11, lh: 17, face: 'sans', track: 0.08},
+  name: {size: 20, lh: 27, face: 'hand'},
+  note: {size: 13, lh: 19, face: 'sans'},
   padX: 20,
   padY: 15,
 };
-const ARCH_CARD_BORDER = 'var(--ag-arch-card-border, #d7dce1)';
-const ARCH_EDGE = 'var(--ag-arch-edge, #748292)';
-const ARCH_CARD_BORDER_WIDTH = 1.2;
-const ARCH_EDGE_WIDTH = 1.1;
-
-export function smallHeadDown(x: number, y: number): string {
-  return `M ${x - 4} ${y - 5} L ${x} ${y - 0.5} L ${x + 4} ${y - 5}`;
-}
-
-export function smallHeadLeft(x: number, y: number): string {
-  return `M ${x + 5} ${y - 4} L ${x + 0.5} ${y} L ${x + 5} ${y + 4}`;
-}
-
-export function smallHeadRight(x: number, y: number): string {
-  return `M ${x - 5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5} ${y + 4}`;
-}
-
-export function smallHeadUp(x: number, y: number): string {
-  return `M ${x - 4} ${y + 5} L ${x} ${y + 0.5} L ${x + 4} ${y + 5}`;
-}
 
 export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   const colX = 140;
-  const outCx = 830;
-  const sourceCx = 640;
+  const outCx = 840;
+  const sourceCx = 480;
 
   const top: DiagramNode = {
-    kind: 'query interfaces',
+    kind: 'your query interface',
     name: 'SQL · DataFrame · Flight SQL',
-    note: 'embedded library · remote ADBC clients',
+    note: 'embedded in a Rust service · remote ADBC clients',
     tone: 'plain',
   };
   const rule: DiagramNode = {
-    kind: 'DataFusion optimizer rule',
-    name: 'algeon_datafusion_native',
-    note: 'selects a whole relational candidate',
+    kind: 'Algeon optimizer rule in DataFusion',
+    name: 'Algeon DataFusion adapter',
+    note: 'picks whole relational candidates for the GPU',
     tone: 'engine',
   };
   const gpu: DiagramNode = {
-    kind: 'native · same process',
+    kind: 'same process · one device · one memory grant',
     name: 'GPU execution',
     note: [
-      'cuDF · SQL algorithm functions',
-      'admission queue · GPU memory ledger',
+      'cuDF for the relational plan',
+      'cugraph_* · cuvs_* · cuml_* table functions',
     ],
     tone: 'gpu',
   };
   const out: DiagramNode = {
     kind: 'same caller contract',
-    name: 'Arrow RecordBatch stream',
-    note: 'returns to the original query interface',
+    name: 'Arrow batches',
+    note: 'rows back to the interface you started from',
     tone: 'plain',
   };
   const disk: DiagramNode = {
-    kind: 'mutable workspace',
+    kind: 'local files',
     name: 'Local disk',
-    note: 'Parquet files · scratch tables',
+    note: 'Parquet · read-only',
     tone: 'bridge',
   };
   const source: DiagramNode = {
     kind: 'S3-compatible',
-    name: 'Remote Iceberg',
-    note: 'REST / Glue catalog metadata',
+    name: 'Object storage',
+    note: 'Parquet · read-only',
     tone: 'lake',
   };
 
@@ -654,8 +668,8 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   const sourceY = inputBottom - sourceSize.h;
   const storeLeft = Math.min(colX, sourceCx - sourceSize.w / 2) - 26;
   const storeRight = Math.max(colX + diskSize.w, sourceCx + sourceSize.w / 2) + 26;
-  const storeY = inputY - 24;
-  const storeBottom = inputBottom + 24;
+  const storeY = inputY - 26;
+  const storeBottom = inputBottom + 26;
   const H = Math.ceil(storeBottom) + EDGE;
 
   // Left-aligned column: the spine runs at the narrowest card's center, so
@@ -667,128 +681,109 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
   const outLeft = outCx - outSize.w / 2;
   const outRight = outCx + outSize.w / 2;
   const R = 12;
-  const W = Math.ceil(outRight + 8);
+  const W = Math.ceil(Math.max(outRight, storeRight) + 8);
 
-  const stroke = ARCH_EDGE;
-  const head = (d: string) => <path d={d} fill={stroke} stroke="none" />;
+  const edge = {stroke: INK, strokeWidth: EDGE_WIDTH};
+  const dashedEdge = {...edge, dashed: true};
 
   return (
-    <Figure caption={caption} svgW={W} svgH={H} minW={680} center>
+    <Figure caption={caption} svgW={W} svgH={H} minW={560} maxW={Math.round(W * 0.82)} center
+      ariaLabel="Where Algeon sits inside a DataFusion query: the optimizer rule, GPU execution, the CPU fallback, and the Parquet sources">
       {/* The main query path runs straight down the left column. */}
-      <line x1={spineX} y1={topBottom} x2={spineX} y2={ruleY - 1}
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
-      {head(smallHeadDown(spineX, ruleY))}
-      <line x1={spineX} y1={ruleBottom} x2={spineX} y2={gpuY - 1}
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
-      {head(smallHeadDown(spineX, gpuY))}
+      {sketchLine('arch:top-rule', spineX, topBottom, spineX, ruleY - 1, edge)}
+      {sketchHead('arch:top-rule:head', spineX, ruleY, 'down', edge)}
+      {sketchLine('arch:rule-gpu', spineX, ruleBottom, spineX, gpuY - 1, edge)}
+      {sketchHead('arch:rule-gpu:head', spineX, gpuY, 'down', edge)}
 
-      {/* A non-selected candidate falls back to DataFusion CPU execution
-          (dashed, as the non-selected path) and still lands in the same
-          Arrow stream. */}
-      <line x1={ruleRight} y1={ruleCy} x2={outLeft - 1} y2={ruleCy}
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeDasharray="5 4" />
-      {head(smallHeadRight(outLeft, ruleCy))}
-      <text x={(ruleRight + outLeft) / 2} y={ruleCy + 20} textAnchor="middle"
-        fontSize={ARCH_KIND.size} fontWeight={600} fill={COLOR.muted}>
-        DataFusion CPU fallback
-      </text>
+      {/* A non-selected candidate stays on DataFusion CPU execution (dashed,
+          as the non-selected path) and still lands in the same Arrow stream. */}
+      {sketchLine('arch:fallback', ruleRight, ruleCy, outLeft - 1, ruleCy, dashedEdge)}
+      {sketchHead('arch:fallback:head', outLeft, ruleCy, 'right', edge)}
+      <BackedLabel x={(ruleRight + outLeft) / 2} y={ruleCy - 12} text="unselected candidates" />
+      <BackedLabel x={(ruleRight + outLeft) / 2} y={ruleCy + 20} text="stay on DataFusion CPU" />
 
       {/* GPU results join the same caller contract from below. */}
-      <path
-        d={[
-          `M ${gpuRight} ${gpuCy}`,
-          `L ${outCx - R} ${gpuCy}`,
-          `Q ${outCx} ${gpuCy} ${outCx} ${gpuCy - R}`,
-          `L ${outCx} ${outBottom + 1}`,
-        ].join(' ')}
-        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      {head(smallHeadUp(outCx, outBottom))}
+      {sketchPath('arch:gpu-out', [
+        `M ${gpuRight} ${gpuCy}`,
+        `L ${outCx - R} ${gpuCy}`,
+        `Q ${outCx} ${gpuCy} ${outCx} ${gpuCy - R}`,
+        `L ${outCx} ${outBottom + 1}`,
+      ].join(' '), edge)}
+      {sketchHead('arch:gpu-out:head', outCx, outBottom, 'up', edge)}
+      <BackedLabel x={(gpuRight + outCx) / 2} y={gpuCy - 10} text="GPU results" />
 
       {/* Both storage cards share one KvikIO read path: a single trunk
           climbs from the storage container's top edge into the GPU. */}
-      <line x1={spineX} y1={storeY} x2={spineX} y2={gpuBottom + 1}
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
-      {head(smallHeadUp(spineX, gpuBottom))}
-      <text x={spineX - 10} y={(storeY + gpuBottom) / 2 + ARCH_KIND.size * 0.35}
-        fontSize={ARCH_KIND.size} fontWeight={600} textAnchor="end" fill={COLOR.muted}>
+      {sketchLine('arch:store-gpu', spineX, storeY, spineX, gpuBottom + 1, edge)}
+      {sketchHead('arch:store-gpu:head', spineX, gpuBottom, 'up', edge)}
+      <text x={spineX + 12} y={(storeY + gpuBottom) / 2 + LABEL.size * 0.36}
+        fontSize={LABEL.size} fill={COLOR.muted}>
         KvikIO
       </text>
 
       {/* Results return outside the query path, so the loop is visible
           without crossing any card. */}
-      <path
-        d={[
-          `M ${outCx} ${outY}`,
-          `L ${outCx} ${topCy + R}`,
-          `Q ${outCx} ${topCy} ${outCx - R} ${topCy}`,
-          `L ${topRight + 1} ${topCy}`,
-        ].join(' ')}
-        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      {head(smallHeadLeft(topRight, topCy))}
+      {sketchPath('arch:out-top', [
+        `M ${outCx} ${outY}`,
+        `L ${outCx} ${topCy + R}`,
+        `Q ${outCx} ${topCy} ${outCx - R} ${topCy}`,
+        `L ${topRight + 1} ${topCy}`,
+      ].join(' '), edge)}
+      {sketchHead('arch:out-top:head', topRight, topCy, 'left', edge)}
 
       {/* The storage container groups both inputs under the shared read
           path; cards draw on top of it. */}
       <rect x={storeLeft} y={storeY} width={storeRight - storeLeft}
-        height={storeBottom - storeY} rx={10}
-        fill={COLOR.fg} fillOpacity={0.04}
-        stroke={ARCH_CARD_BORDER} strokeWidth={1} />
+        height={storeBottom - storeY} rx={GROUP_RADIUS} fill={COLOR.fg} fillOpacity={0.04} />
+      {sketchRoundRect('arch:store', storeLeft, storeY, storeRight - storeLeft, storeBottom - storeY, GROUP_RADIUS,
+        {stroke: COLOR.muted, strokeWidth: 1.2, dashed: true})}
       {/* Boxes are last so edge endpoints tuck under their borders. */}
-      <Box node={top} x={colX} y={topY} w={topSize.w} h={topSize.h}
-        fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <rect x={colX - 7} y={ruleY - 7}
-        width={ruleSize.w + 14} height={ruleSize.h + 14} rx={12}
-        fill={TONE.engine} opacity={0.1} />
-      <Box node={rule} x={colX} y={ruleY} w={ruleSize.w} h={ruleSize.h}
-        fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={gpu} x={colX} y={gpuY} w={gpuSize.w} h={gpuSize.h}
-        fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={out} x={outLeft} y={outY} w={outSize.w} h={outSize.h}
-        fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={disk} x={colX} y={diskY} w={diskSize.w} h={diskSize.h}
-        fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <Box node={top} x={colX} y={topY} w={topSize.w} h={topSize.h} fonts={ARCH_FONTS} />
+      <Box node={rule} x={colX} y={ruleY} w={ruleSize.w} h={ruleSize.h} fonts={ARCH_FONTS}
+        borderColor={TONE.engine} borderWidth={2.2} />
+      <Box node={gpu} x={colX} y={gpuY} w={gpuSize.w} h={gpuSize.h} fonts={ARCH_FONTS} />
+      <Box node={out} x={outLeft} y={outY} w={outSize.w} h={outSize.h} fonts={ARCH_FONTS} />
+      <Box node={disk} x={colX} y={diskY} w={diskSize.w} h={diskSize.h} fonts={ARCH_FONTS} />
       <Box node={source} x={sourceCx - sourceSize.w / 2} y={sourceY} w={sourceSize.w} h={sourceSize.h}
-        fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+        fonts={ARCH_FONTS} />
     </Figure>
   );
 }
 
 /* ======================= FlowDiagram ======================= */
 
-// Flow boxes sit between the compact Design-DAG type and the homepage's
-// ArchitectureDiagram type: a notch larger than StackDiagram, without its density.
-const FLOW_KIND = {size: 10.5, lh: 16, track: 0.07};
-const FLOW_NAME = {size: 14.5, lh: 21};
-const FLOW_NOTE = {size: 12, lh: 17};
-export const FLOW_FONTS: BoxFonts = {kind: FLOW_KIND, name: FLOW_NAME, note: FLOW_NOTE, padX: 16, padY: 12};
-const FL_LABEL = {size: 11, lh: 16, track: 0.03};
-const FL_GROUP_PAD_X = 16;
-const FL_GROUP_HEAD = 30; // headroom inside a group for its corner label
-const FL_GROUP_FOOT = 14;
+export const FLOW_FONTS: BoxFonts = {
+  kind: {size: 11, lh: 17, face: 'sans', track: 0.08},
+  name: {size: 19, lh: 26, face: 'hand'},
+  note: {size: 13, lh: 19, face: 'sans'},
+  padX: 18,
+  padY: 14,
+};
+const FL_MIN_GAP = 72;
+const FL_BAND_PAD = 18;
+const FL_BAND_HEAD = 34; // headroom inside a band for its corner label
+const FL_BAND_FOOT = 14;
+const FL_RAIL_DROP = 34;
 
 export interface FlowNode extends DiagramNode {
   id: string;
-  /** Label line(s) drawn beside the arrow leading into this node. */
+  /** Label line(s) drawn above the arrow leading into this node. */
   edgeLabel?: string | string[];
 }
 
 export interface FlowGroup {
   /** Corner label, rendered as given (no case transform). */
   label: string;
-  /** Contiguous node ids the group encloses. */
+  /** Contiguous node ids the band encloses. */
   nodes: string[];
+  tone?: Tone;
 }
 
 export interface FlowReturn {
   from: string;
   to: string;
-  /** Label line(s) beside the return rail. */
-  label?: string | string[];
+  /** Label under the return rail. */
+  label?: string;
 }
 
 export interface FlowDiagramProps {
@@ -797,16 +792,19 @@ export interface FlowDiagramProps {
   groups?: FlowGroup[];
   returns?: FlowReturn[];
   caption?: React.ReactNode;
+  /** Minimum displayed width before the figure scrolls horizontally. */
+  minWidth?: number;
 }
 
 /**
- * A top-down flow at ArchitectureDiagram scale: one centered column of large-type
- * boxes, arrow labels beside the spine, dashed ownership containers, and an
- * optional dashed return rail on the right for the backflow. Nodes with
- * `detail` are clickable and drive the panel below the SVG, blending the
- * homepage figure's glanceability and the Design diagrams' interactivity.
+ * A left-to-right pipeline: boxes sized to their content, arrow labels above
+ * the arrows, optional dashed bands over a run of stages, and optional dashed
+ * return rails below for output that feeds an earlier stage. Nodes with
+ * `detail` are clickable and drive the panel below the SVG; without any, the
+ * figure is a static picture.
  */
-export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], caption}: FlowDiagramProps) {
+export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], caption, minWidth = 680}: FlowDiagramProps) {
+  const interactive = nodes.some((n) => n.detail);
   const [selectedId, setSelectedId] = useState<string | null>(
     nodes.find((n) => n.detail)?.id ?? null,
   );
@@ -815,145 +813,116 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
   groups.forEach((g) => g.nodes.forEach((id) => groupOf.set(id, g)));
   const edgeLines = (n: FlowNode): string[] =>
     !n.edgeLabel ? [] : Array.isArray(n.edgeLabel) ? n.edgeLabel : [n.edgeLabel];
-  const returnLines = (r: FlowReturn): string[] =>
-    !r.label ? [] : Array.isArray(r.label) ? r.label : [r.label];
 
   const sizes = new Map(nodes.map((n) => [n.id, measureNode(n, FLOW_FONTS)]));
-  const boxW = Math.max(380, ...nodes.map((n) => sizes.get(n.id)!.w));
-  const groupX = EDGE + 2;
-  const boxX = groupX + FL_GROUP_PAD_X;
-  const boxRight = boxX + boxW;
-  const groupW = boxW + 2 * FL_GROUP_PAD_X;
-  const cx = boxX + boxW / 2;
+  const rowH = Math.max(...[...sizes.values()].map((s) => s.h));
+  const hasBands = groups.length > 0;
+  const top = EDGE + 6 + (hasBands ? FL_BAND_HEAD : 0);
 
-  // Vertical layout: arrow gaps sized so their labels always fit; entering or
-  // leaving a dashed group adds that group's label headroom / footroom.
-  const rect = new Map<string, {y: number; h: number; cy: number}>();
-  const groupRect = new Map<FlowGroup, {top: number; bottom: number}>();
-  let y = EDGE + 2;
+  // Horizontal layout: each gap is sized to the widest label line above its arrow.
+  const placed = new Map<string, {x: number; y: number; w: number; h: number; cx: number; cy: number}>();
+  let x = EDGE + 8 + (hasBands ? FL_BAND_PAD : 0);
   nodes.forEach((n, i) => {
-    const g = groupOf.get(n.id);
-    const prevG = i > 0 ? groupOf.get(nodes[i - 1].id) : undefined;
-    if (i === 0) {
-      if (g) y += FL_GROUP_HEAD;
-    } else {
-      const lines = edgeLines(n).length;
-      let gap = lines > 0 ? Math.max(54, lines * FL_LABEL.lh + 30) : 46;
-      if (prevG && prevG !== g) gap += FL_GROUP_FOOT;
-      if (g && g !== prevG) gap += FL_GROUP_HEAD;
-      y += gap;
+    if (i > 0) {
+      const lw = Math.max(0, ...edgeLines(n).map((line) => textWidth(line, LABEL)));
+      x += Math.max(FL_MIN_GAP, Math.ceil(lw) + 48);
     }
-    if (g && g !== prevG) groupRect.set(g, {top: y - FL_GROUP_HEAD, bottom: 0});
-    const h = sizes.get(n.id)!.h;
-    rect.set(n.id, {y, h, cy: y + h / 2});
-    y += h;
-    if (g) groupRect.get(g)!.bottom = y + FL_GROUP_FOOT;
+    const s = sizes.get(n.id)!;
+    placed.set(n.id, {x, y: top + (rowH - s.h) / 2, w: s.w, h: s.h, cx: x + s.w / 2, cy: top + rowH / 2});
+    x += s.w;
   });
-  const svgH = Math.max(y, ...[...groupRect.values()].map((r) => r.bottom)) + EDGE + 2;
-
-  // Width: spine labels sit to the right of the arrows; the return rail sits
-  // clear of both the boxes and the widest spine label.
-  const maxEdgeLabelW = Math.max(
-    0, ...nodes.flatMap((n) => edgeLines(n).map((line) => textWidth(line, FL_LABEL))),
-  );
-  const maxReturnLabelW = Math.max(
-    0, ...returns.flatMap((r) => returnLines(r).map((line) => textWidth(line, FL_LABEL))),
-  );
-  const railX = Math.max(boxRight + FL_GROUP_PAD_X, cx + 12 + maxEdgeLabelW) + 34;
-  const svgW = Math.max(
-    groupX + groupW + EDGE + 4,
-    cx + 12 + maxEdgeLabelW + EDGE + 4,
-    returns.length ? railX + 12 + maxReturnLabelW + EDGE + 4 : 0,
-  );
+  const rowBottom = top + rowH;
+  const railY = rowBottom + FL_RAIL_DROP;
+  const contentBottom = returns.length ? railY + LABEL.lh + 6 : rowBottom;
+  const svgH = contentBottom + (hasBands ? FL_BAND_FOOT : 0) + EDGE + 6;
+  const svgW = x + 8 + (hasBands ? FL_BAND_PAD : 0) + EDGE;
 
   const selected = selectedId ? byId.get(selectedId) : undefined;
+  const edge = {stroke: INK, strokeWidth: EDGE_WIDTH};
 
   return (
-    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={560} interactive
-      ariaLabel={ariaLabel ?? 'Interactive flow diagram'}
+    <Figure caption={caption} svgW={svgW} svgH={svgH} minW={minWidth} interactive={interactive} center
+      ariaLabel={ariaLabel ?? 'Flow diagram'}
       panel={selected?.detail ? <DetailPanel node={selected} /> : null}>
-      {/* dashed ownership containers */}
+      {/* dashed bands over a run of stages */}
       {groups.map((g, i) => {
-        const r = groupRect.get(g);
-        if (!r) return null;
+        const members = g.nodes.map((id) => placed.get(id)!);
+        const bx = Math.min(...members.map((m) => m.x)) - FL_BAND_PAD;
+        const bw = Math.max(...members.map((m) => m.x + m.w)) + FL_BAND_PAD - bx;
+        const by = EDGE + 4;
+        const bh = svgH - EDGE - 4 - by;
+        const toneColor = TONE[g.tone ?? 'gpu'];
         return (
-          <g key={`group-${i}`}>
-            <rect x={groupX} y={r.top} width={groupW} height={r.bottom - r.top} rx={9}
-              fill="none" stroke={COLOR.border} strokeWidth={1} strokeDasharray="5 4" />
-            <text x={groupX + 14} y={r.top + 18} fontSize={FLOW_KIND.size}
-              letterSpacing={`${FLOW_KIND.track}em`} fill={COLOR.subtle}>
-              {g.label}
+          <g key={`band-${i}`}>
+            <rect x={bx} y={by} width={bw} height={bh} rx={GROUP_RADIUS} fill={toneColor} opacity={0.06} />
+            <g opacity={0.7}>
+              {sketchRoundRect(`band:${g.label}`, bx, by, bw, bh, GROUP_RADIUS,
+                {stroke: toneColor, strokeWidth: 1.2, dashed: true})}
+            </g>
+            <text x={bx + 16} y={by + 20} fontSize={KIND.size} letterSpacing={`${KIND.track}em`}
+              fill={COLOR.muted}>
+              {g.label.toUpperCase()}
             </text>
           </g>
         );
       })}
-      {/* spine arrows + labels */}
+      {/* arrows + labels */}
       {nodes.map((n, i) => {
         if (i === 0) return null;
-        const prev = rect.get(nodes[i - 1].id)!;
-        const cur = rect.get(n.id)!;
-        const top = prev.y + prev.h;
-        const bottom = cur.y;
+        const a = placed.get(nodes[i - 1].id)!;
+        const b = placed.get(n.id)!;
+        const sx = a.x + a.w;
+        const dx = b.x;
+        const cy = a.cy;
+        // Center labels on the visible arrow shaft, and when the arrow enters a
+        // band the previous node is outside of, on the clear space before the
+        // band's edge rather than on the gap as a whole.
+        const entersBand = groupOf.has(n.id) && groupOf.get(n.id) !== groupOf.get(nodes[i - 1].id);
+        const right = entersBand ? dx - FL_BAND_PAD : dx - 10;
+        const mid = (sx + 2 + right) / 2;
         const lines = edgeLines(n);
-        // Center labels in the visible clear gap: when the arrow crosses a
-        // group border, exclude the group's foot/head bands from the segment.
-        const g = groupOf.get(n.id);
-        const prevG = groupOf.get(nodes[i - 1].id);
-        const segTop = top + (prevG && prevG !== g ? FL_GROUP_FOOT : 0);
-        const segBottom = bottom - (g && g !== prevG ? FL_GROUP_HEAD : 0);
-        const mid = (segTop + segBottom) / 2;
         return (
-          <g key={`spine-${i}`}>
-            <line x1={cx} y1={top} x2={cx} y2={bottom - 1} stroke={COLOR.border} strokeWidth={1} />
-            <path d={smallHeadDown(cx, bottom)} fill="none" stroke={COLOR.border}
-              strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
+          <g key={`edge-${n.id}`}>
+            {sketchLine(`flow:${n.id}`, sx + 2, cy, dx - 2, cy, edge)}
+            {sketchHead(`flow:${n.id}:head`, dx, cy, 'right', edge)}
             {lines.map((line, j) => (
-              <text key={`l-${j}`} x={cx + 12}
-                y={mid - ((lines.length - 1) * FL_LABEL.lh) / 2 + j * FL_LABEL.lh + FL_LABEL.size * 0.36}
-                fontSize={FL_LABEL.size} letterSpacing={`${FL_LABEL.track}em`} fill={COLOR.subtle}>
-                {line}
-              </text>
+              <BackedLabel key={`l-${j}`} x={mid} y={cy - 14 - (lines.length - 1 - j) * LABEL.lh} text={line} />
             ))}
           </g>
         );
       })}
       {/* return rails */}
       {returns.map((r, i) => {
-        const from = rect.get(r.from)!;
-        const to = rect.get(r.to)!;
+        const from = placed.get(r.from)!;
+        const to = placed.get(r.to)!;
         const R = 10;
-        const dir = to.cy < from.cy ? -1 : 1;
+        const dir = to.cx < from.cx ? -1 : 1;
         const d = [
-          `M ${boxRight} ${from.cy}`,
-          `L ${railX - R} ${from.cy}`,
-          `Q ${railX} ${from.cy} ${railX} ${from.cy + R * dir}`,
-          `L ${railX} ${to.cy - R * dir}`,
-          `Q ${railX} ${to.cy} ${railX - R} ${to.cy}`,
-          `L ${boxRight + 1} ${to.cy}`,
+          `M ${from.cx} ${from.y + from.h}`,
+          `L ${from.cx} ${railY - R}`,
+          `Q ${from.cx} ${railY} ${from.cx + R * dir} ${railY}`,
+          `L ${to.cx - R * dir} ${railY}`,
+          `Q ${to.cx} ${railY} ${to.cx} ${railY - R}`,
+          `L ${to.cx} ${to.y + to.h + 1}`,
         ].join(' ');
-        const lines = returnLines(r);
-        const mid = (from.cy + to.cy) / 2;
         return (
           <g key={`return-${i}`}>
-            <path d={d} fill="none" stroke={COLOR.border} strokeWidth={1}
-              strokeDasharray="5 4" strokeLinejoin="round" />
-            <path d={smallHeadLeft(boxRight, to.cy)} fill="none" stroke={COLOR.border}
-              strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
-            {lines.map((line, j) => (
-              <text key={`l-${j}`} x={railX + 12}
-                y={mid - ((lines.length - 1) * FL_LABEL.lh) / 2 + j * FL_LABEL.lh + FL_LABEL.size * 0.36}
-                fontSize={FL_LABEL.size} letterSpacing={`${FL_LABEL.track}em`} fill={COLOR.subtle}>
-                {line}
+            {sketchPath(`rail:${r.from}->${r.to}`, d, {...edge, dashed: true})}
+            {sketchHead(`rail:${r.from}->${r.to}:head`, to.cx, to.y + to.h, 'up', edge)}
+            {r.label ? (
+              <text x={(from.cx + to.cx) / 2} y={railY + LABEL.lh} fontSize={LABEL.size}
+                letterSpacing={`${LABEL.track}em`} textAnchor="middle" fill={COLOR.muted}>
+                {r.label}
               </text>
-            ))}
+            ) : null}
           </g>
         );
       })}
       {/* nodes */}
       {nodes.map((n) => {
-        const r = rect.get(n.id)!;
+        const p = placed.get(n.id)!;
         return (
-          <Box key={n.id} node={n} x={boxX} y={r.y} w={boxW} h={r.h} fonts={FLOW_FONTS}
+          <Box key={n.id} node={n} x={p.x} y={p.y} w={p.w} h={p.h} fonts={FLOW_FONTS}
             selected={selectedId === n.id}
             onSelect={n.detail ? () => setSelectedId(n.id) : undefined} />
         );

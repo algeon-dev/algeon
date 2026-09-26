@@ -37,6 +37,15 @@
   transition: stroke 0.15s ease;
 }
 
+/* Tone fill inside a box: a flat tint and a hachure layer, each gated by a
+   theme token so the same SVG reads well on light and dark pages. */
+.boxTint {
+  opacity: var(--ag-dg-tint-opacity, 0);
+}
+.boxHatch {
+  opacity: var(--ag-dg-hatch-opacity, 0.22);
+}
+
 /* ===== Detail panel ====================================================== */
 .panel {
   margin-top: 0.9rem;

@@ -23,13 +23,17 @@ executes the SQL and returns rows for the application to present.
 ## Questions to explore
 
 - [What should I read to understand BERT beyond its own bibliography?](./functions/centrality/cugraph_personalized_pagerank.mdx#examples)
-- [What is the shortest citation chain from BERT back to LSTM?](./functions/traversal/cugraph_bfs.mdx#examples)
-- [Which widely cited early language-modeling papers are closest to the Transformer?](./functions/traversal/cugraph_sssp.mdx#examples)
+- [Which mutually citing paper pairs have the largest publication-year gaps?](./functions/connectivity/cugraph_strongly_connected_components.mdx#examples)
 - [Which papers should I read after the Transformer if I want familiar references?](./functions/similarity/cugraph_jaccard.mdx#examples)
-- [Which broader reading lists cover most of BERT's bibliography?](./functions/similarity/cugraph_overlap.mdx#examples)
+- [Which widely cited early language-modeling papers are closest to the Transformer?](./functions/traversal/cugraph_sssp.mdx#examples)
+- [Which papers act as reading guides, and which works are their shared foundations?](./functions/centrality/cugraph_hits.mdx#examples)
+- [What is the shortest citation chain from BERT back to LSTM?](./functions/traversal/cugraph_bfs.mdx#examples)
+- [How are the papers around the Transformer connected?](./functions/layout/cugraph_force_atlas2.mdx#examples)
+- [Which large publication-year gaps remain in a minimal map of AI citations?](./functions/connectivity/cugraph_minimum_spanning_tree.mdx#examples)
+- [Which well-connected papers have the tightest citation neighborhoods?](./functions/structure/cugraph_triangle_count_all.mdx#examples)
 - [Do citation communities match the research fields in our catalog?](./functions/community/cugraph_louvain.mdx#examples)
 - [Which research pockets are disconnected from the main citation network?](./functions/connectivity/cugraph_weakly_connected_components.mdx#examples)
-- [How are the papers around the Transformer connected?](./functions/layout/cugraph_force_atlas2.mdx#examples)
+- [Which broader reading lists cover most of BERT's bibliography?](./functions/similarity/cugraph_overlap.mdx#examples)
 
 Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
 to keep scans and surrounding SQL on DataFusion CPU while graph algorithms run

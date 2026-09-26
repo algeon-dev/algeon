@@ -103,6 +103,13 @@ export default function DocItemLayout({children}: Props): ReactNode {
 
   useEffect(() => {
     setIsClient(true);
+    setIsHoverOpen(false);
+
+    if (metadata.id === 'intro') {
+      setTocMode('pinned');
+      return;
+    }
+
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === 'pinned' || stored === 'floating') {
       setTocMode(stored);
@@ -122,17 +129,20 @@ export default function DocItemLayout({children}: Props): ReactNode {
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [metadata.id]);
 
   const updateTocMode = useCallback((mode: TocMode) => {
     setTocMode(mode);
     setIsHoverOpen(false);
+    if (metadata.id === 'intro') {
+      return;
+    }
     try {
       localStorage.setItem(STORAGE_KEY, mode);
     } catch {
       // ignore storage failure in private tabs
     }
-  }, []);
+  }, [metadata.id]);
 
   const handleMouseEnter = () => {
     if (leaveTimerRef.current) {
@@ -205,6 +215,7 @@ export default function DocItemLayout({children}: Props): ReactNode {
                 <IconArrowRight />
               </button>
             </div>
+            <div className={styles.pinnedTocTitle}>On this page</div>
             <DocItemTOCDesktop />
           </div>
         </div>
