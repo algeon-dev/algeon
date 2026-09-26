@@ -29,8 +29,7 @@ use query_engine::{
 };
 
 use super::{
-    cancellation_requested, execute_gpu_resident_producer_with_context, gpu_resident_producer,
-    prepare_gpu_resident_producer_for_execution,
+    execute_gpu_resident_producer_with_context, gpu_resident_producer, prepare_gpu_resident_producer_for_execution,
 };
 use crate::error::{Error, ErrorCode};
 
@@ -315,7 +314,7 @@ async fn stage_child_partition(
     let mut batches = Vec::new();
     while let Some(batch) = tokio::select! {
         batch = stream.try_next() => batch?,
-        () = cancellation_requested(cancellation) => None,
+        () = cancellation.cancelled_or_expired() => None,
     } {
         check_cancellation(cancellation)?;
         let batch = batch.project(&spec.projection).map_err(DataFusionError::from)?;
@@ -420,7 +419,7 @@ fn record_batches_to_gpu(
 pub(crate) mod tests {
     use std::{
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::{Duration, Instant},
@@ -439,8 +438,15 @@ pub(crate) mod tests {
             stream::RecordBatchStreamAdapter,
         },
     };
-    use futures::{future::BoxFuture, stream::once};
-    use tokio::time::sleep;
+    use futures::{
+        future::BoxFuture,
+        stream::{once, unfold},
+    };
+    use tokio::{
+        sync::mpsc,
+        task::yield_now,
+        time::{Instant as TokioInstant, sleep},
+    };
 
     use super::*;
     use crate::{error::DataFusionErrorExt, native_exec::GpuResidentProducer};
@@ -654,6 +660,71 @@ pub(crate) mod tests {
                 batch
             });
             Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), drip)))
+        }
+    }
+
+    /// One partition that yields the batches its sender sends and stays
+    /// pending until the next one, so a test decides when input arrives.
+    #[derive(Debug)]
+    struct ChannelExec {
+        schema: SchemaRef,
+        receiver: Mutex<Option<mpsc::UnboundedReceiver<RecordBatch>>>,
+        cache: Arc<PlanProperties>,
+    }
+
+    impl ChannelExec {
+        fn new(schema: SchemaRef) -> (mpsc::UnboundedSender<RecordBatch>, Self) {
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let cache = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(Arc::clone(&schema)),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            (sender, Self { schema, receiver: Mutex::new(Some(receiver)), cache })
+        }
+    }
+
+    impl DisplayAs for ChannelExec {
+        fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ChannelExec")
+        }
+    }
+
+    impl ExecutionPlan for ChannelExec {
+        fn name(&self) -> &str {
+            "ChannelExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.cache
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        ) -> Result<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            Vec::new()
+        }
+
+        fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+            assert!(children.is_empty());
+            Ok(self)
+        }
+
+        fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+            assert_eq!(partition, 0);
+            let receiver = self.receiver.lock().unwrap().take().expect("the channel partition executes once");
+            let batches =
+                unfold(
+                    receiver,
+                    |mut receiver| async move { receiver.recv().await.map(|batch| (Ok(batch), receiver)) },
+                );
+            Ok(Box::pin(RecordBatchStreamAdapter::new(Arc::clone(&self.schema), batches)))
         }
     }
 
@@ -987,5 +1058,48 @@ pub(crate) mod tests {
         let typed = error.find_algeon_error().expect("structured staging cancellation");
         assert!(typed.message().contains("cancelled"), "mid-flight cancellation, not completion, ends the run");
         assert_eq!(task_context.memory_pool().reserved(), 0, "cancellation returns every claimed byte");
+    }
+
+    /// Staging that waits on a pending input wakes on cancellation, not a
+    /// timer.
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_staging_while_its_input_is_pending_wakes_it_without_a_timer() {
+        let task_context = Arc::new(TaskContext::default());
+        let first = batch(0, 0.0, 0);
+        let (sender, plan) = ChannelExec::new(first.schema());
+        let plan = Arc::new(plan) as Arc<dyn ExecutionPlan>;
+        let cancellation = ExecutionCancellation::new();
+        let staging = tokio::spawn({
+            let task_context = Arc::clone(&task_context);
+            let cancellation = cancellation.clone();
+            async move {
+                stage_native_children(
+                    vec![NativeChildInputSpec {
+                        input_name: "input".to_string(),
+                        role: "input",
+                        plan,
+                        projection: vec![0, 1],
+                    }],
+                    task_context,
+                    &cancellation,
+                    DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
+                )
+                .await
+            }
+        });
+        sender.send(first).unwrap();
+        while task_context.memory_pool().reserved() == 0 {
+            yield_now().await;
+        }
+
+        let started = TokioInstant::now();
+        cancellation.cancel();
+        let error = staging.await.expect("staging task joins").unwrap_err();
+
+        let typed = error.find_algeon_error().expect("structured staging cancellation");
+        assert!(typed.message().contains("cancelled"), "cancellation, not input, ends the run");
+        assert_eq!(started.elapsed(), Duration::ZERO, "cancellation wakes staging without a timer");
+        assert_eq!(task_context.memory_pool().reserved(), 0, "cancellation returns every claimed byte");
+        drop(sender);
     }
 }

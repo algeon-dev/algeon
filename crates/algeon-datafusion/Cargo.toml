@@ -92,6 +92,8 @@ hex = "0.4"
 proptest = "1.7"
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+# Paused-clock tests prove a wait wakes without a timer.
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 
 [[test]]

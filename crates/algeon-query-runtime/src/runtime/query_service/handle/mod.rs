@@ -19,12 +19,21 @@ use crate::{
         GpuExecutorLease, StreamPermitClass,
         gpu::{DeviceContext, GrantIdentity},
         gpu_execution_pool::GpuExecutionJobClass,
+        service_stream::StreamSlot,
     },
 };
 
 mod lifetime;
 mod release;
 mod report_commit;
+
+/// An auxiliary context's attempt permit and stream slot, reserved before
+/// its context-setup job runs.
+#[derive(Debug)]
+struct AuxiliaryReservation {
+    permit: AttemptAuxiliaryPermit,
+    stream: StreamSlot,
+}
 
 pub(super) use lifetime::QueryHandleLifetime;
 use lifetime::{ContextSetupClaim, RootContextSetupClaimGuard};
@@ -117,6 +126,35 @@ impl QueryHandle {
         self.config.source_chunk_planning_options
     }
 
+    /// Reserves an auxiliary stream slot on this query's device without
+    /// blocking the caller; the slot becomes a lease inside the context-setup
+    /// job.
+    async fn reserve_auxiliary_stream(
+        &self,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+    ) -> Result<StreamSlot> {
+        let operation = "query_engine.query_service.context.stream_acquire";
+        let service = self.lifetime.service()?;
+        let Some(resources) = &service.resources else {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "query service was constructed without runtime resources",
+            ));
+        };
+        let pool = resources.devices.context_by_ordinal(self.device_ordinal)?.stream_pool().clone();
+        pool.reserve_async(
+            cancellation,
+            deadline,
+            operation,
+            self.lifetime.observation.clone(),
+            RuntimeStreamLeaseScope::default(),
+            StreamPermitClass::Auxiliary,
+        )
+        .await
+    }
+
     fn context_stream_acquire_deadline(&self, cancellation: &ExecutionCancellation) -> Instant {
         let configured = Instant::now().checked_add(self.queue_bounds.max_wait).unwrap_or_else(Instant::now);
         cancellation.deadline().map_or(configured, |deadline| deadline.min(configured))
@@ -143,20 +181,25 @@ impl QueryHandle {
         let root_setup_claim = (setup_claim == ContextSetupClaim::Root)
             .then(|| RootContextSetupClaimGuard::new(Arc::clone(&self.lifetime)));
         let stream_acquire_deadline = self.context_stream_acquire_deadline(&cancellation);
-        // Claim the attempt-owned auxiliary share before submitting an execution-class job.
-        // Otherwise excess work from one attempt can fill every global
-        // auxiliary executor permit while it waits for its own local limit.
-        let attempt_auxiliary_permit = match setup_claim {
-            ContextSetupClaim::Auxiliary => Some(
-                self.lifetime
+        // Claim the attempt-owned auxiliary share and its stream slot before
+        // submitting an execution-class job, so the GPU worker never waits
+        // for either. Otherwise excess work from one attempt can fill every
+        // global auxiliary executor permit while it waits for its own local
+        // limit.
+        let auxiliary_reservation = match setup_claim {
+            ContextSetupClaim::Auxiliary => {
+                let permit = self
+                    .lifetime
                     .attempt_auxiliary_slots
                     .acquire_with_cancellation_deadline_async(
                         &cancellation,
                         stream_acquire_deadline,
                         "query_engine.query_service.context.attempt_auxiliary_acquire",
                     )
-                    .await?,
-            ),
+                    .await?;
+                let stream = self.reserve_auxiliary_stream(&cancellation, stream_acquire_deadline).await?;
+                Some(AuxiliaryReservation { permit, stream })
+            },
             ContextSetupClaim::Root => None,
             ContextSetupClaim::WaitForRoot => {
                 unreachable!("context setup reservation resolves waits before scheduling")
@@ -183,7 +226,7 @@ impl QueryHandle {
                     stream_scope,
                     setup_claim,
                     stream_acquire_deadline,
-                    attempt_auxiliary_permit,
+                    auxiliary_reservation,
                 )
             },
         )
@@ -240,7 +283,7 @@ impl QueryHandle {
         stream_scope: RuntimeStreamLeaseScope,
         setup_claim: ContextSetupClaim,
         stream_acquire_deadline: Instant,
-        attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
+        auxiliary_reservation: Option<AuxiliaryReservation>,
     ) -> Result<AdmittedQueryContext> {
         let operation = "query_engine.query_service.context";
         // This is the first instruction after an asynchronous device-worker
@@ -278,7 +321,7 @@ impl QueryHandle {
                 template,
                 stream_scope,
                 stream_acquire_deadline,
-                attempt_auxiliary_permit,
+                auxiliary_reservation,
             )?;
             let context = context.with_query_resource_anchor(query_anchor);
             self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
@@ -293,7 +336,7 @@ impl QueryHandle {
             .with_fact("reason", "context_setup_claim_mismatch")
             .with_fact("context_setup_claim", "auxiliary"));
         }
-        debug_assert!(attempt_auxiliary_permit.is_none(), "root context setup cannot carry an auxiliary permit");
+        debug_assert!(auxiliary_reservation.is_none(), "root context setup cannot carry an auxiliary reservation");
         // The admission transaction already owns the root stream, allocation
         // domain, and root stream member. Consume that binding; no stream or
         // domain is created after admission.
@@ -311,24 +354,28 @@ impl QueryHandle {
         template: ExecutionContext,
         stream_scope: RuntimeStreamLeaseScope,
         stream_acquire_deadline: Instant,
-        attempt_auxiliary_permit: Option<AttemptAuxiliaryPermit>,
+        auxiliary_reservation: Option<AuxiliaryReservation>,
     ) -> Result<ExecutionContext> {
-        let attempt_auxiliary_permit = match attempt_auxiliary_permit {
-            Some(permit) => permit,
-            None => self.lifetime.attempt_auxiliary_slots.acquire_with_cancellation_deadline(
-                cancellation,
-                stream_acquire_deadline,
-                "query_engine.query_service.context.attempt_auxiliary_acquire",
-            )?,
+        let operation = "query_engine.query_service.context.stream_acquire";
+        let (attempt_auxiliary_permit, stream_lease) = match auxiliary_reservation {
+            Some(AuxiliaryReservation { permit, stream }) => (permit, stream.into_lease(operation)?),
+            None => {
+                let permit = self.lifetime.attempt_auxiliary_slots.acquire_with_cancellation_deadline(
+                    cancellation,
+                    stream_acquire_deadline,
+                    "query_engine.query_service.context.attempt_auxiliary_acquire",
+                )?;
+                let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline_and_class(
+                    cancellation,
+                    stream_acquire_deadline,
+                    operation,
+                    self.lifetime.observation.clone(),
+                    stream_scope,
+                    StreamPermitClass::Auxiliary,
+                )?;
+                (permit, stream_lease)
+            },
         };
-        let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline_and_class(
-            cancellation,
-            stream_acquire_deadline,
-            "query_engine.query_service.context.stream_acquire",
-            self.lifetime.observation.clone(),
-            stream_scope,
-            StreamPermitClass::Auxiliary,
-        )?;
         validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
         template.with_owned_auxiliary_stream(stream_lease, attempt_auxiliary_permit)
     }

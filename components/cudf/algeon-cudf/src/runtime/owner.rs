@@ -10,7 +10,7 @@ use super::{
     binding_extension::{BindingExtensionInitError, BindingExtensionLease},
     budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
-    device_guard::{DeviceEntryGuard, DeviceGuard},
+    device_guard::DeviceGuard,
     event::CudaEvent,
     execution_domain::ExecutionDomain,
     placement::ExecutionPlacement,
@@ -239,10 +239,7 @@ impl Runtime {
     /// observation of the event rather than here; the committer attributes it with its own
     /// task facts instead of the producer's worker facts.
     pub fn record_completion_event(&self) -> Result<CudaEvent> {
-        let _entry = DeviceEntryGuard::enter(self.device(), "runtime::record_completion_event")?;
-        let event = CudaEvent::new()?;
-        event.record(self.stream())?;
-        Ok(event)
+        self.stream().record_completion_event()
     }
 
     /// Access the runtime's owned CUDA stream.

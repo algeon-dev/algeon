@@ -344,3 +344,28 @@ fn admitted_attempt_holds_complete_envelope_before_context_acquisition() {
     assert_eq!(lanes, 0);
     assert_eq!(ledger.active_attempts, 0);
 }
+
+/// An async admission builds its envelope's root stream, allocation domain,
+/// and root member on the placed device's GPU pool, not on the caller's Tokio
+/// worker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_admission_builds_its_envelope_on_the_device_gpu_pool() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for envelope placement");
+    service.set_admission_transaction_probe(AdmissionTransactionProbe::disabled());
+
+    let handle = service.admit_async().await.expect("async admission succeeds");
+
+    let probe = service
+        .inner
+        .admission_transaction_probe
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("installed transaction probe");
+    let thread = probe.transaction_thread();
+    assert!(
+        thread.as_deref().is_some_and(|name| name.starts_with("algeon-gpu-")),
+        "the envelope transaction ran on {thread:?}"
+    );
+    drop(handle);
+}

@@ -2,13 +2,10 @@
 
 #[cfg(test)]
 use std::sync::{Barrier, mpsc};
-#[cfg(any(test, feature = "test-hooks"))]
 use std::{
-    collections::HashMap,
-    sync::{OnceLock, Weak},
-};
-use std::{
+    cell::Cell,
     fmt, mem,
+    pin::{Pin, pin},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -16,12 +13,21 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use std::{
+    collections::HashMap,
+    sync::{OnceLock, Weak},
+};
 
 use cudf::{
     DeviceId, Runtime,
     runtime::{DeviceHealthSnapshot, DeviceHealthStatus, device_health_snapshot},
 };
 use query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::{
+    sync::{Notify, futures::Notified},
+    time::sleep_until,
+};
 
 #[cfg(test)]
 use super::DeviceFacts;
@@ -40,6 +46,7 @@ use super::stream_cleanup::{
 use super::{
     ExecutionCancellation, ExecutionContext,
     context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
+    deadline::block_until,
     stream_cleanup::{ServiceStreamTestProbeSlot, StreamCleanupCompletion, StreamCleanupSupervisor},
 };
 use crate::{
@@ -59,7 +66,6 @@ use crate::{
 /// unavailable and as the upper bound when detection succeeds.
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
-const STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STREAM_CLEANUP_SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static NEXT_STREAM_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -116,7 +122,7 @@ pub(super) struct ServiceStreamPoolInner {
     pub(super) root_capacity: usize,
     pub(super) aux_capacity: usize,
     pub(super) state: Mutex<ServiceStreamPoolState>,
-    pub(super) available: Condvar,
+    pub(super) available: Notify,
     pub(super) state_changed: Condvar,
     pub(super) next_lease_id: AtomicU64,
     pub(super) cleanup_probe: ServiceStreamTestProbeSlot,
@@ -218,7 +224,7 @@ impl ServiceStreamPool {
             root_capacity,
             aux_capacity,
             state: Mutex::new(ServiceStreamPoolState::default()),
-            available: Condvar::new(),
+            available: Notify::new(),
             state_changed: Condvar::new(),
             next_lease_id: AtomicU64::new(1),
             cleanup_probe,
@@ -288,7 +294,7 @@ impl ServiceStreamPool {
     /// Leased runtimes are discarded after their deferred synchronization.
     pub(crate) fn close(&self, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
-        self.inner.available.notify_all();
+        self.inner.available.notify_waiters();
         let idle = match self.inner.state.try_lock() {
             Ok(mut state) => {
                 let idle = mem::take(&mut state.idle);
@@ -314,7 +320,7 @@ impl ServiceStreamPool {
     /// the caller's absolute shutdown deadline.
     pub(crate) fn close_and_wait_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
-        self.inner.available.notify_all();
+        self.inner.available.notify_waiters();
         let mut state = self.lock_state_until(deadline, operation)?;
         let idle = mem::take(&mut state.idle);
         state.created = state.created.saturating_sub(idle.len());
@@ -380,7 +386,7 @@ impl ServiceStreamPool {
         // the cleanup supervisor has been joined.
         self.inner.process_exit_started.store(true, Ordering::Release);
         self.inner.closed.store(true, Ordering::Release);
-        self.inner.available.notify_all();
+        self.inner.available.notify_waiters();
         let idle = {
             let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
             let idle = mem::take(&mut state.idle);
@@ -596,132 +602,78 @@ impl ServiceStreamPool {
         scope: RuntimeStreamLeaseScope,
         permit_class: StreamPermitClass,
     ) -> Result<StreamLease> {
-        enum AcquireAction {
-            Reuse(Arc<Runtime>),
-            Create,
-        }
+        self.reserve_blocking(cancellation, deadline, operation, observation, scope, permit_class)?
+            .into_lease(operation)
+    }
 
-        let lease_observation = Arc::new(StreamLeaseObservation::new(self, observation, scope));
-        lease_observation.define_resource();
-        lease_observation.record(StreamLeaseLifecycleState::Enqueued);
-        let enqueued_at = Instant::now();
-        let action = loop {
-            if self.inner.closed.load(Ordering::Acquire) {
-                let error = stream_pool_closed(operation, self);
-                lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
-                return Err(error);
-            }
-            if let Some(cancellation) = cancellation
-                && let Err(error) = cancellation.check(operation)
-            {
-                lease_observation.record(StreamLeaseLifecycleState::CancellationRequested);
-                lease_observation.terminal(StreamLeaseLifecycleState::Cancelled);
-                return Err(error);
-            }
-            if let Some(deadline) = deadline
-                && Instant::now() >= deadline
-            {
-                let error = stream_acquire_timeout_error(operation, self.device(), self.pool_size());
-                lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
-                return Err(error);
-            }
-            let mut state = self.lock_state(operation)?;
-            if self.inner.closed.load(Ordering::Acquire) {
-                let error = stream_pool_closed(operation, self);
-                lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
-                return Err(error);
-            }
-            let health = device_health_snapshot(self.device());
-            if health.status() == DeviceHealthStatus::Unhealthy {
-                let error = unhealthy_stream_device_error(operation, self.device(), health);
-                lease_observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
-                return Err(error);
-            }
-            let class_open = match permit_class {
-                StreamPermitClass::Root => state.root_outstanding < self.inner.root_capacity,
-                StreamPermitClass::Auxiliary => state.aux_outstanding < self.inner.aux_capacity,
+    /// Reserves one stream slot of `permit_class`, blocking the calling thread
+    /// until a slot frees, cancellation is requested, or a deadline passes.
+    /// Each of them wakes the thread directly.
+    fn reserve_blocking(
+        &self,
+        cancellation: Option<&ExecutionCancellation>,
+        deadline: Option<Instant>,
+        operation: &'static str,
+        observation: RuntimeObservationHandle,
+        scope: RuntimeStreamLeaseScope,
+        permit_class: StreamPermitClass,
+    ) -> Result<StreamSlot> {
+        let request = SlotRequest::new(self, cancellation, deadline, operation, observation, scope, permit_class);
+        let wait_deadline = match (deadline, cancellation.and_then(ExecutionCancellation::deadline)) {
+            (Some(deadline), Some(cancellation_deadline)) => Some(deadline.min(cancellation_deadline)),
+            (deadline, cancellation_deadline) => deadline.or(cancellation_deadline),
+        };
+        loop {
+            let available = self.inner.available.notified();
+            let mut available = pin!(available);
+            let _waiting = match request.take_or_register(available.as_mut())? {
+                SlotOrWait::Slot(slot) => return Ok(slot),
+                SlotOrWait::Wait(waiting) => waiting,
             };
-            if class_open {
-                if let Some(runtime) = state.idle.pop() {
-                    match permit_class {
-                        StreamPermitClass::Root => state.root_outstanding += 1,
-                        StreamPermitClass::Auxiliary => state.aux_outstanding += 1,
+            let _ = block_until(
+                async {
+                    match cancellation {
+                        Some(cancellation) => tokio::select! {
+                            biased;
+                            () = available => {},
+                            () = cancellation.cancel_requested() => {},
+                        },
+                        None => available.await,
                     }
-                    self.inner.state_changed.notify_all();
-                    break AcquireAction::Reuse(runtime);
-                }
-                if state.created < self.pool_size() {
-                    state.created += 1;
-                    match permit_class {
-                        StreamPermitClass::Root => state.root_outstanding += 1,
-                        StreamPermitClass::Auxiliary => state.aux_outstanding += 1,
-                    }
-                    self.inner.state_changed.notify_all();
-                    break AcquireAction::Create;
-                }
-            }
-            if cancellation.is_some() || deadline.is_some() {
-                let wait = stream_acquire_wait_interval(deadline);
-                state.waiting_acquires = state.waiting_acquires.saturating_add(1);
-                self.inner.state_changed.notify_all();
-                let (mut state, _timeout) = self.inner.available.wait_timeout(state, wait).map_err(|_error| {
-                    QueryError::new(
-                        QueryErrorCode::Internal,
-                        operation,
-                        "service stream pool mutex was poisoned while waiting for a stream",
-                    )
-                })?;
-                state.waiting_acquires = state.waiting_acquires.saturating_sub(1);
-                self.inner.state_changed.notify_all();
-            } else {
-                state.waiting_acquires = state.waiting_acquires.saturating_add(1);
-                self.inner.state_changed.notify_all();
-                let mut state = self.inner.available.wait(state).map_err(|_error| {
-                    QueryError::new(
-                        QueryErrorCode::Internal,
-                        operation,
-                        "service stream pool mutex was poisoned while waiting for a stream",
-                    )
-                })?;
-                state.waiting_acquires = state.waiting_acquires.saturating_sub(1);
-                self.inner.state_changed.notify_all();
-            }
-        };
+                },
+                wait_deadline,
+            );
+        }
+    }
 
-        let (runtime, acquisition) = match action {
-            AcquireAction::Reuse(runtime) => (runtime, StreamLeaseAcquisition::Reused),
-            AcquireAction::Create => match self.build_runtime() {
-                Ok(runtime) if !self.inner.closed.load(Ordering::Acquire) => {
-                    (Arc::new(runtime), StreamLeaseAcquisition::Created)
-                },
-                Ok(runtime) => {
-                    self.discard_created_slot(permit_class);
-                    drop(runtime);
-                    let error = stream_pool_closed(operation, self);
-                    lease_observation
-                        .terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
-                    return Err(error);
-                },
-                Err(error) => {
-                    self.discard_created_slot(permit_class);
-                    lease_observation
-                        .terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
-                    return Err(error);
-                },
-            },
-        };
-        lease_observation.record(StreamLeaseLifecycleState::Acquired {
-            acquisition,
-            host_wait_ns: u64::try_from(enqueued_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
-        });
-        Ok(StreamLease {
-            pool: self.clone(),
-            runtime: Some(runtime),
-            observation: Some(lease_observation),
-            resource_epoch: None,
-            cleanup_completion: Mutex::new(None),
-            permit_class,
-        })
+    /// Reserves one stream slot of `permit_class` without blocking the
+    /// caller's thread. The reservation creates no CUDA stream; the lease is
+    /// materialized from it where CUDA work is allowed.
+    pub(crate) async fn reserve_async(
+        &self,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+        operation: &'static str,
+        observation: RuntimeObservationHandle,
+        scope: RuntimeStreamLeaseScope,
+        permit_class: StreamPermitClass,
+    ) -> Result<StreamSlot> {
+        let request =
+            SlotRequest::new(self, Some(cancellation), Some(deadline), operation, observation, scope, permit_class);
+        loop {
+            let available = self.inner.available.notified();
+            let mut available = pin!(available);
+            let _waiting = match request.take_or_register(available.as_mut())? {
+                SlotOrWait::Slot(slot) => return Ok(slot),
+                SlotOrWait::Wait(waiting) => waiting,
+            };
+            tokio::select! {
+                biased;
+                () = available => {},
+                () = cancellation.cancelled_or_expired() => {},
+                () = sleep_until(deadline.into()) => {},
+            }
+        }
     }
 
     fn build_runtime(&self) -> Result<Runtime> {
@@ -771,7 +723,7 @@ impl ServiceStreamPool {
                     StreamPermitClass::Root => state.root_outstanding = state.root_outstanding.saturating_sub(1),
                     StreamPermitClass::Auxiliary => state.aux_outstanding = state.aux_outstanding.saturating_sub(1),
                 }
-                self.inner.available.notify_one();
+                self.inner.available.notify_waiters();
                 self.inner.state_changed.notify_all();
             },
             Err(_error) => {
@@ -781,12 +733,216 @@ impl ServiceStreamPool {
     }
 }
 
-fn stream_acquire_wait_interval(deadline: Option<Instant>) -> Duration {
-    let cancellation_poll = STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL;
-    let Some(deadline) = deadline else {
-        return cancellation_poll;
-    };
-    deadline.saturating_duration_since(Instant::now()).min(cancellation_poll)
+/// One reservation attempt against a pool. A request dropped before it hands
+/// out a slot, such as an abandoned async reservation, records its lease as
+/// cancelled.
+struct SlotRequest<'a> {
+    pool: &'a ServiceStreamPool,
+    cancellation: Option<&'a ExecutionCancellation>,
+    deadline: Option<Instant>,
+    operation: &'static str,
+    permit_class: StreamPermitClass,
+    observation: Arc<StreamLeaseObservation>,
+    enqueued_at: Instant,
+    handed_out: Cell<bool>,
+}
+
+enum SlotOrWait<'a> {
+    Slot(StreamSlot),
+    Wait(WaitingAcquire<'a>),
+}
+
+/// Counts one waiting acquire in the pool state until it drops, including
+/// when an async reservation is abandoned mid-wait; shutdown waits for the
+/// count to reach zero.
+struct WaitingAcquire<'a> {
+    pool: &'a ServiceStreamPool,
+}
+
+impl Drop for WaitingAcquire<'_> {
+    fn drop(&mut self) {
+        let mut state = self.pool.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.waiting_acquires = state.waiting_acquires.saturating_sub(1);
+        self.pool.inner.state_changed.notify_all();
+    }
+}
+
+impl<'a> SlotRequest<'a> {
+    fn new(
+        pool: &'a ServiceStreamPool,
+        cancellation: Option<&'a ExecutionCancellation>,
+        deadline: Option<Instant>,
+        operation: &'static str,
+        observation: RuntimeObservationHandle,
+        scope: RuntimeStreamLeaseScope,
+        permit_class: StreamPermitClass,
+    ) -> Self {
+        let observation = Arc::new(StreamLeaseObservation::new(pool, observation, scope));
+        observation.define_resource();
+        observation.record(StreamLeaseLifecycleState::Enqueued);
+        Self {
+            pool,
+            cancellation,
+            deadline,
+            operation,
+            permit_class,
+            observation,
+            enqueued_at: Instant::now(),
+            handed_out: Cell::new(false),
+        }
+    }
+
+    /// Takes a slot if one is free. Otherwise enables `available` while the
+    /// pool lock is held, so a release after this check wakes the waiter,
+    /// and counts the waiter while the returned registration lives.
+    fn take_or_register(&self, available: Pin<&mut Notified<'_>>) -> Result<SlotOrWait<'a>> {
+        let pool = self.pool;
+        let operation = self.operation;
+        if pool.inner.closed.load(Ordering::Acquire) {
+            return Err(self.fail(stream_pool_closed(operation, pool)));
+        }
+        if let Some(cancellation) = self.cancellation
+            && let Err(error) = cancellation.check(operation)
+        {
+            self.observation.record(StreamLeaseLifecycleState::CancellationRequested);
+            self.observation.terminal(StreamLeaseLifecycleState::Cancelled);
+            return Err(error);
+        }
+        if let Some(deadline) = self.deadline
+            && Instant::now() >= deadline
+        {
+            return Err(self.fail(stream_acquire_timeout_error(operation, pool.device(), pool.pool_size())));
+        }
+        let mut state = pool.lock_state(operation)?;
+        if pool.inner.closed.load(Ordering::Acquire) {
+            return Err(self.fail(stream_pool_closed(operation, pool)));
+        }
+        let health = device_health_snapshot(pool.device());
+        if health.status() == DeviceHealthStatus::Unhealthy {
+            return Err(self.fail(unhealthy_stream_device_error(operation, pool.device(), health)));
+        }
+        let class_open = match self.permit_class {
+            StreamPermitClass::Root => state.root_outstanding < pool.inner.root_capacity,
+            StreamPermitClass::Auxiliary => state.aux_outstanding < pool.inner.aux_capacity,
+        };
+        let action = if !class_open {
+            None
+        } else if let Some(runtime) = state.idle.pop() {
+            Some(SlotAction::Reuse(runtime))
+        } else if state.created < pool.pool_size() {
+            state.created += 1;
+            Some(SlotAction::Create)
+        } else {
+            None
+        };
+        if let Some(action) = action {
+            match self.permit_class {
+                StreamPermitClass::Root => state.root_outstanding += 1,
+                StreamPermitClass::Auxiliary => state.aux_outstanding += 1,
+            }
+            pool.inner.state_changed.notify_all();
+            self.handed_out.set(true);
+            return Ok(SlotOrWait::Slot(StreamSlot {
+                pool: pool.clone(),
+                action: Some(action),
+                permit_class: self.permit_class,
+                observation: Arc::clone(&self.observation),
+                enqueued_at: self.enqueued_at,
+            }));
+        }
+        available.enable();
+        state.waiting_acquires = state.waiting_acquires.saturating_add(1);
+        pool.inner.state_changed.notify_all();
+        Ok(SlotOrWait::Wait(WaitingAcquire { pool }))
+    }
+
+    fn fail(&self, error: QueryError) -> QueryError {
+        self.observation.terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
+        error
+    }
+}
+
+impl Drop for SlotRequest<'_> {
+    fn drop(&mut self) {
+        if !self.handed_out.get() {
+            self.observation.terminal(StreamLeaseLifecycleState::Cancelled);
+        }
+    }
+}
+
+enum SlotAction {
+    Reuse(Arc<Runtime>),
+    Create,
+}
+
+/// A reserved stream slot: an idle runtime to reuse, or the right to create
+/// one. [`Self::into_lease`] turns it into a lease; dropping it unused returns
+/// the slot to the pool.
+pub(crate) struct StreamSlot {
+    pool: ServiceStreamPool,
+    action: Option<SlotAction>,
+    permit_class: StreamPermitClass,
+    observation: Arc<StreamLeaseObservation>,
+    enqueued_at: Instant,
+}
+
+impl fmt::Debug for StreamSlot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("StreamSlot").field("permit_class", &self.permit_class).finish_non_exhaustive()
+    }
+}
+
+impl StreamSlot {
+    /// Leases the reserved runtime, creating its CUDA stream when the slot
+    /// carries the right to create one.
+    pub(crate) fn into_lease(mut self, operation: &'static str) -> Result<StreamLease> {
+        let pool = self.pool.clone();
+        let (runtime, acquisition) = match self.action.take().expect("an unconsumed slot holds its action") {
+            SlotAction::Reuse(runtime) => (runtime, StreamLeaseAcquisition::Reused),
+            SlotAction::Create => match pool.build_runtime() {
+                Ok(runtime) if !pool.inner.closed.load(Ordering::Acquire) => {
+                    (Arc::new(runtime), StreamLeaseAcquisition::Created)
+                },
+                Ok(runtime) => {
+                    pool.discard_created_slot(self.permit_class);
+                    drop(runtime);
+                    let error = stream_pool_closed(operation, &pool);
+                    self.observation
+                        .terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
+                    return Err(error);
+                },
+                Err(error) => {
+                    pool.discard_created_slot(self.permit_class);
+                    self.observation
+                        .terminal(StreamLeaseLifecycleState::Failed { error_code: error.code().to_string() });
+                    return Err(error);
+                },
+            },
+        };
+        self.observation.record(StreamLeaseLifecycleState::Acquired {
+            acquisition,
+            host_wait_ns: u64::try_from(self.enqueued_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        });
+        Ok(StreamLease {
+            pool,
+            runtime: Some(runtime),
+            observation: Some(Arc::clone(&self.observation)),
+            resource_epoch: None,
+            cleanup_completion: Mutex::new(None),
+            permit_class: self.permit_class,
+        })
+    }
+}
+
+impl Drop for StreamSlot {
+    fn drop(&mut self) {
+        let Some(action) = self.action.take() else { return };
+        self.observation.terminal(StreamLeaseLifecycleState::Cancelled);
+        match action {
+            SlotAction::Reuse(runtime) => self.pool.enqueue_cleanup(runtime, None, None, self.permit_class),
+            SlotAction::Create => self.pool.discard_created_slot(self.permit_class),
+        }
+    }
 }
 
 fn stream_acquire_timeout_error(operation: &'static str, device: DeviceId, pool_size: usize) -> QueryError {

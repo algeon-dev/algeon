@@ -6228,6 +6228,7 @@ pub fn cudf::runtime::stream::CudaStream::device(&self) -> cudf::runtime::device
 pub fn cudf::runtime::stream::CudaStream::identity(&self) -> usize
 pub fn cudf::runtime::stream::CudaStream::is_ready(&self) -> cudf::core::error::Result<bool>
 pub fn cudf::runtime::stream::CudaStream::new() -> cudf::core::error::Result<Self>
+pub fn cudf::runtime::stream::CudaStream::record_completion_event(&self) -> cudf::core::error::Result<cudf::runtime::event::CudaEvent>
 pub fn cudf::runtime::stream::CudaStream::synchronize(&self) -> cudf::core::error::Result<()>
 pub fn cudf::runtime::stream::CudaStream::wait_event(&self, &cudf::runtime::event::CudaEvent) -> cudf::core::error::Result<()>
 impl core::fmt::Debug for cudf::runtime::stream::CudaStream
@@ -6365,6 +6366,7 @@ pub fn cudf::runtime::stream::CudaStream::device(&self) -> cudf::runtime::device
 pub fn cudf::runtime::stream::CudaStream::identity(&self) -> usize
 pub fn cudf::runtime::stream::CudaStream::is_ready(&self) -> cudf::core::error::Result<bool>
 pub fn cudf::runtime::stream::CudaStream::new() -> cudf::core::error::Result<Self>
+pub fn cudf::runtime::stream::CudaStream::record_completion_event(&self) -> cudf::core::error::Result<cudf::runtime::event::CudaEvent>
 pub fn cudf::runtime::stream::CudaStream::synchronize(&self) -> cudf::core::error::Result<()>
 pub fn cudf::runtime::stream::CudaStream::wait_event(&self, &cudf::runtime::event::CudaEvent) -> cudf::core::error::Result<()>
 impl core::fmt::Debug for cudf::runtime::stream::CudaStream

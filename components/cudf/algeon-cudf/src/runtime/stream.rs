@@ -257,6 +257,19 @@ impl CudaStream {
         })
     }
 
+    /// Record a completion event on this stream on its owner device, without
+    /// blocking the host.
+    ///
+    /// The event orders after every operation already enqueued here. Waiting
+    /// on it later observes exactly that work, unlike synchronizing the
+    /// stream, which also waits for whatever the stream runs in between.
+    pub fn record_completion_event(&self) -> Result<CudaEvent> {
+        let _entry = DeviceEntryGuard::enter(self.device(), "stream::record_completion_event")?;
+        let event = CudaEvent::new()?;
+        event.record(self)?;
+        Ok(event)
+    }
+
     /// The CUDA device this stream was created on.
     pub fn device(&self) -> DeviceId {
         self.handle.device
@@ -287,8 +300,7 @@ impl CudaStream {
     /// stream. Unlike normal execution, teardown must still attempt owner-device
     /// entry after the device has been marked unhealthy so it can either retire
     /// the resource safely or quarantine it.
-    #[doc(hidden)]
-    pub fn synchronize_for_teardown(&self, operation: &'static str) -> Result<()> {
+    pub(crate) fn synchronize_for_teardown(&self, operation: &'static str) -> Result<()> {
         let _entry = DeviceEntryGuard::enter_for_teardown(self.device(), operation)?;
         // SAFETY: the resource-retirement registry retains a clone of this
         // stream until after the fence has completed.

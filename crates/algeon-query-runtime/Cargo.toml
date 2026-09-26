@@ -49,8 +49,11 @@ object_store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 cudf = { workspace = true, features = ["test-hooks"] }
 cudf-sys = { workspace = true, features = ["test-hooks"] }
 query-planning = { workspace = true, features = ["test-hooks"] }
+# Paused-clock tests prove a wait wakes without a timer.
+tokio = { workspace = true, features = ["test-util"] }

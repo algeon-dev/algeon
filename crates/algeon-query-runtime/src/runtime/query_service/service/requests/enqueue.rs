@@ -14,7 +14,7 @@ use super::{
         QueryService,
         api::QueryAdmissionRequest,
     },
-    ADMISSION_CANCELLATION_POLL_INTERVAL, PreparedSubmission,
+    PreparedSubmission,
 };
 use crate::runtime::{
     backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
@@ -81,14 +81,22 @@ impl QueryService {
             let notified = self.inner.admission_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if let Some(handle) = waiter.try_admit()? {
+            if let Some(handle) = waiter.try_admit_async().await? {
                 return Ok(handle);
             }
             let remaining_wait = waiter.remaining_wait();
             if remaining_wait.is_zero() {
                 continue;
             }
-            let _ = time::timeout(remaining_wait.min(ADMISSION_CANCELLATION_POLL_INTERVAL), &mut notified).await;
+            // `try_admit` reports cancellation and the queue deadline; each
+            // of them, like a ledger transition, ends this wait.
+            let _ = time::timeout(remaining_wait, async {
+                tokio::select! {
+                    () = &mut notified => {},
+                    () = waiter.execution_cancellation.cancelled_or_expired() => {},
+                }
+            })
+            .await;
         }
     }
 

@@ -12,5 +12,5 @@
 # it or a value of its type crosses the crate boundary.
 symbol	feature	owner	consumer	removal_condition
 cudf::interop::arrow_host::estimate::estimate_record_batches_import_required_budget_bytes	cross-crate	cudf interop::arrow_host::estimate	prod: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
-cudf::runtime::stream::CudaStream::synchronize_for_teardown	cross-crate	cudf runtime::stream	prod: algeon-query-runtime	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
+cudf::runtime::event::CudaEvent::synchronize_for_teardown	cross-crate	cudf runtime::event	prod: algeon-query-runtime	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 cudf::testing	test-hooks	cudf crate root	tools: tools; tests: algeon-cudf, algeon-cugraph, algeon-cuml, algeon-cuvs, algeon-datafusion, algeon-query-engine, algeon-query-runtime, tools	cudf execution-surface plan P1 keeps it under test-hooks; deletable once crates/tools multi-GPU probes and the cudf integration tests stop using cudf::testing
