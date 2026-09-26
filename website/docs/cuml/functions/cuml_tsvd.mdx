@@ -20,7 +20,12 @@ cuML truncated SVD fits and transforms Float32 input rows.
 Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
 
 ```sql
-SELECT id, pc_0, pc_1 FROM cuml_tsvd(input => (SELECT id, d0, d1 FROM t), n_components => 2) ORDER BY row_ordinal;
+SELECT id, pc_0, pc_1
+FROM cuml_tsvd(
+  input => (SELECT id, d0, d1 FROM t),
+  n_components => 2
+)
+ORDER BY row_ordinal;
 ```
 
 ## Inputs

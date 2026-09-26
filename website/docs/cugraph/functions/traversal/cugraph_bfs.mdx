@@ -20,7 +20,12 @@ Visit reachable vertices in increasing unweighted hop distance from one or more 
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, and starts from source vertex `123`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_bfs(edges => (SELECT src, dst FROM target_edges), source_vertex => 123, depth_limit => 4);
+SELECT *
+FROM cugraph_bfs(
+  edges => (SELECT src, dst FROM target_edges),
+  source_vertex => 123,
+  depth_limit => 4
+);
 ```
 
 ## Inputs

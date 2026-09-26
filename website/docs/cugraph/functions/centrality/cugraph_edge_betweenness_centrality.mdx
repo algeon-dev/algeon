@@ -20,7 +20,10 @@ Measure how often each edge lies on shortest paths between vertex pairs, exactly
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`. Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_edge_betweenness_centrality(edges => (SELECT src, dst FROM target_edges));
+SELECT *
+FROM cugraph_edge_betweenness_centrality(
+  edges => (SELECT src, dst FROM target_edges)
+);
 ```
 
 ## Inputs

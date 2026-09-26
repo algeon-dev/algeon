@@ -20,7 +20,11 @@ Compare explicit vertex pairs as twice their shared-neighbor count divided by th
 The call below supplies `edges` from registered relation `target_edges` with canonical `src` and `dst` columns and may include `weight`, plus the registered relation `candidate_pairs` (the `vertex_pairs` relation with columns `first`, `second`). Substitute your own registered relations.
 
 ```sql
-SELECT * FROM cugraph_sorensen(edges => (SELECT src, dst FROM target_edges), vertex_pairs => (SELECT first, second FROM candidate_pairs));
+SELECT *
+FROM cugraph_sorensen(
+  edges => (SELECT src, dst FROM target_edges),
+  vertex_pairs => (SELECT first, second FROM candidate_pairs)
+);
 ```
 
 ## Inputs

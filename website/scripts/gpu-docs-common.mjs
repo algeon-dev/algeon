@@ -103,6 +103,24 @@ export function sqlBlock(sql) {
   return ['```sql', sql, '```'].join('\n');
 }
 
+export function formatFunctionQuickstartSql(sql) {
+  const statement = sql.trim().replace(/;$/, '');
+  const match = /^SELECT (.+?) FROM ([a-z_][a-z0-9_]*)\((.+)\)(?: (ORDER BY .+))?$/s.exec(statement);
+  if (!match) throw new Error(`unsupported Quickstart SQL layout: ${sql}`);
+  const [, projection, functionName, argumentsSql, orderBy] = match;
+  // Split before named arguments, not between projected columns in relation subqueries.
+  const args = argumentsSql.split(/, (?=[a-z_][a-z0-9_]* => )/);
+  if (args.some(arg => !/^[a-z_][a-z0-9_]* => .+$/s.test(arg))) {
+    throw new Error(`unsupported Quickstart arguments: ${sql}`);
+  }
+  return [
+    `SELECT ${projection}`,
+    `FROM ${functionName}(`,
+    ...args.map((arg, index) => `  ${arg}${index < args.length - 1 ? ',' : ''}`),
+    `)${orderBy ? `\n${orderBy}` : ''};`,
+  ].join('\n');
+}
+
 export function narrativeExampleImport(importPath) {
   return [`import Examples from '${importPath}';`, '', '<Examples />'].join('\n');
 }

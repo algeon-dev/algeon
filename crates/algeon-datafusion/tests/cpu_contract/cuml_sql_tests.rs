@@ -402,7 +402,19 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         );
         assert!(page.contains(&format!("# {}", descriptor.display_name)), "{}", page_path.display());
         assert!(page.contains(&format!("SQL function: `{}`", descriptor.sql_function_name)), "{}", page_path.display());
-        assert!(page.contains(descriptor.quickstart_sql), "{}", page_path.display());
+        let rendered_sql = page
+            .split_once("```sql\n")
+            .and_then(|(_, rest)| rest.split_once("\n```").map(|(sql, _)| sql))
+            .unwrap_or_else(|| panic!("{} is missing Quickstart SQL", page_path.display()));
+        let compact_sql = |sql: &str| {
+            sql.chars().filter(|ch| !ch.is_whitespace()).collect::<String>()
+        };
+        assert_eq!(
+            compact_sql(rendered_sql),
+            compact_sql(descriptor.quickstart_sql),
+            "{}",
+            page_path.display()
+        );
         assert!(page.contains(descriptor.summary), "{}", page_path.display());
         for limit in descriptor.limitations {
             assert!(page.contains(&mdx_table_text(limit)), "{}", page_path.display());

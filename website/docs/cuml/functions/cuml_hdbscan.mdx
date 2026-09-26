@@ -20,7 +20,12 @@ cuML HDBSCAN fits density-based clusters and returns query-local labels and memb
 Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `input_vectors`.
 
 ```sql
-SELECT id, cluster_id, probability FROM cuml_hdbscan(input => (SELECT id, d0, d1 FROM t), min_cluster_size => 5) ORDER BY row_ordinal;
+SELECT id, cluster_id, probability
+FROM cuml_hdbscan(
+  input => (SELECT id, d0, d1 FROM t),
+  min_cluster_size => 5
+)
+ORDER BY row_ordinal;
 ```
 
 ## Inputs
