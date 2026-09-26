@@ -32,7 +32,7 @@ Algeon's GPU execution path, as opposed to DataFusion's CPU operators.
   [Lakehouse and workspace boundary](#lakehouse-and-workspace-boundary), then
   use server config and diagnostics as the deployment contract.
 - **Graph or vector SQL user:** Jump to
-  [Specialized GPU functions](#specialized-gpu-functions). Discover and
+  [Specialized GPU UDTFs](#specialized-gpu-udtfs). Discover and
   validate calls before running GPU work.
 - **Native contributor:** Read
   [Native Lowering & Final Plans](./native-lowering.mdx), then use
@@ -156,7 +156,7 @@ The root workspace contains these crates. Default members are the adapter,
 
 | Crate | Path | Owns |
 | --- | --- | --- |
-| `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph and cuVS SQL functions, the GPU function catalog, Iceberg table providers, reports, and errors. The only crate that depends on DataFusion. |
+| `algeon-datafusion` | `crates/algeon-datafusion/src/` | The DataFusion adapter: optimizer rules, candidate recognition and lowering, `ExecutionPlan` wrappers, cuGraph, cuVS, and cuML UDTFs, the GPU UDTF catalog, Iceberg table providers, reports, and errors. The only crate that depends on DataFusion. |
 | `query-planning` | `crates/algeon-query-planning` | The native IR (`QueryPlan`), optimizer, capability analysis, proof diagnostics, admission contracts, and compiled pipeline. No DataFusion or execution dependency. |
 | `query-runtime` | `crates/algeon-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, GPU caches, observation, and metrics. |
 | `query-engine` | `crates/algeon-query-engine` | Native execution composition and the public facade that re-exports planning and runtime. |
@@ -190,7 +190,7 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 | Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `crates/algeon-server/` |
 | cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `crates/algeon-datafusion/src/cugraph_sql/` |
 | cuVS SQL | You want exact kNN, KMeans, and PCA over vector columns as relations. | `crates/algeon-datafusion/src/cuvs_sql/` |
-| GPU function catalog | You want to list, describe, and validate the installed `cugraph_*` and `cuvs_*` functions before executing them. | `crates/algeon-datafusion/src/gpu_functions/` |
+| GPU UDTF catalog | You want to list, describe, and validate the installed `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs before executing them. | `crates/algeon-datafusion/src/gpu_functions/` |
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native scan facts while workspace views stay mutable. | `crates/algeon-datafusion/src/table_format/` |
 | Reports and errors | You need stable evidence for candidate selection, final plans, runtime, function validation, source access, and failures. | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/native_report/`, `crates/algeon-datafusion/src/error.rs` |
 
@@ -236,17 +236,19 @@ plan after native selection. The full boundary is described in
 | Feature | Adds |
 | --- | --- |
 | `cugraph` | cuGraph SQL algorithms and graph execution. |
-| `cuvs` | cuVS SQL functions (`cuvs_brute_force_knn`, `cuvs_kmeans`, `cuvs_pca`) and their GPU execution. |
+| `cuvs` | cuVS UDTFs (`cuvs_brute_force_knn`, `cuvs_kmeans`, `cuvs_pca`) and their GPU execution. |
 | `iceberg` | Iceberg catalogs and native scan integration. |
 | `nvml` | Optional NVML device diagnostics. |
 
 `algeon-datafusion` exposes these DataFusion-specific features; the private
 `server` shell forwards them to the adapter and engine.
 
-## Specialized GPU functions
+<span id="specialized-gpu-functions" />
 
-Graph and vector algorithms are SQL table functions. Both families are
-projected through the shared GPU function catalog, so `gpu_list_functions`,
+## Specialized GPU UDTFs
+
+Graph, vector, and ML algorithms are GPU UDTFs. Their descriptors are
+projected through the shared GPU UDTF catalog, so `gpu_list_functions`,
 `gpu_describe_function`, and `gpu_validate_call` provide discovery and dry-run
 validation for every installed family without provider-specific metadata
 functions. The recommended workflow for either family is:
@@ -263,7 +265,7 @@ functions. The recommended workflow for either family is:
 ### cuGraph SQL path
 
 With `--features cugraph`, every graph execution function in
-`CUGRAPH_OPERATION_REGISTRY` is available as a `cugraph_*` table function:
+`CUGRAPH_OPERATION_REGISTRY` is available as a `cugraph_*` UDTF:
 
 ```sql
 SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst FROM edges))
@@ -279,7 +281,7 @@ ORDER BY value DESC;
   nodes={[
     {
       id: 'udtf', lane: 'host', col: 0,
-      kind: 'sql', name: 'cugraph_*()', note: ['table function', 'CugraphAlgoExec'], tone: 'plan',
+      kind: 'sql', name: 'cugraph_*()', note: ['UDTF', 'CugraphAlgoExec'], tone: 'plan',
       sub: 'crates/algeon-datafusion/src/cugraph_sql/table_function.rs · crates/algeon-datafusion/src/cugraph_sql/exec/',
       detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
         resolves the edge relation in the DataFusion catalog, creates the

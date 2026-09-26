@@ -19,7 +19,7 @@ contains GPU work.
 
 ## SQL surface
 
-On a session with the Algeon native optimizer installed, call the table function
+On a session with the Algeon native optimizer installed, call the metadata UDTF
 with one query string literal:
 
 ```sql
@@ -35,7 +35,7 @@ FROM algeon_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
 ```
 
-The table function returns one `summary` row followed by one `candidate` row
+The UDTF returns one `summary` row followed by one `candidate` row
 per native-planning outcome. The Flight SQL server accepts the same projection
 without a string-literal escape layer:
 
@@ -196,7 +196,7 @@ executes the returned plan or performs GPU admission.
 ## Relationship to `gpu_validate_call`
 
 [`gpu_validate_call`](../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json)
-validates one installed GPU function call's named relations and provider-owned
+validates one installed GPU UDTF call's named relations and provider-owned
 options. Its result does not inspect the surrounding physical plan.
 `algeon_explain_coverage` inspects the whole planned query, including DataFusion
 boundaries feeding or consuming an explicit GPU island. Use both when composing

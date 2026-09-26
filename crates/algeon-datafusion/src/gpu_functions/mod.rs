@@ -1,4 +1,4 @@
-//! Common DataFusion-facing GPU function discovery and validation catalog.
+//! Common DataFusion-facing GPU UDTF discovery and validation catalog.
 //!
 //! GPU SQL families provide descriptors and static validation through the
 //! crate-private `GpuFunctionFamily` trait. This module owns the immutable

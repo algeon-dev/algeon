@@ -65,7 +65,7 @@ across every session and frontend instead of building another one.
 ## Add cuGraph and cuVS SQL
 
 `install_on` installs backend-bound native rules and coverage. It does not
-install cuGraph, cuVS, or cuML SQL. To enable the `cugraph_*` table functions on
+install cuGraph, cuVS, or cuML SQL. To enable the `cugraph_*` UDTFs on
 the session, chain `try_with_cugraph_sql(config)`:
 
 ```rust
@@ -82,7 +82,7 @@ let state = backend
 let ctx = SessionContext::new_with_state(state);
 ```
 
-cuGraph SQL functions resolve the backend's admission and native execution
+cuGraph UDTFs resolve the backend's admission and native execution
 configuration from session state when executed. To add the `cuvs_*` functions,
 chain `try_with_cuvs_sql()` in the same manner; it takes no configuration. The
 functions execute only when the crate was built with the `cuvs` feature. For
@@ -200,8 +200,8 @@ Set `AlgeonGpuExecutionMode` on the shared backend before installing sessions:
 
 | Rust mode | Behavior | Use it when |
 | --- | --- | --- |
-| `NativePreferred` (default) | Select supported relational SQL for native GPU execution; retain DataFusion for unsupported or unselected candidates. Explicit GPU functions still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph, vector, and ML functions. |
-| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU; run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` functions on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
+| `NativePreferred` (default) | Select supported relational SQL for native GPU execution; retain DataFusion for unsupported or unselected candidates. Explicit GPU UDTFs still run on GPU. | You want GPU acceleration for ordinary SQL as well as graph, vector, and ML functions. |
+| `FunctionsOnly` | Keep ordinary relational SQL on DataFusion CPU; run explicit `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs on GPU. | You want DataFusion to scan, join, filter, and aggregate around GPU algorithms. |
 | `NativeRequired` | Attempt native relational selection, then reject any completed plan containing DataFusion CPU execution. | You need to enforce a plan with no DataFusion CPU operators. |
 
 This replaces the backend construction above, using the same `device`:
@@ -223,9 +223,9 @@ backend requirements. The Flight SQL equivalents are documented in
 
 ### Compose CPU and GPU work
 
-In `FunctionsOnly`, a CPU relation can feed a GPU function whose Arrow results
+In `FunctionsOnly`, a CPU relation can feed a GPU UDTF whose Arrow results
 return to CPU SQL. A GPU result can also pass through CPU SQL into another GPU
-function. cuGraph inputs remain registered table or view names; cuVS and cuML inputs
+UDTF. cuGraph inputs remain registered table or view names; cuVS and cuML inputs
 remain parenthesized subqueries. Supported compositions share the same backend
 admission and immutable query grant.
 
@@ -241,7 +241,7 @@ for PageRank with CPU filtering and ordering.
 
 ### DataFusion fallback and GPU-only plans
 
-An explicit GPU function has no CPU algorithm fallback. Unsupported function
+An explicit GPU UDTF has no CPU algorithm fallback. Unsupported function
 inputs, memory exhaustion, cancellation, and runtime failures remain errors;
 after GPU execution starts, Algeon never replays the query on CPU. See
 [Handling Errors](./handling-errors.mdx) for the structured error contract.

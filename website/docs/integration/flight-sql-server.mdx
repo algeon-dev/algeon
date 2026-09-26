@@ -7,8 +7,8 @@ description: Build and run the algeon-server Flight SQL endpoint, then connect w
 
 Run the standalone server when clients need a remote Arrow Flight SQL
 endpoint instead of an embedded Rust API. It builds one shared GPU backend,
-installs the cuVS SQL functions on every session (and the cuGraph functions
-when [enabled in its configuration](./configuration.mdx#gpu-sql-functions)),
+installs the cuVS UDTFs on every session (and the cuGraph UDTFs
+when [enabled in its configuration](./configuration.mdx#gpu-sql-udtfs)),
 and serves ordinary Arrow results to any ADBC or Flight SQL client. Its
 embeddable implementation and public API live in
 `algeon_datafusion::server`; `crates/algeon-server` is the standalone launcher.

@@ -7,7 +7,7 @@ description: SQL-visible cuML decomposition, clustering, embedding, classificati
 # cuML SQL API
 
 Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml)
-as relation-valued functions in DataFusion SQL sessions. `cuml_tsvd` fits and
+as GPU UDTFs in DataFusion SQL sessions. `cuml_tsvd` fits and
 transforms a truncated singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
 membership probabilities, and `cuml_umap` produces a manifold embedding.
 `cuml_logistic_regression` and `cuml_random_forest_classifier` fit Int32 class
@@ -28,10 +28,10 @@ an execution argument. [ML Inputs](./ml-inputs.mdx) specifies the canonical
 `id`, feature layouts, element types, and checks at planning and execution.
 
 For metadata validation, `gpu_validate_call` resolves a registered table or
-view and inspects its schema without evaluating rows. The [GPU Function
+view and inspects its schema without evaluating rows. The [GPU UDTF
 Catalog API](../reference/gpu-function-catalog.mdx) documents discovery and
-validation. [Functions](./functions/index.mdx) contains the generated option,
-output, and limitation reference for each cuML function.
+validation. [UDTFs](./functions/index.mdx) contains the generated option,
+output, and limitation reference for each cuML UDTF.
 
 ## Execution and lifetime
 

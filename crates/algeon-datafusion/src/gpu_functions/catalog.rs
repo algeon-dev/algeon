@@ -1,4 +1,4 @@
-//! Immutable GPU function catalog and catalog-wide invariants.
+//! Immutable GPU UDTF catalog and catalog-wide invariants.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -17,7 +17,7 @@ pub(crate) struct GpuFunctionCatalogEntry {
     pub(crate) family: Arc<dyn GpuFunctionFamily>,
 }
 
-/// Per-session immutable inventory of installed GPU function families.
+/// Per-session immutable inventory of installed GPU UDTF families.
 #[derive(Clone)]
 pub(crate) struct GpuFunctionCatalog {
     families: Vec<Arc<dyn GpuFunctionFamily>>,

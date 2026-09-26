@@ -13,7 +13,10 @@ Algeon (`/ˈæl.dʒi.ən/`, pronounced "AL-jee-on") is a GPU query engine that l
 GPU algorithms from SQL. It integrates with query engines like [Apache DataFusion](https://datafusion.apache.org/):
 the Algeon adapter lowers supported physical plans to
 a native [cuDF](https://docs.rapids.ai/api/cudf/stable/) engine and exposes
-GPU algorithms from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/), [cuVS](https://docs.rapids.ai/api/cuvs/stable/) and [cuML](https://docs.rapids.ai/api/cuml/stable/) as SQL functions.
+GPU algorithms from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/),
+[cuVS](https://docs.rapids.ai/api/cuvs/stable/), and
+[cuML](https://docs.rapids.ai/api/cuml/stable/) as SQL UDTFs (user-defined
+table functions).
 Algeon aims to extend OLAP infrastructure with GPUs, enabling users to run graph, vector,
 and machine-learning algorithms in SQL without writing custom glue code or ad-hoc pipelines.
 
@@ -23,8 +26,8 @@ and machine-learning algorithms in SQL without writing custom glue code or ad-ho
   optimizer, so users can run the whole query on the GPU or only parts of it.
 - **Specialized algorithms and function discovery.** Run PageRank, BFS, Louvain,
   kNN, PCA, and other cuGraph, cuVS, and cuML algorithms through
-  `cugraph_*`, `cuvs_*`, and `cuml_*` table functions. The
-  [GPU function catalog](https://algeon.dev/guides/gpu-function-discovery)
+  `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs. The
+  [GPU UDTF catalog](https://algeon.dev/guides/gpu-function-discovery)
   describes each function's availability in the current session.
 - **Parquet sources.** Read Parquet files from local storage or remote Iceberg tables.
 - **Structured planning diagnostics.** Inspect GPU coverage and remediation through

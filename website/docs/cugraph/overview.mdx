@@ -6,13 +6,13 @@ description: SQL-visible cuGraph graph algorithms over Algeon SQL sessions.
 
 # cuGraph SQL API
 
-Algeon exposes NVIDIA RAPIDS **cuGraph** algorithms as SQL table
-functions over DataFusion SQL sessions, whether the session is embedded in a
-Rust process or served remotely through Flight SQL. Each `cugraph_*` function
+Algeon exposes NVIDIA RAPIDS **cuGraph** algorithms as GPU UDTFs
+(user-defined table functions) over DataFusion SQL sessions. The session can
+run in a Rust process or be served through Flight SQL. Each `cugraph_*` UDTF
 reads an edge relation, builds a GPU graph, runs an algorithm, and returns rows
 you can compose with ordinary SQL.
 
-This section helps you choose a graph function, provide its edge relation, and
+This section helps you choose a graph UDTF, provide its edge relation, and
 understand its execution and reuse boundaries.
 
 Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
@@ -56,10 +56,10 @@ family or compare the generated catalog descriptors.
 
 ## Discovery and validation
 
-Use [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
+Use [Discover & Validate GPU UDTFs](../guides/gpu-function-discovery.mdx)
 for the shared list, describe, validate, and execute workflow. The exact
 metadata response and validation-request schemas are in the
-[GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
+[GPU UDTF Catalog API](../reference/gpu-function-catalog.mdx).
 
 ## Reuse in bounded servers
 

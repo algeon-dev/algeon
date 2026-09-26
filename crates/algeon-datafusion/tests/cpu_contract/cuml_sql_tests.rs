@@ -396,7 +396,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         let page = fs::read_to_string(&page_path)
             .unwrap_or_else(|error| panic!("read generated cuML page at {}: {error}", page_path.display()));
         assert!(
-            page.contains("GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuml-docs.mjs"),
+            page.contains("GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuml-docs.mjs"),
             "{} must retain its generated-source marker",
             page_path.display()
         );

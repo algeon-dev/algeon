@@ -1,4 +1,4 @@
-//! Shared dense-relation device packing for GPU function executors.
+//! Shared dense-relation device packing for GPU UDTF executors.
 
 use std::{collections::BTreeMap, sync::Arc};
 

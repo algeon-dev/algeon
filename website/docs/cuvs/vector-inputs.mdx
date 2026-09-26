@@ -1,12 +1,12 @@
 ---
 sidebar_position: 3
 slug: /cuvs/vector-inputs
-description: Relational ID, dense-vector element and metric support, and runtime validation for cuVS SQL functions.
+description: Relational ID, dense-vector element and metric support, and runtime validation for cuVS UDTFs.
 ---
 
 # Vector Inputs
 
-All eight cuVS functions take relation arguments as parenthesized `SELECT`
+All eight cuVS UDTFs take relation arguments as parenthesized `SELECT`
 subqueries. Each subquery remains a planner child. For `gpu_validate_call`,
 register a table or view with the same schema; metadata validation does not
 evaluate rows.

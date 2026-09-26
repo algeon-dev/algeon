@@ -310,7 +310,7 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         let page = fs::read_to_string(&page_path)
             .unwrap_or_else(|error| panic!("read generated cuVS page at {}: {error}", page_path.display()));
         assert!(
-            page.contains("GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs"),
+            page.contains("GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuvs-docs.mjs"),
             "{} must retain its generated-source marker",
             page_path.display()
         );

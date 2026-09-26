@@ -1,4 +1,4 @@
-//! DataFusion table functions for the unified GPU function control plane.
+//! Metadata UDTFs for the shared GPU execution catalog.
 
 use std::{any::TypeId, sync::Arc};
 
@@ -22,11 +22,11 @@ use crate::{
     physical_plan::cpu_physical_boundary,
 };
 
-/// Unified GPU function discovery table-function name.
+/// SQL name of the catalog discovery UDTF.
 pub const GPU_LIST_FUNCTIONS_FUNCTION: &str = "gpu_list_functions";
-/// Unified GPU function description table-function name.
+/// SQL name of the catalog description UDTF.
 pub const GPU_DESCRIBE_FUNCTION_FUNCTION: &str = "gpu_describe_function";
-/// Unified GPU function dry-run validation table-function name.
+/// SQL name of the catalog validation UDTF.
 pub const GPU_VALIDATE_CALL_FUNCTION: &str = "gpu_validate_call";
 
 /// Build the three common metadata UDTFs over one immutable catalog snapshot.
@@ -112,7 +112,7 @@ struct GpuMetadataProvider {
     kind: MetadataKind,
 }
 
-/// Whether `source` is backed by a built-in GPU metadata table function.
+/// Whether `source` is backed by a built-in GPU metadata UDTF.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn is_builtin_gpu_metadata_table_source(source: &Arc<dyn TableSource>) -> bool {
     source_as_provider(source).is_ok_and(|provider| provider.as_ref().type_id() == TypeId::of::<GpuMetadataProvider>())

@@ -4,7 +4,7 @@ Algeon is a GPU query engine for
 [Apache DataFusion](https://datafusion.apache.org/) that is designed to sit
 inside your own process: your service keeps its HTTP framework, session
 lifecycle, and catalogs, while Algeon evaluates supported physical plans on CUDA
-with cuDF and exposes cuGraph/cuVS algorithms as ordinary SQL table functions.
+with cuDF and exposes cuGraph/cuVS algorithms as SQL UDTFs.
 
 This crate is the runnable entry point for embedding Algeon. Each binary is a
 complete program you can read top to bottom, run, and copy from. The examples
@@ -184,12 +184,12 @@ same acquisition instructions instead of downloading the dataset automatically.
 Embedded and server sessions use the same three modes. `native_preferred` is
 the default and keeps ordinary SQL eligible for native rewrite.
 `functions_only` leaves scans, filters, joins, aggregates, sorts, windows, and
-limits in DataFusion while explicit cuGraph and cuVS functions cross the GPU
+limits in DataFusion while explicit cuGraph and cuVS UDTFs cross the GPU
 boundary. `native_required` rejects a completed plan that still contains
 DataFusion CPU execution.
 
 The `functions_only_modes` binary runs one PageRank query with CPU filter and
-sort operators around the GPU function. Select a mode without changing the
+sort operators around the GPU UDTF. Select a mode without changing the
 SQL:
 
 ```bash
@@ -201,7 +201,7 @@ Server deployments use `native.execution_mode` in TOML or
 `ALGEON_SERVER_EXECUTION_MODE`. GPU inputs and outputs use bounded Arrow staging
 with DataFusion memory accounting; staging does not spill. Unsupported
 capability, OOM, cancellation, and runtime failures remain structured errors,
-and a GPU function is not replayed as a CPU algorithm after GPU execution
+and a GPU UDTF is not replayed as a CPU algorithm after GPU execution
 starts.
 
 The example consumes the normal Flight SQL server environment plus
@@ -254,7 +254,7 @@ catalog path. If startup reports `AWS_REGION is required for Glue Iceberg`, the
 server did not see `ALGEON_ICEBERG_CATALOG_KIND=rest`.
 
 > **cuVS note.** Building with `--features cuvs` registers and executes the
-> `cuvs_*` table functions inside the backend-managed query memory domain.
+> `cuvs_*` UDTFs inside the backend-managed query memory domain.
 
 ### Pipelines
 

@@ -35,15 +35,15 @@ relational candidates lower to a native cuDF engine. Candidates that are not
 selected retain their executable DataFusion implementation, and callers can
 inspect structured planning evidence before execution.
 
-The same session exposes cuGraph and cuVS operations through SQL table
-functions. Native attempts share one admission path, one per-device ledger, and
+The same session exposes cuGraph and cuVS operations through SQL UDTFs.
+Native attempts share one admission path, one per-device ledger, and
 one allocator-enforced memory cap. Parquet and Iceberg sources can feed the
 workflow without introducing an Algeon-specific storage format.
 
 The project is experimental. Its supported operators, data types, source
 contracts, and operational limits are documented rather than implied by the
 presence of a GPU kernel. Start with the [integration overview](/integration)
-and [GPU function catalog](/guides/gpu-function-discovery).
+and [GPU UDTF catalog](/guides/gpu-function-discovery).
 
 ## Where it goes next
 

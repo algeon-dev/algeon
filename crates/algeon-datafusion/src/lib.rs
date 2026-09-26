@@ -54,7 +54,7 @@
 //! [`gpu_coverage`]; runtime exporter projection lives in [`observability`].
 //!
 //! Optional engines change plan classification only while enabled: with the
-//! `cugraph` feature off, cuGraph table functions fail closed with a typed
+//! `cugraph` feature off, cuGraph UDTFs fail closed with a typed
 //! capability error; with `cuvs` or `cuml` off, the corresponding SQL family
 //! remains discoverable but execution fails before input staging; with
 //! `nvml` off, NVML telemetry reads report unavailable. Iceberg source support

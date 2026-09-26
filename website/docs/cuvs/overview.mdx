@@ -7,9 +7,9 @@ description: SQL-visible cuVS vector search and vector ML over Algeon SQL sessio
 # cuVS SQL API
 
 Algeon exposes NVIDIA RAPIDS
-[**cuVS**](https://github.com/NVIDIA/cuvs) as SQL table functions over
+[**cuVS**](https://github.com/NVIDIA/cuvs) as GPU UDTFs over
 DataFusion SQL sessions, following the pattern already used by the
-[cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` function reads a
+[cuGraph SQL API](../cugraph/overview.mdx). Each `cuvs_*` UDTF reads a
 relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
 session, with no separate vector store and no copy to keep in sync.
@@ -39,7 +39,7 @@ boundary.
 
 ## Functions
 
-Start with [Functions](./functions/index.mdx) to choose nearest neighbors,
+Start with [UDTFs](./functions/index.mdx) to choose nearest neighbors,
 distance, selection, cluster, or preprocessing by its
 one-statement lifecycle. Every
 function page links back to [Vector Inputs](./vector-inputs.mdx) for the shared
@@ -47,10 +47,10 @@ input contract.
 
 ## Discovery and validation
 
-Use [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
+Use [Discover & Validate GPU UDTFs](../guides/gpu-function-discovery.mdx)
 for the shared list, describe, validate, and execute workflow. The detailed
 column and request schemas are in the
-[GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
+[GPU UDTF Catalog API](../reference/gpu-function-catalog.mdx).
 
 ## Execution
 

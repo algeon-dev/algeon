@@ -6,7 +6,7 @@ use datafusion::catalog::Session;
 
 use super::{GpuCallRequest, GpuCallValidation, GpuFunctionDescriptor};
 
-/// Family-owned adapter for the common GPU function catalog.
+/// Family-owned adapter for the common GPU UDTF catalog.
 ///
 /// This intentionally does not abstract execution, lowering, or provider-owned
 /// relation semantics. It only lets the shared DataFusion metadata surface

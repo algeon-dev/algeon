@@ -1,4 +1,4 @@
-//! Final-plan binding for one host-materializing GPU function occurrence.
+//! Final-plan binding for one host-materializing GPU UDTF occurrence.
 
 use std::sync::Arc;
 

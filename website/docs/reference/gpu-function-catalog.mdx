@@ -1,14 +1,16 @@
 ---
 sidebar_position: 4
 slug: /reference/gpu-function-catalog
-title: GPU Function Catalog API
-sidebar_label: GPU Function Catalog API
-description: Schema reference for discovering installed cuGraph, cuVS, and cuML SQL functions, inspecting descriptors, and validating GPU function call envelopes.
+title: GPU UDTF Catalog API
+sidebar_label: GPU UDTF Catalog API
+description: Schema reference for discovering installed cuGraph, cuVS, and cuML UDTFs, inspecting descriptors, and validating calls.
 ---
 
-# GPU Function Catalog API
+<span id="gpu-function-catalog-api" />
 
-Three SQL table functions describe every cuGraph, cuVS, and cuML function installed
+# GPU UDTF Catalog API
+
+Three metadata UDTFs describe every cuGraph, cuVS, and cuML execution UDTF installed
 in a session, so a person or an agent can find, understand, and check a call
 without reading server source:
 
@@ -21,21 +23,21 @@ without reading server source:
   static validation, a dry run: it reads no data and runs nothing on the GPU.
 
 The catalog is one list across providers; filter by `provider` for the
-cuGraph, cuVS, or cuML subset. cuVS functions (including `cuvs_brute_force_knn`,
+cuGraph, cuVS, or cuML subset. cuVS UDTFs (including `cuvs_brute_force_knn`,
 `cuvs_ivf_flat`, `cuvs_ivf_pq`, `cuvs_cagra`, `cuvs_kmeans`, and `cuvs_pca`) are executable
 when the build enables the `cuvs` feature;
 otherwise they are listed with `available=false` and
-`unavailable_reason='required_feature_disabled'`. cuML functions
+`unavailable_reason='required_feature_disabled'`. cuML UDTFs
 use provider `cuml` and require the `cuml` feature for
 execution. See [cuML SQL API](../cuml/overview.mdx) for their query-local
 lifetime.
 
 For the task-oriented list, describe, validate, and execute workflow, use
-[Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx).
+[Discover & Validate GPU UDTFs](../guides/gpu-function-discovery.mdx).
 This page is the detailed API reference for the metadata functions and their
 response schemas.
 
-Execution syntax is provider-specific: cuGraph, cuVS, and cuML functions use named
+Execution syntax is provider-specific: cuGraph, cuVS, and cuML UDTFs use named
 arguments, with each relation supplied as a parenthesized relation-valued
 subquery. Validation is provider-neutral: the `call_json` envelope names
 registered tables or views by role and never evaluates SQL text embedded in

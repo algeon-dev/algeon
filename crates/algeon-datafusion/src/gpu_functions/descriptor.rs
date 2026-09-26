@@ -1,8 +1,8 @@
-//! Provider-neutral metadata for one SQL-visible GPU function.
+//! Provider-neutral metadata for one SQL-visible GPU UDTF.
 
 use serde_json::Value;
 
-/// Static planning availability for a GPU function in one session/build.
+/// Static planning availability for a GPU UDTF in one session/build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GpuFunctionAvailability {
     /// The function can be statically planned for GPU execution in this session.
@@ -26,11 +26,11 @@ impl GpuFunctionAvailability {
     }
 }
 
-/// Shared discovery and description metadata for one canonical SQL function.
+/// Shared discovery and description metadata for one execution UDTF.
 ///
 /// Family adapters own the values. The common catalog validates cross-family
 /// invariants and owns the stable Arrow projection used by the three metadata
-/// table functions.
+/// metadata UDTFs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GpuFunctionDescriptor {
     /// Exact canonical execution function name, for example `cuvs_kmeans`.

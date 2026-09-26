@@ -27,7 +27,7 @@ use crate::{
     planner::FinalPlanDisposition,
 };
 
-/// Return the SQL table function that exposes [`validate_query`].
+/// Return the metadata UDTF that exposes [`validate_query`].
 pub(crate) fn gpu_coverage_table_function() -> Arc<TableFunction> {
     Arc::new(TableFunction::new(ALGEON_EXPLAIN_COVERAGE_FUNCTION.to_string(), Arc::new(GpuCoverageTableFunction)))
 }

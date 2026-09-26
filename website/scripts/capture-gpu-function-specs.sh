@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture all installed GPU function descriptors from the unified catalog on a
+# Capture all installed GPU UDTF descriptors from the unified catalog on a
 # running Flight SQL server. Specs are stored by provider so generated docs
 # retain the descriptor's provider grouping without a second inventory.
 #
@@ -31,7 +31,7 @@ validate_function_name() {
   [[ "$1" =~ ^[a-z][a-z0-9_]*$ ]]
 }
 
-echo "Capturing GPU function descriptors from $HOST:$PORT ..."
+echo "Capturing GPU UDTF descriptors from $HOST:$PORT ..."
 run_sql "SELECT function_name, provider FROM gpu_list_functions() ORDER BY function_name" > "$LIST_FILE"
 
 count=0
@@ -71,4 +71,4 @@ fi
 
 if [[ -d "$OUT_ROOT" ]]; then mv "$OUT_ROOT" "$OLD_ROOT"; fi
 mv "$STAGE_ROOT" "$OUT_ROOT"
-echo "Wrote $count unified GPU function specs to $OUT_ROOT (atomic swap)"
+echo "Wrote $count unified GPU UDTF specs to $OUT_ROOT (atomic swap)"

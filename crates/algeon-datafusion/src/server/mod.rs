@@ -927,9 +927,9 @@ fn cugraph_enabled(config: &ServerConfig) -> bool {
 }
 
 /// Emit a one-shot startup WARN when this binary was built with the `cugraph`
-/// feature but cuGraph SQL functions were disabled at runtime
+/// feature but cuGraph UDTFs were disabled at runtime
 /// (`ALGEON_SERVER_CUGRAPH_ENABLED=false`). Without it the
-/// `cugraph_*` table functions are never registered and queries fail with a
+/// the `cugraph_*` relation planner is not installed and queries fail with a
 /// not-found error, which is easy to misread as a build problem when the
 /// feature is actually compiled in. The cfg-gated definitions keep this a
 /// no-op on feature-off builds, where enabling the runtime setting instead
@@ -942,9 +942,8 @@ fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
     tracing::warn!(
         cugraph_enabled = false,
         "Algeon Flight SQL server was built with the `cugraph` feature \
-         but cuGraph SQL functions are disabled at runtime, so they will not be \
-         registered. Set ALGEON_SERVER_CUGRAPH_ENABLED=true to register \
-         the cugraph_* table functions."
+         but cuGraph UDTFs are disabled at runtime. Set \
+         ALGEON_SERVER_CUGRAPH_ENABLED=true to enable the cugraph_* SQL planner."
     );
 }
 

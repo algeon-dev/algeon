@@ -51,7 +51,7 @@ use crate::{
 };
 pub use crate::{planner::FinalPlanCoverage, report::CandidateOutcomeKind};
 
-/// SQL table function that exposes query GPU coverage validation.
+/// Metadata UDTF that exposes query GPU coverage validation.
 pub const ALGEON_EXPLAIN_COVERAGE_FUNCTION: &str = "algeon_explain_coverage";
 /// Version of the shared multi-row UDTF and `EXPLAIN GPU` output schema.
 pub const EXPLAIN_GPU_SCHEMA_VERSION: u8 = 2;
