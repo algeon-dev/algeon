@@ -11,8 +11,9 @@ use query_engine::{contract_report::CapabilityDecisionRow, optimizer::NativeOpti
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
     schema::{
-        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS,
-        NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA, NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
+        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA,
+        NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA,
+        NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
     },
     tsv::{
         TsvRow, format_aggregate_strategy_rows, format_capability_compiled_graphs, format_capability_decision_rows,
@@ -322,6 +323,7 @@ impl TsvRow for NativeDataFusionExecutionRow {
             row.query_id.clone_from(&self.query_id);
         }
         vec![
+            NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA.to_string(),
             self.query_id.clone(),
             self.physical_root.clone(),
             self.physical_shape.clone(),
@@ -415,8 +417,6 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.hash_join_build_count.to_string(),
             self.metrics.filtered_join_build_count.to_string(),
             self.metrics.one_shot_join_count.to_string(),
-            self.metrics.hash_join_cache_hits.to_string(),
-            self.metrics.hash_join_cache_misses.to_string(),
             self.metrics.hash_join_hash_table_bytes.to_string(),
             self.metrics.filtered_join_hash_table_bytes.to_string(),
             self.metrics.filtered_join_probe_state_bytes.to_string(),
@@ -533,6 +533,7 @@ mod tests {
         let expected_execution_fields = NativeDataFusionExecutionRow::COLUMNS
             .iter()
             .map(|column| match *column {
+                "schema" => NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA,
                 "query_id" => "q",
                 "physical_root" | "post_native_plan_root" => "Root",
                 "physical_shape" => "Root(Source)",
@@ -657,8 +658,6 @@ mod tests {
                 hash_join_build_count: 77,
                 filtered_join_build_count: 78,
                 one_shot_join_count: 79,
-                hash_join_cache_hits: 80,
-                hash_join_cache_misses: 81,
                 hash_join_hash_table_bytes: 85,
                 filtered_join_hash_table_bytes: 86,
                 filtered_join_probe_state_bytes: 87,
@@ -688,6 +687,7 @@ mod tests {
         assert_eq!(
             execution.to_tsv_line(),
             concat!(
+                "algeon_datafusion.native_datafusion_execution_tsv.v2\t",
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\tselected\tnone\tnone\t",
                 "none\tnone\tAlgeonNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
                 "true\tsucceeded\tnone\t3\t111\t2222\t",
@@ -695,7 +695,7 @@ mod tests {
                 "none\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
                 "46\t47\t48\t49\t50\t51\t52\t53\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
-                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t77\t78\t79\t80\t81\t85\t86\t",
+                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t77\t78\t79\t85\t86\t",
                 "87\t88\t89\t90\t91\t92\tnone\tnone\tnone\t",
                 "outcome=completed,bytes=4096,elapsed_ns=9000000,cache_path_hash=cache123,stable_id_hash=stable456,",
                 "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none",

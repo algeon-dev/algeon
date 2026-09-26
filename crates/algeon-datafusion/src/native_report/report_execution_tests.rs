@@ -26,9 +26,10 @@ use query_engine::{
 
 use super::{
     CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-    NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
-    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
+    NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
+    NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
+    NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
+    NativeDynamicFilterRuntimeMetricRow,
 };
 use crate::{
     capability::CapabilityReason,
@@ -158,8 +159,6 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.hash_join_build_count, 1);
     assert_eq!(row.metrics.filtered_join_build_count, 6);
     assert_eq!(row.metrics.one_shot_join_count, 7);
-    assert_eq!(row.metrics.hash_join_cache_hits, 2);
-    assert_eq!(row.metrics.hash_join_cache_misses, 1);
     assert_eq!(row.metrics.hash_join_hash_table_bytes, 16384);
     assert_eq!(row.metrics.filtered_join_hash_table_bytes, 8192);
     assert_eq!(row.metrics.filtered_join_probe_state_bytes, 1024);
@@ -223,7 +222,9 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_status.as_deref(), Some("measured"));
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_error_code, None);
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 108);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 107);
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.starts_with("schema\tquery_id\t"));
+    assert!(text.contains(&format!("\n{NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA}\tq01\t")));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
     ));
@@ -263,6 +264,8 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
         "hash_join_durable_cache_hits",
         "hash_join_durable_cache_misses",
         "hash_join_durable_cache_inserts",
+        "hash_join_cache_hits",
+        "hash_join_cache_misses",
         concat!("source_", "fetch_bytes"),
         concat!("source_", "fetch_count"),
         concat!("host_", "fetch_budget_wait_time_ms"),
@@ -1322,8 +1325,6 @@ fn native_execution_metrics_set() -> MetricsSet {
         ("hash_join_build_count", 1),
         ("filtered_join_build_count", 6),
         ("one_shot_join_count", 7),
-        ("hash_join_cache_hits", 2),
-        ("hash_join_cache_misses", 1),
         ("hash_join_hash_table_bytes", 16384),
         ("filtered_join_hash_table_bytes", 8192),
         ("filtered_join_probe_state_bytes", 1024),
@@ -1430,7 +1431,6 @@ fn native_execution_metrics_set() -> MetricsSet {
         .with_new_label("node_id", "n4")
         .with_new_label("selected_strategy", "libcudf_groupby")
         .with_new_label("execution_stage", "partial")
-        .with_new_label("memory_mode", "bounded")
         .with_new_label("group_key_count", "1")
         .with_new_label("group_key_exprs", "l_returnflag")
         .with_new_label("group_key_dtypes", "Utf8")

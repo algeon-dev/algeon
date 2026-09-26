@@ -480,7 +480,6 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),
-        context.memory_control_policy().as_str(),
         context.aggregate_strategy_execution_options(),
         spec,
         batch.schema().as_ref(),
@@ -519,7 +518,6 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
 fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     metrics: &ExecutionMetrics,
     node_id: Option<String>,
-    memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
     input_schema: &ArrowSchema,
@@ -531,7 +529,6 @@ fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     let mut facts = BTreeMap::from([
         ("selected_strategy", "datafusion_exact_host_welford".to_string()),
         ("execution_stage", AggregateExecutionStage::Single.as_str().to_string()),
-        ("memory_mode", memory_mode.to_string()),
         ("group_key_count", spec.group_exprs.len().to_string()),
         ("group_key_exprs", aggregate_group_key_exprs_for_metrics(spec)),
         ("group_key_dtypes", aggregate_group_key_dtypes_for_metrics(spec, input_schema)),

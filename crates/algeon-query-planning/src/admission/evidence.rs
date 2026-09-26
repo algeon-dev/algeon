@@ -87,6 +87,7 @@ impl AttemptCapabilityEvidence {
         }
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn from_parts(
         required_capabilities: Vec<ExecutionCapability>,
@@ -100,6 +101,7 @@ impl AttemptCapabilityEvidence {
         }
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn required_capabilities(&self) -> &[ExecutionCapability] {
         &self.required_capabilities

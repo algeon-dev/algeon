@@ -1192,7 +1192,6 @@ pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::group_ke
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::group_key_exprs: alloc::string::String
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::groupby_elapsed_ns: usize
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::input_rows: usize
-pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::memory_mode: alloc::string::String
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::node_id: alloc::string::String
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::output_group_count: usize
 pub algeon_datafusion::native_report::NativeAggregateStrategyMetricRow::partial_aggregate_count: usize
@@ -1269,8 +1268,6 @@ pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::final_me
 pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::gpu_resident_input_handoffs: usize
 pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::graph_runtime_rows: alloc::vec::Vec<algeon_datafusion::native_report::NativeGraphRuntimeMetricRow>
 pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::hash_join_build_count: usize
-pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::hash_join_cache_hits: usize
-pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::hash_join_cache_misses: usize
 pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::hash_join_hash_table_bytes: usize
 pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::host_to_device_uploaded_bytes: usize
 pub algeon_datafusion::native_report::NativeDataFusionExecutionMetrics::host_to_device_uploaded_rows: usize
@@ -1685,6 +1682,7 @@ pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_M
 pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE: &str
 pub const algeon_datafusion::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str
+pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str
 pub const algeon_datafusion::native_report::NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA: &str
 pub const algeon_datafusion::native_report::NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str

@@ -16,19 +16,23 @@ pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape
 pub use diagnostics::{
     bounded_join_unsupported_shape_facts_with_projection, insert_bounded_join_rejection_projection_error_facts,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use evidence::CUGRAPH_GRAPH_EXECUTION_CAPABILITY;
 #[doc(hidden)]
 pub use evidence::{
-    AttemptCapabilityEvidence, AttemptCapabilityEvidence as AttemptRequirement, CUGRAPH_GRAPH_EXECUTION_CAPABILITY,
-    ExecutionCapability, capability_labels,
+    AttemptCapabilityEvidence, AttemptCapabilityEvidence as AttemptRequirement, ExecutionCapability, capability_labels,
 };
 #[doc(hidden)]
 pub use scope::{
     AttemptExecutionManifest, AttemptExecutionOccurrence, AttemptExecutionScope, AttemptProducerOccurrence,
 };
 #[doc(hidden)]
+pub use support::pipeline_tasks_within_migrated_contract;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-    pipeline_tasks_within_migrated_contract,
 };
 
 #[doc(hidden)]

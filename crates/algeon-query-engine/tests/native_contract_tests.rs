@@ -230,16 +230,7 @@ fn source_storage_error_codes_have_stable_policy() {
 }
 
 #[test]
-fn memory_control_policy_names_the_bounded_mode() {
-    let bounded = MemoryControlPolicy {
-        device_budget_bytes: 4 * 1024 * 1024 * 1024,
-        max_source_chunk_bytes: 512 * 1024 * 1024,
-        max_row_groups_per_chunk: 2,
-        max_retry_attempts: 3,
-        min_retry_chunk_row_groups: 1,
-    };
-
-    assert_eq!(bounded.as_str(), "bounded");
+fn reservation_kind_labels_are_stable() {
     assert_eq!(ReservationKind::SourceRead.as_str(), "source_read");
     assert_eq!(ReservationKind::ChunkOperator.as_str(), "chunk_operator");
     assert_eq!(ReservationKind::OperatorOutput.as_str(), "operator_output");
@@ -253,6 +244,17 @@ fn memory_control_policy_names_the_bounded_mode() {
     assert_eq!(ReservationKind::PartialState.as_str(), "partial_state");
     assert_eq!(ReservationKind::FinalSort.as_str(), "final_sort");
     assert_eq!(ReservationKind::Materialization.as_str(), "materialization");
+}
+
+#[test]
+fn memory_control_policy_converts_to_source_chunk_planning_policy() {
+    let bounded = MemoryControlPolicy {
+        device_budget_bytes: 4 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 512 * 1024 * 1024,
+        max_row_groups_per_chunk: 2,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    };
 
     let chunk_policy = SourceChunkPlanningPolicy::from(bounded);
     assert_eq!(chunk_policy.max_source_chunk_bytes, Some(512 * 1024 * 1024));
@@ -422,7 +424,6 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(join.build_side, "right");
     assert_eq!(join.probe_side, "left");
 
-    metrics.record_hash_join_cache_miss();
     metrics.record_hash_join_build();
     metrics.record_hash_join_hash_table_bytes(4096);
     metrics.record_filtered_join_build();
@@ -433,12 +434,9 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_one_shot_join_index_bytes(128);
     metrics.record_one_shot_join_materialization_bytes(256);
     metrics.record_one_shot_join_output_bytes(384);
-    metrics.record_hash_join_cache_hit();
-    assert_eq!(metrics.hash_join_cache_misses, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert_eq!(metrics.one_shot_join_count, 1);
-    assert_eq!(metrics.hash_join_cache_hits, 1);
     assert_eq!(metrics.hash_join_hash_table_bytes, 4096);
     assert_eq!(metrics.filtered_join_hash_table_bytes, 2048);
     assert_eq!(metrics.filtered_join_probe_state_bytes, 1024);

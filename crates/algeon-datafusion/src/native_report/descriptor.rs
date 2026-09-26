@@ -75,8 +75,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "gpu_resident_input_handoffs",
     "graph_runtime_rows",
     "hash_join_build_count",
-    "hash_join_cache_hits",
-    "hash_join_cache_misses",
     "hash_join_hash_table_bytes",
     "host_datafusion_boundary_count",
     "host_to_device_uploaded_bytes",

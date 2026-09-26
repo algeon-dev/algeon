@@ -242,6 +242,9 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
             .contains("\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\t")
     );
 
+    assert_eq!(header_fields[0], "schema");
+    let schema_index = header_index(&header_fields, "schema");
+    let query_id_index = header_index(&header_fields, "query_id");
     let planning_outcome_index = header_index(&header_fields, "planning_outcome");
     let bounded_status_index = header_index(&header_fields, "bounded_status");
     assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tpost_native_execution_path\t"));
@@ -256,6 +259,8 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
         "hash_join_durable_cache_hits",
         "hash_join_durable_cache_misses",
         "hash_join_durable_cache_inserts",
+        "hash_join_cache_hits",
+        "hash_join_cache_misses",
     ] {
         assert!(
             !NATIVE_TPCH_BENCHMARK_TSV_HEADER.split('\t').any(|column| column == removed),
@@ -274,7 +279,8 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
         let fields = row.split('\t').collect::<Vec<_>>();
         assert_eq!(fields.len(), NATIVE_TPCH_BENCHMARK_TSV_COLUMNS.len(), "row has wrong contract width: {row}");
         assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
-        match fields[0] {
+        assert_eq!(fields[schema_index], NATIVE_TPCH_BENCHMARK_TSV_SCHEMA);
+        match fields[query_id_index] {
             "q01" => {
                 assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
                 assert_eq!(fields[final_disposition_index], "native");

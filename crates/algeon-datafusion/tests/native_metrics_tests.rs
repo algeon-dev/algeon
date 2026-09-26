@@ -7,7 +7,7 @@ use algeon_datafusion::{
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER, native_report_metric_descriptor, native_report_metric_descriptors,
     },
 };
-use query_engine::metrics::{MetricAggregation, MetricUnit, QueryId, QueryMetrics, TraceId};
+use query_engine::metrics::{MetricAggregation, MetricUnit, QUERY_METRICS_JSON_SCHEMA, QueryId, QueryMetrics, TraceId};
 
 #[test]
 fn query_metrics_records_peak_device_memory_observation() {
@@ -108,7 +108,7 @@ fn query_metrics_json_projection_is_catalog_driven() {
     metrics.record_compiled_pipeline_task_mapping("task-1", "source_read", Some("n7"));
     let json = metrics.to_json();
 
-    assert_eq!(json["schema"], "query_engine.query_metrics.v1");
+    assert_eq!(json["schema"], QUERY_METRICS_JSON_SCHEMA);
     assert_eq!(json["query_id"], "q-json");
     assert_eq!(json["trace_id"], "request-1");
     assert_eq!(json["triage"]["verdict"], "healthy");
@@ -206,8 +206,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "hash_join_build_count",
         "filtered_join_build_count",
         "one_shot_join_count",
-        "hash_join_cache_hits",
-        "hash_join_cache_misses",
         "hash_join_hash_table_bytes",
         "filtered_join_hash_table_bytes",
         "filtered_join_probe_state_bytes",
@@ -240,6 +238,8 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "hash_join_durable_cache_hits",
         "hash_join_durable_cache_misses",
         "hash_join_durable_cache_inserts",
+        "hash_join_cache_hits",
+        "hash_join_cache_misses",
     ] {
         assert!(!names.contains(&removed), "removed cache metric must not remain public: {removed}");
     }

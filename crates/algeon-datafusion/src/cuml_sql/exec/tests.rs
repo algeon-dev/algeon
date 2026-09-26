@@ -11,7 +11,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use query_engine::{
-    admission::AttemptExecutionScope,
+    admission::AttemptCapabilityEvidence,
     plan::{MlAlgorithmParams, PlanNode, QueryPlanBuilder},
     source::{LocalParquetSource, SourceNode},
 };
@@ -75,7 +75,11 @@ async fn sql_exec_with_native_gpu_input_has_native_final_plan_disposition() {
         vec!["id".into(), "d0".into(), "d1".into()],
     )));
     let child_plan = builder.finish_gpu_resident(source);
-    let child_scope = AttemptExecutionScope::for_query_plan(&child_plan);
+    let child_evidence = AttemptCapabilityEvidence::for_query_plan(&child_plan);
+    let [child_scope] = child_evidence.execution_scopes() else {
+        panic!("a query plan's evidence has one execution scope")
+    };
+    let child_scope_fingerprint = child_scope.execution_scope_fingerprint();
     let child = Arc::new(AlgeonNativeGpuProducerExec::try_new("native_input", child_plan).unwrap());
     let rebound = Arc::new(exec.clone())
         .replace_children(vec![child], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
@@ -88,15 +92,11 @@ async fn sql_exec_with_native_gpu_input_has_native_final_plan_disposition() {
         [producer.gpu_result_capability_evidence().unwrap(), producer.host_result_capability_evidence().unwrap()]
     {
         let scopes = evidence.execution_scopes();
-        assert!(
-            scopes
-                .iter()
-                .any(|scope| scope.matches_execution_scope_fingerprint(child_scope.execution_scope_fingerprint()))
-        );
+        assert!(scopes.iter().any(|scope| scope.execution_scope_fingerprint() == child_scope_fingerprint));
         let occurrences = scopes.iter().flat_map(|scope| scope.producer_occurrences()).collect::<Vec<_>>();
         let [occurrence] = occurrences[..] else { panic!("one producer occurrence: {occurrences:?}") };
         assert_eq!(occurrence.occurrence_id(), input_names[0]);
-        assert_eq!(occurrence.execution_scope_fingerprint(), child_scope.execution_scope_fingerprint());
+        assert_eq!(occurrence.execution_scope_fingerprint(), child_scope_fingerprint);
     }
 }
 

@@ -1015,7 +1015,6 @@ impl AlgeonNativeMetrics {
                 .with_new_label("node_id", decision.node_id.clone())
                 .with_new_label("selected_strategy", aggregate_fact(facts, "selected_strategy"))
                 .with_new_label("execution_stage", aggregate_fact(facts, "execution_stage"))
-                .with_new_label("memory_mode", aggregate_fact(facts, "memory_mode"))
                 .with_new_label("group_key_count", aggregate_fact(facts, "group_key_count"))
                 .with_new_label("group_key_exprs", aggregate_fact(facts, "group_key_exprs"))
                 .with_new_label("group_key_dtypes", aggregate_fact(facts, "group_key_dtypes"))

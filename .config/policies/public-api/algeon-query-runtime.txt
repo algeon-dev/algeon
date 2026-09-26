@@ -312,8 +312,6 @@ pub query_runtime::metrics::QueryMetrics::final_sort_time: core::time::Duration
 pub query_runtime::metrics::QueryMetrics::graph_algorithm_runtime_rows: alloc::vec::Vec<query_runtime::metrics::GraphAlgorithmRuntimeMetrics>
 pub query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows: alloc::vec::Vec<query_planning::graph_observation::GraphMeasuredPeakRow>
 pub query_runtime::metrics::QueryMetrics::hash_join_build_count: u64
-pub query_runtime::metrics::QueryMetrics::hash_join_cache_hits: u64
-pub query_runtime::metrics::QueryMetrics::hash_join_cache_misses: u64
 pub query_runtime::metrics::QueryMetrics::hash_join_hash_table_bytes: u64
 pub query_runtime::metrics::QueryMetrics::input_batches: u64
 pub query_runtime::metrics::QueryMetrics::input_rows: u64
@@ -424,8 +422,6 @@ pub fn query_runtime::metrics::QueryMetrics::record_filtered_join_build(&mut sel
 pub fn query_runtime::metrics::QueryMetrics::record_filtered_join_hash_table_bytes(&mut self, u64)
 pub fn query_runtime::metrics::QueryMetrics::record_filtered_join_probe_state_bytes(&mut self, u64)
 pub fn query_runtime::metrics::QueryMetrics::record_hash_join_build(&mut self)
-pub fn query_runtime::metrics::QueryMetrics::record_hash_join_cache_hit(&mut self)
-pub fn query_runtime::metrics::QueryMetrics::record_hash_join_cache_miss(&mut self)
 pub fn query_runtime::metrics::QueryMetrics::record_hash_join_hash_table_bytes(&mut self, u64)
 pub fn query_runtime::metrics::QueryMetrics::record_join_strategy_decision(&mut self, impl alloc::string::ToString, &alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>)
 pub fn query_runtime::metrics::QueryMetrics::record_mixed_join_size_data_bytes(&mut self, u64)
@@ -489,6 +485,7 @@ impl query_runtime::metrics::SourceReadRuntimeMetrics
 pub fn query_runtime::metrics::SourceReadRuntimeMetrics::to_stable_kv_row(&self) -> alloc::string::String
 pub const query_runtime::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS: [u64; 7]
 pub const query_runtime::metrics::BACKEND_METRIC_DESCRIPTORS: &[query_runtime::metrics::BackendMetricDescriptor]
+pub const query_runtime::metrics::QUERY_METRICS_JSON_SCHEMA: &str
 pub const fn query_runtime::metrics::backend_metric_descriptors() -> &'static [query_runtime::metrics::BackendMetricDescriptor]
 pub fn query_runtime::metrics::project_backend_duration_histogram(&query_runtime::metrics::BackendMetricDescriptor, u64) -> core::result::Result<query_runtime::metrics::backend_descriptor::BackendDurationHistogramProjection, query_runtime::metrics::BackendDurationProjectionError>
 pub mod query_runtime::native_error
@@ -979,8 +976,6 @@ pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibra
 pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_algorithm_started(&self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
 pub fn query_runtime::observability::MetricsRecorder::record_graph_claim_calibration_measurement(&self, query_planning::plan::core::NodeId, query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, query_planning::graph_observation::GraphMeasuredPeakProvenance)
 pub fn query_runtime::observability::MetricsRecorder::record_hash_join_build(&self)
-pub fn query_runtime::observability::MetricsRecorder::record_hash_join_cache_hit(&self)
-pub fn query_runtime::observability::MetricsRecorder::record_hash_join_cache_miss(&self)
 pub fn query_runtime::observability::MetricsRecorder::record_hash_join_hash_table_bytes(&self, u64)
 pub fn query_runtime::observability::MetricsRecorder::record_host_to_device_upload(&self, u64, u64)
 pub fn query_runtime::observability::MetricsRecorder::record_input_batch(&self, u64)

@@ -1,6 +1,6 @@
 //! Arrow-to-oracle comparators for the registry-driven cuGraph parity harness.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use algeon_datafusion::cugraph_sql::{
     CugraphAlgorithm,
@@ -169,9 +169,6 @@ pub fn compare(
         ParityComparator::Numeric if spec.algorithm == CugraphAlgorithm::Sssp => {
             compare_sssp(&actual, &expected, edges, spec.tolerance.abs, spec.tolerance.rel)
         },
-        ParityComparator::Numeric if spec.algorithm == CugraphAlgorithm::ForceAtlas2 => {
-            compare_force_atlas2(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel)
-        },
         ParityComparator::Numeric if spec.algorithm == CugraphAlgorithm::EdgeBetweennessCentrality => {
             compare_edge_betweenness(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel)
         },
@@ -191,7 +188,13 @@ pub fn compare(
         ParityComparator::PartitionQuality => {
             Err(format!("partition-quality comparator has no implementation for {:?}", spec.algorithm))
         },
-        ParityComparator::SeededSequence | ParityComparator::RankCorrelation => {
+        ParityComparator::RankCorrelation if spec.algorithm == CugraphAlgorithm::ForceAtlas2 => {
+            compare_layout_structure(&actual, &expected, edges, spec.tolerance)
+        },
+        ParityComparator::RankCorrelation => {
+            Err(format!("rank-correlation comparator has no implementation for {:?}", spec.algorithm))
+        },
+        ParityComparator::SeededSequence => {
             Err(format!("comparator family '{}' has no registry rows yet", spec.comparator.as_str()))
         },
     }
@@ -480,102 +483,142 @@ fn numbers_close(left: f64, right: f64, abs: f64, rel: f64) -> bool {
     delta <= abs.max(rel * left.abs().max(right.abs()))
 }
 
-fn compare_force_atlas2(actual: &Table, expected: &Table, abs: f64, rel: f64) -> Result<(), String> {
+/// ForceAtlas2 accumulates forces with float `atomicAdd` in GPU scheduling
+/// order and has no deterministic mode, so coordinates differ between runs
+/// even under a fixed seed. The comparison therefore checks two layout
+/// properties that summation order does not change: the RMS radius about the
+/// centroid stays within `tolerance.rel` of the oracle's, and the Spearman
+/// correlation between pairwise layout distances and graph hop distances is
+/// at least `1 - tolerance.abs`. Both are invariant under translation,
+/// rotation, and reflection.
+fn compare_layout_structure(
+    actual: &Table,
+    expected: &Table,
+    edges: &[ParityEdge],
+    tolerance: ParityTolerance,
+) -> Result<(), String> {
     let actual_vertices = actual.integer_column("vertex")?;
     let expected_vertices = expected.integer_column("vertex")?;
     if actual_vertices != expected_vertices {
         return Err(format!("layout vertex mismatch: GPU={actual_vertices:?} oracle={expected_vertices:?}"));
     }
-    let points = |table: &Table| -> Result<Vec<(f64, f64)>, String> {
-        let x = table.column("x")?;
-        let y = table.column("y")?;
-        x.iter().zip(y).enumerate().map(|(row, (x, y))| Ok((x.number("x", row)?, y.number("y", row)?))).collect()
-    };
-    let actual_points = points(actual)?;
-    let expected_points = points(expected)?;
-    if actual_points.is_empty() {
-        return Ok(());
-    }
-
-    let actual_center = centroid(&actual_points);
-    let expected_center = centroid(&expected_points);
-    let actual_centered = center_points(&actual_points, actual_center);
-    let expected_centered = center_points(&expected_points, expected_center);
-
-    // Two-dimensional orthogonal Procrustes has closed forms for both
-    // rotation and reflection. Layout coordinates have no meaningful global
-    // origin, orientation, or handedness, so choose the lower-residual rigid
-    // transform before comparing point displacement.
-    let rotation_a = actual_centered.iter().zip(&expected_centered).map(|((x, y), (u, v))| x * u + y * v).sum::<f64>();
-    let rotation_b = actual_centered.iter().zip(&expected_centered).map(|((x, y), (u, v))| x * v - y * u).sum::<f64>();
-    let rotation = transform_points(&actual_centered, expected_center, rotation_a, rotation_b, false)?;
-
-    let reflection_a =
-        actual_centered.iter().zip(&expected_centered).map(|((x, y), (u, v))| x * u - y * v).sum::<f64>();
-    let reflection_b =
-        actual_centered.iter().zip(&expected_centered).map(|((x, y), (u, v))| y * u + x * v).sum::<f64>();
-    let reflection = transform_points(&actual_centered, expected_center, reflection_a, reflection_b, true)?;
-    let residual = |aligned: &[(f64, f64)]| {
-        aligned.iter().zip(&expected_points).map(|((x, y), (u, v))| (x - u).hypot(y - v)).collect::<Vec<_>>()
-    };
-    let rotation_residual = residual(&rotation);
-    let reflection_residual = residual(&reflection);
-    let residuals = if squared_sum(&rotation_residual) <= squared_sum(&reflection_residual) {
-        rotation_residual
-    } else {
-        reflection_residual
-    };
-    let rms_radius =
-        (expected_centered.iter().map(|(x, y)| x * x + y * y).sum::<f64>() / expected_centered.len() as f64).sqrt();
-    let limit = abs.max(rel * rms_radius);
-    let (worst_row, worst) = residuals
-        .iter()
-        .copied()
-        .enumerate()
-        .max_by(|(_, left), (_, right)| left.total_cmp(right))
-        .expect("non-empty layout has a residual");
-    if worst > limit {
+    let actual_points = layout_points(actual)?;
+    let actual_radius = rms_radius(&actual_points);
+    let expected_radius = rms_radius(&layout_points(expected)?);
+    if (actual_radius - expected_radius).abs() > tolerance.rel * expected_radius {
         return Err(format!(
-            "rigid-aligned layout mismatch at vertex {}: displacement={worst} tolerance={limit} rms_radius={rms_radius}",
-            actual_vertices[worst_row]
+            "layout RMS radius mismatch: GPU={actual_radius} oracle={expected_radius} relative_tolerance={}",
+            tolerance.rel
+        ));
+    }
+    let correlation = layout_graph_distance_correlation(&actual_vertices, &actual_points, edges)?;
+    let minimum = 1.0 - tolerance.abs;
+    if correlation < minimum {
+        return Err(format!(
+            "layout distances do not follow graph distances: spearman={correlation} minimum={minimum}"
         ));
     }
     Ok(())
 }
 
-fn centroid(points: &[(f64, f64)]) -> (f64, f64) {
-    let (x, y) = points.iter().fold((0.0, 0.0), |(sum_x, sum_y), (x, y)| (sum_x + x, sum_y + y));
-    (x / points.len() as f64, y / points.len() as f64)
+fn layout_points(table: &Table) -> Result<Vec<(f64, f64)>, String> {
+    let x = table.column("x")?;
+    let y = table.column("y")?;
+    x.iter().zip(y).enumerate().map(|(row, (x, y))| Ok((x.number("x", row)?, y.number("y", row)?))).collect()
 }
 
-fn center_points(points: &[(f64, f64)], center: (f64, f64)) -> Vec<(f64, f64)> {
-    points.iter().map(|(x, y)| (x - center.0, y - center.1)).collect()
-}
-
-fn transform_points(
-    points: &[(f64, f64)],
-    target_center: (f64, f64),
-    a: f64,
-    b: f64,
-    reflect: bool,
-) -> Result<Vec<(f64, f64)>, String> {
-    let norm = a.hypot(b);
-    if norm <= f64::EPSILON {
-        return Err("layout rigid alignment is degenerate".to_string());
+fn rms_radius(points: &[(f64, f64)]) -> f64 {
+    if points.is_empty() {
+        return 0.0;
     }
-    let (cos, sin) = (a / norm, b / norm);
-    Ok(points
-        .iter()
-        .map(|(x, y)| {
-            let (x, y) =
-                if reflect { (cos * x + sin * y, sin * x - cos * y) } else { (cos * x - sin * y, sin * x + cos * y) };
-            (x + target_center.0, y + target_center.1)
-        })
-        .collect())
+    let count = points.len() as f64;
+    let (sum_x, sum_y) = points.iter().fold((0.0, 0.0), |(sum_x, sum_y), (x, y)| (sum_x + x, sum_y + y));
+    let (center_x, center_y) = (sum_x / count, sum_y / count);
+    (points.iter().map(|(x, y)| (x - center_x).powi(2) + (y - center_y).powi(2)).sum::<f64>() / count).sqrt()
 }
 
-fn squared_sum(values: &[f64]) -> f64 {
-    values.iter().map(|value| value * value).sum()
+/// Spearman correlation over every connected vertex pair between the
+/// Euclidean layout distance and the undirected hop distance.
+fn layout_graph_distance_correlation(
+    vertices: &[i64],
+    points: &[(f64, f64)],
+    edges: &[ParityEdge],
+) -> Result<f64, String> {
+    let mut neighbors = BTreeMap::<i64, BTreeSet<i64>>::new();
+    for edge in edges {
+        neighbors.entry(edge.source).or_default().insert(edge.destination);
+        neighbors.entry(edge.destination).or_default().insert(edge.source);
+    }
+    let mut layout_distances = Vec::new();
+    let mut hop_distances = Vec::new();
+    for (left, &source) in vertices.iter().enumerate() {
+        let hops = hop_distances_from(source, &neighbors);
+        for (right, target) in vertices.iter().enumerate().skip(left + 1) {
+            if let Some(&hop) = hops.get(target) {
+                let ((x0, y0), (x1, y1)) = (points[left], points[right]);
+                layout_distances.push((x0 - x1).hypot(y0 - y1));
+                hop_distances.push(hop as f64);
+            }
+        }
+    }
+    if layout_distances.len() < 2 {
+        return Err("layout has fewer than two connected vertex pairs".to_string());
+    }
+    pearson(&average_ranks(&layout_distances), &average_ranks(&hop_distances))
+        .ok_or_else(|| "layout or graph distances are constant".to_string())
+}
+
+fn hop_distances_from(source: i64, neighbors: &BTreeMap<i64, BTreeSet<i64>>) -> BTreeMap<i64, usize> {
+    let mut distances = BTreeMap::from([(source, 0)]);
+    let mut frontier = vec![source];
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for vertex in frontier {
+            let distance = distances[&vertex] + 1;
+            for &neighbor in neighbors.get(&vertex).into_iter().flatten() {
+                if let Entry::Vacant(entry) = distances.entry(neighbor) {
+                    entry.insert(distance);
+                    next.push(neighbor);
+                }
+            }
+        }
+        frontier = next;
+    }
+    distances
+}
+
+/// One-based ranks; tied values share the mean of the ranks they span.
+fn average_ranks(values: &[f64]) -> Vec<f64> {
+    let mut order = (0..values.len()).collect::<Vec<_>>();
+    order.sort_by(|&left, &right| values[left].total_cmp(&values[right]));
+    let mut ranks = vec![0.0; values.len()];
+    let mut start = 0;
+    while start < order.len() {
+        let mut end = start;
+        while end + 1 < order.len() && values[order[end + 1]] == values[order[start]] {
+            end += 1;
+        }
+        let rank = (start + end) as f64 / 2.0 + 1.0;
+        for &index in &order[start..=end] {
+            ranks[index] = rank;
+        }
+        start = end + 1;
+    }
+    ranks
+}
+
+fn pearson(left: &[f64], right: &[f64]) -> Option<f64> {
+    let count = left.len() as f64;
+    let left_mean = left.iter().sum::<f64>() / count;
+    let right_mean = right.iter().sum::<f64>() / count;
+    let (mut covariance, mut left_variance, mut right_variance) = (0.0, 0.0, 0.0);
+    for (left, right) in left.iter().zip(right) {
+        covariance += (left - left_mean) * (right - right_mean);
+        left_variance += (left - left_mean).powi(2);
+        right_variance += (right - right_mean).powi(2);
+    }
+    let scale = (left_variance * right_variance).sqrt();
+    (scale > 0.0).then(|| covariance / scale)
 }
 
 fn cells_match(column: &str, actual: Cell, expected: Cell) -> bool {
@@ -1137,17 +1180,34 @@ mod tests {
     }
 
     #[test]
-    fn force_atlas_comparison_removes_translation_rotation_and_reflection() {
-        let expected_points = vec![(0.0, 0.0), (2.0, 0.0), (0.0, 1.0), (1.0, 3.0)];
-        let actual_points = expected_points.iter().map(|(x, y)| (5.0 - y, -3.0 - x)).collect();
-        let vertices = vec![0, 1, 2, 3];
-        compare_force_atlas2(
-            &layout_table(vertices.clone(), actual_points),
-            &layout_table(vertices, expected_points),
-            1.0e-12,
-            1.0e-12,
-        )
-        .unwrap();
+    fn layout_structure_comparison_ignores_rigid_motion_and_rejects_scale_and_scrambled_layouts() {
+        let edges = (0..5)
+            .map(|vertex| ParityEdge { source: vertex, destination: vertex + 1, weight: 1.0 })
+            .collect::<Vec<_>>();
+        let vertices = (0..6).collect::<Vec<i64>>();
+        let path = (0..6).map(|vertex| (vertex as f64, 0.5 * (vertex as f64).sin())).collect::<Vec<_>>();
+        let tolerance = ParityTolerance { abs: 0.2, rel: 0.02 };
+        let expected = layout_table(vertices.clone(), path.clone());
+
+        let moved = path.iter().map(|(x, y)| (5.0 - y, -3.0 - x)).collect();
+        compare_layout_structure(&layout_table(vertices.clone(), moved), &expected, &edges, tolerance).unwrap();
+
+        let scaled = path.iter().map(|(x, y)| (1.1 * x, 1.1 * y)).collect();
+        let error = compare_layout_structure(&layout_table(vertices.clone(), scaled), &expected, &edges, tolerance)
+            .unwrap_err();
+        assert!(error.contains("RMS radius mismatch"), "unexpected error: {error}");
+
+        let mut scrambled = path;
+        scrambled.swap(0, 3);
+        scrambled.swap(2, 5);
+        let error =
+            compare_layout_structure(&layout_table(vertices, scrambled), &expected, &edges, tolerance).unwrap_err();
+        assert!(error.contains("do not follow graph distances"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn average_ranks_share_the_mean_rank_across_ties() {
+        assert_eq!(average_ranks(&[3.0, 1.0, 3.0, 2.0]), [3.5, 1.0, 3.5, 2.0]);
     }
 
     #[test]

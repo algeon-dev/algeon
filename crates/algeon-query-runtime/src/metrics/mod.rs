@@ -42,6 +42,7 @@ pub use self::{
     dynamic_filter::DynamicFilterSourceSnapshot,
     graph::GraphAlgorithmRuntimeMetrics,
     join::{JoinOperatorMetrics, JoinStrategyDecisionMetrics},
+    json::QUERY_METRICS_JSON_SCHEMA,
     operator::OperatorMetrics,
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::BudgetedExecutionEvent,
@@ -137,10 +138,6 @@ pub struct QueryMetrics {
     pub filtered_join_build_count: u64,
     /// Number of one-shot keyed equality joins executed during this query.
     pub one_shot_join_count: u64,
-    /// Query-scoped reusable hash-join cache hits.
-    pub hash_join_cache_hits: u64,
-    /// Query-scoped reusable hash-join cache misses.
-    pub hash_join_cache_misses: u64,
     /// Unique device bytes retained by reusable cuDF hash-join build artifacts.
     ///
     /// This is recorded when an artifact is constructed, not when it is reused.
@@ -442,8 +439,6 @@ impl QueryMetrics {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(other.filtered_join_build_count);
         self.one_shot_join_count = self.one_shot_join_count.saturating_add(other.one_shot_join_count);
-        self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(other.hash_join_cache_hits);
-        self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(other.hash_join_cache_misses);
         self.hash_join_hash_table_bytes =
             self.hash_join_hash_table_bytes.saturating_add(other.hash_join_hash_table_bytes);
         self.filtered_join_hash_table_bytes =

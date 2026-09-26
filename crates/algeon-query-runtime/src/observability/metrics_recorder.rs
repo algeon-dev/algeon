@@ -258,16 +258,6 @@ impl MetricsRecorder {
         self.apply(|metrics| metrics.record_join_strategy_decision(node_id, &facts));
     }
 
-    /// Records a hash-join cache hit.
-    pub fn record_hash_join_cache_hit(&self) {
-        self.apply(QueryMetrics::record_hash_join_cache_hit);
-    }
-
-    /// Records a hash-join cache miss.
-    pub fn record_hash_join_cache_miss(&self) {
-        self.apply(QueryMetrics::record_hash_join_cache_miss);
-    }
-
     /// Records a hash-join build.
     pub fn record_hash_join_build(&self) {
         self.apply(QueryMetrics::record_hash_join_build);

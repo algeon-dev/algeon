@@ -26,6 +26,7 @@ pub struct AttemptExecutionOccurrence {
 }
 
 impl AttemptExecutionOccurrence {
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn host_arrow(
         occurrence_id: impl Into<String>,
@@ -84,6 +85,7 @@ impl AttemptExecutionManifest {
         Ok(manifest)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn occurrences(&self) -> &[AttemptExecutionOccurrence] {
         &self.occurrences
@@ -240,8 +242,7 @@ impl AttemptExecutionScope {
     /// Scope of `plan`, keyed like its fingerprint by the caller-visible
     /// output: a host sink and a deferred host sink of the same schema share
     /// one scope.
-    #[doc(hidden)]
-    pub fn for_query_plan(plan: &QueryPlan) -> Self {
+    pub(crate) fn for_query_plan(plan: &QueryPlan) -> Self {
         Self {
             execution_scope_fingerprint: plan.execution_fingerprint(),
             output_schema_fingerprint: SchemaFingerprint::of(plan.caller_visible_output_schema()),
@@ -273,8 +274,7 @@ impl AttemptExecutionScope {
         self.execution_scope_fingerprint == plan.execution_fingerprint()
     }
 
-    #[doc(hidden)]
-    pub fn matches_execution_scope_fingerprint(&self, execution_scope_fingerprint: PlanFingerprint) -> bool {
+    pub(crate) fn matches_execution_scope_fingerprint(&self, execution_scope_fingerprint: PlanFingerprint) -> bool {
         self.execution_scope_fingerprint == execution_scope_fingerprint
     }
 
