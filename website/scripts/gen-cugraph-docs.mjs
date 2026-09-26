@@ -25,12 +25,12 @@ const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
 const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
-const OFFICIAL_DOCS_ROOT = 'https://docs.rapids.ai/api/cugraph/stable/';
+const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cugraph/latest/';
 
 const FAMILIES = {
   centrality: { label: 'Centrality', position: 2 },
-  community: { label: 'Community Detection', position: 3 },
-  traversal: { label: 'Traversal & Paths', position: 4 },
+  community: { label: 'Community', position: 3 },
+  traversal: { label: 'Traversal', position: 4 },
   connectivity: { label: 'Connectivity', position: 5 },
   structure: { label: 'Structure', position: 6 },
   similarity: { label: 'Similarity', position: 7 },
@@ -41,137 +41,164 @@ const ALGORITHMS = {
   cugraph_betweenness_centrality: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#betweenness-centrality',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv430cugraph_betweenness_centralityPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_t6bool_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t',
   },
   cugraph_bfs: {
     family: 'traversal',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/traversal/#breadth-first-search-bfs',
+    officialPath:
+      'api_docs/cugraph_c/traversal/#_CPPv411cugraph_bfsPK25cugraph_resource_handle_tP15cugraph_graph_tP39cugraph_type_erased_device_array_view_t6bool_t6size_t6bool_t6bool_tPP22cugraph_paths_result_tPP15cugraph_error_t',
   },
   cugraph_core_number: {
     family: 'structure',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/core/#core-number',
+    officialPath:
+      'api_docs/cugraph_c/core/#_CPPv419cugraph_core_numberPK25cugraph_resource_handle_tP15cugraph_graph_t28cugraph_k_core_degree_type_t6bool_tPP21cugraph_core_result_tPP15cugraph_error_t',
   },
   cugraph_cosine: {
     family: 'similarity',
-    officialApi: 'Python API',
-    officialPath: 'api_docs/api/cugraph/cugraph.link_prediction.cosine/',
+    officialApi: 'C API',
+    officialPath:
+      'api_docs/cugraph_c/similarity/#_CPPv438cugraph_cosine_similarity_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t',
   },
   cugraph_degrees_all: {
     family: 'structure',
-    officialApi: 'Python API',
-    officialPath: 'api_docs/api/cugraph/cugraph.structure.graph_implementation.simpleGraphImpl.degrees/',
+    officialApi: 'C API',
+    officialPath:
+      'api_docs/cugraph_c/graph/#_CPPv415cugraph_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t',
   },
   cugraph_ecg: {
     family: 'community',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/community/#ecg',
+    officialPath:
+      'api_docs/cugraph_c/community/#_CPPv411cugraph_ecgPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_td6size_t6size_tdd6bool_tPP40cugraph_hierarchical_clustering_result_tPP15cugraph_error_t',
   },
   cugraph_edge_betweenness_centrality: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#edge-betweenness-centrality',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv435cugraph_edge_betweenness_centralityPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_t6bool_tPP32cugraph_edge_centrality_result_tPP15cugraph_error_t',
   },
   cugraph_eigenvector_centrality: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#eigenvector-centrality',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv430cugraph_eigenvector_centralityPK25cugraph_resource_handle_tP15cugraph_graph_td6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t',
   },
   cugraph_force_atlas2: {
     family: 'layout',
-    officialApi: 'Python API',
-    officialPath: 'api_docs/api/cugraph/cugraph.force_atlas2/',
+    officialApi: 'C API',
+    officialPath:
+      'api_docs/cugraph_c/layout/#_CPPv420cugraph_force_atlas2PK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_tiP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_t6bool_t6bool_t6bool_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tddd6bool_tdd6bool_tdP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_tP39cugraph_type_erased_device_array_view_t6bool_t6bool_tPP23cugraph_layout_result_tPP15cugraph_error_t',
   },
   cugraph_hits: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#hits-centrality',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv412cugraph_hitsPK25cugraph_resource_handle_tP15cugraph_graph_td6size_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_t6bool_t6bool_tPP21cugraph_hits_result_tPP15cugraph_error_t',
   },
   cugraph_in_degrees_all: {
     family: 'structure',
-    officialApi: 'Python API',
-    officialPath: 'api_docs/api/cugraph/cugraph.structure.graph_implementation.simpleGraphImpl.in_degree/',
+    officialApi: 'C API',
+    officialPath:
+      'api_docs/cugraph_c/graph/#_CPPv418cugraph_in_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t',
   },
   cugraph_jaccard: {
     family: 'similarity',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/similarity/#jaccard',
+    officialPath:
+      'api_docs/cugraph_c/similarity/#_CPPv428cugraph_jaccard_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t',
   },
   cugraph_katz_centrality: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#katz-centrality',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv423cugraph_katz_centralityPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tddd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t',
   },
   cugraph_k_core: {
     family: 'structure',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/core/#k-core',
+    officialPath:
+      'api_docs/cugraph_c/core/#_CPPv414cugraph_k_corePK25cugraph_resource_handle_tP15cugraph_graph_t6size_t28cugraph_k_core_degree_type_tPK21cugraph_core_result_t6bool_tPP23cugraph_k_core_result_tPP15cugraph_error_t',
   },
   cugraph_leiden: {
     family: 'community',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/community/#leiden',
+    officialPath:
+      'api_docs/cugraph_c/community/#_CPPv414cugraph_leidenPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_t6size_tdd6bool_tPP40cugraph_hierarchical_clustering_result_tPP15cugraph_error_t',
   },
   cugraph_louvain: {
     family: 'community',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/community/#louvain',
+    officialPath:
+      'api_docs/cugraph_c/community/#_CPPv415cugraph_louvainPK25cugraph_resource_handle_tP15cugraph_graph_t6size_tdd6bool_tPP40cugraph_hierarchical_clustering_result_tPP15cugraph_error_t',
   },
   cugraph_minimum_spanning_tree: {
     family: 'connectivity',
-    officialApi: 'Python API',
-    officialPath: 'api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/',
+    officialApi: 'C API',
+    officialPath:
+      'api_docs/cugraph_c/tree/#_CPPv429cugraph_minimum_spanning_treePK25cugraph_resource_handle_tP15cugraph_graph_t6bool_tPP33cugraph_induced_subgraph_result_tPP15cugraph_error_t',
   },
   cugraph_out_degrees_all: {
     family: 'structure',
-    officialApi: 'Python API',
-    officialPath: 'api_docs/api/cugraph/cugraph.structure.graph_implementation.simpleGraphImpl.out_degree/',
+    officialApi: 'C API',
+    officialPath:
+      'api_docs/cugraph_c/graph/#_CPPv419cugraph_out_degreesPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP24cugraph_degrees_result_tPP15cugraph_error_t',
   },
   cugraph_overlap: {
     family: 'similarity',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/similarity/#overlap',
+    officialPath:
+      'api_docs/cugraph_c/similarity/#_CPPv428cugraph_overlap_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t',
   },
   cugraph_pagerank: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#pagerank',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv416cugraph_pagerankPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tdd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t',
   },
   cugraph_personalized_pagerank: {
     family: 'centrality',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/centrality/#personalized-pagerank',
+    officialPath:
+      'api_docs/cugraph_c/centrality/#_CPPv429cugraph_personalized_pagerankPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tPK39cugraph_type_erased_device_array_view_tdd6size_t6bool_tPP27cugraph_centrality_result_tPP15cugraph_error_t',
   },
   cugraph_sorensen: {
     family: 'similarity',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/similarity/#sorensen',
+    officialPath:
+      'api_docs/cugraph_c/similarity/#_CPPv429cugraph_sorensen_coefficientsPK25cugraph_resource_handle_tP15cugraph_graph_tPK22cugraph_vertex_pairs_t6bool_t6bool_tPP27cugraph_similarity_result_tPP15cugraph_error_t',
   },
   cugraph_spectral_modularity_maximization: {
     family: 'community',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization',
+    officialPath:
+      'api_docs/cugraph_c/community/#_CPPv440cugraph_spectral_modularity_maximizationPK25cugraph_resource_handle_tP19cugraph_rng_state_tP15cugraph_graph_t6size_t6size_tdidi6bool_tPP27cugraph_clustering_result_tPP15cugraph_error_t',
   },
   cugraph_sssp: {
     family: 'traversal',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp',
+    officialPath:
+      'api_docs/cugraph_c/traversal/#_CPPv412cugraph_ssspPK25cugraph_resource_handle_tP15cugraph_graph_t6size_td6bool_t6bool_tPP22cugraph_paths_result_tPP15cugraph_error_t',
   },
   cugraph_strongly_connected_components: {
     family: 'connectivity',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/labeling/#strongly-connected-components',
+    officialPath:
+      'api_docs/cugraph_c/labeling/#_CPPv437cugraph_strongly_connected_componentsPK25cugraph_resource_handle_tP15cugraph_graph_t6bool_tPP25cugraph_labeling_result_tPP15cugraph_error_t',
   },
   cugraph_triangle_count_all: {
     family: 'structure',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/community/#triangle-counting',
+    officialPath:
+      'api_docs/cugraph_c/community/#_CPPv422cugraph_triangle_countPK25cugraph_resource_handle_tP15cugraph_graph_tPK39cugraph_type_erased_device_array_view_t6bool_tPP31cugraph_triangle_count_result_tPP15cugraph_error_t',
   },
   cugraph_weakly_connected_components: {
     family: 'connectivity',
     officialApi: 'C API',
-    officialPath: 'api_docs/cugraph_c/labeling/#weakly-connected-components',
+    officialPath:
+      'api_docs/cugraph_c/labeling/#_CPPv435cugraph_weakly_connected_componentsPK25cugraph_resource_handle_tP15cugraph_graph_t6bool_tPP25cugraph_labeling_result_tPP15cugraph_error_t',
   },
 };
 
@@ -682,8 +709,6 @@ function renderPage(spec) {
 function renderCheatsheet(specs) {
   return [
     '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
-    '',
-    `The live catalog contains **${specs.length} SQL-visible cuGraph functions**.`,
     '',
     table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = documentationFor(spec.function_name);

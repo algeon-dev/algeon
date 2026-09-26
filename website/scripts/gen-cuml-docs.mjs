@@ -23,7 +23,7 @@ const WEBSITE = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cuml');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cuml');
 const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
-const OFFICIAL_DOCS_ROOT = 'https://docs.rapids.ai/api/cuml/stable/api/';
+const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cuml/latest/';
 
 const FAMILIES = {
   dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuml_tsvd'] },
@@ -34,14 +34,39 @@ const FAMILIES = {
   inference: { label: 'Inference', functions: ['cuml_forest_predict'] },
 };
 const FUNCTIONS = {
-  cuml_tsvd: { officialApi: 'Python API', officialPath: '#cuml.TruncatedSVD' },
-  cuml_hdbscan: { officialApi: 'Python API', officialPath: '#cuml.HDBSCAN' },
-  cuml_umap: { officialApi: 'Python API', officialPath: '#cuml.UMAP' },
-  cuml_logistic_regression: { officialApi: 'Python API', officialPath: '#cuml.LogisticRegression' },
-  cuml_random_forest_classifier: { officialApi: 'Python API', officialPath: '#cuml.RandomForestClassifier' },
-  cuml_random_forest_regressor: { officialApi: 'Python API', officialPath: '#cuml.RandomForestRegressor' },
-  cuml_forest_predict: { officialApi: 'ForestInference (nvForest)', officialPath: '#forest-inferencing' },
+  cuml_tsvd: {
+    officialApi: 'Python API',
+    officialPath: 'api/generated/cuml.decomposition.TruncatedSVD/',
+  },
+  cuml_hdbscan: {
+    officialApi: 'Python API',
+    officialPath: 'api/generated/cuml.cluster.hdbscan.HDBSCAN/',
+  },
+  cuml_umap: {
+    officialApi: 'Python API',
+    officialPath: 'api/generated/cuml.manifold.UMAP/',
+  },
+  cuml_logistic_regression: {
+    officialApi: 'Python API',
+    officialPath: 'api/generated/cuml.linear_model.LogisticRegression/',
+  },
+  cuml_random_forest_classifier: {
+    officialApi: 'Python API',
+    officialPath: 'api/generated/cuml.ensemble.RandomForestClassifier/',
+  },
+  cuml_random_forest_regressor: {
+    officialApi: 'Python API',
+    officialPath: 'api/generated/cuml.ensemble.RandomForestRegressor/',
+  },
+  cuml_forest_predict: {
+    officialApi: 'nvForest',
+    officialUrl: 'https://docs.nvidia.com/nvforest/latest/',
+  },
 };
+
+function officialRefUrl(documentation) {
+  return documentation.officialUrl || `${OFFICIAL_DOCS_ROOT}${documentation.officialPath}`;
+}
 
 function loadSpecs() {
   return loadProviderSpecs({
@@ -103,7 +128,7 @@ function renderPage(spec) {
     spec,
     title: entry.quickstart.display_name,
     slug: `/cuml/functions/${spec.function_name}`,
-    reference: `Official cuML reference: [${documentation.officialApi}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
+    reference: `Official cuML reference: [${documentation.officialApi}](${officialRefUrl(documentation)})`,
     quickstart: {
       prerequisite: `Register the relations referenced by the parenthesized ${code('SELECT')} clauses below. For metadata validation, the descriptor names ${Object.values(entry.validation.call.relations).map(relation => code(relation.table)).join(' and ')}.`,
       sql: entry.quickstart.sql,
@@ -125,15 +150,13 @@ function renderCheatsheet(specs) {
   return [
     '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}',
     '',
-    `The live catalog contains **${specs.length} SQL-visible cuML functions**.`,
-    '',
     table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const documentation = FUNCTIONS[spec.function_name];
       return [
         `[${cell(densePresentation(spec).quickstart.display_name)}](./functions/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
         cell(spec.summary),
-        `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
+        `[${cell(documentation.officialApi)}](${officialRefUrl(documentation)})`,
       ];
     })),
   ].join('\n');

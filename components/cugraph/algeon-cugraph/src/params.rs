@@ -1,6 +1,6 @@
 //! Strongly-typed parameter wrappers for cuGraph algorithm configuration.
 //!
-//! These newtypes enforce invariants at construction time, making it impossible
+//! These new types enforce invariants at construction time, making it impossible
 //! to pass invalid values (e.g., zero iteration counts, negative scaling
 //! ratios) to algorithm functions.
 //!

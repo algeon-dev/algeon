@@ -104,6 +104,38 @@
   --ifm-navbar-height: 3.75rem;
 }
 
+:root:root {
+  --doc-sidebar-width: 260px;
+  --ifm-container-width-xl: 1560px;
+}
+
+@media (min-width: 997px) and (pointer: fine) {
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar {
+    scrollbar-color: transparent transparent;
+  }
+
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar::-webkit-scrollbar-track,
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar:hover,
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar:focus-within {
+    scrollbar-color: var(--ifm-scrollbar-thumb-background-color)
+      var(--ifm-scrollbar-track-background-color);
+  }
+
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar:hover::-webkit-scrollbar-track,
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar:focus-within::-webkit-scrollbar-track {
+    background: var(--ifm-scrollbar-track-background-color);
+  }
+
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar:hover::-webkit-scrollbar-thumb,
+  .theme-doc-sidebar-container nav.menu.thin-scrollbar:focus-within::-webkit-scrollbar-thumb {
+    background: var(--ifm-scrollbar-thumb-background-color);
+  }
+}
+
 .navbar__brand {
   align-items: center;
 }
@@ -261,6 +293,16 @@
 [data-theme='dark'] .card {
   background: var(--ag-ayu-surface);
 }
+
+/* Infima defaults to 2rem background-size for category carets inside a 1.25rem
+   box, scaling the 24px viewBox chevron to a 16px glyph. Constrain background-size
+   so the chevron renders proportionally to the 14px menu label. */
+.menu__caret:before,
+.menu__link--sublist-caret:after {
+  background-repeat: no-repeat;
+  background-size: 1.125rem 1.125rem;
+}
+
 
 [data-theme='dark'] .alert--warning {
   --ifm-alert-background-color: color-mix(
@@ -642,25 +684,58 @@
   color: var(--ifm-link-color);
 }
 
-/* Overview cheatsheet: wrap description prose to fit the content area,
-   keeping compact columns nowrap and allowing horizontal scroll on narrow viewports. */
+/* Overview cheatsheet: pull in the right edge with comfortable negative space
+   on desktop, aligning prose and table to the same max-width without eating up the entire right screen. */
+@media (min-width: 997px) {
+  html[class*='/functions/index'] article,
+  html[class*='/functions/index'] .theme-doc-markdown,
+  html[class*='/functions/index'] .pagination-nav,
+  article:has(.cu-functions-cheatsheet),
+  .theme-doc-markdown:has(.cu-functions-cheatsheet),
+  article:has(.cu-functions-cheatsheet) ~ .pagination-nav,
+  .cu-functions-cheatsheet,
+  .cugraph-function-cheatsheet,
+  .cuvs-function-cheatsheet,
+  .cuml-function-cheatsheet,
+  html[class*='/functions/index'] .table-responsive-wrapper {
+    width: 100%;
+    max-width: min(72rem, calc(100% - 2rem));
+    margin-right: auto;
+  }
+}
+
+.cu-functions-cheatsheet,
 .cugraph-function-cheatsheet,
-.cuvs-function-cheatsheet {
-  max-width: 100%;
+.cuvs-function-cheatsheet,
+.cuml-function-cheatsheet,
+html[class*='/functions/index'] .table-responsive-wrapper {
+  width: 100%;
   overflow-x: auto;
 }
 
+.cu-functions-cheatsheet table,
 .cugraph-function-cheatsheet table,
-.cuvs-function-cheatsheet table {
+.cuvs-function-cheatsheet table,
+.cuml-function-cheatsheet table,
+html[class*='/functions/index'] .table-responsive-wrapper table {
   display: table;
   width: 100%;
 }
 
+.cu-functions-cheatsheet table td,
 .cugraph-function-cheatsheet table td,
-.cuvs-function-cheatsheet table td {
+.cuvs-function-cheatsheet table td,
+.cuml-function-cheatsheet table td,
+html[class*='/functions/index'] .table-responsive-wrapper table td {
   vertical-align: top;
 }
 
+.cu-functions-cheatsheet table th:nth-child(1),
+.cu-functions-cheatsheet table td:nth-child(1),
+.cu-functions-cheatsheet table th:nth-child(2),
+.cu-functions-cheatsheet table td:nth-child(2),
+.cu-functions-cheatsheet table th:nth-child(4),
+.cu-functions-cheatsheet table td:nth-child(4),
 .cugraph-function-cheatsheet table th:nth-child(1),
 .cugraph-function-cheatsheet table td:nth-child(1),
 .cugraph-function-cheatsheet table th:nth-child(2),
@@ -672,16 +747,34 @@
 .cuvs-function-cheatsheet table th:nth-child(2),
 .cuvs-function-cheatsheet table td:nth-child(2),
 .cuvs-function-cheatsheet table th:nth-child(4),
-.cuvs-function-cheatsheet table td:nth-child(4) {
+.cuvs-function-cheatsheet table td:nth-child(4),
+.cuml-function-cheatsheet table th:nth-child(1),
+.cuml-function-cheatsheet table td:nth-child(1),
+.cuml-function-cheatsheet table th:nth-child(2),
+.cuml-function-cheatsheet table td:nth-child(2),
+.cuml-function-cheatsheet table th:nth-child(4),
+.cuml-function-cheatsheet table td:nth-child(4),
+html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(1),
+html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(1),
+html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(2),
+html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(2),
+html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(4),
+html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(4) {
   white-space: nowrap;
 }
 
+.cu-functions-cheatsheet table th:nth-child(3),
+.cu-functions-cheatsheet table td:nth-child(3),
 .cugraph-function-cheatsheet table th:nth-child(3),
 .cugraph-function-cheatsheet table td:nth-child(3),
 .cuvs-function-cheatsheet table th:nth-child(3),
-.cuvs-function-cheatsheet table td:nth-child(3) {
+.cuvs-function-cheatsheet table td:nth-child(3),
+.cuml-function-cheatsheet table th:nth-child(3),
+.cuml-function-cheatsheet table td:nth-child(3),
+html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(3),
+html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(3) {
   white-space: normal;
-  min-width: 16rem;
+  min-width: 22rem;
 }
 
 .markdown table td ul {
@@ -697,36 +790,106 @@
   margin-bottom: 0;
 }
 
-/* In markdown tables, allow code in data cells to wrap so wide types or signatures
-   do not squeeze description columns. Identifiers in the first column stay nowrap. */
-.markdown table {
-  display: table;
+/* ===========================================================================
+ * Markdown table design system
+ * ---------------------------------------------------------------------------
+ * Tables are wrapped inside responsive scroll containers (.table-responsive-wrapper),
+ * preventing horizontal blowouts and layout collisions with the right outline.
+ * Tables with one or two columns format as compact tables rather than
+ * spanning awkward full-width space.
+ * Multi-column and wide tables scroll horizontally within the wrapper boundary.
+ * ======================================================================== */
+
+.table-responsive-wrapper {
+  background: var(--ifm-card-background-color);
+  border: 1px solid var(--ifm-table-border-color);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  display: block;
+  margin: 1.25rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+  position: relative;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Compact tables (1-2 columns): generous minimum width instead of narrow collapse */
+.table-responsive-wrapper.table-responsive-wrapper--compact {
+  display: inline-block;
+  max-width: 100%;
+  min-width: min(32rem, 100%);
+  width: auto;
+}
+
+.table-responsive-wrapper.table-responsive-wrapper--compact table {
   width: 100%;
 }
 
-.markdown table th,
-.markdown table td {
+/* Universal table styles inside wrapper */
+.markdown .table-responsive-wrapper table {
+  border: none;
+  border-collapse: collapse;
+  border-spacing: 0;
+  display: table;
+  margin-bottom: 0;
+  width: 100%;
+}
+
+.markdown .table-responsive-wrapper.table-responsive-wrapper--wide table {
+  min-width: max-content;
+}
+
+.markdown .table-responsive-wrapper th,
+.markdown .table-responsive-wrapper td {
+  border: none;
+  border-bottom: 1px solid var(--ifm-table-border-color);
+  padding: 0.75rem 1.15rem;
   vertical-align: top;
 }
 
-.markdown table td code {
+.markdown .table-responsive-wrapper tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown .table-responsive-wrapper th {
+  background-color: var(--ifm-table-stripe-background);
+  color: var(--ifm-heading-color);
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.markdown .table-responsive-wrapper tbody tr:hover {
+  background-color: rgba(230, 180, 80, 0.04);
+}
+
+[data-theme='light'] .markdown .table-responsive-wrapper tbody tr:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.markdown .table-responsive-wrapper td code {
   white-space: normal;
   word-break: normal;
 }
 
-.markdown table td:first-child code {
+.markdown .table-responsive-wrapper td:first-child code {
   white-space: nowrap;
 }
 
-/* Ensure the description column in markdown tables retains generous width. */
-.markdown table td:last-child,
-.markdown table th:last-child {
-  min-width: 14rem;
+/* Standalone fallback for direct tables */
+.markdown > table:not(.table-responsive-wrapper table) {
+  border: 1px solid var(--ifm-table-border-color);
+  border-radius: 8px;
+  display: block;
+  margin: 1.25rem 0;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
-/* Prevent wide type columns from monopolizing table width. */
-.markdown table td:nth-child(2),
-.markdown table th:nth-child(2) {
-  max-width: 18rem;
+.markdown > table:not(.table-responsive-wrapper table):has(tr > :first-child:nth-last-child(-n+2)) {
+  display: inline-block;
+  width: auto;
 }
+
 

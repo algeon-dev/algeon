@@ -32,10 +32,26 @@ const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cuvs/';
 // These presentation families are documentation navigation only. They do not
 // alter SQL names or introduce an execution API family.
 const FAMILIES = {
-  vector_search: { label: 'Vector Search', functions: ['cuvs_brute_force_knn', 'cuvs_ivf_flat', 'cuvs_ivf_pq', 'cuvs_cagra'] },
-  distances_and_selection: { label: 'Distances and Selection', functions: ['cuvs_pairwise_distance', 'cuvs_top_k'] },
-  clustering: { label: 'Clustering', functions: ['cuvs_kmeans'] },
-  dimensionality_reduction: { label: 'Dimensionality Reduction', functions: ['cuvs_pca'] },
+  nearest_neighbors: {
+    label: 'Nearest Neighbors',
+    functions: ['cuvs_brute_force_knn', 'cuvs_ivf_flat', 'cuvs_ivf_pq', 'cuvs_cagra'],
+  },
+  distance: {
+    label: 'Distance',
+    functions: ['cuvs_pairwise_distance'],
+  },
+  selection: {
+    label: 'Selection',
+    functions: ['cuvs_top_k'],
+  },
+  cluster: {
+    label: 'Cluster',
+    functions: ['cuvs_kmeans'],
+  },
+  preprocessing: {
+    label: 'Preprocessing',
+    functions: ['cuvs_pca'],
+  },
 };
 
 const FUNCTIONS = {
@@ -202,8 +218,6 @@ function renderPage(spec) {
 function renderCheatsheet(specs) {
   return [
     '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
-    '',
-    `The live catalog contains **${specs.length} SQL-visible cuVS functions**.`,
     '',
     table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const entry = presentation(spec);
