@@ -488,7 +488,7 @@ impl AttemptFailureSummary {
         }
     }
 
-    /// Closed root-adapter fallback. It intentionally retains no DataFusion
+    /// Closed root-adapter fallback. It intentionally retains no adapter-side
     /// display text, source-chain text, SQL, URI, or credential material.
     pub const fn datafusion_fallback() -> Self {
         Self {

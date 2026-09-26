@@ -1,4 +1,4 @@
-//! DataFusion-free expression IR for native plan nodes.
+//! Expression IR for native plan nodes.
 //!
 //! Expressions use Arrow datatypes and native column references but do not
 //! depend on DataFusion physical-expression objects. Unsupported expression

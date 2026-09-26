@@ -1,4 +1,4 @@
-//! DataFusion-free dynamic-filter IR, payloads, and diagnostics.
+//! Native dynamic-filter IR, payloads, and diagnostics.
 //!
 //! Dynamic filters are runtime producer/consumer channels carried by native
 //! plans. They let a selective producer such as a hash-join build side or

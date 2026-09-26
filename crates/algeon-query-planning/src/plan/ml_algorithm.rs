@@ -1,4 +1,4 @@
-//! DataFusion-free cuML dimensionality-reduction contracts.
+//! Native cuML dimensionality-reduction contracts.
 
 use std::{fmt, sync::Arc};
 

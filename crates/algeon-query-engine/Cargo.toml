@@ -1,6 +1,6 @@
 [package]
 name = "algeon-query-engine"
-description = "Native cuDF/cuGraph query engine contracts for DataFusion-free GPU plans."
+description = "Native cuDF/cuGraph query engine contracts for GPU plans."
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }

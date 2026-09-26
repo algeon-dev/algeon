@@ -1,4 +1,4 @@
-//! DataFusion-free native Parquet source contracts.
+//! Native Parquet source contracts.
 
 #[cfg(test)]
 use std::path::Path;

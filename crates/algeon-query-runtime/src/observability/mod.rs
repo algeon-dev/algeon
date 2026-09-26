@@ -1,4 +1,4 @@
-//! DataFusion-free typed runtime observations and bounded query-local capture.
+//! Native typed runtime observations and bounded query-local capture.
 
 mod attempt_report;
 mod clock;

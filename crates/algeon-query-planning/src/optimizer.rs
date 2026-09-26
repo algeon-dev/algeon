@@ -1,4 +1,4 @@
-//! DataFusion-free native query-plan optimizer surface.
+//! Native query-plan optimizer surface.
 //!
 //! Optimizer rules in this module operate on [`QueryPlan`] IR only. They do
 //! not inspect SQL text, DataFusion plans, benchmark query ids, or adapter
@@ -273,7 +273,7 @@ impl NativeOptimizerDiagnostics {
     }
 }
 
-/// Runs the native optimizer pass list over a DataFusion-free query plan.
+/// Runs the native optimizer pass list over a query plan.
 pub fn optimize_query_plan(
     plan: QueryPlan,
     options: &NativeOptimizerOptions,

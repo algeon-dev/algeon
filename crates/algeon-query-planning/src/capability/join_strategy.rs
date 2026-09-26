@@ -10,7 +10,7 @@ use crate::{
     plan::{JoinNode, NodeId, QueryPlan},
 };
 
-/// DataFusion-free strategy metadata for compiled join tasks.
+/// Native strategy metadata for compiled join tasks.
 ///
 /// This is intentionally node-local capability metadata, not a bounded
 /// family/path selector. The scheduler still executes task edges and barriers;

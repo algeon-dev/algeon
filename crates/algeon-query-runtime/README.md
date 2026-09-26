@@ -1,6 +1,6 @@
 # query-runtime
 
-`query-runtime` is the DataFusion-free owner of native attempt lifecycle
+`query-runtime` is the native owner of attempt lifecycle
 and GPU resource admission. It depends on `query-planning` contracts and
 does not depend on `query-engine` execution.
 

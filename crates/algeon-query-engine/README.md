@@ -1,6 +1,6 @@
 # query-engine
 
-`query-engine` is the DataFusion-free native execution owner and public
+`query-engine` is the native execution owner and public
 facade used by `algeon-datafusion`. Its package and Rust import identity remain
 the compatible entry point for callers that used the native engine before the
 planning/runtime split.
