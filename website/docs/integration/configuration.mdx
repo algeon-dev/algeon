@@ -172,7 +172,10 @@ string; plaintext is rejected. Usernames must be unique.
 
 The defaults retain bounded per-query records and sealed reports. Change them
 only when the service's traffic and exporter behavior require a different
-budget:
+budget. A data statement's runtime observation belongs to its execution
+attempt. A metadata statement, such as a catalog query, runs no native work:
+its runtime artifact is the control frame alone, and its query stats come from
+the server's own capture.
 
 | TOML field under `[observability]` | Environment override | Default |
 | --- | --- | --- |

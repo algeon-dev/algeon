@@ -299,7 +299,7 @@ fn distinct_capability_requirement() -> AttemptRequirement {
     )
 }
 
-fn observed_admission_events(owner: &RuntimeObservationOwner) -> Vec<(AdmissionRequestId, AdmissionLifecycleState)> {
+fn observed_admission_events(observation: &RuntimeObservationHandle) -> Vec<(AdmissionRequestId, AdmissionLifecycleState)> {
     let collect = |events: &[RuntimeTimelineEvent]| {
         events
             .iter()
@@ -311,18 +311,16 @@ fn observed_admission_events(owner: &RuntimeObservationOwner) -> Vec<(AdmissionR
             })
             .collect()
     };
-    if let Some(snapshot) = owner.live_snapshot() {
+    if let Some(snapshot) = observation.live_snapshot() {
         collect(snapshot.events())
     } else {
-        collect(owner.sealed_snapshot().expect("observation is live or sealed").events())
+        collect(observation.sealed_snapshot().expect("observation is live or sealed").events())
     }
 }
-fn wait_for_sealed_observation(
-    owner: &RuntimeObservationOwner,
-) -> SealedRuntimeObservationSnapshot {
+fn wait_for_sealed_observation(observation: &RuntimeObservationHandle) -> SealedRuntimeObservationSnapshot {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
-        if let Some(snapshot) = owner.sealed_snapshot() {
+        if let Some(snapshot) = observation.sealed_snapshot() {
             return snapshot;
         }
         assert!(Instant::now() < deadline, "timed out waiting for observation sealing");

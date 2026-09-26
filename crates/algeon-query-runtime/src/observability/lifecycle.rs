@@ -6,7 +6,7 @@ use super::{
     RuntimeSpanId, RuntimeTaskId, RuntimeTaskLifecycleObservation, RuntimeTerminalOutcome,
     SealedRuntimeObservationSnapshot, SourceReadFact, TaskAttemptId, TaskLifecycleState,
 };
-use crate::metrics::SourceReadRuntimeMetrics;
+use crate::{attempt::AttemptHandle, metrics::SourceReadRuntimeMetrics};
 
 /// Owner-only query lifecycle. Normal completion consumes the owner; Drop
 /// terminalizes abandoned and unwinding executions without exposing seal
@@ -25,10 +25,18 @@ pub struct RuntimeQueryLifecycle {
 #[derive(Debug)]
 pub struct RuntimePlanExecutionLifecycle {
     observation: RuntimeObservationHandle,
-    owner: Option<RuntimeObservationOwner>,
+    outcome: Option<PlanOutcomeRecipient>,
     plan_execution_id: PlanExecutionId,
     plan_span_id: RuntimeSpanId,
     finished: bool,
+}
+
+/// Where a finished plan's outcome goes: the attempt it ran under, or a
+/// standalone query owner.
+#[derive(Debug)]
+enum PlanOutcomeRecipient {
+    Attempt(AttemptHandle),
+    Owner(RuntimeObservationOwner),
 }
 
 /// Cloneable identity and recording capability for descendants of one plan
@@ -171,13 +179,22 @@ impl RuntimePlanExecutionLifecycle {
     /// Opens a plan invocation using query-level owner authority retained by a
     /// caller such as the query-service admission ticket.
     pub fn from_owner(owner: RuntimeObservationOwner, plan_execution_id: PlanExecutionId) -> Self {
-        let lifecycle = Self {
-            observation: owner.handle(),
-            owner: Some(owner),
-            plan_execution_id,
-            plan_span_id: RuntimeSpanId::new(1),
-            finished: false,
-        };
+        Self::open(owner.handle(), Some(PlanOutcomeRecipient::Owner(owner)), plan_execution_id)
+    }
+
+    /// Opens a plan invocation of an admitted attempt. Its outcome becomes the
+    /// attempt's release fallback.
+    pub(crate) fn from_attempt(attempt: AttemptHandle, plan_execution_id: PlanExecutionId) -> Self {
+        Self::open(attempt.observation(), Some(PlanOutcomeRecipient::Attempt(attempt)), plan_execution_id)
+    }
+
+    fn open(
+        observation: RuntimeObservationHandle,
+        outcome: Option<PlanOutcomeRecipient>,
+        plan_execution_id: PlanExecutionId,
+    ) -> Self {
+        let lifecycle =
+            Self { observation, outcome, plan_execution_id, plan_span_id: RuntimeSpanId::new(1), finished: false };
         lifecycle.record_plan(PlanExecutionBoundaryKind::Started);
         lifecycle
     }
@@ -187,10 +204,7 @@ impl RuntimePlanExecutionLifecycle {
     /// The handle can record plan/task evidence but carries no terminal-seal
     /// authority. The external query coordinator owns the sole query terminal.
     pub fn from_handle(observation: RuntimeObservationHandle, plan_execution_id: PlanExecutionId) -> Self {
-        let lifecycle =
-            Self { observation, owner: None, plan_execution_id, plan_span_id: RuntimeSpanId::new(1), finished: false };
-        lifecycle.record_plan(PlanExecutionBoundaryKind::Started);
-        lifecycle
+        Self::open(observation, None, plan_execution_id)
     }
 
     /// Returns cloneable recording access without terminal authority.
@@ -219,8 +233,10 @@ impl RuntimePlanExecutionLifecycle {
         };
         self.record_plan(boundary);
         self.finished = true;
-        if let Some(owner) = self.owner.take() {
-            owner.record_terminal_outcome(outcome);
+        match self.outcome.take() {
+            Some(PlanOutcomeRecipient::Attempt(attempt)) => attempt.record_plan_outcome(outcome),
+            Some(PlanOutcomeRecipient::Owner(owner)) => owner.record_terminal_outcome(outcome),
+            None => {},
         }
     }
 

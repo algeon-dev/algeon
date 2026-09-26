@@ -52,6 +52,8 @@ pub use query_planning::{
     execution_contracts::RuntimeTaskId,
     schedule_projection::{AttemptComposedScheduleProjection, AttemptId, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1},
 };
+#[cfg(test)]
+pub(crate) use recorder::RuntimeObservationDeliveryGate;
 pub(crate) use recorder::{
     AttemptReportSealProvider, BudgetWindow, CleanupFailureTally, QueryCleanupSealDelivery,
     in_runtime_observation_delivery,

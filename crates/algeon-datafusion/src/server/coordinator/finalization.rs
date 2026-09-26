@@ -11,8 +11,7 @@ use std::{
 use query_engine::{
     attempt::AttemptCancellation,
     observability::{
-        QueryAttemptReport, RuntimeObservationOwner, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
-        write_runtime_observation_jsonl,
+        QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
     },
 };
 
@@ -39,7 +38,7 @@ pub(crate) struct FinalizationInputs {
     pub(crate) attempt_outcome: Option<RuntimeTerminalOutcome>,
     /// `None` when the query registered without a capture.
     pub(crate) captured: Option<CapturedQuery>,
-    pub(crate) observation_owner: Option<RuntimeObservationOwner>,
+    pub(crate) attempt_owned: bool,
     pub(crate) attempt_report: Option<Arc<QueryAttemptReport>>,
     pub(crate) attempt_snapshot: Option<SealedRuntimeObservationSnapshot>,
     pub(crate) live_stats_cache: Arc<LiveStatsCache>,
@@ -92,7 +91,6 @@ pub(crate) struct ShutdownTimeoutOutput {
 
 pub(crate) struct ShutdownDiscarded {
     pub(crate) _captured: Option<CapturedQuery>,
-    pub(crate) _observation_owner: Option<RuntimeObservationOwner>,
     pub(crate) _terminal: Option<QueryTerminal>,
     pub(crate) _ticket: Option<CoordinatorTicketPayload>,
     pub(crate) _execution_cancellation: Option<AttemptCancellation>,
@@ -144,8 +142,7 @@ impl FinalizationOutput {
 
 impl QueryCoordinator {
     pub(crate) fn finalize_ready(&self) {
-        loop {
-            let Some(inputs) = self.take_finalization_inputs() else { break };
+        while let Some(inputs) = self.take_finalization_inputs() {
             let failure = FinalizationFailureContext::from_inputs(&inputs);
             let output = catch_unwind(AssertUnwindSafe(|| Self::finalize_outside_lock(inputs)))
                 .unwrap_or_else(|_| FinalizationOutput::panicked(failure));
@@ -182,7 +179,7 @@ impl QueryCoordinator {
             terminal_outcome,
             attempt_outcome: record.attempt_outcome.clone(),
             captured: record.captured.take(),
-            observation_owner: record.observation_owner.take(),
+            attempt_owned: record.attempt_owned,
             attempt_report: record.attempt_report.take(),
             attempt_snapshot: record.attempt_snapshot.take(),
             live_stats_cache: Arc::clone(&live_stats_cache),
@@ -207,24 +204,25 @@ impl QueryCoordinator {
         let delivery_outcome = inputs.terminal_outcome.stats_outcome();
         let stats_outcome = inputs.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
         let stats_delivery_outcome = (stats_outcome != delivery_outcome).then_some(delivery_outcome);
-        let snapshot = match inputs.observation_owner.take() {
-            Some(owner) => owner.finish_query(None),
-            // Flight receives this snapshot only after the attempt has sealed
-            // it. The coordinator projects that immutable result and never
-            // creates another owner for the same invocation.
-            None if inputs.attempt_report.is_some() => inputs.attempt_snapshot.take(),
-            None => None,
-        };
-        let (Some(snapshot), Some(mut captured)) = (snapshot, inputs.captured.take()) else {
-            return FinalizationOutput::unavailable(
-                inputs.key,
-                inputs.claim,
-                inputs.live_stats_cache,
-                stats_outcome,
-                stats_delivery_outcome,
-                inputs.preselected_unavailable.unwrap_or(RetainedUnavailableReason::CaptureDisabled),
-                inputs.artifact_max_bytes,
-            );
+        // Flight receives the attempt's snapshot only after the attempt has
+        // sealed it, and the coordinator projects that immutable result. A
+        // coordinator-only statement has no runtime observation; its stats
+        // come from the coordinator's own capture alone.
+        let snapshot = inputs.attempt_report.as_ref().and_then(|_| inputs.attempt_snapshot.take());
+        let mut captured = match (inputs.captured.take(), &snapshot) {
+            (Some(captured), Some(_)) => captured,
+            (Some(captured), None) if !inputs.attempt_owned => captured,
+            _ => {
+                return FinalizationOutput::unavailable(
+                    inputs.key,
+                    inputs.claim,
+                    inputs.live_stats_cache,
+                    stats_outcome,
+                    stats_delivery_outcome,
+                    inputs.preselected_unavailable.unwrap_or(RetainedUnavailableReason::CaptureDisabled),
+                    inputs.artifact_max_bytes,
+                );
+            },
         };
         captured.set_output_metrics(
             inputs.hot.output_batches,
@@ -233,49 +231,55 @@ impl QueryCoordinator {
             inputs.hot.overflow,
         );
         captured.seal(Instant::now());
-        let mut incomplete_reason = snapshot
-            .footer()
-            .counter_overflow
+        let footer = snapshot.as_ref().map(SealedRuntimeObservationSnapshot::footer);
+        let mut incomplete_reason = footer
+            .is_some_and(|footer| footer.counter_overflow)
             .then_some(RetainedUnavailableReason::CounterOverflow)
             .or_else(|| inputs.hot.overflow.then_some(RetainedUnavailableReason::CounterOverflow))
             .or(inputs.preselected_unavailable)
             .or_else(|| {
-                (snapshot.footer().truncated || snapshot.footer().degraded)
+                footer
+                    .is_some_and(|footer| footer.truncated || footer.degraded)
                     .then_some(RetainedUnavailableReason::CaptureTruncated)
             });
         let control =
             sealed_runtime_control(inputs.key.query_id(), inputs.attempt_report.as_deref(), incomplete_reason);
-        let Some(jsonl_limit) = inputs.artifact_max_bytes.checked_sub(control.len() as u64) else {
-            return FinalizationOutput::unavailable(
-                inputs.key,
-                inputs.claim,
-                inputs.live_stats_cache,
-                stats_outcome,
-                stats_delivery_outcome,
-                RetainedUnavailableReason::TooLarge,
-                inputs.artifact_max_bytes,
-            );
+        let jsonl = match &snapshot {
+            Some(snapshot) => {
+                let Some(jsonl_limit) = inputs.artifact_max_bytes.checked_sub(control.len() as u64) else {
+                    return FinalizationOutput::unavailable(
+                        inputs.key,
+                        inputs.claim,
+                        inputs.live_stats_cache,
+                        stats_outcome,
+                        stats_delivery_outcome,
+                        RetainedUnavailableReason::TooLarge,
+                        inputs.artifact_max_bytes,
+                    );
+                };
+                let mut jsonl = LimitedVecWriter::new(usize::try_from(jsonl_limit).unwrap_or(usize::MAX));
+                if write_runtime_observation_jsonl(snapshot, &mut jsonl).is_err() {
+                    let reason = if jsonl.overflowed {
+                        RetainedUnavailableReason::TooLarge
+                    } else {
+                        RetainedUnavailableReason::EncodeFailed
+                    };
+                    return FinalizationOutput::unavailable(
+                        inputs.key,
+                        inputs.claim,
+                        inputs.live_stats_cache,
+                        stats_outcome,
+                        stats_delivery_outcome,
+                        reason,
+                        inputs.artifact_max_bytes,
+                    );
+                }
+                Some(Arc::<[u8]>::from(jsonl.bytes))
+            },
+            None => None,
         };
-        let mut jsonl = LimitedVecWriter::new(usize::try_from(jsonl_limit).unwrap_or(usize::MAX));
-        if write_runtime_observation_jsonl(&snapshot, &mut jsonl).is_err() {
-            let reason = if jsonl.overflowed {
-                RetainedUnavailableReason::TooLarge
-            } else {
-                RetainedUnavailableReason::EncodeFailed
-            };
-            return FinalizationOutput::unavailable(
-                inputs.key,
-                inputs.claim,
-                inputs.live_stats_cache,
-                stats_outcome,
-                stats_delivery_outcome,
-                reason,
-                inputs.artifact_max_bytes,
-            );
-        }
-        let jsonl = Arc::<[u8]>::from(jsonl.bytes);
         let Some(mut composed) =
-            compose_terminal_artifact(control, Some(Arc::clone(&jsonl)), inputs.artifact_max_bytes, |remaining| {
+            compose_terminal_artifact(control, jsonl.clone(), inputs.artifact_max_bytes, |remaining| {
                 captured.to_query_stats_payload(remaining)
             })
         else {
@@ -296,11 +300,9 @@ impl QueryCoordinator {
                 inputs.attempt_report.as_deref(),
                 Some(RetainedUnavailableReason::CaptureTruncated),
             );
-            let Some(recomposed) =
-                compose_terminal_artifact(control, Some(jsonl), inputs.artifact_max_bytes, |remaining| {
-                    captured.to_query_stats_payload(remaining)
-                })
-            else {
+            let Some(recomposed) = compose_terminal_artifact(control, jsonl, inputs.artifact_max_bytes, |remaining| {
+                captured.to_query_stats_payload(remaining)
+            }) else {
                 return FinalizationOutput::unavailable(
                     inputs.key,
                     inputs.claim,

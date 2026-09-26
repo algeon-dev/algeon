@@ -394,23 +394,22 @@ impl QueryHandle {
         resources: &QueryServiceResources,
     ) -> Result<ExecutionContext> {
         let device_runtime = resources.device_runtime(self.device_ordinal)?;
-        let (binding, memory_grant, allocation_domain, observation_owner) =
-            self.lifetime.with_resources(|lifetime| {
-                let envelope = &lifetime.envelope;
-                // The envelope's worker scope is the admission-time identity
-                // evidence: same device, same worker pool, and the lane the
-                // attempt has held since the ledger transaction committed.
-                if let Some(scope) = envelope.worker_scope() {
-                    debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
-                    debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
-                    debug_assert_eq!(scope.pool_id(), device_runtime.gpu_execution_pool.snapshot().pool_id);
-                }
-                let binding = envelope.take_root_binding()?;
-                let memory_grant = envelope.memory_grant().clone();
-                let allocation_domain = envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
-                let observation_owner = lifetime.observation_owner().ok_or_else(|| self.lifetime.released_error())?;
-                Ok((binding, memory_grant, allocation_domain, observation_owner))
-            })?;
+        let (binding, memory_grant, allocation_domain, attempt) = self.lifetime.with_resources(|lifetime| {
+            let envelope = &lifetime.envelope;
+            // The envelope's worker scope is the admission-time identity
+            // evidence: same device, same worker pool, and the lane the
+            // attempt has held since the ledger transaction committed.
+            if let Some(scope) = envelope.worker_scope() {
+                debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
+                debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
+                debug_assert_eq!(scope.pool_id(), device_runtime.gpu_execution_pool.snapshot().pool_id);
+            }
+            let binding = envelope.take_root_binding()?;
+            let memory_grant = envelope.memory_grant().clone();
+            let allocation_domain = envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
+            let attempt = lifetime.attempt().ok_or_else(|| self.lifetime.released_error())?;
+            Ok((binding, memory_grant, allocation_domain, attempt))
+        })?;
         #[cfg(test)]
         self.lifetime.wait_at_root_context_binding_gate();
         validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
@@ -431,7 +430,7 @@ impl QueryHandle {
             service_epoch: service.service_epoch.clone(),
             query_epoch: self.lifetime.query_epoch.clone(),
             cancellation,
-            observation_owner,
+            attempt,
             #[cfg(feature = "cugraph")]
             cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),

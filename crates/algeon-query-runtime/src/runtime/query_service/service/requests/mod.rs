@@ -221,12 +221,11 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
-        let AdmissionObservation { handle: observation, owner, activity, activity_error, attempt_id } =
+        let AdmissionObservation { handle: observation, activity, activity_error, attempt_id } =
             request.into_admission_observation();
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let completion = QueryCompletion::new(
-            owner,
             attempt_admission,
             observation_permit,
             activity,

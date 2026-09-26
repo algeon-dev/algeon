@@ -9,16 +9,13 @@ use std::{
 use query_engine::{
     attempt::AttemptCancellation,
     observability::{
-        QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
-        RuntimeTraceId, SealedRuntimeObservationSnapshot,
+        QueryAttemptReport, RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
 };
 use uuid::Uuid;
 
 #[cfg(test)]
 use super::types::CoordinatorArtifact;
-#[cfg(test)]
-use super::types::ObservationId;
 use super::{
     super::observability::{CapturedError, CapturedQuery},
     QueryCoordinator,
@@ -37,14 +34,16 @@ use crate::native_report::NativeDataFusionExecutionMetrics;
 #[derive(Debug)]
 pub(crate) struct QueryRecord {
     pub(crate) key: QueryKey,
-    #[cfg(test)]
-    pub(crate) observation_id: ObservationId,
     pub(crate) captured: Option<CapturedQuery>,
     pub(crate) phase: QueryPhase,
     pub(crate) terminal: Option<QueryTerminal>,
     pub(crate) terminal_outcome: Option<QueryTerminalOutcome>,
     pub(crate) active_leases: usize,
-    pub(crate) observation_owner: Option<RuntimeObservationOwner>,
+    /// Whether the statement's runtime observation belongs to an attempt.
+    /// A coordinator-only statement (metadata, or a fixture without a
+    /// native backend) has no runtime observation and retains only its
+    /// captured stats.
+    pub(crate) attempt_owned: bool,
     /// Flight attempt reports are immutable handoffs from the actual attempt
     /// owner. `None` remains valid when an attempt never begins, but records
     /// with an attempt cannot finalize until this arrives.
@@ -96,21 +95,12 @@ impl QueryCoordinator {
         self: &Arc<Self>,
         sql: impl Into<String>,
         correlation_id: Option<String>,
-        trace_id: Option<String>,
         observation_config: RuntimeObservationConfig,
     ) -> Result<(String, QueryPlanningLease), QueryCoordinatorError> {
         let mut state = self.lock_state();
         let query_id = Uuid::new_v4().hyphenated().to_string();
         let lease = self
-            .register_locked(
-                &mut state,
-                query_id.clone(),
-                sql.into(),
-                correlation_id,
-                trace_id,
-                observation_config,
-                true,
-            )
+            .register_locked(&mut state, query_id.clone(), sql.into(), correlation_id, observation_config, false)
             .map_err(|error| error.with_query_id(query_id.clone()))?;
         Ok((query_id, lease))
     }
@@ -123,21 +113,12 @@ impl QueryCoordinator {
         self: &Arc<Self>,
         sql: impl Into<String>,
         correlation_id: Option<String>,
-        trace_id: Option<String>,
         observation_config: RuntimeObservationConfig,
     ) -> Result<(String, QueryPlanningLease), QueryCoordinatorError> {
         let mut state = self.lock_state();
         let query_id = Uuid::new_v4().hyphenated().to_string();
         let lease = self
-            .register_locked(
-                &mut state,
-                query_id.clone(),
-                sql.into(),
-                correlation_id,
-                trace_id,
-                observation_config,
-                false,
-            )
+            .register_locked(&mut state, query_id.clone(), sql.into(), correlation_id, observation_config, true)
             .map_err(|error| error.with_query_id(query_id.clone()))?;
         Ok((query_id, lease))
     }
@@ -148,21 +129,12 @@ impl QueryCoordinator {
         query_id: impl Into<String>,
         sql: impl Into<String>,
         correlation_id: Option<String>,
-        trace_id: Option<String>,
         observation_config: RuntimeObservationConfig,
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
         let query_id = query_id.into();
         let mut state = self.lock_state();
-        self.register_locked(
-            &mut state,
-            query_id.clone(),
-            sql.into(),
-            correlation_id,
-            trace_id,
-            observation_config,
-            true,
-        )
-        .map_err(|error| error.with_query_id(query_id))
+        self.register_locked(&mut state, query_id.clone(), sql.into(), correlation_id, observation_config, false)
+            .map_err(|error| error.with_query_id(query_id))
     }
 
     #[cfg(test)]
@@ -171,33 +143,26 @@ impl QueryCoordinator {
         query_id: impl Into<String>,
         sql: impl Into<String>,
         correlation_id: Option<String>,
-        trace_id: Option<String>,
         observation_config: RuntimeObservationConfig,
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
         let query_id = query_id.into();
         let mut state = self.lock_state();
-        self.register_locked(
-            &mut state,
-            query_id.clone(),
-            sql.into(),
-            correlation_id,
-            trace_id,
-            observation_config,
-            false,
-        )
-        .map_err(|error| error.with_query_id(query_id))
+        self.register_locked(&mut state, query_id.clone(), sql.into(), correlation_id, observation_config, true)
+            .map_err(|error| error.with_query_id(query_id))
     }
 
-    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
+    /// Registers one statement. An `attempt_owned` statement's runtime
+    /// observation belongs to its attempt, which hands the sealed report and
+    /// snapshot to this record; any other statement keeps only the
+    /// coordinator's own capture.
     pub(crate) fn register_locked(
         self: &Arc<Self>,
         state: &mut QueryRegistryState,
         query_id: String,
         sql: String,
         correlation_id: Option<String>,
-        trace_id: Option<String>,
         observation_config: RuntimeObservationConfig,
-        create_runtime_observation_owner: bool,
+        attempt_owned: bool,
     ) -> Result<QueryPlanningLease, QueryCoordinatorError> {
         if !state.accepting {
             return Err(QueryCoordinatorError::new(
@@ -254,8 +219,6 @@ impl QueryCoordinator {
         })?;
         state.next_generation = generation;
         let key = QueryKey { query_id: Arc::from(query_id.as_str()), generation };
-        #[cfg(test)]
-        let observation_id = ObservationId(Arc::from(format!("{query_id}:{generation}")));
         let (observation_config, captured, unavailable) = match logical_capture_bytes {
             Some(_) => {
                 let captured = CapturedQuery::new(
@@ -273,13 +236,6 @@ impl QueryCoordinator {
             },
         };
         let logical_capture_bytes = logical_capture_bytes.unwrap_or(0);
-        let owner = create_runtime_observation_owner.then(|| {
-            RuntimeObservationOwner::new(
-                RuntimeQueryId::new(query_id.clone()),
-                trace_id.map(RuntimeTraceId::new),
-                observation_config,
-            )
-        });
         let hot = Arc::new(QueryHotCounters::default());
         state.active_logical_capture_bytes += logical_capture_bytes;
         state.current.insert(query_id, key.clone());
@@ -287,18 +243,16 @@ impl QueryCoordinator {
             key.clone(),
             QueryRecord {
                 key: key.clone(),
-                #[cfg(test)]
-                observation_id: observation_id.clone(),
                 captured,
                 phase: QueryPhase::Planning,
                 terminal: None,
                 terminal_outcome: None,
                 active_leases: 1,
-                observation_owner: owner,
+                attempt_owned,
                 attempt_report: None,
                 attempt_outcome: None,
                 attempt_snapshot: None,
-                requires_attempt_report: !create_runtime_observation_owner,
+                requires_attempt_report: attempt_owned,
                 hot: Arc::clone(&hot),
                 logical_capture_bytes,
                 artifact_max_bytes: self.config.per_query_artifact_max_bytes,
@@ -318,8 +272,6 @@ impl QueryCoordinator {
         Ok(QueryPlanningLease {
             coordinator: Arc::downgrade(self),
             key,
-            #[cfg(test)]
-            observation_id,
             hot,
             observation_config,
             attempt_report_handoff_registered: std::cell::Cell::new(false),

@@ -31,7 +31,7 @@ use crate::{
     metrics::QueryId,
     observability::{
         AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
-        RuntimeObservationOwner, RuntimeObservationPayload, RuntimeTerminalOutcome,
+        RuntimeObservationPayload, RuntimeTerminalOutcome,
     },
 };
 

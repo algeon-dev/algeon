@@ -116,13 +116,13 @@ fn unset_logical_capture_budget_registers_every_attempt_admission_can_hold_besid
     // A finished statement keeps its reservation until it finalizes, after
     // its admission slot is free again.
     let _finalizing = coordinator
-        .register_new("select 0", None, None, config.observability.runtime_observation_config())
+        .register_new("select 0", None, config.observability.runtime_observation_config())
         .expect("the earlier statement registers");
 
     let leases = (1..=live_attempts)
         .map(|index| {
             coordinator
-                .register_new(format!("select {index}"), None, None, config.observability.runtime_observation_config())
+                .register_new(format!("select {index}"), None, config.observability.runtime_observation_config())
                 .unwrap_or_else(|error| panic!("live query {index} of {live_attempts} was refused: {error:?}"))
         })
         .collect::<Vec<_>>();
@@ -140,10 +140,10 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
         config.active_logical_capture_budget_bytes().expect("test config resolves a capture budget"),
     ));
     let _planning = coordinator
-        .register_with_id("shutdown-order", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("shutdown-order", "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
     let register_probe = |query_id: &str| {
-        coordinator.register_with_id(query_id, "select 2", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        coordinator.register_with_id(query_id, "select 2", None, RuntimeObservationConfig::bounded(16, 4096))
     };
 
     let coordinator_live = after_closing_admission(&admission, || {
@@ -169,13 +169,7 @@ async fn shutdown_supervisor_reports_coordinator_deadline_expiry_as_error() {
         ServerObservabilityConfig::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES,
     ));
     let execution = coordinator
-        .register_with_id(
-            "supervisor-forced-timeout",
-            "select 1",
-            None,
-            None,
-            RuntimeObservationConfig::bounded(16, 4096),
-        )
+        .register_with_id("supervisor-forced-timeout", "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap()
         .into_execution()
         .unwrap();
@@ -246,7 +240,7 @@ async fn supervisor_uses_captured_expired_plan_after_coordinator_finalization_cl
         ServerObservabilityConfig::DEFAULT_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES,
     ));
     let execution = coordinator
-        .register_with_id("fast-finalization", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("fast-finalization", "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap()
         .into_execution()
         .unwrap();

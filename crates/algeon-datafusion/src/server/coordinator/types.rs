@@ -30,11 +30,6 @@ impl QueryKey {
     }
 }
 
-/// The coordinator observation generation a test-held observation handle binds to.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ObservationId(pub(crate) Arc<str>);
-
 #[derive(Debug, Clone)]
 pub(crate) struct QueryCoordinatorConfig {
     pub(crate) max_live_queries: usize,

@@ -16,11 +16,9 @@ use futures::future::BoxFuture;
 use query_engine::{
     error::{QueryError, QueryErrorCode},
     observability::{
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureOperation,
-        AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite,
-        AttemptRetryRecovery, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V2, QueryAttemptReport,
-        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
-        SealedRuntimeObservationSnapshot,
+        AttemptDisposition, AttemptFailureOperation, AttemptFailureSummary, AttemptRetryAdvice,
+        AttemptRetryPrerequisite, AttemptRetryRecovery, QueryAttemptReport, RuntimeObservationConfig,
+        RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
 };
 use tokio::{task::yield_now, time::timeout};
@@ -34,6 +32,7 @@ use super::{
     },
     maintenance::{CoordinatorMaintenanceClock, QueryCoordinatorMaintenance},
     retention::checked_deadline,
+    test_support::{cpu_attempt_report, sealed_attempt_report_snapshot},
     types::{QueryHotCounterSnapshot, QueryPhase, QueryTerminal},
     *,
 };
@@ -111,51 +110,7 @@ fn config() -> QueryCoordinatorConfig {
 }
 
 fn register(coordinator: &Arc<QueryCoordinator>, query_id: &str) -> QueryPlanningLease {
-    coordinator.register_with_id(query_id, "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096)).unwrap()
-}
-
-fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
-    QueryAttemptReport {
-        schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
-        attempt_id: AttemptId::mint(),
-        query_id: Some(AttemptQueryId::new(query_id).expect("test query id is a valid attempt correlation")),
-        trace_context: None,
-        disposition: AttemptDisposition::CpuFallback,
-        outcome: RuntimeTerminalOutcome::Succeeded,
-        primary_failure: None,
-        retry_advice: AttemptRetryAdvice::no_retry_needed(),
-        device_ordinal: None,
-        admission: None,
-        admission_wait: None,
-        composed_schedule: None,
-        timestamps: AttemptTimestamps {
-            submitted_ns: 1,
-            planning_started_ns: Some(2),
-            planning_finished_ns: Some(3),
-            admission_requested_ns: None,
-            admitted_ns: None,
-            physical_execution_started_ns: Some(4),
-            gpu_execution_started_ns: None,
-            outcome_terminal_ns: 5,
-            cleanup_complete_ns: None,
-            report_ready_ns: Some(6),
-        },
-        cleanup_disposition: AttemptCleanupDisposition::NotRequired,
-        cleanup_failure_count: 0,
-        cleanup_failure_count_complete: true,
-        first_cleanup_failure: None,
-        capacity_disposition: AttemptCapacityDisposition::NotAdmitted,
-        final_domain_usage: None,
-        health_transition: None,
-        native_fault_evidence: None,
-        resource_evidence: None,
-        observation_lost_records: 0,
-        observation_retained_records: 0,
-        observation_retained_bytes: 0,
-        observation_truncated: false,
-        observation_degraded: false,
-        unix_epoch_ns: None,
-    }
+    coordinator.register_with_id(query_id, "select 1", None, RuntimeObservationConfig::bounded(16, 4096)).unwrap()
 }
 
 fn queue_backoff_attempt_report(query_id: &str) -> QueryAttemptReport {
@@ -185,30 +140,13 @@ fn cancelled_attempt_report_snapshot(query_id: &str) -> (QueryAttemptReport, Sea
     sealed_attempt_report_snapshot(report)
 }
 
-fn sealed_attempt_report_snapshot(
-    report: QueryAttemptReport,
-) -> (QueryAttemptReport, SealedRuntimeObservationSnapshot) {
-    let query_id = report.query_id.as_ref().map_or("attempt-query", |query_id| query_id.as_str());
-    let terminal = report.outcome.clone();
-    let snapshot_report = report.clone();
-    let owner =
-        RuntimeObservationOwner::new(RuntimeQueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096))
-            .with_attempt_report_provider(Arc::new(move || snapshot_report.clone()));
-    let snapshot = owner.finish_query(Some(terminal)).expect("attempt observation seals before coordinator handoff");
-    // The sealed snapshot owns the immutable report projection accepted by the
-    // coordinator. Return that exact projection rather than a pre-seal test
-    // template, whose completeness footer may have been filled during sealing.
-    let report = snapshot.attempt_report().expect("sealed snapshot carries its attempt report").clone();
-    (report, snapshot)
-}
-
 fn attach_cancelled_attempt_then_fail_delivery(
     coordinator: &Arc<QueryCoordinator>,
     query_id: &str,
     config: RuntimeObservationConfig,
 ) {
     let planning = coordinator
-        .register_with_id_with_attempt_observation(query_id, "select 1", None, None, config)
+        .register_with_id_with_attempt_observation(query_id, "select 1", None, config)
         .expect("attempt-owned query registers");
     let (report, snapshot) = cancelled_attempt_report_snapshot(query_id);
     coordinator
@@ -225,7 +163,7 @@ fn attach_cancelled_attempt_then_fail_delivery(
 fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
     let coordinator = QueryCoordinator::new(config());
     let (query_id, planning) = coordinator
-        .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_new_with_attempt_observation("select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("attempt-owned registration succeeds");
     let sealed_report = cpu_attempt_report(&query_id);
     let owner = RuntimeObservationOwner::new(
@@ -408,7 +346,6 @@ fn execution_tsv_projects_the_sealed_attempt_fact_matrix() {
                     &query_id,
                     "select 1",
                     None,
-                    None,
                     RuntimeObservationConfig::bounded(16, 4096),
                 )
                 .expect("attempt-owned query registers"),
@@ -482,27 +419,28 @@ fn execution_tsv_projects_the_sealed_attempt_fact_matrix() {
     }
 }
 
+/// A statement with no attempt, such as a metadata query, has no runtime
+/// observation: it retains its captured stats and a sealed control frame.
 #[test]
-fn coordinator_owned_observation_footer_has_no_attempt_terminal() {
+fn coordinator_only_statement_retains_stats_without_runtime_observation() {
     let coordinator = QueryCoordinator::new(config());
-    register(&coordinator, "coordinator-owned").into_execution().expect("planning promotes to execution").succeed();
+    register(&coordinator, "coordinator-only").into_execution().expect("planning promotes to execution").succeed();
 
-    let (_, jsonl) = coordinator.artifact_frames("coordinator-owned").expect("runtime artifact retained");
-    let footer = jsonl
-        .expect("runtime observation JSONL is retained")
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice::<serde_json::Value>(line).expect("valid runtime JSONL"))
-        .find(|record| record["record_type"] == "footer")
-        .expect("runtime observation includes a footer");
-    assert!(footer["data"]["terminal"].is_null(), "{footer}");
+    let (control, jsonl) = coordinator.artifact_frames("coordinator-only").expect("runtime artifact retained");
+    assert!(jsonl.is_none(), "a coordinator-only statement has no runtime observation");
+    let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
+    assert_eq!(control["state"], "sealed");
+    assert!(control["reason"].is_null(), "{control}");
+    let stats = String::from_utf8(coordinator.query_stats("coordinator-only").unwrap().to_vec()).unwrap();
+    assert!(stats.contains("# outcome=succeeded\n"), "{stats}");
+    assert!(!stats.contains("unavailable_reason"), "{stats}");
 }
 
 #[test]
 fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
     let coordinator = QueryCoordinator::new(config());
     let (query_id, planning) = coordinator
-        .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_new_with_attempt_observation("select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("attempt-owned registration succeeds");
     let sealed_report = queue_backoff_attempt_report(&query_id);
     let terminal = sealed_report.outcome.clone();
@@ -551,7 +489,7 @@ fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
 fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
     let coordinator = QueryCoordinator::new(config());
     let (query_id, _planning) = coordinator
-        .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_new_with_attempt_observation("select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("attempt-owned registration succeeds");
     let sealed_report = cpu_attempt_report(&query_id);
     let owner =
@@ -815,10 +753,7 @@ fn overlapping_finalizers_share_one_claim_and_install_one_complete_artifact() {
     let Some(CoordinatorArtifact::Retained(bundle)) = coordinator.artifact("overlapping-finalizers") else {
         panic!("the claimed finalizer must retain the complete artifact");
     };
-    assert!(bundle.runtime_jsonl.is_some(), "a competing finalizer must not install capture_disabled");
-    for line in std::str::from_utf8(bundle.runtime_jsonl.as_ref().unwrap()).unwrap().lines() {
-        serde_json::from_str::<serde_json::Value>(line).expect("every retained JSONL record is valid JSON");
-    }
+    assert!(bundle.stats.starts_with(QUERY_STATS_HEADER_LINE.as_bytes()));
     let state = coordinator.state.lock().unwrap();
     let key = state.current.get("overlapping-finalizers").unwrap();
     let record = state.records.get(key).unwrap();
@@ -859,25 +794,22 @@ fn stats_reader_after_cache_close_waits_for_terminal_publication() {
 }
 
 #[test]
-fn stale_generation_and_observation_identity_cannot_mutate_replacement() {
+fn stale_generation_cannot_mutate_replacement() {
     let coordinator = QueryCoordinator::new(config());
     let first = coordinator
         .register_with_id_with_attempt_observation(
             "same-id",
             "select 1",
             None,
-            None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
         .expect("first attempt-owned generation registers");
     let first_key = first.key().clone();
-    let first_observation = first.observation_id().clone();
     drop(first);
     let second = coordinator
         .register_with_id_with_attempt_observation(
             "same-id",
             "select 2",
-            None,
             None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
@@ -899,7 +831,6 @@ fn stale_generation_and_observation_identity_cannot_mutate_replacement() {
             .is_none(),
         "stale report must not become the replacement generation's canonical outcome"
     );
-    assert_ne!(first_observation, *second.observation_id());
 }
 
 #[test]
@@ -909,7 +840,6 @@ fn planning_report_handoff_keeps_attempt_owned_record_live_until_the_sealed_repo
         .register_with_id_with_attempt_observation(
             "planning-handoff-gate",
             "select 1",
-            None,
             None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
@@ -922,7 +852,6 @@ fn planning_report_handoff_keeps_attempt_owned_record_live_until_the_sealed_repo
         .register_with_id_with_attempt_observation(
             "planning-handoff-gate",
             "select 2",
-            None,
             None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
@@ -938,7 +867,6 @@ fn planning_report_handoff_keeps_attempt_owned_record_live_until_the_sealed_repo
             "planning-handoff-gate",
             "select 2",
             None,
-            None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
         .expect("the terminal planning generation releases its query id after report finalization");
@@ -948,7 +876,7 @@ fn planning_report_handoff_keeps_attempt_owned_record_live_until_the_sealed_repo
 fn duplicate_live_query_id_is_rejected_before_registry_or_budget_mutation() {
     let coordinator = QueryCoordinator::new(config());
     let first = coordinator
-        .register_with_id("duplicate-live", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("duplicate-live", "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
     let before = {
         let state = coordinator.state.lock().unwrap();
@@ -966,7 +894,6 @@ fn duplicate_live_query_id_is_rejected_before_registry_or_budget_mutation() {
             "duplicate-live",
             "select 2",
             Some("replacement-correlation".to_string()),
-            Some("replacement-trace".to_string()),
             RuntimeObservationConfig::bounded(1, 1),
         )
         .unwrap_err();
@@ -1069,29 +996,13 @@ fn generation_overflow_is_explicit_and_does_not_register() {
     coordinator.state.lock().unwrap().next_generation = u64::MAX;
 
     let error = coordinator
-        .register_with_id("overflow", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("overflow", "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap_err();
 
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::GenerationExhausted);
     let state = coordinator.state.lock().unwrap();
     assert!(state.records.is_empty());
     assert!(state.current.is_empty());
-}
-
-#[test]
-fn query_wide_observation_identity_is_stable_across_three_native_epochs() {
-    let coordinator = QueryCoordinator::new(config());
-    let planning = register(&coordinator, "stable-observation");
-    let observation_id = planning.observation_id().clone();
-    let root = planning.observation_handle().unwrap();
-    let execution = planning.into_execution().unwrap();
-
-    assert_eq!(execution.observation_id(), &observation_id);
-    for _ in 0..3 {
-        let epoch = execution.observation_handle().unwrap();
-        assert!(root.is_same_session(&epoch));
-    }
-    execution.succeed();
 }
 
 #[test]
@@ -1348,7 +1259,6 @@ async fn maintenance_shutdown_joins_after_last_execution_and_attempt_report() {
             "graceful-shutdown",
             "select 1",
             None,
-            None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
         .unwrap();
@@ -1358,7 +1268,7 @@ async fn maintenance_shutdown_joins_after_last_execution_and_attempt_report() {
     let plan = coordinator.begin_shutdown(clock.now());
     assert_eq!(plan.live_count(), 1);
     let error = coordinator
-        .register_with_id("closed", "select 2", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("closed", "select 2", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap_err();
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::RegistrationCapacity);
     let finish = tokio::spawn(maintenance.finish(plan));
@@ -1405,7 +1315,6 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
             "forced-shutdown",
             "select secret_literal",
             Some("correlation".to_string()),
-            None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
         .unwrap();
@@ -1444,7 +1353,6 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         let state = coordinator.state.lock().unwrap();
         let record = state.records.values().find(|record| record.key.query_id() == "forced-shutdown").unwrap();
         assert!(record.captured.is_none());
-        assert!(record.observation_owner.is_none());
         assert_eq!(record.active_leases, 0);
         let bundle = record.retained.as_ref().expect("forced shutdown retains its bounded fallback bundle");
         assert_eq!(
@@ -1470,7 +1378,7 @@ fn registration_cap_rejects_before_work() {
     let coordinator = QueryCoordinator::new(limited);
     let _first = register(&coordinator, "first");
     let error = coordinator
-        .register_with_id("second", "select 2", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("second", "select 2", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap_err();
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::RegistrationCapacity);
 }
@@ -1504,16 +1412,10 @@ fn a_query_beyond_the_active_capture_budget_runs_without_capture() {
     capture_limited.max_active_logical_capture_bytes = 2 * 4096 + 1024 + 4096;
     let coordinator = QueryCoordinator::new(capture_limited);
     let first = coordinator
-        .register_with_id("first-capture", "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .register_with_id("first-capture", "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
     let second = coordinator
-        .register_with_id(
-            "second-capture",
-            "select secret_literal",
-            None,
-            None,
-            RuntimeObservationConfig::bounded(16, 4096),
-        )
+        .register_with_id("second-capture", "select secret_literal", None, RuntimeObservationConfig::bounded(16, 4096))
         .expect("admission, not the capture budget, decides overload");
 
     assert_eq!(first.observation_config(), RuntimeObservationConfig::bounded(16, 4096));
@@ -1550,13 +1452,7 @@ fn artifact_frames_preserve_control_schema_escape_ids_and_never_expose_sql() {
     let coordinator = QueryCoordinator::new(config());
     let query_id = "quoted-\"query\nline";
     let planning = coordinator
-        .register_with_id(
-            query_id,
-            "select 'private-sql-literal'",
-            None,
-            None,
-            RuntimeObservationConfig::bounded(16, 4096),
-        )
+        .register_with_id(query_id, "select 'private-sql-literal'", None, RuntimeObservationConfig::bounded(16, 4096))
         .unwrap();
     let (pending, jsonl) = coordinator.artifact_frames(query_id).unwrap();
     assert!(jsonl.is_none());
@@ -1574,12 +1470,11 @@ fn artifact_frames_preserve_control_schema_escape_ids_and_never_expose_sql() {
     execution.succeed();
 
     let (sealed, jsonl) = coordinator.artifact_frames(query_id).unwrap();
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&sealed).unwrap()["state"], "sealed");
-    let jsonl = jsonl.expect("terminal artifact has one complete JSONL frame");
-    let jsonl = std::str::from_utf8(&jsonl).unwrap();
-    assert!(jsonl.contains("\"record_type\":\"manifest\""));
-    assert!(jsonl.contains("\"record_type\":\"footer\""));
-    assert!(!jsonl.contains("private-sql-literal"));
+    assert!(jsonl.is_none(), "a coordinator-only statement has no runtime observation");
+    let sealed: serde_json::Value = serde_json::from_slice(&sealed).unwrap();
+    assert_eq!(sealed["state"], "sealed");
+    assert_eq!(sealed["query_id"], query_id);
+    assert!(!sealed.to_string().contains("private-sql-literal"));
 }
 
 #[test]
@@ -1601,8 +1496,12 @@ fn retention_charges_exact_serialized_bytes_and_evicts_oldest_terminal_only() {
     let Some(CoordinatorArtifact::Retained(bundle)) = coordinator.artifact("newer") else {
         panic!("newest terminal query must be retained");
     };
-    let expected = u64::try_from(bundle.stats.len() + bundle.runtime_control.len()).unwrap()
-        + u64::try_from(bundle.runtime_jsonl.as_ref().unwrap().len()).unwrap();
+    let expected = u64::try_from(
+        bundle.stats.len()
+            + bundle.runtime_control.len()
+            + bundle.runtime_jsonl.as_ref().map_or(0, |jsonl| jsonl.len()),
+    )
+    .unwrap();
     assert_eq!(bundle.charge_bytes, expected);
     let state = coordinator.state.lock().unwrap();
     assert_eq!(state.retained_count, 1);
@@ -1649,7 +1548,6 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
         .register_with_id_with_attempt_observation(
             "terminal-error-identity",
             "select 1",
-            None,
             None,
             RuntimeObservationConfig::bounded(16, 4096),
         )
@@ -1736,7 +1634,6 @@ fn adversarial_capture_inputs_and_transient_artifacts_stay_bounded_with_structur
             "adversarial-bounded",
             "s".repeat(2 * 1024 * 1024),
             Some("c".repeat(2 * 1024 * 1024)),
-            None,
             RuntimeObservationConfig::bounded(8, 1024),
         )
         .unwrap();
@@ -2108,7 +2005,6 @@ fn retained_unavailable_runtime_artifact_v2_keeps_attempt_projection_when_captur
         .register_with_id_with_attempt_observation(
             "bounded-capture",
             "x".repeat(128 * 1024),
-            None,
             None,
             RuntimeObservationConfig::bounded(16, 4096),
         )

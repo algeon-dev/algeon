@@ -81,16 +81,19 @@ mod correlation_tests {
     };
 
     use query_engine::observability::{
-        QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig, RuntimeObservationPayload,
-        RuntimeObservationRecordDisposition, RuntimeReservationAction, RuntimeReservationDisposition,
-        RuntimeReservationId, RuntimeReservationObservation,
+        QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationConfig, RuntimeObservationOwner,
+        RuntimeObservationPayload, RuntimeObservationRecordDisposition, RuntimeQueryId, RuntimeReservationAction,
+        RuntimeReservationDisposition, RuntimeReservationId, RuntimeReservationObservation,
     };
     use tokio::{spawn, task::yield_now, time::timeout};
 
     use super::*;
     use crate::server::{
         attempt::AttemptOptions,
-        coordinator::{QueryTerminalOutcome, install_coordinator_render_probe},
+        coordinator::{
+            QueryTerminalOutcome, install_coordinator_render_probe,
+            test_support::{cpu_attempt_report, seal_attempt_observation},
+        },
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
         },
@@ -444,7 +447,7 @@ mod correlation_tests {
         let query_id = "stream-error-terminal";
         let planning = service
             .coordinator
-            .register_with_id(query_id, "SELECT private_sql_literal", None, None, service.runtime_observation_config)
+            .register_with_id(query_id, "SELECT private_sql_literal", None, service.runtime_observation_config)
             .expect("coordinator-owned fixture registers");
         let execution = planning.into_execution().unwrap();
         let terminal = CoordinatorExecutionTerminal::new(
@@ -670,7 +673,7 @@ mod correlation_tests {
         let service = test_service();
         let execution = service
             .coordinator
-            .register_with_id(QUERY_ID, "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+            .register_with_id(QUERY_ID, "select 1", None, RuntimeObservationConfig::bounded(16, 4096))
             .expect("live query registration")
             .into_execution()
             .expect("execution phase");
@@ -758,15 +761,19 @@ mod correlation_tests {
         let service = test_service();
         let planning = service
             .coordinator
-            .register_with_id(
+            .register_with_id_with_attempt_observation(
                 QUERY_ID,
                 format!("SELECT '{SQL_SECRET}' FROM '{RAW_SOURCE}'"),
                 None,
-                None,
                 service.runtime_observation_config,
             )
-            .expect("coordinator-owned runtime artifact fixture registers");
-        let observation = planning.observation_handle().unwrap();
+            .expect("attempt-owned runtime artifact fixture registers");
+        let key = planning.key().clone();
+        // Stands in for the statement's attempt, which records into its own
+        // observation and hands the sealed snapshot to the coordinator.
+        let attempt_observation =
+            RuntimeObservationOwner::new(RuntimeQueryId::new(QUERY_ID), None, service.runtime_observation_config);
+        let observation = attempt_observation.handle();
         let execution = planning.into_execution().unwrap();
         let source_location_id =
             observation.source_location_id(RAW_SOURCE).expect("enabled capture derives an opaque source identity");
@@ -844,6 +851,11 @@ mod correlation_tests {
         );
 
         execution.succeed();
+        let (report, snapshot) = seal_attempt_observation(attempt_observation, cpu_attempt_report(QUERY_ID));
+        service
+            .coordinator
+            .attach_attempt_report(&key, Arc::new(report), Some(snapshot), None)
+            .expect("the attempt hands its sealed report to the coordinator");
 
         let sealed = service
             .do_action_fallback(Request::new(arrow_flight::Action {
@@ -859,16 +871,12 @@ mod correlation_tests {
         assert_eq!(sealed.len(), 2, "sealed artifacts must emit one control frame and one complete JSONL frame");
         let sealed_control: serde_json::Value =
             serde_json::from_slice(&sealed[0].body).expect("control frame should be JSON");
-        assert_eq!(
-            sealed_control,
-            serde_json::json!({
-                "schema": "algeon_datafusion.query_runtime_artifact.control.v1",
-                "version": 1,
-                "query_id": QUERY_ID,
-                "state": "sealed",
-                "retryable": false,
-            })
-        );
+        assert_eq!(sealed_control["schema"], "algeon_datafusion.query_runtime_artifact.control.v2");
+        assert_eq!(sealed_control["version"], 2);
+        assert_eq!(sealed_control["query_id"], QUERY_ID);
+        assert_eq!(sealed_control["state"], "sealed");
+        assert_eq!(sealed_control["retryable"], false);
+        assert!(sealed_control["attempt"].is_object(), "an attempt-owned artifact projects its attempt report");
         let records = std::str::from_utf8(&sealed[1].body)
             .expect("runtime artifact JSONL should be UTF-8")
             .lines()
@@ -882,7 +890,7 @@ mod correlation_tests {
         let footer = records.last().expect("JSONL footer");
         assert_eq!(footer["record_type"], "footer");
         assert_eq!(footer["data"]["complete"], true);
-        assert_eq!(footer["data"]["terminal"], serde_json::Value::Null);
+        assert!(!footer["data"]["terminal"].is_null(), "the attempt seals its observation with its outcome");
 
         let wire_bytes = sealed.iter().flat_map(|frame| frame.body.iter().copied()).collect::<Vec<_>>();
         let wire_text = String::from_utf8(wire_bytes).expect("artifact frames should be UTF-8");
@@ -899,7 +907,7 @@ mod correlation_tests {
         let service = test_service();
         let planning = service
             .coordinator
-            .register_with_id(QUERY_ID, "SELECT 1", None, None, service.runtime_observation_config)
+            .register_with_id(QUERY_ID, "SELECT 1", None, service.runtime_observation_config)
             .expect("coordinator-owned unavailable-artifact fixture registers");
         let hot = planning.hot_counters();
         hot.record_output(usize::MAX, 0);

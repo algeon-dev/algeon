@@ -193,7 +193,7 @@ fn transaction_deadline_expiry_after_acquisition_rolls_back_complete_envelope() 
     let queue_deadline = Instant::now() + Duration::from_secs(10);
     let attempt_owner =
         observed_attempt("post-acquisition-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
-    let owner = attempt_owner.observation_owner_for_test();
+    let observation = attempt_owner.observation_for_test();
     let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
@@ -208,7 +208,7 @@ fn transaction_deadline_expiry_after_acquisition_rolls_back_complete_envelope() 
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
     assert_eq!(error.fact_value("acquisition_stage"), Some("after_root_member"));
     assert!(
-        observed_admission_events(&owner).iter().any(|(_, state)| *state == AdmissionLifecycleState::TimedOut),
+        observed_admission_events(&observation).iter().any(|(_, state)| *state == AdmissionLifecycleState::TimedOut),
         "post-acquisition deadline expiry records the timeout lifecycle"
     );
 
@@ -233,7 +233,7 @@ fn deadline_is_rechecked_after_admission_mutex_reacquisition_before_publication(
     let queue_deadline = Instant::now() + Duration::from_secs(10);
     let attempt_owner =
         observed_attempt("pre-publication-deadline", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
-    let owner = attempt_owner.observation_owner_for_test();
+    let observation = attempt_owner.observation_for_test();
     let binding = attempt_owner.admission_binding();
     let admission_service = service.clone();
     let admission = std::thread::spawn(move || {
@@ -252,7 +252,7 @@ fn deadline_is_rechecked_after_admission_mutex_reacquisition_before_publication(
     assert_eq!(error.fact_value("acquisition_stage"), Some("before_publication"));
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
     assert!(
-        observed_admission_events(&owner).iter().any(|(_, state)| *state == AdmissionLifecycleState::TimedOut),
+        observed_admission_events(&observation).iter().any(|(_, state)| *state == AdmissionLifecycleState::TimedOut),
         "pre-publication deadline expiry records the timeout lifecycle"
     );
 

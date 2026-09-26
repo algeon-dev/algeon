@@ -219,7 +219,7 @@ fn execution_terminal_log_includes_resolved_sql() {
     let sql = "SELECT 1\nFROM user_rows";
     let planning = service
         .coordinator
-        .register_with_id("terminal-execution-query", sql, None, None, service.runtime_observation_config)
+        .register_with_id("terminal-execution-query", sql, None, service.runtime_observation_config)
         .expect("coordinator-owned fixture registers");
     let execution = planning.into_execution().expect("planning promotes to execution");
     let terminal = CoordinatorExecutionTerminal::new(
