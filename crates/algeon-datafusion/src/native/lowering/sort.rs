@@ -24,7 +24,17 @@ pub(super) fn lower_sort_ordering_with_input(
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, LoweringRejection> {
     let sorted = lower_sort_ordering_unprojected_with_input(builder, ordering, sort_input_schema, input)?;
-    project_sort_output(builder, sort_output_schema, sorted, required_output_fields)
+    project_sort_output(builder, sort_output_schema, sorted.input, required_output_fields)
+}
+
+/// A lowered sort before the projection back to the sort's output schema.
+pub(super) struct SortedNativeInput {
+    /// The sort node's output, bound to the sort's frontend fields. Its schema
+    /// also carries the unbound columns computed for expression sort keys.
+    pub(super) input: LoweredNativeInput,
+    /// `key_columns[i]` is the native column the sort ordered by for
+    /// `ordering[i]`.
+    pub(super) key_columns: Vec<String>,
 }
 
 pub(super) fn lower_sort_ordering_unprojected_with_input(
@@ -32,14 +42,17 @@ pub(super) fn lower_sort_ordering_unprojected_with_input(
     ordering: &LexOrdering,
     sort_input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<SortedNativeInput, LoweringRejection> {
     let prepared = materialize_sort_expressions(builder, ordering, sort_input_schema, input)?;
     let node = builder.add_sort(
         prepared.input.node,
         lower_sort_spec_with_prepared_input(ordering, &prepared.input, &prepared.sort_columns)?,
         Arc::clone(&prepared.input.schema),
     );
-    Ok(LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.original_bindings))
+    Ok(SortedNativeInput {
+        input: LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.original_bindings),
+        key_columns: prepared.sort_columns,
+    })
 }
 
 struct PreparedSortInput {

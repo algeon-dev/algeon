@@ -1343,6 +1343,59 @@ fn native_float32_casts_match_arrow_cpu_casts_bit_for_bit() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// A window whose partition and order keys are computed expressions runs
+/// natively when the sort below it computed the same expressions: the window
+/// reads the sort's key columns, so the sort's ordering covers the window.
+#[test]
+fn rank_over_computed_window_keys_runs_natively_and_matches_datafusion() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-computed-window-keys");
+    let path = dir.join("input.parquet");
+    {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("key", DataType::Int32, false),
+            Field::new("payload", DataType::Int32, false),
+        ]));
+        // The CASE key is NULL for keys 1 and 2; payload ties inside a
+        // partition share a rank.
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10])),
+                Arc::new(Int32Array::from(vec![1, 3, 1, 3, 2, 4, 2, 1, 3, 4])),
+                Arc::new(Int32Array::from(vec![30, 10, 10, 20, 7, 5, 7, 20, 10, 9])),
+            ],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+    let config = || SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false);
+    let required = SessionContext::new_with_state(
+        SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(config())
+            .with_algeon_native(native_optimizer_config().with_execution_mode(AlgeonGpuExecutionMode::NativeRequired))
+            .build(),
+    );
+    let cpu = SessionContext::new_with_config(config());
+    for ctx in [&required, &cpu] {
+        block_on(ctx.register_parquet("input", path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    }
+    let query = "SELECT id, RANK() OVER (PARTITION BY key + 1, CASE WHEN key > 2 THEN key END \
+                 ORDER BY payload * 2) AS r FROM input ORDER BY id";
+
+    let plan = block_on(block_on(required.sql(query)).unwrap().create_physical_plan())
+        .expect("NativeRequired plans the window natively");
+    let rows = |batches: Vec<RecordBatch>| pretty_format_batches(&batches).unwrap().to_string();
+    let actual = rows(block_on(collect(plan, Arc::new(TaskContext::default()))).unwrap());
+    let expected = rows(block_on(block_on(cpu.sql(query)).unwrap().collect()).unwrap());
+    assert_eq!(actual, expected);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 /// DataFusion's `rank()`, `dense_rank()`, and `percent_rank()` are one `Rank`
 /// type that differs only in a private rank kind. Only `rank()` has a native
 /// kernel, so the other two stay in DataFusion under NativePreferred and
