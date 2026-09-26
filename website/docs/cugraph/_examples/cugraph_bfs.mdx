@@ -3,14 +3,11 @@
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
 
-### Reverse the traversal by projecting named edge columns
+### How far did AlexNet spread through later citation generations?
 
-Following citations forward (`src` → `dst`) walks into a paper's reference
-ancestry. Projecting `dst AS src, src AS dst` into the named `edges` relation
-traverses the same edges in the opposite direction (from a paper to the papers
-that cite it, and then their citers) without building a new table. The `sources`
-relation resolves the start vertex from AlexNet's title and year, so no paper id
-appears in the query; each BFS generation is one hop outward in citing papers:
+Reversing each citation edge follows papers that cite AlexNet, then papers that
+cite those citers. The result counts papers and reports the average publication
+year at each of the first three citation steps.
 
 ```sql
 SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
@@ -36,14 +33,11 @@ ORDER BY b.distance;
 Three citation generations reach ~151k papers. (The reversed traversal reads
 `citation_edges_by_dst`, which is clustered by `dst`, so the scan prunes well.)
 
-### Path mode with a SQL-defined target
+### What is the shortest citation chain from BERT back to LSTM?
 
-`output_mode: "path"` reconstructs the shortest hop chain between the source
-and a target. Both endpoints are **relations**, so a `WHERE` clause on `papers`
-selects each one by title and year; `target_vertices` must resolve to exactly
-one row. This query traces the reference path from BERT (2018) back to LSTM
-(1997). The `year` predicate matters here: the corpus also holds a 2019
-conference record titled identically to the BERT preprint.
+Path mode returns one shortest hop chain from the 2018 BERT record to the 1997
+LSTM paper. The endpoint relations use title and year because the corpus also
+contains a 2019 conference record with the BERT preprint's title.
 
 ```sql
 SELECT b.path_index, b.distance, p.year, p.title
@@ -65,18 +59,14 @@ ORDER BY b.path_index;
 | 1 | 1 | 2015 | Semi-supervised Sequence Learning |
 | 2 | 2 | 1997 | Long short-term memory |
 
-Two hops of references separate BERT from LSTM. Several two-hop chains exist,
-and path output returns one of them: other runs pass through *SemEval-2017
-Task 1* or *Aligning Books and Movies* instead.
+The result is one of several two-hop citation chains. Other valid paths pass
+through *SemEval-2017 Task 1* or *Aligning Books and Movies*.
 
-### Multi-source BFS from a seed view
+### How many papers are within two citation steps of AlexNet, VGG, or ResNet?
 
-Passing the named `sources` relation starts the traversal from every row of a
-SQL result. Here the three CNN
-classics (AlexNet, VGG, ResNet) form one combined frontier, so `distance`
-measures hops from the nearest of the three founding papers. Each title is
-paired with its year because the corpus also holds a 2015 preprint record of
-the ResNet paper under the same title:
+The three papers form one source set. Each result's distance is the number of
+reverse citation steps from its nearest source. Title and year identify the
+2016 ResNet record because a 2015 preprint shares its title.
 
 ```sql
 CREATE OR REPLACE VIEW cnn_founders AS
@@ -102,16 +92,12 @@ ORDER BY b.distance;
 | 1 | 28,776 |
 | 2 | 69,038 |
 
-### Title-keyed vertices on a small subgraph
+### Would using paper titles as graph IDs merge different records?
 
-Logical string endpoints let a graph use titles as vertex IDs, so results come
-back readable without a join to `papers`. That is sound only where each title
-names one paper, and the
-[demo dataset](../demo-dataset.mdx#seed-papers-used-in-the-examples) repeats
-193,894 titles, which is why the examples above keep `paper_id` as the vertex
-domain. On a small subgraph the trade-off can be measured first. The reference
-ancestry of *Attention Is All You Need* (the seed, its 22 references, and every
-paper those cite) spans 370 papers but only 358 distinct titles:
+This query compares record IDs with titles in the reference ancestry of
+*Attention Is All You Need*, then runs BFS with string titles as vertex IDs.
+The count shows whether this subgraph contains repeated titles; identical
+titles alone do not establish that records describe the same work.
 
 ```sql
 CREATE OR REPLACE VIEW attention_ancestry AS
@@ -129,20 +115,7 @@ SELECT COUNT(DISTINCT n.paper_id) AS papers, COUNT(DISTINCT p.title) AS titles
 FROM (SELECT src AS paper_id FROM attention_ancestry
       UNION SELECT dst FROM attention_ancestry) n
 JOIN papers p ON p.paper_id = n.paper_id;
-```
 
-| papers | titles |
-|---|---|
-| 370 | 358 |
-
-The 12 missing titles each belong to two records, mostly a preprint and its
-proceedings version. Keying the edges by title merges every such pair into one
-vertex. For a reading list that merge is intended, since both records are one
-work; for unrelated papers that share a generic title it would corrupt the
-topology. Here BFS starts from a title literal, and `vertex` comes back as
-`Utf8`:
-
-```sql
 SELECT b.distance, b.vertex
 FROM cugraph_bfs(
   edges => (SELECT ps.title AS src, pd.title AS dst
@@ -155,6 +128,15 @@ ORDER BY b.distance, b.vertex
 LIMIT 6;
 ```
 
+| papers | titles |
+|---|---|
+| 370 | 358 |
+
+This subgraph has 370 records and 358 distinct titles. A title-keyed graph
+collapses records that share a title, including unrelated works when their
+titles collide. Use that grouping only when merging every record with the same
+title matches the question. Here BFS returns the title as a `Utf8` vertex:
+
 | distance | vertex |
 |---|---|
 | 0 | Attention is all you need |
@@ -164,6 +146,5 @@ LIMIT 6;
 | 1 | Deep Recurrent Models with Fast-Forward Connections for Neural Machine Translation |
 | 1 | Deep Residual Learning for Image Recognition |
 
-All 358 titles are reachable: 22 at distance 1 and 335 at distance 2. String
-graphs reject `edge_id` columns and edge-ID predicate relations; see the
+String graphs reject `edge_id` columns and edge-ID predicate relations; see the
 [Vertex ID support](../graph-options.mdx#vertex-id-support-by-function) matrix.

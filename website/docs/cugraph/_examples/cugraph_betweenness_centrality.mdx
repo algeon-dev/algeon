@@ -2,14 +2,11 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Exact betweenness on a SQL-defined subgraph
+### Which papers connect the most citation routes across AI research?
 
-Exact betweenness is refused above `exact_vertex_threshold` (100k vertices by
-default), so the full 4.1M-vertex citation graph needs `{"k": N}` or explicit
-`seeds`. A `WHERE` clause is the cleaner instrument: the 2010s AI literature
-(same views as the [Louvain example](../functions/community/cugraph_louvain.mdx))
-is a ~38k-vertex graph, small enough that every source is used and the scores
-are exact and deterministic; no sampling options required.
+A paper can connect many shortest citation routes without having the largest
+citation count. This query ranks papers by betweenness in a selected 2010s AI
+subgraph.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -26,7 +23,7 @@ FROM citation_edges e
 JOIN ai_nodes a ON a.paper_id = e.src
 JOIN ai_nodes b ON b.paper_id = e.dst;
 
-SELECT p.title, p.year, p.primary_fos, CAST(b.value AS BIGINT) AS paths_through
+SELECT p.title, p.year, p.primary_fos, CAST(b.value AS BIGINT) AS betweenness
 FROM cugraph_betweenness_centrality(
   edges => (SELECT src, dst FROM ai_edges), normalized => false) b
 JOIN papers p ON p.paper_id = b.vertex
@@ -34,7 +31,7 @@ ORDER BY b.value DESC
 LIMIT 6;
 ```
 
-| title | year | primary_fos | paths_through |
+| title | year | primary_fos | betweenness |
 |---|---|---|---|
 | Deep learning in neural networks | 2015 | Deep learning | 1,107,737 |
 | Rich Feature Hierarchies for Accurate Object Detection and Semantic Segmentation | 2014 | Object detection | 1,053,439 |
@@ -43,19 +40,10 @@ LIMIT 6;
 | SqueezeNet: AlexNet-level accuracy with 50x fewer parameters and \<0.5MB model size | 2017 | Deep learning | 503,771 |
 | Regionlets for Generic Object Detection | 2013 | Object detection | 475,746 |
 
-With `normalized: false` the score is a raw count: over one million shortest
-citation chains inside this subgraph pass through the *Deep learning in neural
-networks* survey and through R-CNN. These are the brokers between AI
-subfields (surveys and boundary-crossing architectures), a different signal
-than citation volume: none of them is the most-cited paper in the view. In
-this run the exact call over the 164k-edge subgraph returned in well under a
-second on the [capture host](../demo-dataset.mdx).
+With `normalized: false`, each paper's score sums its share of shortest paths
+across source-target pairs in this subgraph. The query casts the score to
+`BIGINT` for display. This ranks papers by their role in citation routes, a
+different measure from citation volume.
 
-On the full graph, pass a deterministic sample size instead: execution uses
-the first `k` distinct graph vertices in stable order and refuses `k` larger
-than the actual vertex count:
-
-```sql
-SELECT * FROM cugraph_betweenness_centrality(
-  edges => (SELECT src, dst FROM citation_edges), k => 64, normalized => false);
-```
+For sampling options on larger graphs, see the
+[Betweenness Centrality function reference](../functions/centrality/cugraph_betweenness_centrality.mdx).

@@ -45,7 +45,7 @@ export interface DiagramNode {
 
 const MONO = 'var(--ag-dg-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)';
 
-const COLOR = {
+export const COLOR = {
   border: 'var(--ag-dg-border-strong, #c3c9d4)',
   surface: 'var(--ag-dg-surface, #ffffff)',
   fg: 'var(--ag-dg-fg, #1c1e21)',
@@ -55,7 +55,7 @@ const COLOR = {
 
 // A DataFusion-orange → NVIDIA-green ramp: the closer a component sits to the
 // GPU, the greener its tone (see the --ag-design-* tokens in custom.css).
-const TONE: Record<Tone, string> = {
+export const TONE: Record<Tone, string> = {
   plan: 'var(--ag-design-df, #f1543f)',
   engine: 'var(--ag-design-algeon, #fbb040)',
   bridge: 'var(--ag-design-bridge, #b5c400)',
@@ -74,12 +74,12 @@ const CH = 0.62;
 const KIND = {size: 10, lh: 15, track: 0.07};
 const NAME = {size: 13.5, lh: 19};
 const NOTE = {size: 11.5, lh: 16};
-const LABEL = {size: 10.5, track: 0.03}; // edge / lane / region labels
+export const LABEL = {size: 10.5, track: 0.03}; // edge / lane / region labels
 const PAD_X = 15;
 const PAD_Y = 12;
-const EDGE = 1; // stroke bleed margin around the drawing
+export const EDGE = 1; // stroke bleed margin around the drawing
 
-function textWidth(text: string, font: {size: number; track?: number}): number {
+export function textWidth(text: string, font: {size: number; track?: number}): number {
   const track = font.track ?? 0;
   return text.length * font.size * CH + Math.max(0, text.length - 1) * track * font.size;
 }
@@ -91,7 +91,7 @@ function noteLines(node: DiagramNode): string[] {
 
 /** Font/padding bundle so the same Box renders at compact (Design DAG) or
  * glanceable (Overview/Flow) scale. */
-interface BoxFonts {
+export interface BoxFonts {
   kind: {size: number; lh: number; track: number};
   name: {size: number; lh: number};
   note: {size: number; lh: number};
@@ -99,9 +99,9 @@ interface BoxFonts {
   padY: number;
 }
 
-const COMPACT_FONTS: BoxFonts = {kind: KIND, name: NAME, note: NOTE, padX: PAD_X, padY: PAD_Y};
+export const COMPACT_FONTS: BoxFonts = {kind: KIND, name: NAME, note: NOTE, padX: PAD_X, padY: PAD_Y};
 
-function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS): {w: number; h: number} {
+export function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS): {w: number; h: number} {
   const notes = noteLines(node);
   const w = Math.max(
     node.kind ? textWidth(node.kind.toUpperCase(), fonts.kind) : 0,
@@ -113,7 +113,7 @@ function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS): {w: nu
 }
 
 /** One node box: hairline rect, tone accent bar, mono text block, optional interactivity. */
-function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS, kindColor,
+export function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS, kindColor,
   borderColor = COLOR.border, borderWidth = 1}: {
   node: DiagramNode;
   x: number;
@@ -193,14 +193,14 @@ function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS, kindC
   );
 }
 
-function Arrowhead({x, y, stroke}: {x: number; y: number; stroke: string}) {
+export function Arrowhead({x, y, stroke}: {x: number; y: number; stroke: string}) {
   return (
     <path d={`M ${x - 5.5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5.5} ${y + 4}`}
       fill="none" stroke={stroke} strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
   );
 }
 
-function Figure({caption, svgW, svgH, minW, interactive, ariaLabel, center, children, panel}: {
+export function Figure({caption, svgW, svgH, minW, interactive, ariaLabel, center, children, panel}: {
   caption?: React.ReactNode;
   svgW: number;
   svgH: number;
@@ -564,19 +564,19 @@ const ARCH_EDGE = 'var(--ag-arch-edge, #748292)';
 const ARCH_CARD_BORDER_WIDTH = 1.2;
 const ARCH_EDGE_WIDTH = 1.1;
 
-function smallHeadDown(x: number, y: number): string {
+export function smallHeadDown(x: number, y: number): string {
   return `M ${x - 4} ${y - 5} L ${x} ${y - 0.5} L ${x + 4} ${y - 5}`;
 }
 
-function smallHeadLeft(x: number, y: number): string {
+export function smallHeadLeft(x: number, y: number): string {
   return `M ${x + 5} ${y - 4} L ${x + 0.5} ${y} L ${x + 5} ${y + 4}`;
 }
 
-function smallHeadRight(x: number, y: number): string {
+export function smallHeadRight(x: number, y: number): string {
   return `M ${x - 5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5} ${y + 4}`;
 }
 
-function smallHeadUp(x: number, y: number): string {
+export function smallHeadUp(x: number, y: number): string {
   return `M ${x - 4} ${y + 5} L ${x} ${y + 0.5} L ${x + 4} ${y + 5}`;
 }
 
@@ -765,7 +765,7 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
 const FLOW_KIND = {size: 10.5, lh: 16, track: 0.07};
 const FLOW_NAME = {size: 14.5, lh: 21};
 const FLOW_NOTE = {size: 12, lh: 17};
-const FLOW_FONTS: BoxFonts = {kind: FLOW_KIND, name: FLOW_NAME, note: FLOW_NOTE, padX: 16, padY: 12};
+export const FLOW_FONTS: BoxFonts = {kind: FLOW_KIND, name: FLOW_NAME, note: FLOW_NOTE, padX: 16, padY: 12};
 const FL_LABEL = {size: 11, lh: 16, track: 0.03};
 const FL_GROUP_PAD_X = 16;
 const FL_GROUP_HEAD = 30; // headroom inside a group for its corner label

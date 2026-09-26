@@ -2,12 +2,11 @@
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
-### The recursive core of the literature
+### Which papers sit at the center of the citation network's self-reinforcing core?
 
-Eigenvector centrality has no damping and no teleport: a paper scores highly
-only if the papers citing it score highly themselves. On 45.6M citation edges
-the fixed point concentrates all mass in the most self-reinforcing corner of
-the graph, matching the 1970s theory and databases canon:
+This ranking gives more weight to papers cited by other high-scoring papers.
+Its ordering can differ from a ranking by raw citation counts because each
+incoming citation contributes according to the citing paper's score.
 
 ```sql
 SELECT p.title, p.year, ROUND(e.value, 3) AS eigenvector
@@ -26,18 +25,16 @@ LIMIT 6;
 | New Directions in Cryptography | 1976 | 0.146 |
 | Reducibility Among Combinatorial Problems | 2010 | 0.129 |
 
-The relational data model, the classic algorithms textbook, the founding
-NP-completeness results, and the paper that introduced public-key cryptography
-(the 2010 year on the last row is a reprint edition in the corpus). Compare
-with the [PageRank example](../functions/centrality/cugraph_pagerank.mdx),
-whose damping spreads importance much further out.
+The displayed papers span database systems, algorithms, cryptography, and
+combinatorial problems. The 2010 year for *Reducibility Among Combinatorial
+Problems* is the reprint edition recorded in this corpus. PageRank returns a
+different score distribution, as shown in the comparison below.
 
-### Quantify the winner-take-all behavior
+### Would a reading list based on these scores concentrate on a few papers?
 
-Both functions return plain relations, so one statement can measure how much
-more concentrated eigenvector mass is than PageRank mass (here, the top 100
-of 4.1M scored papers hold 10.7% of all eigenvector centrality but only 2.8%
-of all PageRank:
+Comparing the top 100 scores with the sum of all returned scores shows how
+concentrated each ranking is. This measures score distribution, not the quality
+or coverage of the papers in a reading list.
 
 ```sql
 WITH eig AS (
@@ -57,6 +54,7 @@ SELECT
 |---|---|
 | 10.7 | 2.8 |
 
-If a ranking should reward being cited by the canon, this concentration is the
-point; if it should surface important work across eras and fields, prefer
-PageRank or [Katz](../functions/centrality/cugraph_katz_centrality.mdx).
+In this run, the top 100 account for 10.7% of the sum of eigenvector scores,
+compared with 2.8% of the sum of PageRank scores. A larger share describes a
+more concentrated score distribution; it does not establish that those papers
+are higher quality.

@@ -3,12 +3,11 @@
 These examples run on the [citation network demo dataset](../demo-dataset.mdx)
 (4.9M papers, 45.6M `src`-cites-`dst` edges).
 
-### PageRank versus raw citation counts
+### Which papers rank highest when citations from influential papers count more?
 
-PageRank over the full graph, joined back to paper metadata. Importance flows
-through citations, so a paper's score depends on who cites it, not only on how
-many do; on this dataset that lets papers with modest raw counts rank above
-papers with more, but shallower, citations.
+Raw citation counts treat each incoming citation equally. PageRank weights
+citations by the scores of the citing papers, and the metadata join lets us
+compare that ranking with each paper's reported citation count.
 
 ```sql
 SELECT p.title, p.year, p.n_citation, r.value AS pagerank
@@ -26,20 +25,14 @@ LIMIT 5;
 | The complexity of theorem-proving procedures | 1971 | 4,592 | 0.00073 |
 | A mathematical theory of communication | 1948 | 22,122 | 0.00066 |
 
-In this run the first and third papers have modest raw counts (1,401 and 224
-citations), but the papers citing them are themselves foundational results,
-and PageRank propagates that structure. The full call (45.6M edges, GPU graph
-build, 4.1M scores, join, and sort) returned in about 1.5 s on the
-[capture host](../demo-dataset.mdx); that is an observation from one run, not
-a performance figure.
+The first and third rows have reported counts of 1,401 and 224. Their positions
+show how the influence-based ranking can differ from a simple citation count.
 
-### Window functions over the result
+### Where does the original PageRank paper rank by its own algorithm?
 
-The output of a `cugraph_*` function is a plain relation, so `ROW_NUMBER()`
-applies directly to it. This query finds where the paper that introduced
-PageRank ranks, by its own algorithm, among 4.9 million papers. The corpus
-holds two 1998 records with this title (the WWW conference paper and a journal
-record with two in-corpus citations), so the filter also pins `venue`.
+Ranking the paper that introduced PageRank by its own method gives a concrete
+reference point in this corpus. The corpus has two 1998 records with this title,
+so the query selects the Web Conference record by year and venue.
 
 ```sql
 WITH ranked AS (
@@ -55,14 +48,14 @@ WHERE p.title = 'The anatomy of a large-scale hypertextual Web search engine'
 |---|---|---|---|
 | 115 | The anatomy of a large-scale hypertextual Web search engine | 1998 | 0.000143 |
 
-Rank **#115** of 4,894,081 in this run.
+In this run, the Web Conference record ranks **#115** among vertices scored by
+PageRank on this graph.
 
-### SQL defines which graph the GPU sees
+### Which papers were central to the citation network through 2000?
 
-The named `edges` relation can read any table or view. Joining the edge list to
-`papers` on **both** endpoints restricts the graph to citations within a chosen
-era, and PageRank then ranks the most important papers within that window (here,
-the pre-2000 literature).
+An era-specific ranking can surface papers that structure literature from that
+period. This query keeps citations whose source and destination papers are both
+dated 1901 through 2000, then ranks that subgraph with PageRank.
 
 ```sql
 CREATE OR REPLACE VIEW edges_pre2000 AS

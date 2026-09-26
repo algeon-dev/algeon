@@ -2,22 +2,37 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### A one-query data-integrity audit
+### Which recent NLP papers offer the broadest bibliographies?
 
-Every paper's out-degree should equal its recorded reference count
-(`n_references` was written by the same ingest that emitted the edges). One
-join proves the edge table and the node table agree for all 4.9M papers:
+When preparing a literature review, a paper with a long reference list can
+provide many starting points. Restrict the search to papers from 2015 through
+the snapshot's 2020 cutoff in the language-related fields below, then count
+their outgoing citations. The result ranks bibliography breadth within this
+corpus; it does not measure review quality.
 
 ```sql
-SELECT COUNT(*) AS mismatches
+SELECT p.year, p.title, d.out_degree AS bibliography_size
 FROM cugraph_out_degrees_all(edges => (SELECT src, dst FROM citation_edges)) d
 JOIN papers p ON p.paper_id = d.vertex
-WHERE d.out_degree <> p.n_references;
+WHERE p.year BETWEEN 2015 AND 2020
+  AND p.primary_fos IN (
+    'Natural language processing', 'Language model',
+    'Machine translation', 'Question answering')
+ORDER BY d.out_degree DESC, p.paper_id
+LIMIT 6;
 ```
 
-| mismatches |
-|---|
-| 0 |
+| year | title | bibliography_size |
+|---|---|---|
+| 2018 | Neural Approaches to Conversational AI. | 385 |
+| 2018 | Web Forum Retrieval and Text Analytics: A Survey | 372 |
+| 2017 | Computer Vision and Natural Language Processing: Recent Approaches in Multimedia and Robotics | 257 |
+| 2018 | Video Description: A Survey of Methods, Datasets and Evaluation Metrics | 162 |
+| 2016 | A survey of word reordering in statistical machine translation: Computational models and language phenomena | 150 |
+| 2018 | A Survey on Expert Recommendation in Community Question Answering | 141 |
 
-A GPU degree pass plus a SQL predicate is an inexpensive referential-integrity
-check for any graph ingest pipeline.
+*Neural Approaches to Conversational AI.* has the largest bibliography in this
+filtered set, with 385 outgoing references.
+
+The field filter defines the candidate papers. References outside those fields
+still count because the edge relation includes the full citation network.

@@ -2,44 +2,49 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Hubs versus authorities
+### Which papers act as reading guides, and which works are their shared foundations?
 
-HITS returns two scores per vertex in one pass. In a citation graph they
-separate two kinds of importance that PageRank blends: a **hub** cites many
-authorities (typically a survey), and an **authority** is cited by many hubs
-(typically a foundational result). One call feeds two `ORDER BY` clauses:
-
-```sql
-SELECT p.year, p.n_references, p.title
-FROM cugraph_hits(edges => (SELECT src, dst FROM citation_edges)) h
-JOIN papers p ON p.paper_id = h.vertex
-ORDER BY h.hub_score DESC
-LIMIT 4;
-```
-
-| year | n_references | title |
-|---|---|---|
-| 2019 | 292 | Deep Learning for Generic Object Detection: A Survey |
-| 2018 | 276 | Deep Learning for Generic Object Detection: A Survey. |
-| 2015 | 299 | Recent Advances in Convolutional Neural Networks |
-| 2019 | 211 | Object Detection With Deep Learning: A Review |
+HITS scores two citation roles through mutually reinforcing links. A paper's
+hub score reflects the authority of works it cites; its authority score
+reflects how strongly it is cited by hubs. This query ranks the top four
+vertices for each role and joins both lists back to paper titles and years.
 
 ```sql
-SELECT p.year, p.n_citation, p.title
-FROM cugraph_hits(edges => (SELECT src, dst FROM citation_edges)) h
+CREATE OR REPLACE TABLE hits_snapshot AS
+SELECT vertex, hub_score, authority_score
+FROM cugraph_hits(edges => (SELECT src, dst FROM citation_edges));
+
+WITH guides AS (
+  SELECT vertex, hub_score AS score, 'Reading guide' AS role
+  FROM hits_snapshot
+  ORDER BY hub_score DESC, vertex
+  LIMIT 4),
+foundations AS (
+  SELECT vertex, authority_score AS score, 'Foundation' AS role
+  FROM hits_snapshot
+  ORDER BY authority_score DESC, vertex
+  LIMIT 4)
+SELECT h.role, p.year, p.title
+FROM (
+  SELECT * FROM guides
+  UNION ALL
+  SELECT * FROM foundations
+) h
 JOIN papers p ON p.paper_id = h.vertex
-ORDER BY h.authority_score DESC
-LIMIT 4;
+ORDER BY h.role, h.score DESC, h.vertex;
 ```
 
-| year | n_citation | title |
+| role | year | title |
 |---|---|---|
-| 2004 | 35,541 | Distinctive Image Features from Scale-Invariant Keypoints |
-| 2014 | 18,029 | VERY DEEP CONVOLUTIONAL NETWORKS FOR LARGE-SCALE IMAGE RECOGNITION |
-| 2012 | 16,802 | ImageNet Classification with Deep Convolutional Neural Networks |
-| 2005 | 19,433 | Histograms of oriented gradients for human detection |
+| Foundation | 2004 | Distinctive Image Features from Scale-Invariant Keypoints |
+| Foundation | 2014 | VERY DEEP CONVOLUTIONAL NETWORKS FOR LARGE-SCALE IMAGE RECOGNITION |
+| Foundation | 2012 | ImageNet Classification with Deep Convolutional Neural Networks |
+| Foundation | 2005 | Histograms of oriented gradients for human detection |
+| Reading guide | 2019 | Deep Learning for Generic Object Detection: A Survey |
+| Reading guide | 2018 | Deep Learning for Generic Object Detection: A Survey. |
+| Reading guide | 2015 | Recent Advances in Convolutional Neural Networks |
+| Reading guide | 2019 | Object Detection With Deep Learning: A Review |
 
-The top hubs are titled "Survey" and "Review"; the top authorities are SIFT,
-VGG, AlexNet, and HOG. The mutually reinforcing definition places both lists in
-the field with the densest hub/authority structure (computer vision) without
-any field labels supplied as input.
+One snapshot supplies both rankings. The returned rows identify each paper's
+role, year, and title. These scores describe citation structure; they do not
+prove research quality.

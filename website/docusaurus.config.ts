@@ -11,7 +11,7 @@ const GITHUB_URL = `https://github.com/${GITHUB_ORG}/${GITHUB_REPO}`;
 
 const config: Config = {
   title: 'Algeon',
-  tagline: 'Specialized GPU algorithms, composed through SQL.',
+  tagline: 'GPU analytics on any SQL result.',
   favicon: 'favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

@@ -2,15 +2,15 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### In-graph citations versus reported metadata
+### How much of each paper's reported citation count appears in this dataset?
 
-`papers.n_citation` is AMiner's global citation count; `in_degree` counts only
-edges present in this corpus. Joining the two measures how much of each paper's
-audience lies outside the dataset:
+`papers.n_citation` stores AMiner's reported count, while `in_degree` counts
+incoming edges present in this dataset. Their difference measures a metadata
+gap; it does not identify where unmatched citations came from.
 
 ```sql
 SELECT p.year, d.in_degree AS in_graph, p.n_citation AS reported,
-       p.n_citation - d.in_degree AS outside,
+       p.n_citation - d.in_degree AS citation_gap,
        p.title AS paper
 FROM cugraph_in_degrees_all(edges => (SELECT src, dst FROM citation_edges)) d
 JOIN papers p ON p.paper_id = d.vertex
@@ -18,7 +18,7 @@ ORDER BY d.in_degree DESC
 LIMIT 5;
 ```
 
-| year | in_graph | reported | outside | paper |
+| year | in_graph | reported | citation_gap | paper |
 |---|---|---|---|---|
 | 2004 | 22,892 | 35,541 | 12,649 | Distinctive Image Features from Scale-Invariant Keypoints |
 | 2011 | 19,662 | 31,047 | 11,385 | LIBSVM: A library for support vector machines |
@@ -26,6 +26,7 @@ LIMIT 5;
 | 1996 | 16,579 | 42,437 | 25,858 | Fuzzy sets |
 | 2001 | 15,048 | 34,741 | 19,693 | Random Forests |
 
-SIFT is the most-cited paper *within* the corpus. Older cross-disciplinary
-classics (genetic algorithms, fuzzy sets) show the biggest gap: more than
-half their citations come from fields this CS-centric corpus doesn't cover.
+For SIFT, the reported count exceeds the observed in-graph degree by 12,649.
+The result quantifies the gap between metadata and edges in this dataset; it
+does not show whether the difference comes from missing records, citations
+outside the dataset, or another coverage mismatch.

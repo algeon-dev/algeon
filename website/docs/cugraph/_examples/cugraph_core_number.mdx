@@ -2,47 +2,43 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Find the densest citation core
+### Which papers belong to the most densely connected citation core?
 
-Core number measures how deep a vertex sits in recursively denser subgraphs.
-The call builds an undirected graph, so a paper's degree is its number of
-distinct citation neighbors, whichever direction the citation points; every
-`degree_type` selector gives the same degree on that symmetric edge list.
-Define the result as a workspace view, find the deepest shell, and list its
-members:
-
-```sql
-CREATE OR REPLACE VIEW cores AS
-SELECT vertex, core_number
-FROM cugraph_core_number(edges => (SELECT src, dst FROM citation_edges));
-
-SELECT core_number AS deepest, COUNT(*) AS members
-FROM cores
-WHERE core_number = (SELECT MAX(core_number) FROM cores)
-GROUP BY core_number;
-```
-
-| deepest | members |
-|---|---|
-| 35 | 5,913 |
+A reading list can start with papers embedded in a mutually connected body of
+work. The deepest core is the subgraph with the largest minimum number of
+distinct citation neighbors. Citation direction is ignored here. This query
+finds that core, counts its members, and lists its most-cited papers using the
+corpus's citation-count metadata.
 
 ```sql
-SELECT p.year, p.title
-FROM cores c JOIN papers p ON p.paper_id = c.vertex
-WHERE c.core_number = (SELECT MAX(core_number) FROM cores)
-ORDER BY p.n_citation DESC
+WITH cores AS (
+  SELECT vertex, core_number
+  FROM cugraph_core_number(edges => (SELECT src, dst FROM citation_edges))),
+shells AS (
+  SELECT vertex, core_number, MAX(core_number) OVER () AS deepest
+  FROM cores),
+members AS (
+  SELECT vertex, core_number, COUNT(*) OVER () AS members
+  FROM shells WHERE core_number = deepest)
+SELECT c.core_number, c.members, p.year, p.title
+FROM members c JOIN papers p ON p.paper_id = c.vertex
+ORDER BY p.n_citation DESC, p.paper_id
 LIMIT 6;
 ```
 
-| year | title |
-|---|---|
-| 2004 | Distinctive Image Features from Scale-Invariant Keypoints |
-| 2001 | Random Forests |
-| 2011 | LIBSVM: A library for support vector machines |
-| 1995 | The Nature of Statistical Learning Theory |
-| 1995 | Support-Vector Networks |
-| 1986 | A Computational Approach to Edge Detection |
+| core_number | members | year | title |
+|---|---|---|---|
+| 35 | 5913 | 2004 | Distinctive Image Features from Scale-Invariant Keypoints |
+| 35 | 5913 | 2001 | Random Forests |
+| 35 | 5913 | 2011 | LIBSVM: A library for support vector machines |
+| 35 | 5913 | 1995 | The Nature of Statistical Learning Theory |
+| 35 | 5913 | 1995 | Support-Vector Networks |
+| 35 | 5913 | 1986 | A Computational Approach to Edge Detection |
 
-The 35-core (5,913 papers, each linked by citation to at least 35 other
-members of the shell) is recognizably the machine-learning and computer-vision
-literature.
+The deepest core has 5,913 papers at core number 35, and SIFT ranks first by
+reported citation count among its members.
+
+Every member of this core has at least `core_number` neighbors inside it.
+The count includes citations in either direction; it does not require each
+paper to cite that many other members. To extract the edges for a reading map,
+see the [k-core example](../functions/structure/cugraph_k_core.mdx).

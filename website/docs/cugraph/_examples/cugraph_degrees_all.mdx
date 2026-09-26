@@ -2,11 +2,12 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### In-degree and out-degree in one call
+### Which widely cited papers also provide extensive bibliographies?
 
-One call returns in-degree and out-degree together, so a compound `WHERE`
-finds papers that are both heavy citers and heavily cited, anchoring a
-field while surveying prior literature:
+Papers with many incoming citations and many outgoing references can be useful
+starting points for exploring a field's literature. This query selects papers
+with more than 2,000 in-graph citations and more than 200 references in the
+dataset.
 
 ```sql
 SELECT d.in_degree, d.out_degree, p.year, p.title

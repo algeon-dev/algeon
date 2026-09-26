@@ -2,15 +2,12 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Biased walk filtered by an anti-join
+### What should I read to understand BERT beyond its own bibliography?
 
-Personalized PageRank biases the walk toward seed vertices supplied by a
-relation. Seeding on BERT ranks the papers its citation neighborhood returns to
-most often. The seed view resolves BERT from its title and year (a 2019
-conference record shares the title), and every later reference to the seed
-reads that view. The rows of interest are the ones BERT does **not** already
-cite: a `NOT EXISTS` anti-join against the edge table removes the direct
-references, leaving the indirect ancestry:
+A reading list can include work several citation links beyond a paper's direct
+references. This query starts from the 2018 BERT record, then excludes BERT and
+the papers it cites so the results focus on more distant references. The same
+title appears on a 2019 conference record; the seed also filters by year.
 
 ```sql
 CREATE OR REPLACE VIEW bert_seed AS
@@ -42,7 +39,6 @@ LIMIT 8;
 | 0.001923 | 1975 | Design of a linguistic statistical decoder for the recognition of continuous speech |
 | 0.001872 | 2006 | The PASCAL Recognising Textual Entailment Challenge |
 
-BERT never cites Jelinek's 1975-1983 speech-decoding papers, statistical
-machine translation, or the Penn Treebank, yet the walk reaches them two or
-three references deep. The seed view, the exclusion of the seed itself, and
-the anti-join are all ordinary SQL composed around one GPU call.
+The returned list includes work on speech recognition, statistical machine
+translation, and the Penn Treebank. Those titles provide examples of papers
+ranked beyond BERT's direct references.

@@ -2,13 +2,11 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### The citations that bridge subfields
+### Which citations connect otherwise distant parts of the AI literature?
 
-Where [vertex betweenness](../functions/centrality/cugraph_betweenness_centrality.mdx)
-scores papers, edge betweenness scores individual **citations**. The output is
-one row per edge (`source`, `destination`, `score`), so joining `papers` twice
-labels both ends of each load-bearing link. The graph is the same ~38k-vertex
-2010s AI subgraph used by the Louvain and betweenness examples:
+Some citations may lie on many shortest paths through a field's literature.
+This query ranks individual citation edges in the selected 2010s AI subgraph
+and joins paper titles for both ends of each edge.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -41,12 +39,6 @@ LIMIT 5;
 | SqueezeNet: AlexNet-level accuracy with 50x fewer parameters and \<0.5MB model size | Shallow Networks for High-Accuracy Road Object-Detection | 0.00016 |
 | A survey on deep learning in medical image analysis | Deep Learning Convolutional Networks for Multiphoton Microscopy Vasculature Segmentation. | 0.00014 |
 
-The pattern is the classic edge-betweenness signature: the top links are not
-famous-cites-famous, they are the single citations that connect a hub (R-CNN,
-SENet, SqueezeNet, a survey) to an otherwise peripheral cluster: the bridge a
-whole niche crosses to reach the rest of the field. Exact edge betweenness
-touches every source-edge pair, so this call is much heavier than its vertex
-counterpart; in this run it took about 1.5 minutes on this subgraph, versus
-under a second for vertex betweenness on the
-[capture host](../demo-dataset.mdx). The same `exact_vertex_threshold` / `k`
-/ `seeds` policy applies on larger graphs.
+The rows identify edges that rank highest under edge betweenness in this
+subgraph. They do not by themselves show how members of a research area are
+connected outside the selected graph.

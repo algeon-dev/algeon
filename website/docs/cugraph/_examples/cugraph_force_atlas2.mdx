@@ -4,13 +4,13 @@ import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Lay out an ego network on the GPU
+### How are the papers around the Transformer connected?
 
-A seed view resolves *Attention Is All You Need* from its title, two views
-build the one-hop neighborhood around it (its ~40 references, its 110
-most-cited citers, and every citation among them), and ForceAtlas2 returns
-drawable coordinates. A second call (`cugraph_louvain` on the same edge view)
-colors the clusters:
+The selected graph contains *Attention Is All You Need*, its 22 references,
+and its 110 most-cited citers. The edge view keeps citations whose endpoints
+both belong to this set. ForceAtlas2 supplies coordinates and Louvain assigns
+a partition to each paper; the scope excludes other papers and all but those
+110 citers.
 
 ```sql
 CREATE OR REPLACE VIEW attention_seed AS
@@ -66,13 +66,11 @@ must agree on positions, snapshot into the
 mutable `datafusion.public` workspace with `CREATE OR REPLACE TABLE … AS`; that does not
 write back to the Iceberg source catalog.
 
-### Refine a saved layout with radius and mass
+### Can I spread overlapping papers apart without starting the map over?
 
-The optional relations are complete vertex-domain tables. This second pass
-uses the first pass as its warm start and supplies one radius and mass value
-for every vertex. The first pass is a table snapshot rather than a view: the
-final query reads it twice, and a view would rerun the non-reproducible layout
-once per read, so the two side inputs would disagree:
+The first pass saves coordinates in a table. The second pass uses that table
+as its initial positions and supplies radius and mass for every vertex, then
+enables overlap prevention:
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.

@@ -2,13 +2,13 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Where Leiden disagrees with Louvain
+### Would another community algorithm split our largest research groups?
 
-Leiden takes the same call shape as
-[`cugraph_louvain`](../functions/community/cugraph_louvain.mdx) but adds a
-refinement phase that guarantees well-connected communities, splitting
-clusters Louvain merges. Joining the two partitions on `vertex` shows exactly
-where. The views are the Louvain example's 2010s AI subgraph:
+A research catalog may use citation communities to organize a field into
+reading groups. Before treating those groups as fixed boundaries, compare
+Louvain and Leiden on the same 2010s AI subgraph. For each large Louvain group,
+this query counts how many Leiden groups contain at least 50 of its papers.
+The overlap measures sensitivity to the choice of algorithm.
 
 ```sql
 CREATE OR REPLACE VIEW ai_nodes AS
@@ -50,14 +50,9 @@ ORDER BY leiden_parts DESC, members DESC;
 | 4 | 3,859 | 1 |
 | 3 | 3,518 | 1 |
 
-Louvain's 7,172-paper convolutional-network community splits into five Leiden
-communities of 50+ members and its sequence-modeling community into two, while
-the image-segmentation, reinforcement-learning, and object-detection
-communities stay whole. The refinement does not simply produce more
-communities: over the whole graph Louvain returns 1,233 and Leiden 851. When a
-Louvain community is only held together by a few incidental citations,
-Leiden's refinement phase is what separates it: the guarantee that every
-returned community is internally connected is the reason to prefer Leiden as
-the default. Both runs are
-deterministic here (`seed` defaults to 0), which is why the community ids in
-this table are stable across sessions.
+In this capture, the largest Louvain group overlaps five Leiden groups with
+at least 50 papers each. A `leiden_parts` value of 1 allows smaller fragments
+below that threshold; it does not establish that the group remained intact.
+Community IDs are local labels, and membership can vary between GPU runs even
+with a fixed seed. Compare the membership of papers, rather than label values
+from separate executions.
