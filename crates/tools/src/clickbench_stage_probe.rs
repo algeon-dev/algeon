@@ -52,7 +52,7 @@ use workloads::clickbench::{
     register_clickbench_table,
 };
 
-use crate::{gpu_backend::ToolGpuBackend, native_plan_peel::peel_native_query_plan};
+use crate::{gpu_backend::ToolGpuBackend, native_plan_peel::peel_native_admitted_plan};
 
 const DEFAULT_QUERY_IDS: &[&str] = &["q28", "q29", "q34", "q35"];
 const DEFAULT_DEADLINE_SECS: u64 = 120;
@@ -190,7 +190,8 @@ async fn probe_native_observed(
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
     let physical = plan_native_physical(query_id, root, sql, profile).await?;
-    let native_plan = peel_native_query_plan(physical.as_ref())
+    let native_plan = peel_native_admitted_plan(physical.as_ref())
+        .map(|admitted| admitted.plan().clone())
         .ok_or_else(|| format!("query {query_id} did not lower to AlgeonNativeExec/AlgeonNativeComposedExec"))?;
 
     let query_dir = config.artifact_dir.join(query_id);

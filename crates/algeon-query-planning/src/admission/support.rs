@@ -520,15 +520,22 @@ fn window_input_ordering_rejection(
         .iter()
         .filter(|task| task.kind() == PipelineTaskKind::Window)
         .find(|task| !window_input_ordering_established(plan, pipeline, task))?;
-    let window = task.plan_node()?;
     let producer = task
         .input_resources()
         .first()
         .and_then(|input| pipeline.resources().iter().find(|resource| resource.id() == *input))
         .and_then(|resource| pipeline.tasks().iter().find(|candidate| candidate.id() == resource.producer()))
-        .and_then(PipelineTask::plan_node)?;
+        .and_then(PipelineTask::plan_node);
+    // A window or producer task without a plan node has no edge to name, and
+    // its ordering is still unproven.
+    let owner = match (producer, task.plan_node()) {
+        (Some(producer), Some(window)) => {
+            CapabilityRejectionOwner::Edge { producer, consumer: EdgeConsumer::Node(window) }
+        },
+        _ => CapabilityRejectionOwner::Admission("window_input_ordering_not_established"),
+    };
     Some(CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Edge { producer, consumer: EdgeConsumer::Node(window) },
+        owner,
         category: CapabilityRejectionCategory::MissingEdgeContract,
         contract_scope: CapabilityScope::Edge,
         boundary: "compiled_pipeline",

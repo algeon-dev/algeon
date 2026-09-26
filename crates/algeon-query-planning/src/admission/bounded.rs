@@ -17,7 +17,7 @@ use crate::{
     capability::{
         CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
     },
-    error::{QueryError, QueryErrorCode, Result},
+    error::{QueryError, QueryErrorCode, QueryErrorKind, Result},
     expr::{AggregateFunction, AggregateSpec, Expr},
     mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
     pipeline::CompiledPipeline,
@@ -27,10 +27,11 @@ use crate::{
         DataFusionExactHostAccumulator, aggregate_spec_has_floating_statistical_aggregate,
         datafusion_exact_host_accumulator, datafusion_exact_host_group_key_supported,
     },
+    validation::validate_query_plan,
 };
 
-/// A plan that passed capability analysis, compilation and the compiled
-/// contracts exactly once; the frontends validate a plan before admitting it.
+/// A plan that passed validation, capability analysis, compilation and the
+/// compiled contracts exactly once.
 ///
 /// Only [`admit`] and [`AdmittedPlan::with_pruned_sources`] construct it.
 /// Execution and reporting read this artifact instead of deciding again; it
@@ -89,7 +90,7 @@ impl AdmittedPlan {
             .with_fact("changed", changed)
             .with_fact("admitted_plan_fingerprint", self.fingerprint.to_string()));
         }
-        match admit(&pruned, self.statistical_aggregate_execution_mode, ctx.with_policy(self.policy))? {
+        match admit(&pruned, self.statistical_aggregate_execution_mode, self.policy, ctx)? {
             AdmissionDecision::Admitted(admitted) => Ok(admitted),
             AdmissionDecision::Rejected(rejection) => Err(rejection.execution_error(&pruned)),
         }
@@ -128,8 +129,18 @@ impl AdmissionDecision {
 #[derive(Debug, Clone)]
 pub struct AdmissionRejection {
     projection: CapabilityRejectionProjection,
-    pipeline: Option<CompiledPipeline>,
-    execution_mode_refusal: bool,
+    pipeline: Option<Box<CompiledPipeline>>,
+    cause: RejectionCause,
+}
+
+#[derive(Debug, Clone)]
+enum RejectionCause {
+    CompiledContract,
+    ExecutionMode,
+    /// The validator found the plan well formed but outside what the backend
+    /// supports. The error keeps the validator's code, operation, message,
+    /// and facts.
+    Validation(Arc<QueryError>),
 }
 
 impl AdmissionRejection {
@@ -141,39 +152,91 @@ impl AdmissionRejection {
     /// Whether the requested statistical aggregate execution mode, rather than
     /// a compiled contract, refuses the plan.
     pub fn is_execution_mode_refusal(&self) -> bool {
-        self.execution_mode_refusal
+        matches!(self.cause, RejectionCause::ExecutionMode)
     }
 
-    /// The typed error a caller that must execute `plan` reports.
+    /// The unsupported-construct error plan validation reported, when
+    /// validation refused the plan.
+    pub fn validation_error(&self) -> Option<&QueryError> {
+        match &self.cause {
+            RejectionCause::Validation(error) => Some(error),
+            RejectionCause::CompiledContract | RejectionCause::ExecutionMode => None,
+        }
+    }
+
+    /// The typed error a caller that must execute `plan` reports. A
+    /// validation refusal reports the validator's own error.
     pub fn execution_error(&self, plan: &QueryPlan) -> QueryError {
-        compiled_bounded_pipeline_required_error(plan, self.pipeline.as_ref(), &self.projection)
+        match &self.cause {
+            RejectionCause::Validation(error) => error
+                .facts()
+                .iter()
+                .fold(QueryError::new(error.code(), error.operation(), error.message()), |rebuilt, (key, value)| {
+                    rebuilt.with_fact(key, value)
+                }),
+            RejectionCause::CompiledContract | RejectionCause::ExecutionMode => {
+                compiled_bounded_pipeline_required_error(plan, self.pipeline.as_deref(), &self.projection)
+            },
+        }
+    }
+
+    fn validation(error: QueryError) -> Self {
+        let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+        facts.insert("validation_code", error.code().as_str().to_string());
+        facts.insert("validation_operation", error.operation().to_string());
+        let category = match error.code() {
+            QueryErrorCode::UnsupportedType => CapabilityRejectionCategory::UnsupportedArrowDtype,
+            QueryErrorCode::UnsupportedExpression => CapabilityRejectionCategory::UnsupportedExpressionFamily,
+            _ => CapabilityRejectionCategory::UnsupportedNodeOperator,
+        };
+        Self {
+            projection: CapabilityRejectionProjection {
+                owner: CapabilityRejectionOwner::Admission("plan_validation"),
+                category,
+                contract_scope: CapabilityScope::Subgraph,
+                boundary: "plan_validation",
+                reason: "native_plan_validation_unsupported",
+                facts,
+            },
+            pipeline: None,
+            cause: RejectionCause::Validation(Arc::new(error)),
+        }
     }
 }
 
 /// Decides once whether `plan` runs as a compiled pipeline under the given
-/// execution mode and the policy `ctx` carries.
+/// execution mode and policy.
+///
+/// The plan is validated first. A malformed plan has no correct fallback and
+/// is the validator's error; a well-formed plan that uses a type, operator,
+/// or expression the backend does not support is rejected with the
+/// validator's code and operation in the projection facts.
 pub fn admit(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    policy: PlanningPolicy,
     ctx: AnalysisContext<'_>,
 ) -> Result<AdmissionDecision> {
+    let ctx = ctx.with_policy(policy);
+    if let Err(error) = validate_query_plan(plan, ctx) {
+        if error.kind() != QueryErrorKind::Unsupported {
+            return Err(error);
+        }
+        return Ok(AdmissionDecision::Rejected(AdmissionRejection::validation(error)));
+    }
     let admission = capability_first_bounded_pipeline_admission(plan, ctx)?;
     if let Some(projection) = statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
     {
         return Ok(AdmissionDecision::Rejected(AdmissionRejection {
             projection,
             pipeline: None,
-            execution_mode_refusal: true,
+            cause: RejectionCause::ExecutionMode,
         }));
     }
     match admission.candidate_status() {
         CapabilityFirstCandidateStatus::Admitted => {
-            let admitted = admitted_plan_from_capability_first(
-                admission,
-                plan,
-                statistical_aggregate_execution_mode,
-                ctx.policy(),
-            )?;
+            let admitted =
+                admitted_plan_from_capability_first(admission, plan, statistical_aggregate_execution_mode, policy)?;
             Ok(AdmissionDecision::Admitted(Arc::new(admitted)))
         },
         CapabilityFirstCandidateStatus::Rejected => {
@@ -183,8 +246,8 @@ pub fn admit(
                 .clone();
             Ok(AdmissionDecision::Rejected(AdmissionRejection {
                 projection,
-                pipeline: admission.into_pipeline(),
-                execution_mode_refusal: false,
+                pipeline: admission.into_pipeline().map(Box::new),
+                cause: RejectionCause::CompiledContract,
             }))
         },
     }
@@ -195,9 +258,9 @@ pub fn admit(
 ///
 /// Only [`StatisticalAggregateExecutionMode::DataFusionExactHostWelford`]
 /// narrows support: its host kernel reproduces DataFusion's accumulators for a
-/// fixed set of group-key and aggregate types. Frontends call this before
-/// replacing a DataFusion plan so the other types stay on DataFusion instead
-/// of failing during execution.
+/// fixed set of group-key and aggregate types, so a frontend that may fall
+/// back keeps the other types on DataFusion instead of failing during
+/// execution.
 fn statistical_aggregate_execution_mode_rejection(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,

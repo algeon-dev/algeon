@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection() {
+fn bounded_mixed_residual_semi_anti_root_projects_only_left_columns() {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -26,6 +26,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection()
         unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).is_none()
     );
 
+    // Projecting a right column from a semi join is malformed IR.
     let right_projection_schema = Arc::new(Schema::new(vec![Field::new("right_payload", DataType::Int32, false)]));
     let plan = mixed_residual_join_plan(
         Arc::clone(&left_schema),
@@ -35,15 +36,9 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection()
         JoinSide::Right,
         vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
     );
-    let facts = unsupported_facts(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("unsupported mixed semi root shape should produce facts");
-    assert_rejection_facts_are_family_free(&facts, "mixed_semi_root_right_projection");
-    assert_eq!(
-        facts.get("bounded_join_rejection_reason").map(String::as_str),
-        Some("unsupported_join_node_capability")
-    );
-    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
-    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_node_operator"));
+    let error = malformed_plan_error(&plan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "query_engine.join.validate");
 
     let plan = mixed_residual_join_plan(
         left_schema,

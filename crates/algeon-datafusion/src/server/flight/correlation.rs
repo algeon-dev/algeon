@@ -252,7 +252,7 @@ mod correlation_tests {
         let response = service
             .get_flight_info_statement(
                 CommandStatementQuery {
-                    query: format!("SELECT repeat('x', {}) AS oversized", 5 * 1024 * 1024),
+                    query: format!("SELECT repeat('x', {}) AS oversized FROM (VALUES (1)) AS t(x)", 5 * 1024 * 1024),
                     transaction_id: None,
                 },
                 request,

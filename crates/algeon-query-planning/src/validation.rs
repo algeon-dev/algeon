@@ -12,8 +12,7 @@ use crate::{
         AggregateNode, EdgeNormalizeNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
         GraphEdgePredicateInput, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2VertexAttributesInput,
         GraphPageRankPersonalizationInput, GraphPredicateInput, GraphVertexPairInput, NodeId, PlanNode, ProjectionNode,
-        QueryNode, QueryPlan, ResultSink, UnionNode, WindowFrame, WindowFunction, WindowNode,
-        graph_result_schema_for_vertex_type,
+        QueryNode, QueryPlan, UnionNode, WindowFrame, WindowFunction, WindowNode, graph_result_schema_for_vertex_type,
     },
     prepared::{
         AvgStateAliases, aggregate_spec_has_avg, aggregate_spec_has_distinct,
@@ -303,7 +302,7 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
 
     let sink_input = input_node(plan, plan.sink().input(), NodeId::from_index_for_internal_use(plan.node_count()))?;
     let sink_available = available_columns(&available_columns_by_node, plan.sink().input())?;
-    if let ResultSink::HostArrow { schema, .. } = plan.sink() {
+    if let Some(schema) = plan.sink().caller_visible_host_schema() {
         validate_schema_supported(schema, "query_engine.plan.validate_sink_schema", ctx)?;
         if schema.fields().len() != sink_input.output_schema().fields().len() {
             return Err(QueryError::new(

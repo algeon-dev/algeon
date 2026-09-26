@@ -172,8 +172,13 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("a grouped aggregate join-build input is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -212,8 +217,13 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit filter is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -285,8 +295,13 @@ fn execute_query_plan_runs_independent_union_branches_through_unified_admission(
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("independent union branches use the same compiled admission");
     assert!(
         admission.pipeline().tasks().iter().any(|task| task.kind() == PipelineTaskKind::Union),
@@ -332,8 +347,13 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
         sort_task.sort_strategy()
     );
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit offset is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -745,8 +765,13 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not fail");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not fail");
     let admission = decision.admission().expect("GPU sink root join should be admitted");
     assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
     assert!(

@@ -56,7 +56,13 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         Arc::clone(&left_only_join_schema),
     );
     let plan = builder.finish_with_host_sink(anti_join);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .unwrap();
     assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let context = bounded_join_execution_context(&runtime);
@@ -301,7 +307,13 @@ fn bounded_native_query_streams_a_shared_staged_leaf_into_each_join_consumer() {
     let detail_schema = write_shared_leaf_detail_parquet(&detail_path, SHARED_LEAF_ROWS);
     let supplier_schema = write_shared_leaf_supplier_parquet(&supplier_path);
     let plan = shared_leaf_inner_probe_anti_build_plan(&detail_path, &detail_schema, &supplier_path, &supplier_schema);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .unwrap();
     assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let context = backend_context_with_grant(SHARED_LEAF_GRANT_BYTES);

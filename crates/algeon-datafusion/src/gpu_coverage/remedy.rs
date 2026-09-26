@@ -76,6 +76,11 @@ pub(super) const fn cost_remedy(reason: NativePlanCostReason) -> QueryGpuRemedy 
             QueryGpuRemedyKind::CpuPreferred,
             "The cost model expects CPU execution to be cheaper for this small selective shape; increase useful GPU work or keep the DataFusion path.",
         ),
+        NativePlanCostReason::NoColumnData => QueryGpuRemedy::new(
+            "keep_cpu_without_column_data",
+            QueryGpuRemedyKind::CpuPreferred,
+            "The plan reads no column data, so there is no GPU work to accelerate; DataFusion produces its rows directly.",
+        ),
     }
 }
 

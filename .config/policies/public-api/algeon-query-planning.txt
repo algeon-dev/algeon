@@ -11,6 +11,7 @@ impl query_planning::admission::AdmissionRejection
 pub fn query_planning::admission::AdmissionRejection::execution_error(&self, &query_planning::plan::QueryPlan) -> query_planning::error::QueryError
 pub fn query_planning::admission::AdmissionRejection::is_execution_mode_refusal(&self) -> bool
 pub fn query_planning::admission::AdmissionRejection::projection(&self) -> &query_planning::capability::CapabilityRejectionProjection
+pub fn query_planning::admission::AdmissionRejection::validation_error(&self) -> core::option::Option<&query_planning::error::QueryError>
 pub struct query_planning::admission::AdmittedPlan
 impl query_planning::admission::AdmittedPlan
 pub const fn query_planning::admission::AdmittedPlan::fingerprint(&self) -> query_planning::plan::PlanFingerprint
@@ -19,7 +20,7 @@ pub fn query_planning::admission::AdmittedPlan::plan(&self) -> &query_planning::
 pub const fn query_planning::admission::AdmittedPlan::policy(&self) -> query_planning::policy::PlanningPolicy
 pub const fn query_planning::admission::AdmittedPlan::statistical_aggregate_execution_mode(&self) -> query_planning::mode::StatisticalAggregateExecutionMode
 pub fn query_planning::admission::AdmittedPlan::with_pruned_sources(&self, query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<alloc::sync::Arc<Self>>
-pub fn query_planning::admission::admit(&query_planning::plan::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::admission::AdmissionDecision>
+pub fn query_planning::admission::admit(&query_planning::plan::QueryPlan, query_planning::mode::StatisticalAggregateExecutionMode, query_planning::policy::PlanningPolicy, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::admission::AdmissionDecision>
 pub fn query_planning::admission::bounded_join_modeled_facts(&query_planning::plan::QueryPlan, &query_planning::admission::AdmissionDecision, query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub fn query_planning::admission::bounded_join_unsupported_shape_facts(&query_planning::plan::QueryPlan, &query_planning::admission::AdmissionDecision, query_planning::backend::AnalysisContext<'_>) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub mod query_planning::backend
@@ -2086,6 +2087,7 @@ impl query_planning::plan::NativePlanCostDecision
 pub fn query_planning::plan::NativePlanCostDecision::facts(&self) -> &query_planning::plan::NativePlanCostFacts
 pub fn query_planning::plan::NativePlanCostDecision::is_not_selected_by_cost(&self) -> bool
 pub enum query_planning::plan::NativePlanCostReason
+pub query_planning::plan::NativePlanCostReason::NoColumnData
 pub query_planning::plan::NativePlanCostReason::SmallSelectiveFullSort
 pub query_planning::plan::NativePlanCostReason::SmallSelectiveResidualJoin
 pub query_planning::plan::NativePlanCostReason::SmallSelectiveTopK
@@ -2999,7 +3001,7 @@ pub fn query_planning::plan::ml_embedding_output_schema(arrow_schema::datatype::
 pub fn query_planning::plan::ml_forest_output_schema(arrow_schema::datatype::DataType, query_planning::plan::MlForestOutputContract) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_hdbscan_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::ml_predictions_output_schema(arrow_schema::datatype::DataType, arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
-pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, &query_planning::plan::NativePlanCostOptions) -> query_planning::plan::NativePlanCostDecision
+pub fn query_planning::plan::native_plan_cost_decision(&query_planning::plan::QueryPlan, &query_planning::plan::NativePlanCostOptions, bool) -> query_planning::plan::NativePlanCostDecision
 pub fn query_planning::plan::planned_resident_graph_key(&query_planning::plan::GraphResidencyDescriptor, &query_planning::plan::GraphAlgorithmSpec) -> core::option::Option<query_planning::plan::ResidentGraphKey>
 pub fn query_planning::plan::stable_graph_result_schema(query_planning::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub fn query_planning::plan::vector_kmeans_output_schema(arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef

@@ -343,9 +343,14 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
         )),
         Arc::clone(&aggregate_schema),
     );
+    // DataFusion sorts a rank input on its partition key before the order
+    // key, so each category's rows are adjacent when the rank counts them.
     let window_input_sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("sumsales"), true, false)]),
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("category"), false, true),
+            SortExpr::new(Expr::column("sumsales"), true, false),
+        ]),
         Arc::clone(&aggregate_schema),
     );
     let window = builder.add_window(
@@ -396,7 +401,7 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
             (Some("A".to_string()), None, None, 3, 35, 1),
             (Some("A".to_string()), Some("c1".to_string()), None, 1, 35, 1),
             (Some("A".to_string()), Some("c1".to_string()), Some("b1".to_string()), 0, 30, 3),
-            (Some("A".to_string()), Some("c1".to_string()), Some("b2".to_string()), 0, 5, 8),
+            (Some("A".to_string()), Some("c1".to_string()), Some("b2".to_string()), 0, 5, 4),
             (Some("B".to_string()), None, None, 3, 18, 1),
             (Some("B".to_string()), Some("c2".to_string()), None, 1, 18, 1),
             (Some("B".to_string()), Some("c2".to_string()), Some("b1".to_string()), 0, 7, 4),

@@ -10,7 +10,7 @@ use super::*;
 fn small_selective_topk_join_is_not_selected_by_cost() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
         panic!("small top-k join should not be selected by cost");
@@ -28,7 +28,7 @@ fn small_selective_topk_join_is_not_selected_by_cost() {
 fn tiny_residual_join_is_not_selected_by_cost() {
     let plan = residual_topk_join_plan(4);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
         panic!("tiny residual join should not be selected by cost");
@@ -42,7 +42,7 @@ fn tiny_residual_join_is_not_selected_by_cost() {
 fn residual_join_over_tight_threshold_continues_native() {
     let plan = residual_topk_join_plan(31);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     assert!(!decision.is_not_selected_by_cost(), "residual joins use a tighter small-shape gate than ordinary top-k");
     assert_eq!(decision.facts().selected_row_groups, Some(62));
@@ -56,7 +56,7 @@ fn residual_join_can_use_profile_specific_row_group_threshold() {
     let options =
         NativePlanCostOptions { max_small_selective_residual_join_row_groups: 24, ..NativePlanCostOptions::default() };
 
-    let decision = native_plan_cost_decision(&plan, &options);
+    let decision = native_plan_cost_decision(&plan, &options, true);
 
     let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
         panic!("profile-specific residual threshold should decline a small low-byte residual join by cost");
@@ -70,7 +70,7 @@ fn residual_join_can_use_profile_specific_row_group_threshold() {
 fn larger_topk_join_continues_native() {
     let plan = topk_join_plan(254, 5_000_000, 512 * 1024 * 1024);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     assert!(!decision.is_not_selected_by_cost(), "larger top-k join must not be declined by the small-shape cost gate");
     assert_eq!(decision.facts().selected_row_groups, Some(508));
@@ -80,7 +80,7 @@ fn larger_topk_join_continues_native() {
 fn few_large_row_groups_continue_native() {
     let plan = topk_join_plan(4, 10_000, 2 << 30);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     assert!(!decision.is_not_selected_by_cost(), "selected source bytes must gate small/selective cost selection");
     assert_eq!(decision.facts().selected_row_groups, Some(8));
@@ -91,7 +91,7 @@ fn few_large_row_groups_continue_native() {
 fn missing_row_group_evidence_continues_native() {
     let plan = topk_join_without_row_group_metadata();
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     assert!(!decision.is_not_selected_by_cost(), "missing scan evidence should continue native selection");
     assert!(!decision.facts().selected_row_groups_known);
@@ -102,7 +102,7 @@ fn missing_row_group_evidence_continues_native() {
 fn small_grouped_aggregate_without_topk_or_residual_continues_native() {
     let plan = grouped_aggregate_plan(4);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     assert!(!decision.is_not_selected_by_cost(), "small final output alone is not enough to decline by cost");
     assert_eq!(decision.facts().grouped_aggregate_count, 1);
@@ -113,7 +113,7 @@ fn small_grouped_aggregate_without_topk_or_residual_continues_native() {
 fn small_selective_full_sort_join_aggregate_is_not_selected_by_cost() {
     let plan = full_sort_join_aggregate_plan(4, 10_000, 1024 * 1024);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::default(), true);
 
     let NativePlanCostDecision::NotSelectedByCost { reason, facts } = decision else {
         panic!("small full-sort join/aggregate should not be selected by cost");
@@ -130,7 +130,7 @@ fn small_selective_full_sort_join_aggregate_is_not_selected_by_cost() {
 fn disabled_cost_options_continue_native() {
     let plan = topk_join_plan(4, 10_000, 1024 * 1024);
 
-    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::disabled());
+    let decision = native_plan_cost_decision(&plan, &NativePlanCostOptions::disabled(), true);
 
     assert!(!decision.is_not_selected_by_cost());
 }

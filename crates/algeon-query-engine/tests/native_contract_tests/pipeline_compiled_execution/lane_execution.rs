@@ -54,8 +54,13 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("independent union branches use the same compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "literal union branches dispatch on lanes");
@@ -142,8 +147,13 @@ fn lane_dispatch_executes_parquet_union_branches_on_production_path() {
     let limit = builder.add_limit(union, LimitSpec::fetch(10), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("parquet union branches use the compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(
@@ -250,8 +260,13 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         Arc::clone(&aggregate_schema),
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("scan/filter/aggregate admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("scan/filter/aggregate admission should not error");
     let admission = decision.admission().expect("scan/filter/aggregate uses compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline));
@@ -326,13 +341,17 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     drop(test_context);
 
     let resident_plan = plan.clone_with_gpu_resident_sink();
-    let resident_pipeline =
-        admit(&resident_plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("resident aggregate admission should not error")
-            .admission()
-            .expect("resident aggregate uses compiled admission")
-            .pipeline()
-            .clone();
+    let resident_pipeline = admit(
+        &resident_plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("resident aggregate admission should not error")
+    .admission()
+    .expect("resident aggregate uses compiled admission")
+    .pipeline()
+    .clone();
     assert!(!is_lane_family_pipeline(&resident_pipeline));
     let resident_context = runtime.acquire_context_for_plan(&resident_plan).expect("resident plan acquires context");
     let result =
@@ -383,9 +402,13 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         grouped_schema,
     );
     let grouped_plan = builder.finish_gpu_resident(grouped);
-    let grouped_decision =
-        admit(&grouped_plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("grouped aggregate admission should not error");
+    let grouped_decision = admit(
+        &grouped_plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("grouped aggregate admission should not error");
     assert!(grouped_decision.admission().is_some(), "grouped aggregate uses compiled admission");
     let grouped_context = runtime.acquire_context_for_plan(&grouped_plan).expect("grouped plan acquires context");
     let grouped_result =
@@ -488,8 +511,13 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         output_schema,
     );
     let plan = builder.finish_with_host_sink(aggregate);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("overflow aggregate admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("overflow aggregate admission should not error");
     let admission = decision.admission().expect("overflow aggregate uses compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline));
@@ -572,8 +600,13 @@ fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
     );
     let plan = builder.finish_with_host_sink(join);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("join branches use the compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "join pipelines dispatch on lanes");
@@ -737,8 +770,13 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
             output_schema,
         );
         let plan = builder.finish_with_host_sink(join);
-        let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("join admission should not error");
+        let decision = admit(
+            &plan,
+            StatisticalAggregateExecutionMode::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(),
+        )
+        .expect("join admission should not error");
         let admission = decision.admission().unwrap_or_else(|| panic!("join {join_type} uses compiled admission"));
         let pipeline = admission.pipeline().clone();
         let runtime = lane_shared_runtime(cudf::Runtime::new().expect("join scaling runtime"));
@@ -943,8 +981,13 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         Arc::clone(&kv_schema),
     );
     let plan = builder.finish_with_host_sink(join2);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("chained join admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("chained join admission should not error");
     let admission = decision.admission().expect("chained joins use compiled admission");
     let pipeline = admission.pipeline().clone();
     assert_eq!(
@@ -1119,8 +1162,13 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         Arc::clone(&kvw_schema),
     );
     let plan = builder.finish_with_host_sink(join2);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("partitioned chain admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("partitioned chain admission should not error");
     let admission = decision.admission().expect("partitioned chain uses compiled admission");
     let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("partitioned chain runtime"));
@@ -1290,7 +1338,7 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
     }
 
     fn admitted_pipeline(label: &str, plan: &QueryPlan) -> CompiledPipeline {
-        admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
+        admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
             .expect("parity admission should not error")
             .admission()
             .unwrap_or_else(|| panic!("{label}: parity shape uses compiled admission"))
@@ -1484,8 +1532,13 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
         Arc::clone(&schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("cancel admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("cancel admission should not error");
     let admission = decision.admission().expect("cancel join uses compiled admission");
     let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(runtime);
@@ -1618,8 +1671,13 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
         "optimizer discovers a build-to-probe dynamic-filter route"
     );
     let plan = optimized.plan;
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("pruning admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("pruning admission should not error");
     let admission = decision.admission().expect("pruning shape uses compiled admission");
     let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("pruning runtime"));
@@ -1723,8 +1781,13 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
         Arc::clone(&count_schema),
     );
     let plan = builder.finish_gpu_resident(aggregate);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("resident admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("resident admission should not error");
     assert!(decision.admission().is_some(), "resident join uses compiled admission");
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("resident join acquires a context");
@@ -1844,8 +1907,13 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let limit = builder.add_limit(sort, LimitSpec::new(0, 6), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("sort/top-k admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("sort/top-k admission should not error");
     let admission = decision.admission().expect("union sort/top-k uses compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "union sort/top-k dispatches on lanes");
@@ -1948,8 +2016,13 @@ fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("saturation admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("saturation admission should not error");
     let admission = decision.admission().expect("literal union uses compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "literal union dispatches on lanes");
@@ -2039,8 +2112,13 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     let limit = builder.add_limit(sort, LimitSpec::new(2, 5), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("offset sort admission should not error");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("offset sort admission should not error");
     let admission = decision.admission().expect("offset sort uses compiled admission");
     let pipeline = admission.pipeline().clone();
     assert!(is_lane_family_pipeline(&pipeline), "single-frame sort dispatches on lanes");
@@ -2083,12 +2161,17 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
             Arc::clone(&schema),
         );
         let full_plan = full_builder.finish_with_host_sink(full_sort);
-        let full_pipeline = admit(&full_plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-            .expect("full sort admission should not error")
-            .admission()
-            .expect("full sort uses compiled admission")
-            .pipeline()
-            .clone();
+        let full_pipeline = admit(
+            &full_plan,
+            StatisticalAggregateExecutionMode::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(),
+        )
+        .expect("full sort admission should not error")
+        .admission()
+        .expect("full sort uses compiled admission")
+        .pipeline()
+        .clone();
         let metrics = ExecutionMetrics::detached("sort-width-request");
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),

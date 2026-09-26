@@ -401,3 +401,39 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
     assert_eq!(int64_array(batch, 4).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     admitted.finish();
 }
+
+#[test]
+fn native_row_number_window_refuses_input_ordered_only_by_its_order_key() {
+    // Sorted by `ord` alone, the rows of each `grp` partition interleave, and
+    // positional numbering would return [1, 1, 3, 3, 5, 5] without error.
+    let context = backend_context();
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("ord", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("ord", DataType::Int32, false),
+        Field::new("rn", DataType::UInt64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
+    let sort =
+        builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("ord"), false, false)]), input_schema);
+    let window = builder.add_window(
+        sort,
+        WindowSpec::new(
+            vec![Expr::column("grp")],
+            vec![SortExpr::new(Expr::column("ord"), false, false)],
+            vec![WindowFunction::row_number("rn")],
+        ),
+        output_schema,
+    );
+    let plan = builder.finish_with_host_sink(window);
+
+    let Err(error) = context.admit_plan(&plan) else {
+        panic!("a window over input not grouped by its partition must not run");
+    };
+    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some("window_input_ordering_not_established"));
+}

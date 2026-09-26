@@ -24,7 +24,13 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
         &lineitem_schema,
     );
 
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context()).unwrap();
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .unwrap();
     assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
 
     let context = bounded_join_execution_context(&runtime);

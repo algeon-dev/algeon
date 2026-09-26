@@ -423,8 +423,10 @@ async fn validate_query_session_fingerprint_ignores_invocation_local_extensions(
 async fn validate_query_concurrent_calls_report_their_own_planning_diagnostics() {
     let ctx = validation_context(bounded_optimizer_config());
 
-    let (native, cpu) =
-        tokio::join!(validate_query(&ctx, "SELECT 1 AS value"), validate_query(&ctx, "SELECT random() AS r"));
+    let (native, cpu) = tokio::join!(
+        validate_query(&ctx, "SELECT x AS value FROM (VALUES (1)) AS t(x)"),
+        validate_query(&ctx, "SELECT random() AS r")
+    );
     let native = native.unwrap();
     let cpu = cpu.unwrap();
 

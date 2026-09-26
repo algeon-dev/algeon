@@ -21,11 +21,10 @@ use super::{
     GpuResidentInputMap, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics, HostBatchCursorConfig,
     MemoryConsumer, MemoryReservation, QueryExecutionRequest, QueryOutput, RecordBatch, RecordBatchStream,
     RecordOutput, ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext, TryStreamExt,
-    admit_native_edge_source_gpu_plan, as_algeon_native_composed_exec, as_algeon_native_exec, counted_cudf_runtime,
-    edge_source_output_rows, execute_gpu_resident_producer_with_context, execute_query_plan,
-    finalize_graph_query_outcome, get_record_batch_memory_size, gpu_resident_producer,
-    gpu_resident_producer_input_name, plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution,
-    resident_side_input_output_rows,
+    as_algeon_native_composed_exec, as_algeon_native_exec, counted_cudf_runtime, edge_source_output_rows,
+    execute_gpu_resident_producer_with_context, execute_query_plan, finalize_graph_query_outcome,
+    get_record_batch_memory_size, gpu_resident_producer, gpu_resident_producer_input_name, plan_contains_algeon_native,
+    prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows, resolve_native_edge_source_gpu_plan,
 };
 use crate::native_exec::{cancellation_requested, validate_host_wrapped_gpu_execution};
 
@@ -790,12 +789,8 @@ pub(super) async fn execute_edge_source_to_gpu(
         let admitted = match admitted_edge_source_gpu_plan {
             Some(admitted) => admitted,
             None => {
-                admit_native_edge_source_gpu_plan(
-                    native.execution_config(),
-                    native.native_plan(),
-                    task_context.as_ref(),
-                )
-                .await?
+                resolve_native_edge_source_gpu_plan(native.execution_config(), native.admitted(), task_context.as_ref())
+                    .await?
             },
         };
         let outcome = execute_query_plan(context, QueryExecutionRequest::admitted(&admitted));
@@ -819,12 +814,8 @@ pub(super) async fn execute_edge_source_to_gpu(
         let admitted = match admitted_edge_source_gpu_plan {
             Some(admitted) => admitted,
             None => {
-                admit_native_edge_source_gpu_plan(
-                    native.execution_config(),
-                    native.native_plan(),
-                    task_context.as_ref(),
-                )
-                .await?
+                resolve_native_edge_source_gpu_plan(native.execution_config(), native.admitted(), task_context.as_ref())
+                    .await?
             },
         };
         let runtime_occurrence_ids = native

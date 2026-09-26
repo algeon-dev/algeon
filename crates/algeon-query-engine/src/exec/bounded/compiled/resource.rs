@@ -62,8 +62,10 @@ impl CompiledGpuResource {
     /// Snapshots a shared input for lane-claim scratch state.
     ///
     /// Lane-family pipelines currently resolve single-consumer inputs by move;
-    /// this covers shared inputs without aliasing coordinator state, and fails
-    /// closed on lazy or deferred payloads that cannot cross the boundary.
+    /// this covers shared inputs without aliasing coordinator state. A
+    /// deferred source is a read plan that holds no GPU state, so each lane
+    /// consumer re-stages its own copy, as a serial consumer does. Lazy
+    /// streams that cannot alias and in-flight prefetches fail closed.
     pub(in crate::exec::bounded) fn snapshot_for_lane_claim(&self) -> Result<CompiledGpuResource> {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: None } => {
@@ -84,8 +86,8 @@ impl CompiledGpuResource {
                 };
                 Ok(CompiledGpuResource::frame_stream_payload(alias))
             },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
-                Err(invalid("compiled lane task cannot share a deferred join leaf source"))
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream.as_ref().clone()))
             },
             CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
                 Err(invalid("compiled lane task cannot share a pending source read"))

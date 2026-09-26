@@ -488,9 +488,9 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
 }
 
 #[test]
-fn bounded_admission_ignores_unreachable_node_rejection() {
-    // A detached aggregate that fails node capability must not veto a plan
-    // the compiler never instantiates it for.
+fn bounded_admission_refuses_a_plan_with_an_unreachable_node_as_malformed() {
+    // A detached aggregate is not part of the plan the sink reads. Admission
+    // validates the plan, so the IR itself is the error instead of a decision.
     let mut builder = QueryPlanBuilder::new();
     let (join, _) = compositional_inner_join_base(&mut builder);
     let detached_schema = Arc::new(Schema::new(vec![
@@ -511,19 +511,10 @@ fn bounded_admission_ignores_unreachable_node_rejection() {
     let plan = builder.finish_with_host_sink(join);
 
     let unreachable = plan.unreachable_node_ids();
-    assert!(unreachable.contains(&detached), "fixture must keep the bad projection detached: {unreachable:?}");
-    let analysis = plan.capability_analysis(rapids_analysis_context());
-    assert!(
-        analysis.nodes.iter().any(|node| node.node_id == detached
-            && matches!(
-                node.executable,
-                CapabilityDecision::Rejected { .. }
-            )),
-        "fixture must carry a detached node rejection"
-    );
-    bounded_pipeline_admission(&plan)
-        .expect("admission should not fail")
-        .expect("an unreachable node rejection must not veto the reachable pipeline");
+    assert!(unreachable.contains(&detached), "fixture must keep the aggregate detached: {unreachable:?}");
+    let error = malformed_plan_error(&plan);
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "query_engine.plan.validate_reachability");
 }
 
 fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'static str, String>, label: &str) {

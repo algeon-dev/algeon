@@ -22,6 +22,7 @@ use query_engine::{
         WindowSpec, vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
         vector_pca_output_schema,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     runtime::{
         ExecutionContext,
@@ -590,8 +591,13 @@ fn bounded_vector_rejection_reports_the_contract_it_misses() {
         window_schema,
     );
     let plan = builder.finish_with_host_sink(window);
-    let decision = admit(&plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("the plan is decidable");
+    let decision = admit(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(),
+    )
+    .expect("the plan is decidable");
     let expected = decision.rejection_projection().expect("no compiled contract covers the plan").reason;
 
     let error = backend_context().admit_plan(&plan).err().expect("a rejected vector plan fails before any work");

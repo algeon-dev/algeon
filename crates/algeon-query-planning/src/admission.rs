@@ -12,10 +12,6 @@ mod support;
 
 pub use bounded::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit};
 pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
-#[doc(hidden)]
-pub use diagnostics::{
-    bounded_join_unsupported_shape_facts_with_projection, insert_bounded_join_rejection_projection_error_facts,
-};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use evidence::CUGRAPH_GRAPH_EXECUTION_CAPABILITY;

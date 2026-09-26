@@ -13,8 +13,9 @@ mod mixed_aggregate;
 pub(super) use mixed_aggregate::*;
 
 pub(super) fn assert_bounded_pipeline_admitted(plan: &QueryPlan) {
-    let decision = admit(plan, StatisticalAggregateExecutionMode::default(), rapids_analysis_context())
-        .expect("bounded admission should decide the plan");
+    let decision =
+        admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
+            .expect("bounded admission should decide the plan");
     assert!(decision.admission().is_some(), "plan should be admitted as a compiled pipeline: {decision:?}");
 }
 
@@ -458,20 +459,13 @@ pub(super) fn residual_validation_error_with_schema(
     }
 }
 
-pub(super) fn assert_bounded_join_rejection_contract(error: &QueryError) {
+/// A join plan admission rejects is the admission's compiled-pipeline error,
+/// the same one every rejected plan reports, raised before any source read.
+pub(super) fn assert_compiled_pipeline_rejection_contract(error: &QueryError) {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.operation(), "query_engine.bounded.plan");
-    assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-    for key in [
-        "bounded_join_rejection_scope",
-        "bounded_join_rejection_owner",
-        "bounded_join_rejection_boundary",
-        "bounded_join_rejection_category",
-        "bounded_join_rejection_reason",
-        "bounded_join_rejection_facts",
-    ] {
-        assert!(error.fact_value(key).is_some(), "bounded join rejection must include {key}");
-    }
+    assert_eq!(error.operation(), "query_engine.bounded.compiled_pipeline_required");
+    assert!(error.fact_value("compiled_pipeline_rejection_reason").is_some());
+    assert_eq!(error.fact_value("caller_visible_sink"), Some("host_arrow"));
     for retired_key in [
         "bounded_join_reservation_model",
         "bounded_join_reservation_kinds",

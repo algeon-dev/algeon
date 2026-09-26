@@ -641,15 +641,18 @@ impl ResourceOrdering {
         Self { keys, scope: OrderingScope::Global }
     }
 
-    /// Whether rows carrying this ordering appear, within every partition of
-    /// `window`, in the window's order: the ordering is global and, after any
-    /// prefix of partition keys, starts with the window's order keys.
+    /// Whether rows carrying this ordering appear in `window`'s order: the
+    /// ordering is global, its leading keys are the window's partition keys
+    /// in any order, so each partition's rows are adjacent, and the window's
+    /// order keys follow them.
     pub(crate) fn covers_window(&self, window: &WindowSpec) -> bool {
         if self.scope != OrderingScope::Global {
             return false;
         }
         let partition_prefix = self.keys.iter().take_while(|key| window.partition_by.contains(&key.expr)).count();
-        self.keys[partition_prefix..].starts_with(&window.order_by)
+        let prefix = &self.keys[..partition_prefix];
+        window.partition_by.iter().all(|expr| prefix.iter().any(|key| key.expr == *expr))
+            && self.keys[partition_prefix..].starts_with(&window.order_by)
     }
 }
 

@@ -942,3 +942,55 @@ fn filtered_aggregate_input() -> (BackendQueryContext, Arc<Schema>, RecordBatch)
     .unwrap();
     (context, schema, batch)
 }
+
+#[test]
+fn bounded_native_query_shares_one_filtered_source_stream_between_two_aggregates() {
+    // One filter over a Parquet scan feeds two aggregates, so the compiled
+    // pipeline shares the computed stream between two consumers.
+    let context = backend_context();
+    let dir = unique_temp_dir("query-engine-shared-filtered-source");
+    let path = dir.join("fact.parquet");
+    let schema = write_mixed_aggregate_input_fact_row_grouped_parquet(&path);
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
+        &path,
+        Arc::clone(&schema),
+        vec!["entity_id".to_string(), "quantity".to_string(), "measure".to_string()],
+    )));
+    let filtered = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("entity_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2))),
+        Arc::clone(&schema),
+    );
+    let value_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, true)]));
+    let measure = builder.add_aggregate(
+        filtered,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("measure"), "value")],
+        ),
+        Arc::clone(&value_schema),
+    );
+    let quantity = builder.add_aggregate(
+        filtered,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "value")],
+        ),
+        Arc::clone(&value_schema),
+    );
+    let union = builder.add_union(vec![measure, quantity], value_schema);
+    let plan = builder.finish_with_host_sink(union);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    // 12,500 blocks of entity_id [1, 1, 2, 2], quantity [1, 5, 2, 20] and
+    // measure [10, 20, 30, 40]; the filter keeps entity 2.
+    let mut sums = float64_array(batch, 0).values().to_vec();
+    sums.sort_by(f64::total_cmp);
+    assert_eq!(sums, [275_000.0, 875_000.0]);
+
+    std::fs::remove_dir_all(dir).unwrap();
+}

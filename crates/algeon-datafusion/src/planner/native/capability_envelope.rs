@@ -3,7 +3,6 @@ use query_engine::{
     admission::{AdmissionDecision, AdmissionRejection, AdmittedPlan, admit},
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     error::QueryError,
-    exec::preflight_query_plan,
     pipeline::CompiledPipeline,
     plan::QueryPlan,
     rapids_backend::rapids_analysis_context,
@@ -88,19 +87,19 @@ impl NativeCapabilityCompiledGraphDiagnostics {
 /// `plan` is the candidate in the sink form execution runs, so the decision
 /// and the executed plan see the same sink. The boundary check and the
 /// accepted/rejected diagnostics read this decision instead of re-deriving it.
+/// A candidate the validator finds unsupported is rejected like any other
+/// missed contract; only a malformed candidate is an error.
 pub(super) fn native_admission_decision(
     plan: &QueryPlan,
     execution_config: &AlgeonNativeExecutionConfig,
 ) -> DataFusionResult<AdmissionDecision> {
-    preflight_query_plan(plan)
-        .and_then(|()| {
-            admit(
-                plan,
-                execution_config.statistical_aggregate_execution_mode(),
-                rapids_analysis_context().with_policy(execution_config.planning_policy()),
-            )
-        })
-        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
+    admit(
+        plan,
+        execution_config.statistical_aggregate_execution_mode(),
+        execution_config.planning_policy(),
+        rapids_analysis_context(),
+    )
+    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
 }
 
 pub(super) fn accepted_plan_contract_diagnostics(

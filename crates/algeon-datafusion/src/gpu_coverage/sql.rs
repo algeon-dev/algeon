@@ -314,7 +314,7 @@ mod tests {
         let batches = ctx
             .sql(
                 "SELECT query_id, row_kind, gpu_path, coverage_json \
-                 FROM algeon_explain_coverage('SELECT 1') \
+                 FROM algeon_explain_coverage('SELECT x FROM (VALUES (1)) AS t(x)') \
                  WHERE row_kind = 'summary'",
             )
             .await
