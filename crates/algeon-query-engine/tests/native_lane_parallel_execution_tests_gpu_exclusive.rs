@@ -1175,6 +1175,7 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
             .expect("lane source read plan admits");
     let outcome = execute_query_plan(&lane_context, QueryExecutionRequest::admitted(&admitted_plan));
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let output = result.expect("a source read from a work lease completes inline instead of deadlocking");
     let QueryOutput::HostArrow(batch) = output else {
         panic!("host sink should materialize one RecordBatch");

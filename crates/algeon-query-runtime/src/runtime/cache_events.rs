@@ -1,9 +1,6 @@
 //! Structured completion events for asynchronous lakehouse cache fills.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
 /// Structured outcome for an asynchronous lakehouse cache fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,40 +103,6 @@ impl From<&LakehouseCacheFillEvent> for LakehouseCacheFillEventSnapshot {
             error_kind: event.error.as_ref().map(|error| error.kind.clone()),
             error_status: event.error.as_ref().map(|error| error.status.clone()),
             error_operation: event.error.as_ref().map(|error| error.operation.clone()),
-        }
-    }
-}
-
-/// Query-context-local event sink for asynchronous lakehouse cache fill completion.
-#[derive(Debug, Clone, Default)]
-#[doc(hidden)]
-pub struct LakehouseCacheFillEventSink {
-    events: Arc<Mutex<Vec<LakehouseCacheFillEvent>>>,
-}
-
-impl LakehouseCacheFillEventSink {
-    #[doc(hidden)]
-    pub fn record(&self, event: LakehouseCacheFillEvent) {
-        match self.events.lock() {
-            Ok(mut events) => events.push(event),
-            Err(_error) => {
-                eprintln!("[query-engine] warning: failed to record poisoned lakehouse cache fill event sink");
-            },
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn events(&self) -> Vec<LakehouseCacheFillEvent> {
-        match self.events.lock() {
-            Ok(events) => events.clone(),
-            Err(_error) => Vec::new(),
-        }
-    }
-
-    pub(crate) fn drain(&self) -> Vec<LakehouseCacheFillEvent> {
-        match self.events.lock() {
-            Ok(mut events) => events.drain(..).collect(),
-            Err(_error) => Vec::new(),
         }
     }
 }

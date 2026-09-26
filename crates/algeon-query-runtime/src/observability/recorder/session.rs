@@ -1,9 +1,10 @@
 //! Query observation session, seal observers, and recorder event writes.
 
 use std::{
+    collections::BTreeMap,
     fmt,
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -50,6 +51,10 @@ pub(super) struct RuntimeObservationSessionInner {
     pub(super) clock: Arc<dyn RuntimeObservationClock>,
     pub(super) state: Mutex<RuntimeObservationRecorderState>,
     pub(super) sealed: AtomicBool,
+    /// Signals that a sealed snapshot was published. A seal that builds its
+    /// attempt report outside the state lock leaves the session sealed with
+    /// no snapshot until then; a racing seal waits here for it.
+    pub(super) seal_published: Condvar,
 }
 
 pub(super) struct RuntimeObservationSealObserver {
@@ -514,14 +519,24 @@ impl RuntimeObservationSessionInner {
                 attempt_report: None,
                 counter_overflow: state.counter_overflow,
             },
+            plans: BTreeMap::new(),
         }
     }
 
+    /// Waits until a seal in flight publishes its snapshot.
+    pub(super) fn wait_for_seal<'a>(
+        &self,
+        state: MutexGuard<'a, RuntimeObservationRecorderState>,
+    ) -> MutexGuard<'a, RuntimeObservationRecorderState> {
+        self.seal_published.wait(state).unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Takes the retained records and computes the complete footer. The
+    /// footer's attempt report is filled in by the caller.
     pub(super) fn take_sealed_snapshot_data(
         &self,
         state: &mut RuntimeObservationRecorderState,
         outcome: Option<RuntimeTerminalOutcome>,
-        attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> RuntimeObservationSnapshotData {
         let mut topology = std::mem::take(&mut state.topology);
         topology.sort_by(|left, right| left.record.cmp(&right.record).then(left.sequence.cmp(&right.sequence)));
@@ -537,7 +552,7 @@ impl RuntimeObservationSessionInner {
             .iter()
             .map(|(reason, count)| RuntimeObservationReasonLoss { reason: *reason, count: *count })
             .collect();
-        let mut footer = RuntimeObservationFooter {
+        let footer = RuntimeObservationFooter {
             complete: true,
             terminal: outcome,
             retained_records: state.retained_records,
@@ -552,13 +567,12 @@ impl RuntimeObservationSessionInner {
             attempt_report: None,
             counter_overflow: state.counter_overflow,
         };
-        // The provider runs only after the complete footer exists. It returns
-        // the exact immutable report that completion receivers publish, rather
-        // than a pre-seal report which would be missing report-ready facts.
-        footer.attempt_report = attempt_report_provider.map(|provider| provider(&footer, &state.cleanup_failures));
-        debug_assert!(
-            footer.attempt_report.as_ref().is_none_or(|report| { footer.terminal.as_ref() == Some(&report.outcome) })
-        );
-        RuntimeObservationSnapshotData { manifest: self.manifest.clone(), topology, events, footer }
+        RuntimeObservationSnapshotData {
+            manifest: self.manifest.clone(),
+            topology,
+            events,
+            footer,
+            plans: BTreeMap::new(),
+        }
     }
 }

@@ -57,7 +57,7 @@ fn execute_plan(
     }
     let outcome = execute_query_plan(context, request);
     let (result, metrics, _observation) = outcome.into_parts();
-    result.map(|output| QueryExecutionResult::new(output, metrics))
+    result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()))
 }
 
 fn runtime_test_service_with_profiles(

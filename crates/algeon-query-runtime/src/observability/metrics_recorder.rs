@@ -72,6 +72,13 @@ impl MetricsRecorder {
         self.observation.metrics_checkpoint(&self.plan_execution_id)
     }
 
+    /// Freezes this plan execution's metrics and returns them. Facts recorded
+    /// for it afterwards are ignored, so every later checkpoint and the
+    /// sealed snapshot carry this value.
+    pub fn freeze(&self) -> Option<QueryMetricsCheckpoint> {
+        self.observation.freeze_plan_metrics(&self.plan_execution_id)
+    }
+
     /// Source chunk and partial aggregate counts so far, for diagnostic facts.
     /// Never an input to execution decisions.
     pub fn progress(&self) -> ExecutionProgress {

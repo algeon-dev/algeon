@@ -12,7 +12,12 @@ mod support_core;
 mod bounded_join;
 mod exec_plans;
 
-use std::{collections::HashMap, fs, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fs,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 
 use algeon_datafusion::{
     attempt::AttemptOptions,
@@ -22,6 +27,7 @@ use algeon_datafusion::{
         AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeExecutionConfig, AlgeonNativeGpuProducerExec,
         SourceChunking,
     },
+    native_report::NativeDataFusionExecutionMetrics,
     planner::{
         AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, native::wrap_direct_native_plan_with_admission,
     },
@@ -39,12 +45,14 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan, collect, displayable,
         execution_plan::Boundedness,
+        metrics::ExecutionPlanMetricsSet,
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
     },
     prelude::SessionContext,
 };
 use exec_plans::*;
+use futures::StreamExt;
 use query_engine::{
     chunk::SourceChunkPlanningOptions,
     pipeline::{PipelineTaskKind, compile_pipeline},
@@ -53,6 +61,8 @@ use query_engine::{
     source::{GpuResidentSource, SourceNode},
 };
 use support_core::*;
+
+use super::AlgeonNativeMetrics;
 
 fn backend_fixture() -> InstalledTestGpuBackend {
     InstalledTestGpuBackend::with_config(
@@ -449,6 +459,50 @@ fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = diagnostics.expect("native optimizer should record planning diagnostics").report;
     assert_eq!(report.selected_count(), 1);
+}
+
+#[tokio::test]
+async fn deferred_host_wrapper_metrics_project_the_plans_final_metrics() {
+    let dir = unique_temp_dir("algeon-datafusion-native-exec-deferred-host-metrics");
+    let path = dir.join("input.parquet");
+    write_ilike_parquet_file(&path);
+    let fixture = backend_fixture();
+    let config = AlgeonNativeOptimizerConfig::default().with_native_execution_config(bound_execution_config(&fixture));
+    let rule = AlgeonNativePhysicalOptimizerRule::new(config);
+    let plan = rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
+    let attempt = fixture.backend().begin_attempt(AttemptOptions::default()).expect("attempt begins");
+    let (sealed_sender, sealed) = mpsc::channel();
+    attempt.register_sealed_execution_observer(move |_report, snapshot, native_execution| {
+        sealed_sender.send((snapshot, native_execution)).expect("the test receives the seal");
+    });
+
+    let mut stream = attempt.execute_physical_plan(plan, &SessionContext::new()).unwrap();
+    while let Some(batch) = stream.next().await {
+        batch.unwrap();
+    }
+    attempt.completion().await;
+    let (snapshot, native_execution) = sealed.recv_timeout(Duration::from_secs(5)).expect("the attempt seals");
+    let actual = native_execution.expect("the native wrapper's metrics seal with the attempt").metrics;
+
+    let plans = snapshot.events().iter().filter_map(|event| event.plan_execution_id.clone()).collect::<BTreeSet<_>>();
+    assert_eq!(plans.len(), 1, "the query runs one deferred-host plan: {plans:?}");
+    let plan_metrics = snapshot.query_metrics(plans.first().unwrap()).expect("the seal carries the plan's metrics");
+    // The wrapper labels its plan-task rows with its own DataFusion shape.
+    let shape = actual.plan_task_mapping_rows.first().and_then(|row| row.datafusion_shape.clone());
+    let projected = ExecutionPlanMetricsSet::new();
+    AlgeonNativeMetrics::new_with_capture_and_shape(&projected, 0, None, shape.as_deref())
+        .record_query_metrics(plan_metrics);
+    let expected = NativeDataFusionExecutionMetrics {
+        admission_sequence: actual.admission_sequence,
+        admission_wait_time_ns: actual.admission_wait_time_ns,
+        device_ordinal: actual.device_ordinal,
+        query_grant_bytes: actual.query_grant_bytes,
+        ..NativeDataFusionExecutionMetrics::from_metrics(&projected.clone_inner())
+    };
+    assert_eq!(actual.device_to_host_materializations, 1, "the cursor copies the one result batch");
+    assert_eq!(actual, expected, "DataFusion metrics are the projection of the plan's final metrics");
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]

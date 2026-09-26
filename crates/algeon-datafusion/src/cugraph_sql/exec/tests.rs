@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use arrow::{
@@ -1435,7 +1436,7 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
     .unwrap();
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, &native_context);
     let staged_inputs = stage_cugraph_inputs(
         &triangle_spec(),
         memory_edge_source(16),
@@ -1472,7 +1473,7 @@ async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_uplo
     assert!(native_context.is_query_service_admitted());
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, native_context);
     let staged_inputs = stage_cugraph_inputs(
         &triangle_spec(),
         memory_edge_source(16),
@@ -1601,7 +1602,7 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
         .expect("wrong-order fixture must acquire an admitted context");
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics);
+    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, wrong_order_context.context());
     let wrong_order_admitted = admit_query_plan(
         &consumer_gpu_plan,
         wrong_order_context.context().statistical_aggregate_execution_mode(),
@@ -1899,10 +1900,13 @@ fn bfs_singleflight_follower_metrics_identify_coalescing_not_a_graph_cache() {
     let key = exec.bfs_singleflight_key(0).expect("eligible BFS has a transient coalescing key");
     let batches = vec![RecordBatch::new_empty(Arc::new(Schema::empty()))];
 
-    exec.record_bfs_singleflight_gpu_follower_metrics(0, &key, &batches, Some(0), std::time::Duration::ZERO);
-    exec.record_bfs_singleflight_gpu_result_follower_metrics(0, &key, 0, 0, std::time::Duration::ZERO);
-    let host_metrics = AlgeonNativeMetrics::new(&exec.metrics, 0);
-    exec.record_bfs_singleflight_host_follower_metrics(&host_metrics, &key, &batches, std::time::Duration::ZERO);
+    let context = ExecutionContext::standalone(StandaloneConfig::default()).expect("execution context builds");
+    let metrics = AlgeonNativeMetrics::new(&exec.metrics, 0);
+    let mut graph_metrics = GraphExecutionMetrics::new(&metrics, &context);
+    exec.record_bfs_singleflight_gpu_follower_metrics(&graph_metrics, &key, &batches, Some(0), Duration::ZERO);
+    exec.record_bfs_singleflight_gpu_result_follower_metrics(&graph_metrics, &key, 0, 0, Duration::ZERO);
+    exec.record_bfs_singleflight_host_follower_metrics(&graph_metrics, &key, &batches, Duration::ZERO);
+    graph_metrics.finish(Ok(())).expect("follower metrics publish");
 
     let recorded = NativeDataFusionExecutionMetrics::from_metrics(&exec.metrics.clone_inner());
     assert_eq!(recorded.graph_runtime_rows.len(), 3, "one metric row per follower boundary");

@@ -10,8 +10,6 @@ use super::{
     resources::QueryServiceResources,
     *,
 };
-#[cfg(feature = "cugraph")]
-use crate::runtime::query_service::LakehouseCacheFillEventSink;
 use crate::{
     metrics::TraceId,
     observability::{AttemptAdmissionWaitFact, RuntimeStreamLeaseScope},
@@ -433,7 +431,6 @@ impl QueryHandle {
             attempt,
             #[cfg(feature = "cugraph")]
             cache_scope_allocator_correlation: self.lifetime.cache_scope_allocator_correlation(),
-            lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             capability_evidence: self.lifetime.admitted_capability_evidence.clone(),
             memory_control_policy: memory_control_policy_for_grant(self.memory_control_policy(), &memory_grant),
             auxiliary_slots: Arc::clone(&self.lifetime.attempt_auxiliary_slots),

@@ -22,8 +22,8 @@ use super::{
     GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionMetrics,
     GraphExecutionPlan, GraphResidencyDescriptor, MetricsSet, NEXT_CUGRAPH_GPU_RESULT_INPUT_ID,
     NativeExecutionMetricsCapture, NativeExpr, Partitioning, PhysicalExpr, PhysicalSortExpr, PlanNode, PlanProperties,
-    QueryMetrics, RecordBatch, RecordBatchStreamAdapter, Result, Schema, SchemaRef, SendableRecordBatchStream,
-    SortOptions, SourceNode, StagedCugraphInputs, TaskContext, TreeNodeRecursion, TryStreamExt, UploadedCugraphInputs,
+    RecordBatch, RecordBatchStreamAdapter, Result, Schema, SchemaRef, SendableRecordBatchStream, SortOptions,
+    SourceNode, StagedCugraphInputs, TaskContext, TreeNodeRecursion, TryStreamExt, UploadedCugraphInputs,
     attach_graph_residency, check_host_staging_cancellation, collect_cugraph_inputs, counted_cudf_runtime,
     cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted, cugraph_execution_capability_evidence,
     cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor, cugraph_schema_query_plan,
@@ -490,65 +490,72 @@ impl CugraphAlgoExec {
                             let started = Instant::now();
                             self.graph_claim_calibration_capture
                                 .record_bfs_singleflight_follower(follower.leader_attempt_id());
-                            match GraphBfsFollowerRoute::for_gpu_follower(result.kind()) {
-                                GraphBfsFollowerRoute::HandoffGpu => {
-                                    let published = result.gpu_handle().expect("GPU route requires a GPU publication");
-                                    // The published handle is retained by the leader's grant: returning it
-                                    // directly would fail bound refinement with another attempt's lease.
-                                    // Materialize through host staging and re-upload so the follower retains
-                                    // its own grant owner, mirroring the host-follower materialization route.
-                                    // The download completes the leader's device work before the follower
-                                    // re-uploads. The scope claim travels with the copy; the follower's
-                                    // own admission evidence re-verifies it before use.
-                                    let producer_execution_identity = published.producer_execution_identity();
-                                    let metrics = AlgeonNativeMetrics::new_with_capture(
-                                        &self.metrics,
-                                        partition,
-                                        self.metrics_capture.clone(),
-                                    );
-                                    let mut graph_metrics = GraphExecutionMetrics::new(&metrics);
-                                    let output = materialize_gpu_output_eagerly(
-                                        published,
-                                        task_context.as_ref(),
-                                        native_context.cancellation().clone(),
-                                        self.host_boundary_config.max_output_staging_bytes(),
-                                        None,
-                                        &mut graph_metrics,
-                                    )?;
-                                    graph_metrics.finish(Ok(()))?;
-                                    let (batches, _) = output.shared_parts();
-                                    let (handle, _) =
-                                        self.upload_follower_output(native_context, batches.as_slice())?;
-                                    let handle = handle.with_producer_execution_identity(producer_execution_identity);
-                                    follower.record_copy();
-                                    self.record_bfs_singleflight_gpu_result_follower_metrics(
-                                        partition,
-                                        &key,
-                                        u64::try_from(handle.num_rows()).unwrap_or(u64::MAX),
-                                        u64::try_from(handle.num_columns()).unwrap_or(u64::MAX),
-                                        started.elapsed(),
-                                    );
-                                    return Ok((self.gpu_result_input_name.clone(), handle));
-                                },
-                                GraphBfsFollowerRoute::UploadHost => {
-                                    let batches =
-                                        result.host_batches().expect("host upload route requires host batches");
-                                    let (handle, output_device_bytes) =
-                                        self.upload_follower_output(native_context, batches)?;
-                                    follower.record_copy();
-                                    self.record_bfs_singleflight_gpu_follower_metrics(
-                                        partition,
-                                        &key,
-                                        batches,
-                                        output_device_bytes,
-                                        started.elapsed(),
-                                    );
-                                    return Ok((self.gpu_result_input_name.clone(), handle));
-                                },
-                                GraphBfsFollowerRoute::ReuseHost | GraphBfsFollowerRoute::MaterializeGpu => {
-                                    unreachable!("GPU follower route must accept a GPU-resident output")
-                                },
+                            let metrics = AlgeonNativeMetrics::new_with_capture(
+                                &self.metrics,
+                                partition,
+                                self.metrics_capture.clone(),
+                            )
+                            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
+                            let mut graph_metrics = GraphExecutionMetrics::new(&metrics, native_context);
+                            let routed: Result<GpuResultHandle> = async {
+                                match GraphBfsFollowerRoute::for_gpu_follower(result.kind()) {
+                                    GraphBfsFollowerRoute::HandoffGpu => {
+                                        let published =
+                                            result.gpu_handle().expect("GPU route requires a GPU publication");
+                                        // The published handle is retained by the leader's grant: returning it
+                                        // directly would fail bound refinement with another attempt's lease.
+                                        // Materialize through host staging and re-upload so the follower retains
+                                        // its own grant owner, mirroring the host-follower materialization route.
+                                        // The download completes the leader's device work before the follower
+                                        // re-uploads. The scope claim travels with the copy; the follower's
+                                        // own admission evidence re-verifies it before use.
+                                        let producer_execution_identity = published.producer_execution_identity();
+                                        let output = materialize_gpu_output_eagerly(
+                                            published,
+                                            task_context.as_ref(),
+                                            native_context.cancellation().clone(),
+                                            self.host_boundary_config.max_output_staging_bytes(),
+                                            None,
+                                            &graph_metrics,
+                                        )?;
+                                        let (batches, _) = output.shared_parts();
+                                        let (handle, _) =
+                                            self.upload_follower_output(native_context, batches.as_slice())?;
+                                        let handle =
+                                            handle.with_producer_execution_identity(producer_execution_identity);
+                                        follower.record_copy();
+                                        self.record_bfs_singleflight_gpu_result_follower_metrics(
+                                            &graph_metrics,
+                                            &key,
+                                            u64::try_from(handle.num_rows()).unwrap_or(u64::MAX),
+                                            u64::try_from(handle.num_columns()).unwrap_or(u64::MAX),
+                                            started.elapsed(),
+                                        );
+                                        Ok(handle)
+                                    },
+                                    GraphBfsFollowerRoute::UploadHost => {
+                                        let batches =
+                                            result.host_batches().expect("host upload route requires host batches");
+                                        let (handle, output_device_bytes) =
+                                            self.upload_follower_output(native_context, batches)?;
+                                        follower.record_copy();
+                                        self.record_bfs_singleflight_gpu_follower_metrics(
+                                            &graph_metrics,
+                                            &key,
+                                            batches,
+                                            output_device_bytes,
+                                            started.elapsed(),
+                                        );
+                                        Ok(handle)
+                                    },
+                                    GraphBfsFollowerRoute::ReuseHost | GraphBfsFollowerRoute::MaterializeGpu => {
+                                        unreachable!("GPU follower route must accept a GPU-resident output")
+                                    },
+                                }
                             }
+                            .await;
+                            let handle = graph_metrics.finish(routed)?;
+                            return Ok((self.gpu_result_input_name.clone(), handle));
                         },
                         GraphBfsFollowerOutcome::Retry => continue,
                     }
@@ -596,7 +603,7 @@ impl CugraphAlgoExec {
 
     pub(super) fn record_bfs_singleflight_gpu_follower_metrics(
         &self,
-        partition: usize,
+        graph_metrics: &GraphExecutionMetrics<'_>,
         key: &GraphBfsSingleflightKey,
         batches: &[RecordBatch],
         output_device_bytes: Option<u64>,
@@ -606,10 +613,7 @@ impl CugraphAlgoExec {
             .iter()
             .fold(0u64, |rows, batch| rows.saturating_add(u64::try_from(batch.num_rows()).unwrap_or(u64::MAX)));
         let output_columns = batches.first().map_or(0, |batch| u64::try_from(batch.num_columns()).unwrap_or(u64::MAX));
-        let metrics = AlgeonNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
-            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
-        let mut query_metrics = QueryMetrics::default();
-        query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
+        graph_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
             node_id: "bfs_singleflight_follower".to_string(),
             algorithm: "bfs".to_string(),
             runtime_outcome: "succeeded".to_string(),
@@ -630,21 +634,17 @@ impl CugraphAlgoExec {
             host_to_device_uploads: 1,
             ..GraphAlgorithmRuntimeMetrics::default()
         });
-        metrics.record_query_metrics(&query_metrics);
     }
 
     pub(super) fn record_bfs_singleflight_gpu_result_follower_metrics(
         &self,
-        partition: usize,
+        graph_metrics: &GraphExecutionMetrics<'_>,
         key: &GraphBfsSingleflightKey,
         output_rows: u64,
         output_columns: u64,
         elapsed: Duration,
     ) {
-        let metrics = AlgeonNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
-            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
-        let mut query_metrics = QueryMetrics::default();
-        query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
+        graph_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
             node_id: "bfs_singleflight_follower".to_string(),
             algorithm: "bfs".to_string(),
             runtime_outcome: "succeeded".to_string(),
@@ -664,7 +664,6 @@ impl CugraphAlgoExec {
             gpu_resident_input_handoffs: 1,
             ..GraphAlgorithmRuntimeMetrics::default()
         });
-        metrics.record_query_metrics(&query_metrics);
     }
 
     async fn execute_host_result_with_context_impl(
@@ -731,50 +730,52 @@ impl CugraphAlgoExec {
                             drop(staged_inputs.take());
                             self.graph_claim_calibration_capture
                                 .record_bfs_singleflight_follower(follower.leader_attempt_id());
-                            match GraphBfsFollowerRoute::for_host_follower(result.kind()) {
-                                GraphBfsFollowerRoute::ReuseHost => {
-                                    let batches =
-                                        result.host_batches().expect("host reuse route requires host batches");
-                                    follower.record_copy();
-                                    self.record_bfs_singleflight_host_follower_metrics(
-                                        metrics,
-                                        &key,
-                                        batches,
-                                        started.elapsed(),
-                                    );
-                                    let output = EagerCugraphHostOutput::from_published_result(self.schema(), &result)
-                                        .expect("host reuse route requires a host publication");
-                                    return Ok(output.record_datafusion_output(metrics));
-                                },
-                                GraphBfsFollowerRoute::MaterializeGpu => {
-                                    let handle = result
-                                        .gpu_handle()
-                                        .expect("host materialization route requires a GPU publication");
-                                    let mut graph_metrics = GraphExecutionMetrics::new(metrics);
-                                    let output = materialize_gpu_output_eagerly(
-                                        handle,
-                                        task_context.as_ref(),
-                                        native_context.cancellation().clone(),
-                                        self.host_boundary_config.max_output_staging_bytes(),
-                                        None,
-                                        &mut graph_metrics,
-                                    )?;
-                                    graph_metrics.finish(Ok(()))?;
-                                    let (batches, _) = output.shared_parts();
-                                    follower.record_copy();
-                                    self.record_bfs_singleflight_host_follower_metrics_for_input(
-                                        metrics,
-                                        &key,
-                                        batches.as_slice(),
-                                        "singleflight_gpu_result",
-                                        started.elapsed(),
-                                    );
-                                    return Ok(output.record_datafusion_output(metrics));
-                                },
-                                GraphBfsFollowerRoute::UploadHost | GraphBfsFollowerRoute::HandoffGpu => {
-                                    unreachable!("host follower route must produce host Arrow")
-                                },
+                            let mut graph_metrics = GraphExecutionMetrics::new(metrics, native_context);
+                            let routed: Result<EagerCugraphHostOutput> = async {
+                                match GraphBfsFollowerRoute::for_host_follower(result.kind()) {
+                                    GraphBfsFollowerRoute::ReuseHost => {
+                                        let batches =
+                                            result.host_batches().expect("host reuse route requires host batches");
+                                        follower.record_copy();
+                                        self.record_bfs_singleflight_host_follower_metrics(
+                                            &graph_metrics,
+                                            &key,
+                                            batches,
+                                            started.elapsed(),
+                                        );
+                                        Ok(EagerCugraphHostOutput::from_published_result(self.schema(), &result)
+                                            .expect("host reuse route requires a host publication"))
+                                    },
+                                    GraphBfsFollowerRoute::MaterializeGpu => {
+                                        let handle = result
+                                            .gpu_handle()
+                                            .expect("host materialization route requires a GPU publication");
+                                        let output = materialize_gpu_output_eagerly(
+                                            handle,
+                                            task_context.as_ref(),
+                                            native_context.cancellation().clone(),
+                                            self.host_boundary_config.max_output_staging_bytes(),
+                                            None,
+                                            &graph_metrics,
+                                        )?;
+                                        let (batches, _) = output.shared_parts();
+                                        follower.record_copy();
+                                        self.record_bfs_singleflight_host_follower_metrics_for_input(
+                                            &graph_metrics,
+                                            &key,
+                                            batches.as_slice(),
+                                            "singleflight_gpu_result",
+                                            started.elapsed(),
+                                        );
+                                        Ok(output)
+                                    },
+                                    GraphBfsFollowerRoute::UploadHost | GraphBfsFollowerRoute::HandoffGpu => {
+                                        unreachable!("host follower route must produce host Arrow")
+                                    },
+                                }
                             }
+                            .await;
+                            return Ok(graph_metrics.finish(routed)?.record_datafusion_output(metrics));
                         },
                         GraphBfsFollowerOutcome::Retry => continue,
                     }
@@ -792,7 +793,7 @@ impl CugraphAlgoExec {
         singleflight_leader: Option<&mut GraphBfsLeader>,
     ) -> Result<EagerCugraphHostOutput> {
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let mut graph_metrics = GraphExecutionMetrics::new(metrics);
+        let mut graph_metrics = GraphExecutionMetrics::new(metrics, native_context);
         let result = async {
             let UploadedCugraphInputs {
                 edge_schema,
@@ -817,7 +818,7 @@ impl CugraphAlgoExec {
                 native_context.cancellation().clone(),
                 self.host_boundary_config.max_output_staging_bytes(),
                 Some(&host_evidence),
-                &mut graph_metrics,
+                &graph_metrics,
             )?;
             Ok(output)
         };
@@ -827,13 +828,13 @@ impl CugraphAlgoExec {
 
     pub(super) fn record_bfs_singleflight_host_follower_metrics(
         &self,
-        metrics: &AlgeonNativeMetrics,
+        graph_metrics: &GraphExecutionMetrics<'_>,
         key: &GraphBfsSingleflightKey,
         batches: &[RecordBatch],
         elapsed: Duration,
     ) {
         self.record_bfs_singleflight_host_follower_metrics_for_input(
-            metrics,
+            graph_metrics,
             key,
             batches,
             "singleflight_host_result",
@@ -843,7 +844,7 @@ impl CugraphAlgoExec {
 
     fn record_bfs_singleflight_host_follower_metrics_for_input(
         &self,
-        metrics: &AlgeonNativeMetrics,
+        graph_metrics: &GraphExecutionMetrics<'_>,
         key: &GraphBfsSingleflightKey,
         batches: &[RecordBatch],
         input_boundary: &'static str,
@@ -853,8 +854,7 @@ impl CugraphAlgoExec {
             .iter()
             .fold(0u64, |rows, batch| rows.saturating_add(u64::try_from(batch.num_rows()).unwrap_or(u64::MAX)));
         let output_columns = batches.first().map_or(0, |batch| u64::try_from(batch.num_columns()).unwrap_or(u64::MAX));
-        let mut query_metrics = QueryMetrics::default();
-        query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
+        graph_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
             node_id: "bfs_singleflight_follower".to_string(),
             algorithm: "bfs".to_string(),
             runtime_outcome: "succeeded".to_string(),
@@ -873,7 +873,6 @@ impl CugraphAlgoExec {
             elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
             ..GraphAlgorithmRuntimeMetrics::default()
         });
-        metrics.record_query_metrics(&query_metrics);
     }
 
     async fn execute_gpu_result_with_context_physical(
@@ -897,7 +896,7 @@ impl CugraphAlgoExec {
         let metrics = AlgeonNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
             .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let mut graph_metrics = GraphExecutionMetrics::new(&metrics);
+        let mut graph_metrics = GraphExecutionMetrics::new(&metrics, native_context);
         let result = async {
             let UploadedCugraphInputs {
                 edge_schema,
@@ -1280,7 +1279,6 @@ impl ExecutionPlan for CugraphAlgoExec {
                             staged_inputs,
                         )
                         .await?;
-                    metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
                     Ok::<EagerCugraphHostOutput, DataFusionError>(output)
                 },
             )

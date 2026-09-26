@@ -36,7 +36,7 @@ use query_engine::{
     source::SourceNode,
 };
 
-use super::{config::AlgeonNativeExecutionContext, metrics::AlgeonNativeMetrics};
+use super::{config::AlgeonNativeExecutionContext, metrics::DeferredHostMetrics};
 use crate::error::{Error, ErrorCode, Result};
 
 pub(super) const NATIVE_ALGEON_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "AlgeonNativeExec[host-output]";
@@ -129,7 +129,7 @@ pub(crate) struct NativeHostOutputCursor {
     cursor: GpuHostBatchCursor,
     executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
-    metrics: AlgeonNativeMetrics,
+    metrics: DeferredHostMetrics,
     /// The admitted context owns the ticket/handle whose resource epoch must
     /// remain live for each deferred GPU-to-host cursor step. A resident
     /// result alone retains CUDA allocations, but not the query-service
@@ -142,7 +142,7 @@ impl NativeHostOutputCursor {
         cursor: GpuHostBatchCursor,
         executor: GpuExecutorLease,
         observation: RuntimeObservationHandle,
-        metrics: AlgeonNativeMetrics,
+        metrics: DeferredHostMetrics,
         context_lease: AlgeonNativeExecutionContext,
     ) -> Self {
         Self { cursor, executor, observation, metrics, _context_lease: context_lease }
@@ -156,7 +156,7 @@ impl NativeHostOutputCursor {
         publication: NativeOutputPublication,
     ) -> BoxedNativeHostOutputStepFuture {
         Box::pin(async move {
-            let Self { cursor, executor, observation, metrics, _context_lease } = self;
+            let Self { cursor, executor, observation, mut metrics, _context_lease } = self;
             let task_executor = executor.clone();
             let task_observation = observation.clone();
             let (cursor, batch, reservation) = run_gpu_execution_task(
@@ -201,12 +201,12 @@ impl NativeHostOutputCursor {
             )
             .await?;
 
-            metrics.record_deferred_host_sink_executed();
+            metrics.record_sink_executed();
             let Some(batch) = batch else {
                 return Ok(NativeHostOutputStep { cursor: None, batch: None, reservation: None });
             };
-            metrics.record_deferred_host_materialization(batch.num_rows(), get_record_batch_memory_size(&batch));
-            let batch = batch.record_output(&metrics.baseline);
+            metrics.record_materialization(&batch);
+            let batch = batch.record_output(metrics.baseline());
             Ok(NativeHostOutputStep {
                 cursor: Some(Self { cursor, executor, observation, metrics, _context_lease }),
                 batch: Some(batch),

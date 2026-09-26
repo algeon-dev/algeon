@@ -149,10 +149,6 @@ impl QueryAdmission {
                 cache_evictable_resident_bytes = device.admission.cache_evictable_resident_bytes,
                 cache_pinned_in_use_bytes = device.admission.cache_pinned_in_use_bytes,
                 admission_health = ?device.admission.health,
-                telemetry_refresh = ?device.telemetry.last_refresh,
-                allocation_failure_count = device.telemetry.allocation_failure_count,
-                allocation_failure_bytes = device.telemetry.allocation_failure_bytes,
-                largest_allocation_failure_bytes = device.telemetry.largest_allocation_failure_bytes,
                 "query service device backend metrics snapshot"
             );
         }
@@ -160,7 +156,7 @@ impl QueryAdmission {
 
     pub fn diagnostics_payload(&self) -> ServerResult<String> {
         let mut output = String::new();
-        let _ = writeln!(output, "# algeon_admission_stats=1");
+        let _ = writeln!(output, "# algeon_admission_stats=2");
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
                 let queue_policy = backend.queue_policy();
@@ -219,39 +215,6 @@ impl QueryAdmission {
                         device.admission.cache_pinned_in_use_bytes,
                         device.admission.health,
                     );
-                }
-
-                output.push_str("\n[backend_device_telemetry]\n");
-                output.push_str(
-                    "device_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n",
-                );
-                for device in snapshot.devices.iter().flatten() {
-                    match device.telemetry.last_refresh {
-                        Some(refresh) => {
-                            let _ = writeln!(
-                                output,
-                                "{}\t{:?}\t{}\t{}\t{:?}\t{}\t{}\t{}",
-                                device.device_ordinal,
-                                refresh.source,
-                                refresh.sampled_at_unix_ms,
-                                refresh.age_ms,
-                                refresh.availability,
-                                device.telemetry.allocation_failure_count,
-                                device.telemetry.allocation_failure_bytes,
-                                device.telemetry.largest_allocation_failure_bytes,
-                            );
-                        },
-                        None => {
-                            let _ = writeln!(
-                                output,
-                                "{}\tnone\tnone\tnone\tnone\t{}\t{}\t{}",
-                                device.device_ordinal,
-                                device.telemetry.allocation_failure_count,
-                                device.telemetry.allocation_failure_bytes,
-                                device.telemetry.largest_allocation_failure_bytes,
-                            );
-                        },
-                    }
                 }
             },
             #[cfg(test)]
@@ -472,7 +435,7 @@ mod tests {
 
         let payload = admission.diagnostics_payload().unwrap();
 
-        assert!(payload.contains("# algeon_admission_stats=1\n"), "{payload}");
+        assert!(payload.contains("# algeon_admission_stats=2\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
         assert!(payload.contains("# device_profile_count=1\n"), "{payload}");
         assert!(payload.contains("# device_0_max_active_attempts=2\n"), "{payload}");
@@ -489,12 +452,6 @@ mod tests {
         );
         assert!(payload.contains("\t1\t536870912\t16\t16\t0\t0\tOpen\n"), "{payload}");
         assert!(
-            payload.contains(
-                "[backend_device_telemetry]\ndevice_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n0\tnone\tnone\tnone\tnone\t0\t0\t0\n"
-            ),
-            "{payload}"
-        );
-        assert!(
             !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
             "diagnostics must not combine the backend snapshot with separate service reads: {payload}"
         );
@@ -507,7 +464,7 @@ mod tests {
 
         let payload = admission.diagnostics_payload().unwrap();
 
-        assert!(payload.contains("# algeon_admission_stats=1\n"), "{payload}");
+        assert!(payload.contains("# algeon_admission_stats=2\n"), "{payload}");
         assert!(payload.contains("# backend=test_only\n"), "{payload}");
     }
 }

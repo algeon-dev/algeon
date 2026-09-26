@@ -620,7 +620,7 @@ pub(super) fn materialize_gpu_output_eagerly(
     cancellation: ExecutionCancellation,
     max_staging_bytes: usize,
     host_evidence: Option<&HostReservationEvidence>,
-    metrics: &mut GraphExecutionMetrics<'_>,
+    metrics: &GraphExecutionMetrics<'_>,
 ) -> Result<EagerCugraphHostOutput> {
     let output_limit_bytes =
         host_evidence.map_or(max_staging_bytes, |evidence| evidence.output_limit_bytes().min(max_staging_bytes));

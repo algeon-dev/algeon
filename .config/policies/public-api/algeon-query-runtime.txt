@@ -109,8 +109,6 @@ pub query_runtime::metrics::BackendMetric::attempts_completed
 pub query_runtime::metrics::BackendMetric::attempts_duration
 pub query_runtime::metrics::BackendMetric::cache_evictable_resident_bytes
 pub query_runtime::metrics::BackendMetric::cache_pinned_in_use_bytes
-pub query_runtime::metrics::BackendMetric::memory_allocation_failure_bytes
-pub query_runtime::metrics::BackendMetric::memory_allocation_failures
 pub enum query_runtime::metrics::BackendMetricKind
 pub query_runtime::metrics::BackendMetricKind::Counter
 pub query_runtime::metrics::BackendMetricKind::Gauge
@@ -125,7 +123,6 @@ pub const fn query_runtime::metrics::BackendMetricUnit::as_ucum(self) -> &'stati
 pub enum query_runtime::metrics::BackendMetricUpdatePoint
 pub query_runtime::metrics::BackendMetricUpdatePoint::LedgerTransition
 pub query_runtime::metrics::BackendMetricUpdatePoint::ReportReady
-pub query_runtime::metrics::BackendMetricUpdatePoint::TelemetryRefresh
 pub enum query_runtime::metrics::MetricAggregation
 pub query_runtime::metrics::MetricAggregation::Last
 pub query_runtime::metrics::MetricAggregation::Peak
@@ -317,6 +314,7 @@ pub query_runtime::metrics::QueryMetrics::input_batches: u64
 pub query_runtime::metrics::QueryMetrics::input_rows: u64
 pub query_runtime::metrics::QueryMetrics::join_gather_map_bytes: u64
 pub query_runtime::metrics::QueryMetrics::join_strategy_decisions: alloc::vec::Vec<query_runtime::metrics::JoinStrategyDecisionMetrics>
+pub query_runtime::metrics::QueryMetrics::lakehouse_cache_fill_events: alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
 pub query_runtime::metrics::QueryMetrics::materialization_time: core::time::Duration
 pub query_runtime::metrics::QueryMetrics::max_task_observed_peak_bytes: core::option::Option<u64>
 pub query_runtime::metrics::QueryMetrics::max_task_retained_bytes: core::option::Option<u64>
@@ -677,6 +675,7 @@ pub query_runtime::observability::RuntimeObservationRecordClass::CompiledEdge
 pub query_runtime::observability::RuntimeObservationRecordClass::DynamicFilterDetail
 pub query_runtime::observability::RuntimeObservationRecordClass::JobDefinition
 pub query_runtime::observability::RuntimeObservationRecordClass::JoinStrategyDetail
+pub query_runtime::observability::RuntimeObservationRecordClass::LakehouseCacheFillDetail
 pub query_runtime::observability::RuntimeObservationRecordClass::OperatorDetail
 pub query_runtime::observability::RuntimeObservationRecordClass::PlanEdge
 pub query_runtime::observability::RuntimeObservationRecordClass::PlanNode
@@ -943,6 +942,7 @@ pub fn query_runtime::observability::MetricsRecorder::bind(&query_runtime::obser
 pub fn query_runtime::observability::MetricsRecorder::boundary(&self) -> query_runtime::metrics::BoundaryMetrics
 pub fn query_runtime::observability::MetricsRecorder::checkpoint(&self) -> core::option::Option<query_runtime::observability::metrics_summary::QueryMetricsCheckpoint>
 pub fn query_runtime::observability::MetricsRecorder::close_budget_window(&self, impl alloc::string::ToString, query_runtime::observability::recorder::state::BudgetWindow)
+pub fn query_runtime::observability::MetricsRecorder::freeze(&self) -> core::option::Option<query_runtime::observability::metrics_summary::QueryMetricsCheckpoint>
 pub fn query_runtime::observability::MetricsRecorder::new(query_runtime::observability::RuntimeObservationHandle, query_runtime::observability::PlanExecutionId) -> Self
 pub fn query_runtime::observability::MetricsRecorder::open_budget_window(&self) -> query_runtime::observability::recorder::state::BudgetWindow
 pub const fn query_runtime::observability::MetricsRecorder::plan_execution_id(&self) -> &query_runtime::observability::PlanExecutionId
@@ -1417,6 +1417,8 @@ pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::events(&s
 pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::footer(&self) -> &query_runtime::observability::runtime_observation::RuntimeObservationFooter
 pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::manifest(&self) -> &query_runtime::observability::runtime_observation::RuntimeObservationManifest
 pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::topology(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &query_runtime::observability::RuntimeTopologyRecord>
+impl query_runtime::observability::SealedRuntimeObservationSnapshot
+pub fn query_runtime::observability::SealedRuntimeObservationSnapshot::query_metrics(&self, &query_runtime::observability::PlanExecutionId) -> core::option::Option<&query_runtime::metrics::QueryMetrics>
 pub struct query_runtime::observability::SinkDefinitionRow
 pub query_runtime::observability::SinkDefinitionRow::input_task_id: query_planning::execution_contracts::RuntimeTaskId
 pub query_runtime::observability::SinkDefinitionRow::plan_execution_id: query_runtime::observability::PlanExecutionId
@@ -1559,24 +1561,12 @@ pub fn query_runtime::runtime::BackendMetricProjectionError::fmt(&self, &mut cor
 pub enum query_runtime::runtime::BackendMetricSampleValue
 pub query_runtime::runtime::BackendMetricSampleValue::Histogram(query_runtime::runtime::BackendHistogramProjection)
 pub query_runtime::runtime::BackendMetricSampleValue::Scalar(u64)
-pub enum query_runtime::runtime::BackendTelemetryAvailability
-pub query_runtime::runtime::BackendTelemetryAvailability::Available
-pub query_runtime::runtime::BackendTelemetryAvailability::FeatureDisabled
-pub query_runtime::runtime::BackendTelemetryAvailability::Unavailable
-impl core::convert::From<query_runtime::runtime::DeviceTelemetryStatus> for query_runtime::runtime::BackendTelemetryAvailability
-pub fn query_runtime::runtime::BackendTelemetryAvailability::from(query_runtime::runtime::DeviceTelemetryStatus) -> Self
-pub enum query_runtime::runtime::BackendTelemetrySource
-pub query_runtime::runtime::BackendTelemetrySource::Cuda
-pub query_runtime::runtime::BackendTelemetrySource::DeviceMemoryFailureTracker
-pub query_runtime::runtime::BackendTelemetrySource::Nvml
 #[non_exhaustive] pub enum query_runtime::runtime::DeviceTelemetryStatus
 pub query_runtime::runtime::DeviceTelemetryStatus::Available
 pub query_runtime::runtime::DeviceTelemetryStatus::FeatureDisabled
 pub query_runtime::runtime::DeviceTelemetryStatus::Unavailable
 impl query_runtime::runtime::DeviceTelemetryStatus
 pub const fn query_runtime::runtime::DeviceTelemetryStatus::as_str(self) -> &'static str
-impl core::convert::From<query_runtime::runtime::DeviceTelemetryStatus> for query_runtime::runtime::BackendTelemetryAvailability
-pub fn query_runtime::runtime::BackendTelemetryAvailability::from(query_runtime::runtime::DeviceTelemetryStatus) -> Self
 #[non_exhaustive] pub enum query_runtime::runtime::GpuDeviceMemoryLimit
 pub query_runtime::runtime::GpuDeviceMemoryLimit::Automatic
 pub query_runtime::runtime::GpuDeviceMemoryLimit::Automatic::fallback_bytes: u64
@@ -1625,7 +1615,6 @@ pub struct query_runtime::runtime::BackendDeviceMetricsSnapshot
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::admission: query_runtime::runtime::BackendAdmissionMetricsSnapshot
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::device_ordinal: usize
 pub query_runtime::runtime::BackendDeviceMetricsSnapshot::ledger_sequence: u64
-pub query_runtime::runtime::BackendDeviceMetricsSnapshot::telemetry: query_runtime::runtime::BackendTelemetryMetricsSnapshot
 pub struct query_runtime::runtime::BackendHistogramProjection
 pub query_runtime::runtime::BackendHistogramProjection::bucket_counts: [u64; 8]
 pub query_runtime::runtime::BackendHistogramProjection::count: u64
@@ -1648,16 +1637,6 @@ pub query_runtime::runtime::BackendMetricsSnapshot::generation: u64
 impl query_runtime::runtime::BackendMetricsSnapshot
 pub const fn query_runtime::runtime::BackendMetricsSnapshot::device(&self, usize) -> core::option::Option<query_runtime::runtime::BackendDeviceMetricsSnapshot>
 pub fn query_runtime::runtime::BackendMetricsSnapshot::project_backend_metric(&self, &'static query_runtime::metrics::BackendMetricDescriptor) -> core::result::Result<alloc::vec::Vec<query_runtime::runtime::BackendMetricSample>, query_runtime::runtime::BackendMetricProjectionError>
-pub struct query_runtime::runtime::BackendTelemetryMetricsSnapshot
-pub query_runtime::runtime::BackendTelemetryMetricsSnapshot::allocation_failure_bytes: u64
-pub query_runtime::runtime::BackendTelemetryMetricsSnapshot::allocation_failure_count: u64
-pub query_runtime::runtime::BackendTelemetryMetricsSnapshot::largest_allocation_failure_bytes: u64
-pub query_runtime::runtime::BackendTelemetryMetricsSnapshot::last_refresh: core::option::Option<query_runtime::runtime::BackendTelemetryRefreshSnapshot>
-pub struct query_runtime::runtime::BackendTelemetryRefreshSnapshot
-pub query_runtime::runtime::BackendTelemetryRefreshSnapshot::age_ms: u64
-pub query_runtime::runtime::BackendTelemetryRefreshSnapshot::availability: query_runtime::runtime::BackendTelemetryAvailability
-pub query_runtime::runtime::BackendTelemetryRefreshSnapshot::sampled_at_unix_ms: u64
-pub query_runtime::runtime::BackendTelemetryRefreshSnapshot::source: query_runtime::runtime::BackendTelemetrySource
 pub struct query_runtime::runtime::CacheFillBytePermit
 impl query_runtime::runtime::CacheFillBytePermit
 pub fn query_runtime::runtime::CacheFillBytePermit::bytes(&self) -> u64
@@ -1784,7 +1763,6 @@ pub fn query_runtime::runtime::ExecutionContext::with_query_id(&self, impl core:
 pub fn query_runtime::runtime::ExecutionContext::with_runtime_gpu_stream_scope(&self, query_runtime::observability::RuntimeStreamLeaseScope) -> Self
 pub fn query_runtime::runtime::ExecutionContext::with_trace_id(&self, impl core::convert::Into<query_planning::correlation::TraceId>) -> query_planning::error::Result<Self>
 impl query_runtime::runtime::ExecutionContext
-pub fn query_runtime::runtime::ExecutionContext::drain_lakehouse_cache_fill_event_snapshots(&self) -> alloc::vec::Vec<query_runtime::runtime::LakehouseCacheFillEventSnapshot>
 pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_acquire_timeout(&self) -> core::time::Duration
 pub fn query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_budget(&self) -> query_runtime::runtime::cache_fill::CacheFillByteBudget
 pub fn query_runtime::runtime::ExecutionContext::service_stream_pool(&self) -> query_runtime::runtime::context::stream_pool::QueryServiceStreamPool

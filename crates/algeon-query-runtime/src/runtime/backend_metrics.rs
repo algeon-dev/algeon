@@ -1,7 +1,7 @@
 //! Fixed-cardinality backend metrics state.
 //!
 //! This module owns one bounded, backend-generation-scoped projection of
-//! ledger, finalization, and telemetry transitions. It deliberately stores no
+//! ledger and finalization transitions. It deliberately stores no
 //! query correlations, report payloads, or application-provided labels.
 
 use std::{
@@ -21,7 +21,7 @@ use crate::{
         project_backend_duration_histogram,
     },
     observability::{AttemptDisposition, RuntimeTerminalOutcome, SealedAttemptProjection},
-    runtime::gpu::{DeviceAdmissionHealth, DeviceTelemetryStatus, LedgerTransition},
+    runtime::gpu::{DeviceAdmissionHealth, LedgerTransition},
 };
 
 const OPERATION: &str = "query_engine.backend_metrics";
@@ -179,65 +179,6 @@ impl BackendAttemptDurations {
     }
 }
 
-/// Closed source of an explicit backend telemetry refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum BackendTelemetrySource {
-    Cuda,
-    Nvml,
-    DeviceMemoryFailureTracker,
-}
-
-/// Closed availability state recorded with every explicit telemetry refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum BackendTelemetryAvailability {
-    Available,
-    FeatureDisabled,
-    Unavailable,
-}
-
-impl From<DeviceTelemetryStatus> for BackendTelemetryAvailability {
-    fn from(status: DeviceTelemetryStatus) -> Self {
-        match status {
-            DeviceTelemetryStatus::Available => Self::Available,
-            DeviceTelemetryStatus::FeatureDisabled => Self::FeatureDisabled,
-            DeviceTelemetryStatus::Unavailable => Self::Unavailable,
-        }
-    }
-}
-
-/// Cumulative device-memory failure facts sampled by the backend control
-/// plane.
-///
-/// `source_generation` identifies the installation generation that owns the
-/// callback counters. The core never guesses that association: wiring must
-/// provide the generation that owns the sampled report, so stale generations
-/// cannot be double-counted into a newer backend generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) struct BackendMemoryFailureTelemetry {
-    pub(crate) device_ordinal: usize,
-    pub(crate) source_generation: u64,
-    pub(crate) allocation_failure_count: u64,
-    pub(crate) allocation_failure_bytes: u64,
-    pub(crate) largest_allocation_failure_bytes: u64,
-}
-
-/// Explicit telemetry refresh input for one configured device.
-///
-/// `age_ms` is supplied by the control plane and stored verbatim. Before the
-/// first refresh, snapshots expose no refresh record rather than zero-filling
-/// a sample time or age.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) struct BackendTelemetryRefresh {
-    pub(crate) device_ordinal: usize,
-    pub(crate) source: BackendTelemetrySource,
-    pub(crate) sampled_at_unix_ms: u64,
-    pub(crate) age_ms: u64,
-    pub(crate) availability: BackendTelemetryAvailability,
-    pub(crate) memory_failures: Option<BackendMemoryFailureTelemetry>,
-}
-
 /// Closed admission health projected from the owning ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BackendAdmissionHealth {
@@ -285,34 +226,6 @@ impl BackendAttemptMetricsSnapshot {
     }
 }
 
-/// Last refresh metadata for one telemetry source. It contains no source text
-/// or sampled device payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct BackendTelemetryRefreshSnapshot {
-    pub source: BackendTelemetrySource,
-    pub sampled_at_unix_ms: u64,
-    pub age_ms: u64,
-    pub availability: BackendTelemetryAvailability,
-}
-
-/// Telemetry-class counters and refresh status for one configured device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct BackendTelemetryMetricsSnapshot {
-    pub last_refresh: Option<BackendTelemetryRefreshSnapshot>,
-    pub allocation_failure_count: u64,
-    pub allocation_failure_bytes: u64,
-    pub largest_allocation_failure_bytes: u64,
-}
-
-impl BackendTelemetryMetricsSnapshot {
-    const EMPTY: Self = Self {
-        last_refresh: None,
-        allocation_failure_count: 0,
-        allocation_failure_bytes: 0,
-        largest_allocation_failure_bytes: 0,
-    };
-}
-
 /// Ledger-class backend metrics for one fixed device slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackendAdmissionMetricsSnapshot {
@@ -346,7 +259,6 @@ pub struct BackendDeviceMetricsSnapshot {
     pub device_ordinal: usize,
     pub ledger_sequence: u64,
     pub admission: BackendAdmissionMetricsSnapshot,
-    pub telemetry: BackendTelemetryMetricsSnapshot,
 }
 
 /// Coherent fixed-cardinality snapshot of one backend metrics generation.
@@ -471,26 +383,6 @@ impl BackendMetricsSnapshot {
                             });
                         }
                     }
-                }
-            },
-            BackendMetric::memory_allocation_failures => {
-                for device in self.devices.iter().flatten() {
-                    push_scalar_sample(
-                        &mut samples,
-                        descriptor,
-                        device_attributes(descriptor, device.device_ordinal),
-                        device.telemetry.allocation_failure_count,
-                    );
-                }
-            },
-            BackendMetric::memory_allocation_failure_bytes => {
-                for device in self.devices.iter().flatten() {
-                    push_scalar_sample(
-                        &mut samples,
-                        descriptor,
-                        device_attributes(descriptor, device.device_ordinal),
-                        device.telemetry.allocation_failure_bytes,
-                    );
                 }
             },
             BackendMetric::cache_evictable_resident_bytes => {
@@ -777,13 +669,6 @@ struct DeviceMetricsState {
     device_ordinal: usize,
     ledger_sequence: u64,
     admission: BackendAdmissionMetricsSnapshot,
-    telemetry: BackendTelemetryMetricsSnapshot,
-    #[cfg(test)]
-    memory_failure_source_generation: u64,
-    #[cfg(test)]
-    observed_failure_count: u64,
-    #[cfg(test)]
-    observed_failure_bytes: u64,
 }
 
 impl DeviceMetricsState {
@@ -792,13 +677,6 @@ impl DeviceMetricsState {
         device_ordinal: 0,
         ledger_sequence: 0,
         admission: BackendAdmissionMetricsSnapshot::EMPTY,
-        telemetry: BackendTelemetryMetricsSnapshot::EMPTY,
-        #[cfg(test)]
-        memory_failure_source_generation: 0,
-        #[cfg(test)]
-        observed_failure_count: 0,
-        #[cfg(test)]
-        observed_failure_bytes: 0,
     };
 
     const fn configured(device_ordinal: usize) -> Self {
@@ -824,43 +702,11 @@ impl DeviceMetricsState {
         };
     }
 
-    #[cfg(test)]
-    fn record_telemetry_refresh(&mut self, refresh: BackendTelemetryRefresh) -> BackendTelemetryRefreshSnapshot {
-        let metadata = BackendTelemetryRefreshSnapshot {
-            source: refresh.source,
-            sampled_at_unix_ms: refresh.sampled_at_unix_ms,
-            age_ms: refresh.age_ms,
-            availability: refresh.availability,
-        };
-        self.telemetry.last_refresh = Some(metadata);
-        let Some(memory_failures) = refresh.memory_failures else {
-            return metadata;
-        };
-        if memory_failures.source_generation < self.memory_failure_source_generation {
-            return metadata;
-        }
-        if memory_failures.source_generation > self.memory_failure_source_generation {
-            self.memory_failure_source_generation = memory_failures.source_generation;
-            self.observed_failure_count = 0;
-            self.observed_failure_bytes = 0;
-        }
-        let count_delta = memory_failures.allocation_failure_count.saturating_sub(self.observed_failure_count);
-        let byte_delta = memory_failures.allocation_failure_bytes.saturating_sub(self.observed_failure_bytes);
-        self.telemetry.allocation_failure_count = self.telemetry.allocation_failure_count.saturating_add(count_delta);
-        self.telemetry.allocation_failure_bytes = self.telemetry.allocation_failure_bytes.saturating_add(byte_delta);
-        self.telemetry.largest_allocation_failure_bytes =
-            self.telemetry.largest_allocation_failure_bytes.max(memory_failures.largest_allocation_failure_bytes);
-        self.observed_failure_count = self.observed_failure_count.max(memory_failures.allocation_failure_count);
-        self.observed_failure_bytes = self.observed_failure_bytes.max(memory_failures.allocation_failure_bytes);
-        metadata
-    }
-
     const fn snapshot(self) -> BackendDeviceMetricsSnapshot {
         BackendDeviceMetricsSnapshot {
             device_ordinal: self.device_ordinal,
             ledger_sequence: self.ledger_sequence,
             admission: self.admission,
-            telemetry: self.telemetry,
         }
     }
 }
@@ -881,8 +727,8 @@ impl BackendMetricsState {
 /// One backend-owned fixed-cardinality metrics store.
 ///
 /// The store is created once for the backend's resource generation. All update
-/// methods are crate-private so only the owning ledger observer, sealed-report
-/// sink, and explicit telemetry control path can feed it.
+/// methods are crate-private so only the owning ledger observer and the
+/// sealed-report sink can feed it.
 #[derive(Clone, Debug)]
 pub(crate) struct BackendMetricsStore {
     backend_generation: u64,
@@ -962,45 +808,6 @@ impl BackendMetricsStore {
         state.advance_generation();
     }
 
-    /// Records one explicit, control-plane telemetry refresh.
-    #[cfg(test)]
-    pub(crate) fn refresh_telemetry(
-        &self,
-        refresh: BackendTelemetryRefresh,
-    ) -> Result<BackendTelemetryRefreshSnapshot> {
-        if refresh.memory_failures.is_some_and(|memory_failures| memory_failures.source_generation == 0) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "memory-failure telemetry requires a nonzero source generation",
-            )
-            .with_fact("device_ordinal", refresh.device_ordinal)
-            .with_fact("reason", "zero_memory_failure_source_generation"));
-        }
-        if let Some(memory_failures) = refresh.memory_failures
-            && memory_failures.device_ordinal != refresh.device_ordinal
-        {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "memory-failure telemetry device does not match its refresh device",
-            )
-            .with_fact("refresh_device_ordinal", refresh.device_ordinal)
-            .with_fact("memory_failure_device_ordinal", memory_failures.device_ordinal)
-            .with_fact("reason", "memory_failure_telemetry_device_mismatch"));
-        }
-        let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
-        let Some(device) = state.devices.get_mut(refresh.device_ordinal) else {
-            return Err(unknown_telemetry_device_error(refresh.device_ordinal));
-        };
-        if !device.configured {
-            return Err(unknown_telemetry_device_error(refresh.device_ordinal));
-        }
-        let metadata = device.record_telemetry_refresh(refresh);
-        state.advance_generation();
-        Ok(metadata)
-    }
-
     /// Returns one coherent pull snapshot without exposing the mutable store.
     pub(crate) fn snapshot(&self) -> BackendMetricsSnapshot {
         let state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
@@ -1023,17 +830,6 @@ impl BackendMetricsStore {
         let state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         snapshot.generation == state.generation
     }
-}
-
-#[cfg(test)]
-fn unknown_telemetry_device_error(device_ordinal: usize) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::InvalidPlan,
-        OPERATION,
-        "telemetry refresh names a device outside this backend generation",
-    )
-    .with_fact("device_ordinal", device_ordinal)
-    .with_fact("reason", "unknown_backend_metrics_telemetry_device")
 }
 
 #[cfg(test)]
@@ -1195,110 +991,11 @@ mod tests {
         assert!(!store.is_snapshot_current(&before));
         assert!(store.is_snapshot_current(&after_ledger));
 
-        store
-            .refresh_telemetry(BackendTelemetryRefresh {
-                device_ordinal: 3,
-                source: BackendTelemetrySource::Cuda,
-                sampled_at_unix_ms: 99,
-                age_ms: 7,
-                availability: BackendTelemetryAvailability::Available,
-                memory_failures: None,
-            })
-            .unwrap();
-        let after_telemetry = store.snapshot();
-        assert!(after_telemetry.generation > after_ledger.generation);
-        assert!(after_ledger.is_torn_against(&after_telemetry));
-        assert!(store.is_snapshot_current(&after_telemetry));
-    }
-
-    #[test]
-    fn telemetry_refresh_uses_explicit_age_and_exact_cumulative_failure_deltas() {
-        let store = BackendMetricsStore::new(45, &[3]).unwrap();
-        store.record_ledger_transition(&ledger_transition(4, 1, 100, 50, 0));
-        let admission_before_refresh = store.snapshot().device(3).unwrap().admission;
-        assert_eq!(store.snapshot().device(3).unwrap().telemetry.last_refresh, None);
-
-        let first = BackendTelemetryRefresh {
-            device_ordinal: 3,
-            source: BackendTelemetrySource::DeviceMemoryFailureTracker,
-            sampled_at_unix_ms: 123,
-            age_ms: 19,
-            availability: BackendTelemetryAvailability::Available,
-            memory_failures: Some(BackendMemoryFailureTelemetry {
-                device_ordinal: 3,
-                source_generation: 8,
-                allocation_failure_count: 3,
-                allocation_failure_bytes: 70,
-                largest_allocation_failure_bytes: 40,
-            }),
-        };
-        let returned = store.refresh_telemetry(first).unwrap();
-        store.refresh_telemetry(first).unwrap();
-        let refreshed = store.snapshot().device(3).unwrap().telemetry;
-        assert_eq!(
-            refreshed.last_refresh,
-            Some(BackendTelemetryRefreshSnapshot {
-                source: BackendTelemetrySource::DeviceMemoryFailureTracker,
-                sampled_at_unix_ms: 123,
-                age_ms: 19,
-                availability: BackendTelemetryAvailability::Available,
-            })
-        );
-        assert_eq!(refreshed.allocation_failure_count, 3);
-        assert_eq!(refreshed.allocation_failure_bytes, 70);
-        assert_eq!(refreshed.largest_allocation_failure_bytes, 40);
-        assert_eq!(store.snapshot().device(3).unwrap().admission, admission_before_refresh);
-        assert_eq!(returned, refreshed.last_refresh.unwrap());
-
-        store
-            .refresh_telemetry(BackendTelemetryRefresh {
-                memory_failures: Some(BackendMemoryFailureTelemetry {
-                    device_ordinal: 3,
-                    source_generation: 8,
-                    allocation_failure_count: 4,
-                    allocation_failure_bytes: 91,
-                    largest_allocation_failure_bytes: 44,
-                }),
-                ..first
-            })
-            .unwrap();
-        let incremented = store.snapshot().device(3).unwrap().telemetry;
-        assert_eq!(incremented.allocation_failure_count, 4);
-        assert_eq!(incremented.allocation_failure_bytes, 91);
-        assert_eq!(incremented.largest_allocation_failure_bytes, 44);
-
-        store
-            .refresh_telemetry(BackendTelemetryRefresh {
-                memory_failures: Some(BackendMemoryFailureTelemetry {
-                    device_ordinal: 3,
-                    source_generation: 8,
-                    allocation_failure_count: 3,
-                    allocation_failure_bytes: 70,
-                    largest_allocation_failure_bytes: 40,
-                }),
-                ..first
-            })
-            .unwrap();
-        let regressed = store.snapshot().device(3).unwrap().telemetry;
-        assert_eq!(regressed.allocation_failure_count, 4);
-        assert_eq!(regressed.allocation_failure_bytes, 91);
-
-        store
-            .refresh_telemetry(BackendTelemetryRefresh {
-                memory_failures: Some(BackendMemoryFailureTelemetry {
-                    device_ordinal: 3,
-                    source_generation: 7,
-                    allocation_failure_count: 100,
-                    allocation_failure_bytes: 1_000,
-                    largest_allocation_failure_bytes: 1_000,
-                }),
-                ..first
-            })
-            .unwrap();
-        let stale = store.snapshot().device(3).unwrap().telemetry;
-        assert_eq!(stale.allocation_failure_count, 4);
-        assert_eq!(stale.allocation_failure_bytes, 91);
-        assert_eq!(stale.largest_allocation_failure_bytes, 44);
+        store.record_ledger_transition(&ledger_transition(2, 0, 0, 0, 0));
+        let after_release = store.snapshot();
+        assert!(after_release.generation > after_ledger.generation);
+        assert!(after_ledger.is_torn_against(&after_release));
+        assert!(store.is_snapshot_current(&after_release));
     }
 
     #[test]

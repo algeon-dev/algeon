@@ -413,6 +413,7 @@ fn bounded_native_query_reports_typed_failure_when_a_skewed_build_partition_cann
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("an indivisible build partition must fail with the cap cause");
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.operation(), "query_engine.bounded.join.build_partition_concat", "{error:?}");
@@ -507,6 +508,7 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("the deadline elapses before the build recovery completes");
     assert_eq!(error.code(), QueryErrorCode::Cancelled, "{error:?}");
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));

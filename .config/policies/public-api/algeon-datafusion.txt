@@ -1725,10 +1725,6 @@ pub use algeon_datafusion::observability::BackendMetricSampleValue
 pub use algeon_datafusion::observability::BackendMetricUnit
 pub use algeon_datafusion::observability::BackendMetricUpdatePoint
 pub use algeon_datafusion::observability::BackendMetricsSnapshot
-pub use algeon_datafusion::observability::BackendTelemetryAvailability
-pub use algeon_datafusion::observability::BackendTelemetryMetricsSnapshot
-pub use algeon_datafusion::observability::BackendTelemetryRefreshSnapshot
-pub use algeon_datafusion::observability::BackendTelemetrySource
 pub use algeon_datafusion::observability::CacheGraphActivity
 pub use algeon_datafusion::observability::CacheSourceActivity
 pub use algeon_datafusion::observability::CacheSourceEventSnapshot

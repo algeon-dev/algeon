@@ -56,8 +56,7 @@ pub use backend_metrics::{
     BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptMetricsSnapshot,
     BackendAttemptOutcome, BackendDeviceMetricsSnapshot, BackendHistogramProjection, BackendHistogramSnapshot,
     BackendMetricAttribute, BackendMetricAttributeValue, BackendMetricProjectionError, BackendMetricSample,
-    BackendMetricSampleValue, BackendMetricsSnapshot, BackendTelemetryAvailability, BackendTelemetryMetricsSnapshot,
-    BackendTelemetryRefreshSnapshot, BackendTelemetrySource,
+    BackendMetricSampleValue, BackendMetricsSnapshot,
 };
 pub use cache::{
     CacheGraphActivity, CacheSourceActivity, CacheSourceEventSnapshot, DeviceCacheReport, cache_observation_fingerprint,

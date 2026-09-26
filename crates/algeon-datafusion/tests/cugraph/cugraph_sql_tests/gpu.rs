@@ -458,6 +458,22 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
     assert_eq!(first.num_rows(), 2);
     assert!(!completion.is_ready(), "the attempt cannot seal while its deferred native cursor remains live");
 
+    let admission = backend.admission_snapshot().unwrap();
+    assert_eq!(admission.active_queries, 1, "the context lease must survive the first deferred host batch");
+    let live_ledgers = backend.device_ledger_reports().unwrap();
+    let [live_ledger] = live_ledgers.as_slice() else {
+        panic!("one-device fixture must expose exactly one ledger: {live_ledgers:#?}");
+    };
+    assert_eq!(live_ledger.active_attempts, 1);
+    assert_eq!(live_ledger.grants.len(), 1, "the immutable attempt grant remains owned by the deferred cursor");
+    let live_grant = &live_ledger.grants[0];
+    assert!(live_grant.grant_bytes > 0);
+    let live_ledger_sequence = live_ledger.sequence;
+
+    while let Some(batch) = stream.next().await {
+        batch.expect("the composed consumer stream must complete without a second execution path");
+    }
+    // The deferred consumer's metrics reach DataFusion once its cursor ends.
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
     assert_eq!(metrics.graph_runtime_rows.len(), 2, "the composed attempt must record both graph producers");
     assert!(metrics.graph_runtime_rows.iter().all(|row| {
@@ -492,21 +508,6 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
         "the cuDF interop observation must match the categorized native D2H boundaries",
     );
 
-    let admission = backend.admission_snapshot().unwrap();
-    assert_eq!(admission.active_queries, 1, "the context lease must survive the first deferred host batch");
-    let live_ledgers = backend.device_ledger_reports().unwrap();
-    let [live_ledger] = live_ledgers.as_slice() else {
-        panic!("one-device fixture must expose exactly one ledger: {live_ledgers:#?}");
-    };
-    assert_eq!(live_ledger.active_attempts, 1);
-    assert_eq!(live_ledger.grants.len(), 1, "the immutable attempt grant remains owned by the deferred cursor");
-    let live_grant = &live_ledger.grants[0];
-    assert!(live_grant.grant_bytes > 0);
-    let live_ledger_sequence = live_ledger.sequence;
-
-    while let Some(batch) = stream.next().await {
-        batch.expect("the composed consumer stream must complete without a second execution path");
-    }
     let report = completion.await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert_eq!(

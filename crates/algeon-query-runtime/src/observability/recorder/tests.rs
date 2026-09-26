@@ -17,6 +17,7 @@ use crate::{
     observability::{
         CleanupFailurePhase, DeterministicRuntimeObservationClock, PlanNodeRow, QueryBoundaryKind, RuntimePlanNodeId,
     },
+    runtime::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome},
 };
 
 #[test]
@@ -698,6 +699,107 @@ fn each_plan_execution_projects_only_its_own_facts() {
 
     let unseen = handle.metrics_checkpoint(&PlanExecutionId::new("plan-never-ran")).unwrap();
     assert_eq!(unseen.summary, QueryMetricsSummary::default(), "an execution with no facts reports empty totals");
+}
+
+#[test]
+fn a_frozen_plan_ignores_later_facts_and_seals_its_frozen_metrics() {
+    let session = metrics_session("frozen-plan-metrics", RuntimeObservationConfig::native_execution());
+    let handle = session.handle();
+    let frozen = PlanExecutionId::new("plan-frozen");
+    let open = PlanExecutionId::new("plan-open");
+
+    handle.record_source_read(&frozen, SourceReadFact::InputBatch { rows: 3 });
+    let checkpoint = handle.freeze_plan_metrics(&frozen).unwrap();
+    handle.record_source_read(&frozen, SourceReadFact::InputBatch { rows: 4 });
+    handle.record_source_read_row(&frozen, source_row(1));
+    handle.record_source_read(&open, SourceReadFact::InputBatch { rows: 5 });
+
+    assert_eq!(checkpoint.summary.source_read.input_rows, 3);
+    assert_eq!(handle.metrics_checkpoint(&frozen).unwrap(), checkpoint, "a late fact leaves the frozen value");
+    let sealed = session.seal(RuntimeTerminalOutcome::Succeeded).unwrap();
+    let frozen_metrics = sealed.query_metrics(&frozen).expect("the seal carries the frozen plan");
+    assert_eq!(frozen_metrics.input_rows, 3);
+    assert!(frozen_metrics.source_read_runtime_rows.is_empty());
+    assert_eq!(frozen_metrics.query_id.as_str(), "frozen-plan-metrics");
+    assert_eq!(sealed.query_metrics(&open).expect("an open plan freezes at seal").input_rows, 5);
+}
+
+fn cache_fill_event(cache_path_hash: &str, error: Option<LakehouseCacheFillErrorEvent>) -> LakehouseCacheFillEvent {
+    LakehouseCacheFillEvent {
+        outcome: if error.is_some() { LakehouseCacheFillOutcome::Failed } else { LakehouseCacheFillOutcome::Completed },
+        bytes: error.is_none().then_some(4096),
+        elapsed: Duration::from_millis(7),
+        cache_path_hash: cache_path_hash.to_string(),
+        stable_id_hash: "stable-id-hash".to_string(),
+        file_index: Some(2),
+        chunk_index: None,
+        error,
+    }
+}
+
+#[test]
+fn cache_fill_events_reach_the_next_plan_to_freeze_once() {
+    let session = metrics_session("cache-fill-events", RuntimeObservationConfig::native_execution());
+    let handle = session.handle();
+    let first = PlanExecutionId::new("plan-a");
+    let second = PlanExecutionId::new("plan-b");
+
+    handle.record_lakehouse_cache_fill(&cache_fill_event("completed-path", None));
+    handle.record_lakehouse_cache_fill(&cache_fill_event(
+        "failed-path",
+        Some(LakehouseCacheFillErrorEvent {
+            code: "cudf_dependency_failure".to_string(),
+            kind: "external".to_string(),
+            status: "temporary".to_string(),
+            operation: "query_engine.lakehouse_cache.background_fill.fetch".to_string(),
+        }),
+    ));
+    let mut first_metrics = QueryMetrics::default();
+    first_metrics.apply_owner_checkpoint(&handle.freeze_plan_metrics(&first).unwrap());
+    handle.record_lakehouse_cache_fill(&cache_fill_event("later-path", None));
+    let mut second_metrics = QueryMetrics::default();
+    second_metrics.apply_owner_checkpoint(&handle.freeze_plan_metrics(&second).unwrap());
+
+    let first_events = &first_metrics.lakehouse_cache_fill_events;
+    assert_eq!(first_events.len(), 2);
+    assert_eq!((first_events[0].outcome, first_events[0].bytes), ("completed", Some(4096)));
+    assert_eq!(first_events[1].outcome, "failed");
+    assert_eq!(first_events[1].error_operation.as_deref(), Some("query_engine.lakehouse_cache.background_fill.fetch"));
+    assert_eq!(
+        second_metrics
+            .lakehouse_cache_fill_events
+            .iter()
+            .map(|event| event.cache_path_hash.as_str())
+            .collect::<Vec<_>>(),
+        ["later-path"],
+        "a frozen plan keeps its events and the next plan takes only later ones",
+    );
+}
+
+#[test]
+fn cache_fill_events_share_the_query_record_limit_and_count_their_loss() {
+    let session = metrics_session("cache-fill-loss", RuntimeObservationConfig::bounded(1, 64 * 1024));
+    let handle = session.handle();
+    let plan = PlanExecutionId::new("plan");
+
+    handle.record_lakehouse_cache_fill(&cache_fill_event("kept-path", None));
+    handle.record_lakehouse_cache_fill(&cache_fill_event("dropped-path", None));
+    let mut metrics = QueryMetrics::default();
+    metrics.apply_owner_checkpoint(&handle.freeze_plan_metrics(&plan).unwrap());
+    let sealed = session.seal(RuntimeTerminalOutcome::Succeeded).unwrap();
+
+    assert_eq!(metrics.lakehouse_cache_fill_events.len(), 1);
+    assert_eq!(metrics.lakehouse_cache_fill_events[0].cache_path_hash, "kept-path");
+    assert!(sealed.footer().truncated);
+    assert!(
+        sealed
+            .footer()
+            .dropped_by_class
+            .iter()
+            .any(|loss| loss.class == RuntimeObservationRecordClass::LakehouseCacheFillDetail && loss.count == 1),
+        "{:?}",
+        sealed.footer().dropped_by_class,
+    );
 }
 
 #[test]

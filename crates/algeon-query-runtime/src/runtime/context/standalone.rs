@@ -17,7 +17,6 @@ use super::{
     super::{
         CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
         QueryExecutionConfig, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
-        cache_events::LakehouseCacheFillEventSink,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
         service_stream::{default_service_stream_pool_size_for_device, validate_service_stream_pool_size},
@@ -358,7 +357,6 @@ impl StandaloneScopes {
                 memory_control_policy: self.memory_control_policy,
                 cancellation: self.cancellation,
                 observation_owner,
-                lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             })),
             stream: Arc::new(StreamBinding::Standalone { runtime: self.runtime }),
             device: Arc::new(self.device),

@@ -26,6 +26,7 @@ use tokio::{
 use super::{admission::AdmissionTicket, *};
 use crate::{
     attempt::{AttemptBackendCounters, AttemptCompletion, AttemptLifecycleError, AttemptOwner, BeginAttemptRequest},
+    metrics::QueryMetrics,
     observability::{
         AdmissionLifecycleState, AttemptAllocatorEventAction, AttemptAllocatorEventSource, AttemptCapacityDisposition,
         AttemptCleanupDisposition, AttemptDeviceHealthStatus, AttemptDisposition, AttemptEvidenceField,

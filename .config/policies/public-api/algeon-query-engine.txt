@@ -54,9 +54,16 @@ pub query_engine::exec::output::QueryOutput::HostArrow(arrow_array::record_batch
 impl query_engine::exec::output::QueryOutput
 pub fn query_engine::exec::output::QueryOutput::as_gpu_resident(&self) -> core::option::Option<&query_runtime::runtime::resident::GpuResultHandle>
 pub fn query_engine::exec::output::QueryOutput::as_host_arrow(&self) -> core::option::Option<&arrow_array::record_batch::RecordBatch>
+pub struct query_engine::exec::output::PlanMetrics
+impl query_engine::exec::output::PlanMetrics
+pub fn query_engine::exec::output::PlanMetrics::bind(&query_runtime::runtime::context::ExecutionContext, &str) -> Self
+pub fn query_engine::exec::output::PlanMetrics::freeze(&self) -> query_runtime::metrics::QueryMetrics
+pub const fn query_engine::exec::output::PlanMetrics::recorder(&self) -> &query_runtime::observability::metrics_recorder::MetricsRecorder
+pub fn query_engine::exec::output::PlanMetrics::snapshot(&self) -> query_runtime::metrics::QueryMetrics
 pub struct query_engine::exec::output::QueryExecutionOutcome
 impl query_engine::exec::output::QueryExecutionOutcome
-pub fn query_engine::exec::output::QueryExecutionOutcome::into_parts(self) -> (core::result::Result<query_engine::exec::output::QueryOutput, query_planning::error::QueryError>, query_runtime::metrics::QueryMetrics, core::option::Option<query_runtime::observability::recorder::SealedRuntimeObservationSnapshot>)
+pub fn query_engine::exec::output::QueryExecutionOutcome::into_parts(self) -> (core::result::Result<query_engine::exec::output::QueryOutput, query_planning::error::QueryError>, query_engine::exec::output::PlanMetrics, core::option::Option<query_runtime::observability::recorder::SealedRuntimeObservationSnapshot>)
+pub const fn query_engine::exec::output::QueryExecutionOutcome::metrics(&self) -> &query_engine::exec::output::PlanMetrics
 pub struct query_engine::exec::output::QueryExecutionResult
 impl query_engine::exec::output::QueryExecutionResult
 pub fn query_engine::exec::output::QueryExecutionResult::into_parts(self) -> (query_engine::exec::output::QueryOutput, query_runtime::metrics::QueryMetrics)

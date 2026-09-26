@@ -370,7 +370,7 @@ impl BackendQueryContext {
             QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(gpu_inputs),
         );
         let (result, metrics, _observation) = outcome.into_parts();
-        let result = result.map(|output| QueryExecutionResult::new(output, metrics));
+        let result = result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()));
         if result.is_err()
             || result.as_ref().is_ok_and(|result| !matches!(result.output(), QueryOutput::GpuResident(_)))
         {
@@ -419,7 +419,7 @@ impl TestExecutionContext for AdmittedPlanContext {
             QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(gpu_inputs),
         );
         let (result, metrics, _observation) = outcome.into_parts();
-        result.map(|output| QueryExecutionResult::new(output, metrics))
+        result.map(|output| QueryExecutionResult::new(output, metrics.snapshot()))
     }
 }
 

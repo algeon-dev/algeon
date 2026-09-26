@@ -11,7 +11,6 @@ use query_planning::{
 use serde_json::Value;
 
 use super::{
-    cache_events::LakehouseCacheFillEventSink,
     cache_fill::default_lakehouse_cache_fill_budget_bytes_from_physical_memory,
     object_store::default_object_store_control_runtime,
     service_stream::{
@@ -22,7 +21,7 @@ use super::{
 };
 use crate::observability::AdmissionRequestId;
 
-fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
+fn p6_snapshot_json_samples() -> [(&'static str, Value); 9] {
     let backend_metrics = super::backend_metrics::BackendMetricsStore::new(7, &[3])
         .expect("fixed backend metrics fixture initializes")
         .snapshot();
@@ -179,11 +178,13 @@ fn snapshot_json_shape(value: &Value) -> Value {
     }
 }
 
-fn p6_snapshot_json_v1_golden(name: &str) -> Value {
+/// Each snapshot's shape golden lives under the version of that snapshot's
+/// JSON shape.
+fn p6_snapshot_json_golden(name: &str) -> Value {
     let fixture = match name {
         "backend_metrics_snapshot" => include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/backend_snapshot_json_v1/backend_metrics_snapshot.json"
+            "/tests/fixtures/backend_snapshot_json_v2/backend_metrics_snapshot.json"
         )),
         "query_service_admission_snapshot" => include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -217,18 +218,18 @@ fn p6_snapshot_json_v1_golden(name: &str) -> Value {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/backend_snapshot_json_v1/gpu_backend_close_snapshot.json"
         )),
-        _ => panic!("missing backend snapshot JSON v1 golden: {name}"),
+        _ => panic!("missing backend snapshot JSON golden: {name}"),
     };
     serde_json::from_str(fixture).expect("versioned backend snapshot JSON golden is valid")
 }
 
 #[test]
-fn p6_snapshot_json_v1_shapes_match_versioned_goldens() {
-    for (name, value) in p6_snapshot_json_v1_samples() {
+fn p6_snapshot_json_shapes_match_versioned_goldens() {
+    for (name, value) in p6_snapshot_json_samples() {
         assert_eq!(
             snapshot_json_shape(&value),
-            p6_snapshot_json_v1_golden(name),
-            "backend snapshot JSON v1 shape changed for {name}"
+            p6_snapshot_json_golden(name),
+            "backend snapshot JSON shape changed for {name}"
         );
     }
 }
@@ -427,95 +428,6 @@ fn execution_context_records_lakehouse_cache_fill_resource_limits() {
     assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
     assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(11));
     assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 3);
-}
-
-#[test]
-fn lakehouse_cache_fill_event_sink_records_structured_events() {
-    let sink = LakehouseCacheFillEventSink::default();
-
-    sink.record(LakehouseCacheFillEvent {
-        outcome: LakehouseCacheFillOutcome::Completed,
-        bytes: Some(4096),
-        elapsed: Duration::from_millis(7),
-        cache_path_hash: "cache-path-hash".to_string(),
-        stable_id_hash: "stable-id-hash".to_string(),
-        file_index: Some(2),
-        chunk_index: None,
-        error: None,
-    });
-    sink.record(LakehouseCacheFillEvent {
-        outcome: LakehouseCacheFillOutcome::Failed,
-        bytes: None,
-        elapsed: Duration::from_millis(3),
-        cache_path_hash: "failed-path-hash".to_string(),
-        stable_id_hash: "failed-stable-hash".to_string(),
-        file_index: Some(3),
-        chunk_index: Some(4),
-        error: Some(LakehouseCacheFillErrorEvent {
-            code: "cudf_dependency_failure".to_string(),
-            kind: "external".to_string(),
-            status: "temporary".to_string(),
-            operation: "query_engine.lakehouse_cache.background_fill.fetch".to_string(),
-        }),
-    });
-
-    let events = sink.events();
-
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].outcome, LakehouseCacheFillOutcome::Completed);
-    assert_eq!(events[0].bytes, Some(4096));
-    assert_eq!(events[1].outcome, LakehouseCacheFillOutcome::Failed);
-    assert_eq!(
-        events[1].error.as_ref().map(|error| error.operation.as_str()),
-        Some("query_engine.lakehouse_cache.background_fill.fetch")
-    );
-}
-
-#[test]
-fn stream_lease_context_shares_lakehouse_cache_fill_event_sink() {
-    let context = ExecutionContext::standalone(StandaloneConfig::default()).unwrap();
-    let stream_lease = context.service_stream_pool().acquire().unwrap();
-    let leased_context = context.with_stream_lease(&stream_lease).unwrap();
-
-    leased_context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
-        outcome: LakehouseCacheFillOutcome::Completed,
-        bytes: Some(8192),
-        elapsed: Duration::from_millis(5),
-        cache_path_hash: "leased-cache-path-hash".to_string(),
-        stable_id_hash: "leased-stable-id-hash".to_string(),
-        file_index: Some(1),
-        chunk_index: Some(2),
-        error: None,
-    });
-
-    let snapshots = context.lakehouse_cache_fill_event_snapshots();
-    assert_eq!(snapshots.len(), 1);
-    assert_eq!(snapshots[0].outcome, "completed");
-    assert_eq!(snapshots[0].bytes, Some(8192));
-    assert_eq!(snapshots[0].cache_path_hash, "leased-cache-path-hash");
-}
-
-#[test]
-fn lakehouse_cache_fill_event_snapshots_can_be_drained_once() {
-    let context = ExecutionContext::standalone(StandaloneConfig::default()).unwrap();
-    context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
-        outcome: LakehouseCacheFillOutcome::Completed,
-        bytes: Some(1024),
-        elapsed: Duration::from_millis(2),
-        cache_path_hash: "cache-path-hash".to_string(),
-        stable_id_hash: "stable-id-hash".to_string(),
-        file_index: None,
-        chunk_index: None,
-        error: None,
-    });
-
-    let first = context.drain_lakehouse_cache_fill_event_snapshots();
-    let second = context.drain_lakehouse_cache_fill_event_snapshots();
-
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0].outcome, "completed");
-    assert!(second.is_empty());
-    assert!(context.lakehouse_cache_fill_event_snapshots().is_empty());
 }
 
 #[test]

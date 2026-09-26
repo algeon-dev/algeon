@@ -1,6 +1,6 @@
 //! Compile-time mapping from ordered metric descriptors to recording paths.
 
-use query_engine::{metrics::QueryMetrics, runtime::LakehouseCacheFillEventSnapshot};
+use query_engine::metrics::QueryMetrics;
 
 use super::{AlgeonNativeMetrics, add_optional_count, count};
 use crate::native_exec::{
@@ -13,7 +13,6 @@ use crate::native_exec::{
 pub(in crate::native_exec::metrics) enum NativeMetricRecordingKind {
     Query,
     Admission,
-    CacheEvents,
     Attempt,
 }
 
@@ -31,9 +30,6 @@ trait NativeMetricRecording<Marker> {
 
     #[inline]
     fn record_admission(&self, _facts: QueryAdmissionFacts) {}
-
-    #[inline]
-    fn record_cache_events(&self, _events: &[LakehouseCacheFillEventSnapshot]) {}
 }
 
 macro_rules! define_descriptor_recorders {
@@ -47,12 +43,6 @@ macro_rules! define_descriptor_recorders {
         pub(super) fn record_descriptor_admission_facts(&self, facts: QueryAdmissionFacts) {
             $(
                 <Self as NativeMetricRecording<recording_marker::$field>>::record_admission(self, facts);
-            )*
-        }
-
-        pub(super) fn record_descriptor_cache_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
-            $(
-                <Self as NativeMetricRecording<recording_marker::$field>>::record_cache_events(self, events);
             )*
         }
     };
@@ -351,10 +341,10 @@ impl_noop_recording! {
 }
 
 impl NativeMetricRecording<recording_marker::native_lakehouse_cache_fill_event_snapshot_rows> for AlgeonNativeMetrics {
-    recording_kind!(CacheEvents);
+    recording_kind!(Query);
 
-    fn record_cache_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
-        self.record_lakehouse_cache_fill_event_rows(events);
+    fn record_query(&self, metrics: &QueryMetrics) {
+        self.record_lakehouse_cache_fill_event_rows(&metrics.lakehouse_cache_fill_events);
     }
 }
 

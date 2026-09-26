@@ -355,6 +355,7 @@ fn bounded_native_query_fails_with_original_cap_cause_when_no_row_group_fits() {
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("no split can fit a single row group under the cap");
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
@@ -413,6 +414,7 @@ fn bounded_native_query_stops_recovery_at_the_next_cancellation_boundary() {
         QueryExecutionRequest::admitted(&admitted_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
     );
     let (result, metrics, _observation) = outcome.into_parts();
+    let metrics = metrics.snapshot();
     let error = result.err().expect("the deadline elapses before recovery completes");
     assert_eq!(error.code(), QueryErrorCode::Cancelled, "{error:?}");
     assert_eq!(error.fact_value("reason"), Some("deadline_expired"));

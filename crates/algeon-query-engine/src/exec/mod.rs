@@ -88,7 +88,7 @@ use self::{
     materialize::*,
     operators::*,
     order::*,
-    output::{QueryExecutionOutcome, QueryOutput as Output},
+    output::{PlanMetrics, QueryExecutionOutcome, QueryOutput as Output},
     util::*,
     vector_algorithm::*,
 };
@@ -205,14 +205,9 @@ fn execute_query_plan_with_observation(
     gpu_inputs: &GpuResidentInputMap,
 ) -> QueryExecutionOutcome {
     let plan = admitted.plan();
-    let observation_handle = context.runtime_observation().clone();
-    let manifest_query_id = observation_handle.query_id().map(|id| QueryId::new(id.as_str()));
-    let manifest_trace_id = observation_handle.trace_id().map(|id| TraceId::new(id.as_str()));
-    let manifest_is_authoritative = manifest_query_id.is_some();
-    let query_id = manifest_query_id.or_else(|| context.query_id().cloned()).unwrap_or_else(QueryId::mint);
-    let trace_id = if manifest_is_authoritative { manifest_trace_id } else { context.trace_id().cloned() };
+    let (query_id, trace_id) = plan_identity(context);
     let observed_context = context
-        .with_runtime_observation_handle(observation_handle)
+        .with_runtime_observation_handle(context.runtime_observation().clone())
         .and_then(
             |context| {
                 if context.query_id().is_none() { context.with_query_id(query_id.clone()) } else { Ok(context) }
@@ -222,8 +217,7 @@ fn execute_query_plan_with_observation(
             (Some(trace_id), None) => context.with_trace_id(trace_id.clone()),
             _ => Ok(context),
         });
-    let plan_execution_id =
-        PlanExecutionId::new(format!("native-plan-{}", NEXT_PLAN_EXECUTION_ID.fetch_add(1, Ordering::Relaxed)));
+    let plan_execution_id = next_plan_execution_id("native-plan");
     let lifecycle = context.begin_runtime_execution_observation(plan_execution_id.clone());
     let execution_scope = lifecycle.execution_scope();
     let execution_metrics = ExecutionMetrics::bind(
@@ -251,9 +245,26 @@ fn execute_query_plan_with_observation(
         Err(error) => RuntimeTerminalOutcome::from_query_error(error),
     };
     let snapshot = lifecycle.finish(terminal);
-    let mut metrics = query_metrics(query_id, trace_id);
-    execution_metrics.project_onto(&mut metrics);
+    let metrics = PlanMetrics::new(execution_metrics.recorder().clone(), query_id, trace_id);
     QueryExecutionOutcome::new(result, metrics, snapshot)
+}
+
+/// The query and trace identity a plan execution under `context` reports.
+///
+/// A query-bound observation's manifest is authoritative; otherwise the
+/// context's own identity applies, and a query without one gets a fresh id.
+fn plan_identity(context: &ExecutionContext) -> (QueryId, Option<TraceId>) {
+    let observation = context.runtime_observation();
+    match observation.query_id() {
+        Some(query_id) => {
+            (QueryId::new(query_id.as_str()), observation.trace_id().map(|trace_id| TraceId::new(trace_id.as_str())))
+        },
+        None => (context.query_id().cloned().unwrap_or_else(QueryId::mint), context.trace_id().cloned()),
+    }
+}
+
+fn next_plan_execution_id(label: &str) -> PlanExecutionId {
+    PlanExecutionId::new(format!("{label}-{}", NEXT_PLAN_EXECUTION_ID.fetch_add(1, Ordering::Relaxed)))
 }
 
 fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &QueryPlan) {
@@ -278,10 +289,6 @@ fn record_query_plan_topology(scope: &RuntimeExecutionObservationScope, plan: &Q
             });
         }
     }
-}
-
-fn query_metrics(query_id: QueryId, trace_id: Option<TraceId>) -> QueryMetrics {
-    QueryMetrics { query_id, trace_id, ..Default::default() }
 }
 
 fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> QueryError {
