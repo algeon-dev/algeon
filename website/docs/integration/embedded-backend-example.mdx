@@ -40,11 +40,7 @@ B: Flight SQL client ---->   Flight SQL frontend                 |
                         +------------------|---------------------+
                                            |
                                            v
-                         Iceberg REST catalog
-                         lake.citation_network tables
-                                           |
-                                           v
-                         RustFS/S3 staged Citation Network Parquet
+                         Local Citation Network Parquet
 ```
 
 Use this shape when a Rust service owns product workflows but still needs an
@@ -59,73 +55,47 @@ not by a fictional product domain.
 | REST | Predefined, parameter-validated SQL and graph pipelines can return JSON rows and planning reports. |
 | Flight SQL | Ad-hoc clients see the same catalog workspace and can run SQL, prepared statements, metadata calls, and cancel. |
 | Shared backend | REST and Flight native execution share one admission queue, one memory-governor ledger, and one CUDA runtime owner. |
-| Iceberg REST | The Citation Network demo tables are registered with Iceberg `add_files`, so the local catalog references existing Parquet files instead of rewriting them. |
 
 ## Data Prerequisite
 
-The example uses the [Citation Network demo dataset](../cugraph/demo-dataset.mdx):
-4,894,081 papers and 45,564,149 citation edges. Place the upstream
-`dblp.v12.json` file at `fixture/demo/citation_network/raw/dblp.v12.json`,
-generate the Parquet files, then load them into the local Iceberg REST catalog
-with `add-files` mode:
-
-```bash
-python3 fixture/demo/citation_network/prepare.py --overwrite
-
-docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/fixture.sh iceberg rest load \
-  --workload citation_network \
-  --load-mode add-files
-```
-
-`add-files` stages the Parquet files into RustFS and Iceberg references those
-staged files in place. Do not delete the staging prefix while the local REST
-catalog metadata is live. The REST fixture metadata is ephemeral, so rerun the
-loader after every fresh `docker compose up`.
+[Prepare the Citation Network Parquet files](../cugraph/demo-dataset.mdx#prepare-the-data)
+on the host that will run this process. The dataset contains 4,894,081 papers
+and 45,564,149 citation edges.
 
 ## Run It
 
-The example consumes the same server configuration contract as the
-[Flight SQL server](./flight-sql-server.mdx), plus `EXAMPLE_REST_BIND`.
-`EXAMPLE_REST_BIND` is the bind address for this example's own axum HTTP API
-(`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the Iceberg REST catalog
-endpoint; the Iceberg REST catalog endpoint is `ALGEON_ICEBERG_REST_URI`.
+Run these commands from the repository root. Stop any standalone demo server
+first to release GPU 0 and port 50051. Build the example and SQL client:
+
+```bash
+cargo build --workspace --all-features --release --bin embedded_backend --bin algeon_tools
+```
+
+Create a configuration for GPU 0:
+
+```bash
+mkdir -p target
+cat > target/embedded-demo.toml <<'TOML'
+[[admission.device_profiles]]
+device_ordinal = 0
+TOML
+```
+
+Start the process with a localhost address for each frontend:
 
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
+ALGEON_SERVER_CONFIG_FILE="$PWD/target/embedded-demo.toml" \
+ALGEON_SERVER_GPU_DEVICES=0 \
 ALGEON_SERVER_BIND=127.0.0.1:50051 \
 ALGEON_SERVER_CUGRAPH_ENABLED=true \
-DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
-DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
-ALGEON_ICEBERG_CATALOG_KIND=rest \
-ALGEON_ICEBERG_CATALOG_NAME=lake \
-ALGEON_ICEBERG_NAMESPACE=citation_network \
-ALGEON_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
-ALGEON_ICEBERG_REST_URI=http://localhost:8181 \
-ALGEON_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
-ALGEON_ICEBERG_S3_REGION=us-east-1 \
-ALGEON_ICEBERG_S3_PATH_STYLE=true \
-ALGEON_ICEBERG_S3_ACCESS_KEY_ID=algeonadmin \
-ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=algeonadmin \
-ALGEON_SERVER_WORKSPACE_CATALOG=datafusion \
-ALGEON_SERVER_WORKSPACE_SCHEMA=public \
-ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake \
-ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
-ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
-flock /tmp/cudf-gpu.lock \
-cargo run -p examples --all-features --bin embedded_backend
+flock /tmp/cudf-gpu.lock "${CARGO_TARGET_DIR:-target}/release/embedded_backend"
 ```
 
-Use the exact Iceberg keys shown above. `ALGEON_ICEBERG_CATALOG=rest` is not a
-server config key, and `ALGEON_ICEBERG_REST_WAREHOUSE` is not read by the REST
-catalog path. `ALGEON_ICEBERG_CATALOG_KIND` is required whenever Iceberg
-settings are present, so a missing or misspelled
-`ALGEON_ICEBERG_CATALOG_KIND=rest` now fails startup directly with its own
-error rather than falling through to a Glue-specific `AWS_REGION` complaint.
-
-The example HTTP API frontend binds to `EXAMPLE_REST_BIND`. The Flight SQL
-frontend binds to `ALGEON_SERVER_BIND`. The backend connects to the Iceberg REST
-catalog at `ALGEON_ICEBERG_REST_URI`.
+In another terminal, run the demo's
+[table registration commands](../cugraph/demo-dataset.mdx#register-the-tables).
+The REST pipelines and Flight SQL queries share those registered tables.
+Repeat registration after restarting the process.
 
 ## REST Pipelines
 
@@ -175,22 +145,6 @@ printf '%s\n' \
 
 Keep multi-statement experiments in one client process when they depend on
 session-local views.
-
-## E2E Suite
-
-The black-box suite starts the local stack, loads the citation network with
-`--load-mode add-files`, spawns the example process, and checks catalog truth,
-REST pipeline results, Flight SQL graph queries, shared-ledger overload, and
-graceful shutdown:
-
-```bash
-crates/examples/scripts/e2e.sh
-```
-
-Use `--skip-stack` when the REST catalog and RustFS are already running, and
-`--reload` when you want the loader to drop and re-add the Iceberg tables.
-The suite intentionally fails fast with acquisition instructions if the
-citation-network Parquet files are missing.
 
 ## Embedding APIs
 

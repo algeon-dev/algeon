@@ -8,9 +8,9 @@ Each citation receives a weight equal to the absolute publication-year gap.
 The query finds a minimum spanning forest that minimizes the total gap within
 each connected component, then shows its five largest selected gaps. The graph
 covers 1900 to 2020 and the ten field-of-study labels below.
-`cugraph_minimum_spanning_tree` needs Int32 vertex ids, so the
-[renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-cugraph-c-api-algorithms)
-from the demo-dataset page applies:
+`cugraph_minimum_spanning_tree` requires Int32 vertex IDs. The query
+[builds a dense mapping](../graph-options.mdx#int32-vertex-mappings) because
+AMiner IDs can exceed the Int32 range:
 
 ```sql
 CREATE OR REPLACE VIEW ai_all_nodes AS

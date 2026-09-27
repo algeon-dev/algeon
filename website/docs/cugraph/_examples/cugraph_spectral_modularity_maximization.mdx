@@ -8,7 +8,8 @@ A six-group view of the dense citation core can show which catalog fields
 dominate each group and where labels mix. The query first keeps papers with at
 least 30 neighbors in the undirected citation graph, then partitions that core
 and reports each group's two most common `primary_fos` labels. It renumbers
-paper ids for the algorithm's Int32 input requirement.
+paper IDs with a [dense mapping](../graph-options.mdx#int32-vertex-mappings)
+for the algorithm's Int32 input requirement.
 
 ```sql
 CREATE OR REPLACE TABLE kcore30_edges AS
