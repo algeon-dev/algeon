@@ -28,9 +28,18 @@ fn zero_initialized_original_options_layout_remains_unbounded() {
         reserved: [0; 4],
     };
     let mut manager = ptr::null_mut();
+    let mut installation = cudf_sys::cudf_memory_manager_installation_record_t::default();
     assert_eq!(
         unsafe {
-            cudf_sys::cudf_memory_manager_for_device_with_options(device, ptr::from_ref(&original).cast(), &mut manager)
+            cudf_sys::cudf_memory_manager_install(
+                device,
+                ptr::from_ref(&original).cast(),
+                None,
+                ptr::null_mut(),
+                ptr::null(),
+                &mut manager,
+                &mut installation,
+            )
         },
         cudf_sys::CUDF_SUCCESS,
     );

@@ -99,19 +99,17 @@ typedef struct {
 } cudf_memory_manager_installation_record_t;
 
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_for_device_with_options(
-  int32_t device, cudf_memory_manager_options_t const* options, cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
+/// Explicitly install or reuse a device manager with immutable physical options.
+/// `identity` requires a callback. Callback state is borrowed for the process
+/// lifetime once the returned record reports creation, including an incomplete
+/// current-resource switch. A transaction that reaches the registry returns
+/// its locked record; identified reuse requires the original callback binding.
+/// A failure before registry access leaves the record zeroed (`struct_size=0`).
+cudf_status_t cudf_memory_manager_install(
   int32_t device,
+  cudf_memory_manager_options_t const* options,
   cudf_memory_failure_callback_t callback,
   void* callback_arg,
-  cudf_memory_manager_options_t const* options,
-  cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_and_options(
-  int32_t device,
-  cudf_memory_failure_callback_t callback,
-  void* callback_arg,
-  cudf_memory_manager_options_t const* options,
   cudf_memory_manager_installation_identity_t const* identity,
   cudf_memory_manager_handle* out,
   cudf_memory_manager_installation_record_t* installation);

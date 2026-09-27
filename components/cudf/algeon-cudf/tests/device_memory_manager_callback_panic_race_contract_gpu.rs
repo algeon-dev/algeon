@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationRetry,
-    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
+    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, InstallSpec,
 };
 use cudf_sys::test_support;
 
@@ -16,14 +16,15 @@ fn callback_panic_before_rust_receives_generation_does_not_block_installation() 
     };
 
     unsafe { test_support::cudf_test_memory_manager_invoke_failure_callback_before_install_returns() };
-    let (manager, outcome) =
-        DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
-            device,
-            identity,
-            Arc::new(|_| panic!("injected callback panic before install returns")),
+    let (manager, outcome) = DeviceMemoryManager::install(
+        device,
+        InstallSpec {
             options,
-        )
-        .expect("an observation callback failure must not decide manager installation");
+            owner: Some(identity),
+            on_failure: Some(Arc::new(|_| panic!("injected callback panic before install returns"))),
+        },
+    )
+    .expect("an observation callback failure must not decide manager installation");
 
     let state = outcome.state;
     assert_eq!(state.status, DeviceMemoryManagerInstallationStatus::Owned);

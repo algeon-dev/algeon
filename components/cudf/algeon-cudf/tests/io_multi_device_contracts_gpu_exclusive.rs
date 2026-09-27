@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use cudf::{DataFrame, DeviceId, DeviceMemoryManager, Runtime, testing::prelude::*};
+use cudf::{DataFrame, DeviceId, DeviceMemoryManager, InstallSpec, Runtime, testing::prelude::*};
 use tempfile::TempDir;
 
 #[test]
@@ -20,7 +20,7 @@ fn concurrent_parquet_reads_across_devices_do_not_need_a_process_global_io_lock(
     let mut fixtures = Vec::new();
     for ordinal in 0..device_count {
         let device = DeviceId::new(ordinal).unwrap();
-        DeviceMemoryManager::install_for_device(device).unwrap();
+        DeviceMemoryManager::install(device, InstallSpec::default()).unwrap();
         let runtime = Runtime::builder().with_device(device).build().unwrap();
         let values = (0..1024).map(|value| (ordinal as i32 * 10_000) + value).collect::<Vec<_>>();
         let frame = DataFrame::from_series([("id", runtime.series(&values).unwrap())]).unwrap();

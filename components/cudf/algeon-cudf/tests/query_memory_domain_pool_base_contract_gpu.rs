@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{ptr, sync::Arc};
 
 use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerInstallationCause,
-    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerOptions, ErrorCode, ErrorKind,
+    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerOptions, ErrorCode, ErrorKind, InstallSpec,
     QueryMemoryDomainOptions, Runtime,
 };
 
@@ -16,23 +16,33 @@ fn query_memory_domain_rejects_pool_backed_manager() {
         },
         allocation_limit_bytes: None,
     };
-    let manager = DeviceMemoryManager::install_for_device_with_options(device, pool_options).unwrap();
+    let manager = DeviceMemoryManager::install(device, InstallSpec { options: pool_options, ..InstallSpec::default() })
+        .unwrap()
+        .0;
 
     assert_eq!(DeviceMemoryManager::options_for_device(device).unwrap(), Some(pool_options));
-    DeviceMemoryManager::install_for_device_with_options(device, pool_options).unwrap();
+    DeviceMemoryManager::install(device, InstallSpec { options: pool_options, ..InstallSpec::default() }).unwrap();
     Runtime::builder().with_device(device).build().unwrap();
 
-    let mismatch = DeviceMemoryManager::install_for_device_with_options(device, DeviceMemoryManagerOptions::default())
-        .unwrap_err();
-    assert_eq!(mismatch.code(), ErrorCode::RuntimeBindingMismatch);
+    let mismatch = DeviceMemoryManager::install(
+        device,
+        InstallSpec { options: DeviceMemoryManagerOptions::default(), ..InstallSpec::default() },
+    )
+    .unwrap_err();
+    assert_eq!(mismatch.error().code(), ErrorCode::RuntimeBindingMismatch);
 
     let native_async_options = cudf_sys::cudf_memory_manager_options_t::default();
-    let mut raw_manager = std::ptr::null_mut();
+    let mut raw_manager = ptr::null_mut();
+    let mut installation = cudf_sys::cudf_memory_manager_installation_record_t::default();
     let native_status = unsafe {
-        cudf_sys::cudf_memory_manager_for_device_with_options(
+        cudf_sys::cudf_memory_manager_install(
             i32::try_from(device.ordinal()).unwrap(),
             &native_async_options,
+            None,
+            ptr::null_mut(),
+            ptr::null(),
             &mut raw_manager,
+            &mut installation,
         )
     };
     assert_eq!(native_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -43,11 +53,13 @@ fn query_memory_domain_rejects_pool_backed_manager() {
         "a conflicting explicit request must not replace the process-global pool",
     );
 
-    let owned_conflict = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
+    let owned_conflict = DeviceMemoryManager::install(
         device,
-        DeviceMemoryManagerInstallationIdentity::new(*b"algeon-test-id\0\0", 1, [0x42; 16]),
-        Arc::new(|_| {}),
-        DeviceMemoryManagerOptions::default(),
+        InstallSpec {
+            options: DeviceMemoryManagerOptions::default(),
+            owner: Some(DeviceMemoryManagerInstallationIdentity::new(*b"algeon-test-id\0\0", 1, [0x42; 16])),
+            on_failure: Some(Arc::new(|_| {})),
+        },
     )
     .unwrap_err();
     assert_eq!(owned_conflict.error().code(), ErrorCode::RuntimeBindingMismatch);

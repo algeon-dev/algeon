@@ -108,6 +108,7 @@ pub use installation::{
     DeviceMemoryManagerInstallationError, DeviceMemoryManagerInstallationIdentity,
     DeviceMemoryManagerInstallationOutcome, DeviceMemoryManagerInstallationOutcomeKind,
     DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationState, DeviceMemoryManagerInstallationStatus,
+    InstallSpec,
 };
 pub use manager::{CurrentResourceRouteLease, DeviceMemoryManager, RawCurrentResourceRouteLease};
 pub use options::{DeviceMemoryManagerBase, DeviceMemoryManagerOptions, QueryMemoryDomainOptions};

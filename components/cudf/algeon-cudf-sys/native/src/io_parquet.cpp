@@ -3,6 +3,7 @@
 #include "execution_context_internal.hpp"
 #include "io_test_hooks.hpp"
 #include "shim_common.h"
+#include "test_support_internal.hpp"
 
 #include <cudf/concatenate.hpp>
 #include <cudf/io/datasource.hpp>
@@ -150,6 +151,7 @@ cudf::io::table_with_metadata collect_chunked_parquet_reader(cudf::io::chunked_p
 cudf::io::table_with_metadata read_parquet_bounded(cudf::io::parquet_reader_options const& options,
                                                    cudf_exec_context const& exec)
 {
+  cudf::rust::test_support::record_parquet_pass_read_limit(exec.parquet_pass_read_limit);
   if (exec.parquet_pass_read_limit == 0) {
     return cudf::io::read_parquet(options, exec.stream, *exec.mr);
   }
@@ -166,6 +168,7 @@ cudf::io::table_with_metadata read_parquet_bounded(
   cudf::io::parquet_reader_options const& options,
   cudf_exec_context const& exec)
 {
+  cudf::rust::test_support::record_parquet_pass_read_limit(exec.parquet_pass_read_limit);
   if (exec.parquet_pass_read_limit == 0) {
     return cudf::io::read_parquet(std::move(sources), {}, options, exec.stream, *exec.mr);
   }

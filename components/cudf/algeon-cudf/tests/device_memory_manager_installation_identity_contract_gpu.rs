@@ -6,8 +6,8 @@ use std::sync::{
 use cudf::{
     DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity,
     DeviceMemoryManagerInstallationOutcomeKind, DeviceMemoryManagerInstallationRetry,
-    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, ErrorCode, ErrorKind, QueryMemoryDomainOptions,
-    Runtime,
+    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, ErrorCode, ErrorKind, InstallSpec,
+    QueryMemoryDomainOptions, Runtime,
 };
 
 #[test]
@@ -19,6 +19,13 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     assert_eq!(before.cause, DeviceMemoryManagerInstallationCause::None);
 
     let identity = DeviceMemoryManagerInstallationIdentity::new([0x11; 16], 1, [0x22; 16]);
+    let missing_callback =
+        DeviceMemoryManager::install(device, InstallSpec { owner: Some(identity), ..InstallSpec::default() })
+            .unwrap_err();
+    assert_eq!(missing_callback.error().code(), ErrorCode::RuntimeBindingMismatch);
+    assert!(missing_callback.installation_state().is_none(), "validation must precede native installation");
+    assert_eq!(DeviceMemoryManager::installation_state_for_device(device).unwrap(), before);
+
     let callback_calls = Arc::new(AtomicUsize::new(0));
     let callback_calls_for_install = Arc::clone(&callback_calls);
     let callback = Arc::new(move |_| {
@@ -28,11 +35,11 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
         allocation_limit_bytes: Some(8 * 1024 * 1024),
         ..DeviceMemoryManagerOptions::default()
     };
-    let (_manager, installed) =
-        DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
-            device, identity, callback, options,
-        )
-        .unwrap();
+    let (_manager, installed) = DeviceMemoryManager::install(
+        device,
+        InstallSpec { options, owner: Some(identity), on_failure: Some(callback) },
+    )
+    .unwrap();
     assert_eq!(installed.kind, DeviceMemoryManagerInstallationOutcomeKind::Installed);
     assert_eq!(installed.state.status, DeviceMemoryManagerInstallationStatus::Owned);
     assert_eq!(installed.state.retry, DeviceMemoryManagerInstallationRetry::Reusable);
@@ -41,22 +48,18 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     let generation = installed.state.installation_generation.unwrap();
 
     let replacement_callback = Arc::new(|_| {});
-    let (_manager, reused) = DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
+    let (_manager, reused) = DeviceMemoryManager::install(
         device,
-        identity,
-        replacement_callback,
-        options,
+        InstallSpec { options, owner: Some(identity), on_failure: Some(replacement_callback) },
     )
     .unwrap();
     assert_eq!(reused.kind, DeviceMemoryManagerInstallationOutcomeKind::Reused);
     assert_eq!(reused.state.installation_generation, Some(generation));
 
     let other_identity = DeviceMemoryManagerInstallationIdentity::new([0x33; 16], 1, [0x22; 16]);
-    let error = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
+    let error = DeviceMemoryManager::install(
         device,
-        other_identity,
-        Arc::new(|_| {}),
-        options,
+        InstallSpec { options, owner: Some(other_identity), on_failure: Some(Arc::new(|_| {})) },
     )
     .unwrap_err();
     assert_eq!(error.error().code(), ErrorCode::RuntimeBindingMismatch);
@@ -77,18 +80,16 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
         allocation_limit_bytes: Some(16 * 1024 * 1024),
         ..DeviceMemoryManagerOptions::default()
     };
-    let conflict = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
+    let conflict = DeviceMemoryManager::install(
         device,
-        identity,
-        Arc::new(|_| {}),
-        conflicting_options,
+        InstallSpec { options: conflicting_options, owner: Some(identity), on_failure: Some(Arc::new(|_| {})) },
     )
     .unwrap_err();
     assert_eq!(conflict.error().code(), ErrorCode::RuntimeBindingMismatch);
     assert_eq!(conflict.installation_state().unwrap().cause, DeviceMemoryManagerInstallationCause::OptionsMismatch);
     assert_eq!(DeviceMemoryManager::installation_state_for_device(device).unwrap(), after);
 
-    let manager = DeviceMemoryManager::for_device_with_options(device, options).unwrap();
+    let manager = DeviceMemoryManager::for_device(device).unwrap();
     let domain = manager
         .query_memory_domain(7, QueryMemoryDomainOptions::new(1024 * 1024).with_ceiling_bytes(1024 * 1024))
         .expect("a static-partition manager supports a bounded private query domain");

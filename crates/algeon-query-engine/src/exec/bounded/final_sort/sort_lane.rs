@@ -29,6 +29,7 @@ use crate::{
     error::QueryError,
     exec::{
         bounded::compiled::lanes::AggregateLaneDispatch,
+        operators::attach_budget_token_failure_facts,
         retry::{ResourceFailureRecovery, resource_failure_recovery},
     },
 };
@@ -193,13 +194,14 @@ fn lane_candidate_frame(
         .slice(offset, length)
         .map(GpuDataFrame::new)
         .map_err(|error| {
-            cudf_query_error_with_budget_details(
-                "query_engine.final_sort.topk_slice",
-                "failed to slice bounded native final sort input",
-                error,
+            attach_budget_token_failure_facts(
+                cudf_query_error_with_budget_details(
+                    "query_engine.final_sort.topk_slice",
+                    "failed to slice bounded native final sort input",
+                    error,
+                ),
+                work_token,
             )
-            .with_fact_if_absent("budget_boundary", work_token.request().boundary())
-            .with_fact_if_absent("budget_bytes", work_token.request().budget_bytes())
             .with_fact_if_absent("budget_operation", "dataframe::slice")
         })
 }

@@ -38,6 +38,7 @@ thread_local void* g_last_memory_resource_destroy_raw              = nullptr;
 thread_local std::uint64_t g_last_memory_resource_destroy_sequence = 0;
 thread_local void* g_last_exec_mr_raw                              = nullptr;
 thread_local int32_t g_last_exec_device                            = -1;
+thread_local std::uint64_t g_last_parquet_pass_read_limit            = 0;
 thread_local std::array<void*, k_exec_mr_observation_capacity> g_exec_mr_observations{};
 thread_local std::size_t g_exec_mr_observation_start = 0;
 thread_local std::size_t g_exec_mr_observation_count = 0;
@@ -111,6 +112,7 @@ void reset_exec_observation()
   g_last_memory_resource_destroy_sequence = 0;
   g_last_exec_mr_raw                      = nullptr;
   g_last_exec_device                      = -1;
+  g_last_parquet_pass_read_limit          = 0;
   g_exec_mr_observations.fill(nullptr);
   g_exec_mr_observation_start      = 0;
   g_exec_mr_observation_count      = 0;
@@ -142,6 +144,11 @@ std::array<int64_t, 8> g_synthetic_column_view_dummy_storage{};
 }  // namespace
 
 namespace cudf::rust::test_support {
+void record_parquet_pass_read_limit(std::uint64_t bytes)
+{
+  g_last_parquet_pass_read_limit = bytes;
+}
+
 void record_exec_context(std::uintptr_t stream_raw, void* mr_raw)
 {
   g_last_exec_stream_value = stream_raw;
@@ -417,6 +424,13 @@ cudf_status_t cudf_test_memory_resource_allocation_attempt_count(uint64_t* out)
 }
 
 void cudf_test_exec_reset_observation() { reset_exec_observation(); }
+
+cudf_status_t cudf_test_exec_last_parquet_pass_read_limit(uint64_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_last_parquet_pass_read_limit;
+  return CUDF_SUCCESS;
+}
 
 cudf_status_t cudf_test_exec_last_stream_value(uintptr_t* out)
 {

@@ -168,23 +168,6 @@ fn memory_manager_option_bytes(value: u64, field: &'static str) -> Result<usize>
     })
 }
 
-pub(super) fn ensure_memory_manager_options_match(
-    existing: DeviceMemoryManagerOptions,
-    requested: DeviceMemoryManagerOptions,
-) -> Result<()> {
-    if existing == requested.normalized() {
-        return Ok(());
-    }
-    Err(error::Error::new_with(
-        error::ErrorCode::RuntimeBindingMismatch,
-        "memory::device_memory_manager::for_device",
-        "device memory manager already exists with different physical-base options",
-    )
-    .with_detail("existing_options", format!("{existing:?}"))
-    .with_detail("requested_options", format!("{requested:?}"))
-    .with_detail("reason", "device_memory_manager_options_conflict"))
-}
-
 /// Options for an opt-in query memory domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMemoryDomainOptions {

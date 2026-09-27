@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions};
+use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, InstallSpec};
 use query_engine::{
     error::QueryErrorCode,
     observability::RuntimeObservationHandle,
@@ -87,7 +87,7 @@ fn rejected_configs_and_unidentified_allocator_do_not_mutate_the_allocator() {
         "resource-independent storage-profile validation must precede allocator installation",
     );
 
-    DeviceMemoryManager::install_for_device(device).unwrap();
+    DeviceMemoryManager::install(device, InstallSpec::default()).unwrap();
     let incompatible = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
 
     assert_eq!(incompatible.code(), QueryErrorCode::InvalidPlan);
@@ -115,7 +115,7 @@ fn noncanonical_pool_allocator_is_rejected_during_backend_preflight() {
         },
         allocation_limit_bytes: None,
     };
-    DeviceMemoryManager::install_for_device_with_options(device, installed_options).unwrap();
+    DeviceMemoryManager::install(device, InstallSpec { options: installed_options, ..InstallSpec::default() }).unwrap();
 
     let conflict = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
 

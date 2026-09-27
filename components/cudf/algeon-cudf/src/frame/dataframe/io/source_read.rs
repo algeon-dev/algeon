@@ -519,7 +519,7 @@ pub(super) fn read_parquet_source_chunk_with_budget_input(
     let budget_runtime = runtime
         .with_memory_resource_override_and_parquet_pass_read_limit(
             token.memory_resource(),
-            parquet_pass_read_limit_for_budget(token.request().budget_bytes()),
+            parquet_pass_read_limit_for_budget(token.member_limit_bytes().map_err(|error| error.reanchor(operation))?),
             operation,
         )
         .map_err(|error| token.annotate_error(error, operation))?;

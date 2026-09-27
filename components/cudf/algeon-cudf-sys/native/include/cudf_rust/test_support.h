@@ -28,6 +28,7 @@ cudf_status_t cudf_test_checked_owning_handle_size_mul(size_t left, size_t right
 void cudf_test_fail_next_provenance_destroy(cudf_status_t status);
 
 void cudf_test_exec_reset_observation(void);
+cudf_status_t cudf_test_exec_last_parquet_pass_read_limit(uint64_t* out);
 cudf_status_t cudf_test_exec_last_stream_value(uintptr_t* out);
 cudf_status_t cudf_test_exec_last_sync_stream_value(uintptr_t* out);
 cudf_status_t cudf_test_exec_last_sync_sequence(uint64_t* out);

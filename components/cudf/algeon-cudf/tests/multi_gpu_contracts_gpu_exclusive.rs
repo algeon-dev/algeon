@@ -10,8 +10,8 @@ use crate::common::{column_from_device_buffer_nullable, dataframe_from_columns, 
 mod common;
 
 use cudf::{
-    DataFrame, DenseMatrixLayout, DeviceId, ErrorCode, ErrorKind, ExecutionOverrides, MergeOptions, Runtime, Series,
-    SortOptions, TypeId,
+    DataFrame, DenseMatrixLayout, DeviceId, ErrorCode, ErrorKind, ExecutionOverrides, InstallSpec, MergeOptions,
+    Runtime, Series, SortOptions, TypeId,
     core::{
         error::{FactKeyName, FactValue},
         memory::DeviceMemoryResource,
@@ -1769,8 +1769,8 @@ fn concurrent_per_device_pipelines_share_no_state() {
     }
     let (device0, device1) = first_two_test_devices();
 
-    let domain0 = cudf::DeviceMemoryManager::install_for_device(device0).unwrap();
-    let domain1 = cudf::DeviceMemoryManager::install_for_device(device1).unwrap();
+    let domain0 = cudf::DeviceMemoryManager::install(device0, InstallSpec::default()).unwrap().0;
+    let domain1 = cudf::DeviceMemoryManager::install(device1, InstallSpec::default()).unwrap().0;
     let mr0 = domain0.resource().testing_raw_handle_value();
     let mr1 = domain1.resource().testing_raw_handle_value();
     assert_ne!(mr0, mr1, "device memory domains must be independent");

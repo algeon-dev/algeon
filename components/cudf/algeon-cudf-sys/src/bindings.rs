@@ -2639,23 +2639,12 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
     pub fn cudf_memory_manager_for_device(device: i32, out: *mut cudf_memory_manager_handle) -> cudf_status_t;
-    pub fn cudf_memory_manager_for_device_with_options(
+    #[doc = " Explicitly install or reuse a device manager with immutable physical options.\n `identity` requires a callback. Callback state is borrowed for the process\n lifetime once the returned record reports creation, including an incomplete\n current-resource switch. A transaction that reaches the registry returns\n its locked record; identified reuse requires the original callback binding.\n A failure before registry access leaves the record zeroed (`struct_size=0`)."]
+    pub fn cudf_memory_manager_install(
         device: i32,
         options: *const cudf_memory_manager_options_t,
-        out: *mut cudf_memory_manager_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_for_device_with_failure_callback_and_options(
-        device: i32,
         callback: cudf_memory_failure_callback_t,
         callback_arg: *mut core::ffi::c_void,
-        options: *const cudf_memory_manager_options_t,
-        out: *mut cudf_memory_manager_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_install_owned_with_failure_callback_and_options(
-        device: i32,
-        callback: cudf_memory_failure_callback_t,
-        callback_arg: *mut core::ffi::c_void,
-        options: *const cudf_memory_manager_options_t,
         identity: *const cudf_memory_manager_installation_identity_t,
         out: *mut cudf_memory_manager_handle,
         installation: *mut cudf_memory_manager_installation_record_t,

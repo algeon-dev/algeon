@@ -60,23 +60,26 @@ pub(super) fn execution_budget_token_for_boundary(
     let budget = usize::try_from(budget_bytes).map_err(|_error| {
         QueryError::new(QueryErrorCode::InvalidPlan, operation, message)
             .with_fact("budget_boundary", budget_boundary)
-            .with_fact("budget_bytes", budget_bytes)
+            .with_fact("stage_request_bytes", budget_bytes)
     })?;
     context.execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary)).map_err(
         |error| {
             error
                 .with_fact_if_absent("budget_boundary", budget_boundary)
-                .with_fact_if_absent("budget_bytes", budget_bytes)
+                .with_fact_if_absent("stage_request_bytes", budget_bytes)
         },
     )
 }
 
 pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &ExecutionBudgetToken) -> QueryError {
-    error
+    let error = error
         .with_fact_if_absent("budget_boundary", token.request().boundary())
-        .with_fact_if_absent("budget_bytes", token.request().budget_bytes())
         .with_fact_if_absent("budget_enforcement", token.enforcement().as_str())
-        .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected")
+        .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
+    match token.member_limit_bytes() {
+        Ok(member_limit_bytes) => error.with_fact_if_absent("budget_bytes", member_limit_bytes),
+        Err(_) => error,
+    }
 }
 
 pub(super) fn budgeted_value<T>(

@@ -11,7 +11,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest, TimestampResolution, TypeId,
+    DataFrame, DataType, DeviceMemoryManager, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetToken, QueryMemoryDomainOptions, TimestampResolution, TypeId,
     core::{Column, Table},
     frame::dataframe::{GpuRecordBatch, InfoDetail, ParquetSourceChunkReadOutput},
     io::{
@@ -28,6 +29,7 @@ use cudf::{
     runtime::Runtime,
     testing::prelude::*,
 };
+use cudf_sys::test_support;
 use parquet::{
     arrow::ArrowWriter,
     file::properties::{EnabledStatistics, WriterProperties},
@@ -55,11 +57,11 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, retaine
         "allocator high-water should cover retained/output bytes: high_water={high_water}, retained_or_output={retained_or_output_bytes}, report={report:?}",
     );
     assert!(
-        high_water <= report.request().budget_bytes(),
+        high_water <= report.member_limit_bytes().expect("budget report should include the allocator member limit"),
         "allocator high-water should stay within budget: high_water={high_water}, report={report:?}",
     );
     assert!(
-        report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
+        report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.member_limit_bytes().unwrap()),
         "aligned allocator peak should stay within budget: {report:?}",
     );
 }
@@ -1335,8 +1337,20 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     )
     .unwrap();
     let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
-    let token =
-        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let manager = DeviceMemoryManager::for_device(rt.device()).unwrap();
+    let domain = manager
+        .query_memory_domain(
+            60_001,
+            QueryMemoryDomainOptions::new(64 * 1024 * 1024).with_ceiling_bytes(64 * 1024 * 1024),
+        )
+        .unwrap();
+    let lease = domain.reserve_stream(rt.stream(), 60_002, 64 * 1024 * 1024).unwrap();
+    let token = ExecutionBudgetToken::from_shared_lease(
+        &rt,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("source_read"),
+        lease,
+        ExecutionBudgetEnforcement::QueryDomainMember,
+    );
 
     reset_exec_observation();
     let outcome = DataFrame::read_parquet_source_chunk_with_budget(
@@ -1351,14 +1365,19 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     let report = outcome.report();
     let expected_output_bytes = dataframe_device_allocated_size_bytes(df);
     let manager_mr = token.memory_resource().testing_raw_handle_value();
+    let mut parquet_pass_read_limit = 0;
+    let status = unsafe { test_support::cudf_test_exec_last_parquet_pass_read_limit(&mut parquet_pass_read_limit) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(parquet_pass_read_limit, 32 * 1024 * 1024);
 
     assert_eq!(df.column_names(), vec!["id"]);
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
     assert_eq!(df.testing_execution_domain_mr_value(), manager_mr);
     assert_eq!(last_exec_mr_value(), manager_mr);
     assert_eq!(report.request().boundary(), "source_read");
-    assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.request().budget_bytes(), 1024 * 1024);
+    assert_eq!(report.member_limit_bytes(), Some(64 * 1024 * 1024));
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.output_rows(), Some(4));
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));

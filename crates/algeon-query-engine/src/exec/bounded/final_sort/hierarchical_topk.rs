@@ -8,7 +8,7 @@ use super::{
     record_final_sort_retry_error, reduce_merge_fan_in, sort_lane_fan_out, sort_lane_params,
     sort_topk_candidate_with_budget, split_sort_candidate_ranges, stream_candidate_chunk_hint, topk_candidate_rows,
 };
-use crate::exec::retry::backoff_before_retry;
+use crate::exec::{operators::attach_budget_token_failure_facts, retry::backoff_before_retry};
 
 #[derive(Clone, Copy)]
 struct TopKCandidatePlan {
@@ -475,13 +475,14 @@ impl FinalSortExecutor<'_, '_, '_> {
                     .slice(slice.offset, slice.length)
                     .map(GpuDataFrame::new)
                     .map_err(|error| {
-                        cudf_query_error_with_budget_details(
-                            "query_engine.final_sort.topk_slice",
-                            "failed to slice bounded native final sort input",
-                            error,
+                        attach_budget_token_failure_facts(
+                            cudf_query_error_with_budget_details(
+                                "query_engine.final_sort.topk_slice",
+                                "failed to slice bounded native final sort input",
+                                error,
+                            ),
+                            work_token,
                         )
-                        .with_fact_if_absent("budget_boundary", work_token.request().boundary())
-                        .with_fact_if_absent("budget_bytes", work_token.request().budget_bytes())
                         .with_fact_if_absent("budget_operation", "dataframe::slice")
                     })
             },
