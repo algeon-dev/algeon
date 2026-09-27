@@ -14,6 +14,7 @@
 
 use std::{
     ffi::c_void,
+    mem,
     ptr::NonNull,
     sync::{Condvar, Mutex, OnceLock},
 };
@@ -150,6 +151,12 @@ impl PinnedSlabPool {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn leased_count(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.created - state.free.len()
+    }
+
     fn release(&self, slab: PinnedSlab) {
         {
             let mut state = self.state.lock().expect("pinned staging pool mutex poisoned");
@@ -166,6 +173,18 @@ pub(crate) struct PinnedSlabLease {
 }
 
 impl PinnedSlabLease {
+    /// Retain a source whose pending CUDA access could not be fenced, and
+    /// restore pool capacity for uploads on unaffected devices.
+    pub(crate) fn quarantine(&mut self) {
+        if let Some(slab) = self.slab.take() {
+            mem::forget(slab);
+            if let Ok(mut state) = self.pool.state.lock() {
+                state.created -= 1;
+            }
+            self.pool.available.notify_one();
+        }
+    }
+
     pub(crate) fn slab(&mut self) -> &mut PinnedSlab {
         self.slab.as_mut().expect("leased slab is present until drop")
     }
@@ -194,4 +213,23 @@ pub(crate) fn pinned_staging_pool() -> &'static PinnedSlabPool {
         let max_slabs = env_usize("CUDF_HOST_STAGING_SLAB_COUNT", DEFAULT_SLAB_COUNT, MIN_SLAB_COUNT);
         PinnedSlabPool::new(slab_bytes, max_slabs)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PinnedSlabPool;
+
+    #[test]
+    fn quarantined_source_does_not_consume_pool_capacity() {
+        let pool = Box::leak(Box::new(PinnedSlabPool::new(1024, 2)));
+        let mut first = pool.acquire().unwrap();
+        let second = pool.acquire().unwrap();
+        first.quarantine();
+        let replacement = pool.acquire().unwrap();
+        assert_eq!(pool.state.lock().unwrap().created, 2);
+        drop(replacement);
+        drop(second);
+        drop(first);
+        assert_eq!(pool.state.lock().unwrap().free.len(), 2);
+    }
 }
