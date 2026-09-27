@@ -598,7 +598,7 @@ fn bounded_vector_rejection_reports_the_contract_it_misses() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("the plan is decidable");
     let expected = decision.rejection_projection().expect("no compiled contract covers the plan").reason;

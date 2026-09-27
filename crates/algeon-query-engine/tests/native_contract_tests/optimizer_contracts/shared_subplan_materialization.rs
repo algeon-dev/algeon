@@ -7,7 +7,7 @@ fn native_optimizer_discovers_repeated_grouped_aggregate_materialization_family(
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -55,7 +55,7 @@ fn native_optimizer_materializes_aliased_grouped_aggregates_when_branch_replay_i
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -74,7 +74,7 @@ fn native_optimizer_materializes_grouped_aggregates_with_equivalent_projected_ar
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -124,7 +124,7 @@ fn native_optimizer_does_not_materialize_projected_aliases_across_different_loca
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -143,7 +143,7 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -212,7 +212,7 @@ fn native_optimizer_keeps_shared_subplan_materialization_contract_isolated() {
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -228,7 +228,7 @@ fn native_optimizer_keeps_shared_subplan_materialization_decimal_contract_isolat
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -242,7 +242,7 @@ fn native_optimizer_ignores_identity_projection_depth_for_scalar_count_materiali
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -261,7 +261,7 @@ fn native_optimizer_lifts_reader_predicate_filters_for_scalar_count_materializat
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -311,7 +311,7 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
     let result = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -361,7 +361,7 @@ fn native_optimizer_combines_q09_like_scalar_branches_with_different_read_column
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -418,7 +418,7 @@ fn native_optimizer_combines_full_q09_like_scalar_branch_shape() {
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -481,7 +481,7 @@ fn native_optimizer_combines_q09_like_scalar_branches_when_projected_count_is_no
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -522,7 +522,7 @@ fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -566,7 +566,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_projection_l
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -585,7 +585,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_different_local_filter
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -604,7 +604,7 @@ fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collid
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -627,7 +627,7 @@ fn native_optimizer_rejects_grouped_materialization_when_predicate_column_has_di
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -650,7 +650,7 @@ fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurr
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -673,7 +673,7 @@ fn native_optimizer_rejects_grouped_materialization_with_reused_source_node_occu
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -696,7 +696,7 @@ fn native_optimizer_rejects_unreachable_grouped_materialization_without_claiming
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -719,7 +719,7 @@ fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs(
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -743,7 +743,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_limit_below_aggregate(
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -759,7 +759,7 @@ fn native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_col
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -782,7 +782,7 @@ fn native_optimizer_does_not_combine_scalar_branches_with_duplicate_rowset_join_
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -801,7 +801,7 @@ fn native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -822,7 +822,7 @@ fn native_optimizer_derives_scalar_sum_from_grouped_sum_with_permuted_source_fil
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -863,7 +863,7 @@ fn disabled_shared_subplan_materialization_does_not_derive_scalar_sum_from_group
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -879,7 +879,7 @@ fn disabled_shared_subplan_materialization_emits_no_diagnostics() {
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);

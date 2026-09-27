@@ -17,6 +17,7 @@ use super::{
 };
 use crate::{
     chunk::SourceChunkBatch,
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     runtime::{
         cache::local_parquet::{
@@ -100,7 +101,7 @@ pub(in crate::exec) fn read_local_parquet_source(
     source: &LocalParquetSource,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    validate_local_parquet_source(source, rapids_analysis_context())?;
+    validate_local_parquet_source(source, rapids_analysis_context(context.planning_policy()))?;
 
     // The DataFusion exact-statistical-order implementation carries hidden
     // order columns whose presence depends on a thread-local execution scope.
@@ -174,7 +175,7 @@ pub(in crate::exec) fn read_literal_batch_source(
     source: &LiteralBatchSource,
     metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
-    validate_literal_batch_source(source, rapids_analysis_context())?;
+    validate_literal_batch_source(source, rapids_analysis_context(context.planning_policy()))?;
     context.check_cancellation("query_engine.literal_batch_source.read")?;
     let timer = Instant::now();
     let frame = DataFrame::from_record_batches(&context.runtime()?, &source.batches).map_err(|error| {
@@ -805,11 +806,9 @@ fn read_local_parquet_chunk_batch_uncached(
 }
 
 fn validate_local_parquet_chunk_batch(source: &LocalParquetSource, batch: &SourceChunkBatch) -> Result<()> {
-    if source
-        .reader_predicate
-        .as_ref()
-        .is_some_and(|predicate| !source.reader_predicate_is_supported(predicate, rapids_analysis_context()))
-    {
+    if source.reader_predicate.as_ref().is_some_and(|predicate| {
+        !source.reader_predicate_is_supported(predicate, rapids_analysis_context(PlanningPolicy::default()))
+    }) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.local_parquet_chunk_batch",
@@ -996,7 +995,8 @@ mod tests {
         let mut source = test_source(vec![file], Vec::new());
         source.missing_columns.push(MissingColumn::new("missing", ArrowDataType::Int32, true));
 
-        let error = validate_local_parquet_source(&source, rapids_analysis_context()).unwrap_err();
+        let error =
+            validate_local_parquet_source(&source, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
         let rendered = format!("{error:?}");
 
         assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));

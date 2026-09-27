@@ -60,10 +60,13 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .unwrap();
-    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
+    assert!(
+        bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
+            .is_none()
+    );
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -311,10 +314,13 @@ fn bounded_native_query_streams_a_shared_staged_leaf_into_each_join_consumer() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .unwrap();
-    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
+    assert!(
+        bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
+            .is_none()
+    );
 
     let context = backend_context_with_grant(SHARED_LEAF_GRANT_BYTES);
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);

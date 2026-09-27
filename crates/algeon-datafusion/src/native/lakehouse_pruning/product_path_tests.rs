@@ -36,6 +36,7 @@ use query_engine::{
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::local_parquet_source,
     plan::{NodeId, QueryPlan, QueryPlanBuilder},
+    policy::PlanningPolicy,
     runtime::{S3SourceStorageProfile, SourceStorageProfile},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
@@ -347,11 +348,12 @@ async fn product_pruning_uses_runtime_object_store_and_noops_when_store_is_missi
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node_id);
 
-    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, &[]).await;
+    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, &[], PlanningPolicy::default()).await;
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
 
-    let unchanged = prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[]).await;
+    let unchanged =
+        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[], PlanningPolicy::default()).await;
     let unchanged_source =
         local_parquet_source(&unchanged, source_node_id).expect("unpruned source should remain present");
     assert_eq!(unchanged_source.files[0].row_groups, None);
@@ -377,7 +379,7 @@ async fn product_pruning_prefers_runtime_object_store_over_source_storage_profil
     let plan = builder.finish_with_host_sink(source_node_id);
     let unreachable_profile = unreachable_storage_profile("unreachable-profile");
 
-    let pruned = prune_native_query_plan(plan, &runtime_env, &[unreachable_profile]).await;
+    let pruned = prune_native_query_plan(plan, &runtime_env, &[unreachable_profile], PlanningPolicy::default()).await;
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
     remove_fixture(dir);
@@ -400,7 +402,8 @@ async fn product_pruning_falls_back_to_source_storage_profile() {
     let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node_id);
 
-    let pruned = prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[profile]).await;
+    let pruned =
+        prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[profile], PlanningPolicy::default()).await;
     let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
     assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
     assert!(server.request_count.load(Ordering::Relaxed) > 0, "storage-profile fallback should reach S3");

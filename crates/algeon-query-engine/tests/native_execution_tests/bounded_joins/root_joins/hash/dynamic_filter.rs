@@ -55,7 +55,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -118,7 +118,7 @@ fn bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe()
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimized.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Sort(_))).count(), 2);
@@ -259,7 +259,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
         ..NativeOptimizerOptions::disabled()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
         route.consumer_columns == ["ps_partkey".to_string()]
             && route.consumer_lowering == DynamicFilterConsumerLowering::PostDecodeOnly
@@ -359,7 +359,7 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -544,7 +544,7 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     let residual_route = optimized
         .plan
         .dynamic_filter_routes()
@@ -641,7 +641,7 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -763,7 +763,7 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -878,7 +878,7 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -975,7 +975,7 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1070,7 +1070,7 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 2);
     let context = backend_context_with_grant(8 * 1024 * 1024);
 
@@ -1155,7 +1155,7 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1271,7 +1271,7 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -1383,7 +1383,7 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -1452,7 +1452,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::HashJoinProbe { .. }));
 
@@ -1539,7 +1539,7 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::Filter { .. }));
 
@@ -1636,7 +1636,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert_eq!(optimized.plan.dynamic_filter_routes()[0].consumer_columns, ["raw_order_id".to_string()]);
     assert!(matches!(optimized.plan.dynamic_filter_routes()[0].consumer, DynamicFilterConsumer::Filter { .. }));
@@ -1722,12 +1722,12 @@ fn bounded_native_query_executes_aggregate_keyset_dynamic_filter_join_input() {
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = backend_context_with_grant(1024 * 1024);
 
-    let decision = admit(&optimized.plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context()).unwrap();
-    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, &decision, rapids_analysis_context()).is_none());
+    let decision = admit(&optimized.plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default())).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, &decision, rapids_analysis_context(PlanningPolicy::default())).is_none());
     let result = execute_query_plan(&context, &optimized.plan).expect("aggregate keyset join input should execute");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1790,7 +1790,7 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
         ..NativeOptimizerOptions::default()
     };
     let optimized =
-        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(), local_dimension_pruning_resolver());
+        optimize_query_plan(plan, &optimizer_options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     assert!(matches!(
         optimized.plan.dynamic_filter_routes()[0].consumer,
@@ -1798,8 +1798,8 @@ fn bounded_native_query_executes_build_dynamic_filter_below_aggregate_probe() {
     ));
     let context = backend_context_with_grant(1024 * 1024);
 
-    let decision = admit(&optimized.plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context()).unwrap();
-    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, &decision, rapids_analysis_context()).is_none());
+    let decision = admit(&optimized.plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context(PlanningPolicy::default())).unwrap();
+    assert!(bounded_join_unsupported_shape_facts(&optimized.plan, &decision, rapids_analysis_context(PlanningPolicy::default())).is_none());
     let result = execute_query_plan(&context, &optimized.plan).expect("aggregate probe input should execute");
     assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
     let QueryOutput::HostArrow(batch) = result.output() else {

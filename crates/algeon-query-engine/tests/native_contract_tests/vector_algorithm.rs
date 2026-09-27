@@ -162,7 +162,7 @@ fn vector_optimizer_rewrite_remaps_relation_bindings_and_ordered_inputs() {
     let optimized = optimize_query_plan(
         plan,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
     .plan;
@@ -445,7 +445,7 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
         vector_pca_output_schema(DataType::Int64, 1),
     );
     let capability = plan
-        .capability_analysis(rapids_analysis_context())
+        .capability_analysis(rapids_analysis_context(PlanningPolicy::default()))
         .nodes
         .into_iter()
         .find(|node| node.node_id == plan.root_id())
@@ -492,7 +492,7 @@ fn vector_operations_compile_with_role_ordered_resident_inputs() {
         let PlanNode::VectorAlgorithm(vector) = &plan.root_node().kind else {
             panic!("{algorithm} root should be a vector algorithm");
         };
-        let analysis = plan.capability_analysis(rapids_analysis_context());
+        let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
         let vector_edges = analysis
             .edges
             .iter()
@@ -519,8 +519,13 @@ fn vector_operations_compile_with_role_ordered_resident_inputs() {
             );
         }
 
-        let decision = admit(&plan, Default::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("bounded admission should classify vector plan");
+        let decision = admit(
+            &plan,
+            Default::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+        )
+        .expect("bounded admission should classify vector plan");
         let admission = decision.admission().unwrap_or_else(|| {
             panic!("{algorithm} should compile without coverage rejection: {:?}", decision.rejection_projection())
         });
@@ -590,7 +595,7 @@ fn vector_algorithm_composes_with_relational_tasks_and_keeps_resident_handoffs()
         ],
     );
     let plan = builder.finish_with_host_sink(output);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis).expect("relational operators can surround a vector task");
     pipeline.validate().expect("compiled vector composition satisfies resident task contracts");
 

@@ -20,6 +20,7 @@ use query_engine::{
         JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NativePlanCostReason, NodeId, ProjectionOutput,
         QueryPlan, QueryPlanBuilder,
     },
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
@@ -810,7 +811,7 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     let optimizer_result = optimize_query_plan(
         semijoin_reduction_projection_plan(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
@@ -861,7 +862,7 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
     let optimizer_result = optimize_query_plan(
         projection_simplification_identity_plan(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.diagnostics.projection_simplification.considered_count, 1);
@@ -909,7 +910,7 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
     let optimizer_result = optimize_query_plan(
         dynamic_filter_route_plan(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);

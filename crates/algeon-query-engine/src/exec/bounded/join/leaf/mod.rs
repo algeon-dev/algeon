@@ -281,7 +281,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             routes,
             filter_set,
             |route, _filter| merged_reader_predicate_routes.contains(&route.id),
-            rapids_analysis_context(),
+            rapids_analysis_context(context.planning_policy()),
             footers,
         )?;
         let mut chunk_plan = plan_local_parquet_source_chunks_with_metadata_cache_and_context(
@@ -402,7 +402,7 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
 ) -> Result<ResidentGpuFrame> {
     match source {
         SourceNode::LocalParquet(source) => {
-            validate_local_parquet_source(source, rapids_analysis_context())?;
+            validate_local_parquet_source(source, rapids_analysis_context(execution.context().planning_policy()))?;
             execute_bounded_join_leaf_local_parquet_source(execution, source, node_id)
         },
         SourceNode::GpuResident(source) => {

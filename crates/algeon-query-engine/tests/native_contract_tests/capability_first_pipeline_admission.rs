@@ -36,7 +36,7 @@ fn capability_admission_accepts_root_full_sort_left_semi_grouped_aggregate() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("left-semi full-sort aggregate admission should not error");
 
@@ -51,7 +51,7 @@ fn capability_admission_accepts_gpu_resident_sink_for_join_pipeline() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("gpu-resident sink admission should not error");
     let admission = decision.admission().expect("join plan should produce capability admission evidence");
@@ -71,7 +71,7 @@ fn capability_admission_reports_dynamic_filter_control_cycle_as_a_dependency_cyc
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("admission should classify the control cycle");
 
@@ -83,11 +83,12 @@ fn capability_admission_reports_dynamic_filter_control_cycle_as_a_dependency_cyc
     assert!(projection.facts.contains_key("task_id"), "the cycle names the task it closed on: {:?}", projection);
 
     assert!(
-        bounded_join_modeled_facts(&plan, &decision, rapids_analysis_context()).is_none(),
+        bounded_join_modeled_facts(&plan, &decision, rapids_analysis_context(PlanningPolicy::default())).is_none(),
         "a rejected compiled pipeline must not emit modeled bounded-join facts"
     );
-    let unsupported_facts = bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context())
-        .expect("a rejected compiled pipeline emits unsupported bounded-join facts");
+    let unsupported_facts =
+        bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
+            .expect("a rejected compiled pipeline emits unsupported bounded-join facts");
     assert_eq!(
         unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str),
         Some("compiled_pipeline_dependency_cycle")
@@ -127,7 +128,7 @@ fn capability_admission_accepts_independent_source_unary_branches_behind_union()
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("union-scope admission should not error");
     {
@@ -162,7 +163,7 @@ fn capability_admission_accepts_source_unary_without_requiring_a_union() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("converged admission should not error");
     {
@@ -225,7 +226,7 @@ fn capability_admission_accepts_non_join_scan_filter_grouped_aggregate_topk() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("non-join grouped aggregate admission should not error");
     {
@@ -271,7 +272,7 @@ fn capability_admission_accepts_non_join_distinct_aggregate_with_source_stream_c
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("whole-input aggregate admission should not error");
     {
@@ -329,7 +330,7 @@ fn capability_admission_admits_window_that_depends_on_no_input_order() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("window admission should not error");
     let admission = decision.admission().expect("a row number without ORDER BY is admitted");
@@ -346,7 +347,7 @@ fn capability_admission_rejects_row_number_over_unordered_input() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("window admission should not error");
     let projection = decision.rejection_projection().expect("a row number over unordered input is rejected");
@@ -387,7 +388,12 @@ fn partitioned_row_number_plan(input_sort: Option<Vec<SortExpr>>, order_by: bool
 }
 
 fn admit_default(plan: &QueryPlan) -> QueryEngineResult<AdmissionDecision> {
-    admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
+    admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
 }
 
 #[test]
@@ -492,7 +498,7 @@ fn capability_admission_rejects_rank_over_a_materialized_partition_key() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("window admission should not error");
     let projection = decision.rejection_projection().expect("no compiled contract proves the rank input order");
@@ -651,7 +657,7 @@ fn rollup_rank_over_materialized_partition_key_plan() -> QueryPlan {
 
 #[test]
 fn admitted_plan_accepts_footer_pruning_that_only_narrows_row_groups() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let decision = admit(
         &footer_pruned_scan_plan(vec![0, 1, 2], 5),
         StatisticalAggregateExecutionMode::default(),
@@ -674,7 +680,7 @@ fn admitted_plan_accepts_footer_pruning_that_only_narrows_row_groups() {
 
 #[test]
 fn admitted_plan_refuses_a_pruned_source_selecting_a_row_group_its_file_does_not_have() {
-    let ctx = rapids_analysis_context();
+    let ctx = rapids_analysis_context(PlanningPolicy::default());
     let decision = admit(
         &footer_pruned_scan_plan(vec![0, 1, 2], 5),
         StatisticalAggregateExecutionMode::default(),

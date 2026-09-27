@@ -105,7 +105,7 @@ values:
 | --- | --- | --- |
 | `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind`, and `category` are absent. |
 | `not_supported` | The exact relational candidate is outside the native capability contract. | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
-| `not_selected_by_cost` | The candidate is native-capable, but a preference rule retained the DataFusion plan: the plan reads no column data (reason `native_no_column_data_not_selected_by_cost`, applied whenever DataFusion CPU execution is allowed), or an enabled cost threshold matched. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
+| `not_selected_by_cost` | The candidate is native-capable, but a preference rule retained the DataFusion plan: the plan reads no column data, because every source is a literal with no columns or no rows and no GPU algorithm runs (reason `native_no_column_data_not_selected_by_cost`, applied whenever DataFusion CPU execution is allowed), or an enabled cost threshold matched. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 
 Every candidate carries its stable `candidate_family`; every non-selected
 candidate also carries `remedy_code`, `remedy_kind`, and human-readable

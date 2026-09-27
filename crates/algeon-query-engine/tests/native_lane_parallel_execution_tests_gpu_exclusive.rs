@@ -286,9 +286,13 @@ fn parquet_union_plan(left_path: &Path, right_path: &Path, schema: &Arc<Schema>)
 }
 
 fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
-    let decision =
-        admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("bounded admission should not error");
+    let decision = admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("lane union uses the compiled admission");
     admission.pipeline().clone()
 }

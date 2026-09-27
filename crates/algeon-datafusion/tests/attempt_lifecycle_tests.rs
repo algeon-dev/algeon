@@ -853,9 +853,10 @@ async fn concurrent_plain_executions_on_one_context_run_one_attempt_each() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plans_that_read_no_column_data_begin_no_attempt_unless_native_is_required() {
-    // A DDL result's empty relation and `SELECT 1`'s placeholder row carry no
-    // column data a GPU could accelerate, so NativePreferred keeps them on
-    // DataFusion instead of queueing for a grant.
+    // A DDL result's empty relation, `SELECT 1`'s placeholder row, and a
+    // relation DataFusion folds to empty carry no column data a GPU could
+    // accelerate, so NativePreferred keeps them on DataFusion instead of
+    // queueing for a grant.
     {
         let backend = BackendFixture::new(Some(8), AlgeonGpuQueuePolicy::default());
         let ctx = native_context(&backend).await;
@@ -865,6 +866,11 @@ async fn plans_that_read_no_column_data_begin_no_attempt_unless_native_is_requir
         let batches = ctx.sql("SELECT 1").await.unwrap().collect().await.unwrap();
         assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
         assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun, "SELECT 1 begins no attempt");
+        for sql in ["SELECT k FROM native_rows WHERE false", "SELECT k FROM native_rows LIMIT 0"] {
+            let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+            assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+            assert_eq!(backend.attempt_counters_snapshot().attempts_begun, begun, "{sql} begins no attempt");
+        }
     }
 
     // NativeRequired leaves no DataFusion fallback, so the literal stays native.

@@ -90,7 +90,7 @@ pub(super) fn admit_or_execution_error(
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     policy: PlanningPolicy,
 ) -> Result<Arc<AdmittedPlan>> {
-    match admit(plan, statistical_aggregate_execution_mode, policy, rapids_analysis_context())? {
+    match admit(plan, statistical_aggregate_execution_mode, policy, rapids_analysis_context(policy))? {
         AdmissionDecision::Admitted(admission) => Ok(admission),
         AdmissionDecision::Rejected(rejection) if rejection.validation_error().is_some() => {
             Err(rejection.execution_error(plan))

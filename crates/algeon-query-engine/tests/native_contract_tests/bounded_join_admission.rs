@@ -12,15 +12,25 @@ use query_engine::{
 use super::*;
 
 fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPlan>>> {
-    Ok(admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())?
-        .admission()
-        .cloned())
+    Ok(admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )?
+    .admission()
+    .cloned())
 }
 
 /// The error `admit` returns for a plan the validator finds malformed.
 fn malformed_plan_error(plan: &QueryPlan) -> QueryError {
-    admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
-        .expect_err("a malformed plan has no admission decision")
+    admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect_err("a malformed plan has no admission decision")
 }
 
 fn modeled_facts(

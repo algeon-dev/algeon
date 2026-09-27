@@ -44,7 +44,7 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
                 .with_build_side(JoinSide::Right),
                 schema(&["customer"]),
             );
-            let result = optimize_query_plan(builder.finish_gpu_resident(root), &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+            let result = optimize_query_plan(builder.finish_gpu_resident(root), &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
             assert!(result.diagnostics.join_filter_reassociation.applied_count > 0);
             let candidate = result
                 .diagnostics
@@ -66,7 +66,7 @@ fn join_filter_reassociation_preserves_output_advisory_for_residual_build_select
 fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_losing_multiplicity() {
     let plan = inner_join_filter_over_projected_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 1);
@@ -98,7 +98,7 @@ fn join_filter_reassociation_pushes_dimension_filter_below_fact_join_without_los
 fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
     let plan = nested_inner_join_filter_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 2);
@@ -127,7 +127,7 @@ fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
 fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_fact_join() {
     let plan = projected_parent_join_filter_over_fact_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert!(
@@ -166,7 +166,7 @@ fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_
 fn join_filter_reassociation_rejects_shared_projected_parent_to_preserve_projection_fanout() {
     let plan = shared_projected_parent_join_filter_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 0);
     assert!(
@@ -212,7 +212,7 @@ fn join_filter_reassociation_pushes_scalar_range_residuals_into_dimension_join_i
     );
     let plan = scalar_range_residual_plan(&date_path, Arc::clone(&date_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert!(
         result.diagnostics.join_filter_reassociation.applied_count >= 2,
@@ -273,7 +273,7 @@ fn join_filter_reassociation_uses_date32_literals_for_temporal_scalar_range_resi
     write_record_batch_parquet(&date_path, Arc::clone(&date_schema), &batch, 8);
     let plan = date32_scalar_range_residual_plan(&date_path, Arc::clone(&date_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     let expected = Expr::binary(
         Expr::binary(
@@ -310,7 +310,7 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
     write_record_batch_parquet(&scalar_path, Arc::clone(&scalar_schema), &batch, 8);
     let plan = out_of_range_float_scalar_range_residual_plan(&scalar_path, Arc::clone(&scalar_schema));
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(
         result.diagnostics.join_filter_reassociation.applied_count, 0,

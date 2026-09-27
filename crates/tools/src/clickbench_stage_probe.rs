@@ -35,7 +35,7 @@ use datafusion::{
 use futures::TryStreamExt;
 use query_engine::{
     attempt::{AttemptOwner, BeginAttemptRequest},
-    exec::{QueryExecutionRequest, admit_query_plan, execute_query_plan, output::QueryOutput},
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     observability::{
         AttemptDisposition, AttemptQueryId, LiveRuntimeObservationSnapshot, RUNTIME_OBSERVATION_JSONL_SCHEMA,
         RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeOperatorStageState,
@@ -190,8 +190,9 @@ async fn probe_native_observed(
 ) -> ToolResult<ProbeVerdict> {
     let sql = clickbench_sql(query_id)?;
     let physical = plan_native_physical(query_id, root, sql, profile).await?;
-    let native_plan = peel_native_admitted_plan(physical.as_ref())
-        .map(|admitted| admitted.plan().clone())
+    // The probe runs the artifact planning decided for the native node, under
+    // that decision's mode and policy.
+    let admitted_plan = peel_native_admitted_plan(physical.as_ref())
         .ok_or_else(|| format!("query {query_id} did not lower to AlgeonNativeExec/AlgeonNativeComposedExec"))?;
 
     let query_dir = config.artifact_dir.join(query_id);
@@ -213,11 +214,6 @@ async fn probe_native_observed(
 
     let started = Instant::now();
     let admitted_context = query_handle.acquire_context_with_cancellation(cancellation.clone())?;
-    let admitted_plan = admit_query_plan(
-        &native_plan,
-        admitted_context.context().statistical_aggregate_execution_mode(),
-        admitted_context.context().planning_policy(),
-    )?;
 
     let outcome = execute_query_plan(admitted_context.context(), QueryExecutionRequest::admitted(&admitted_plan));
     stop.store(true, Ordering::Release);

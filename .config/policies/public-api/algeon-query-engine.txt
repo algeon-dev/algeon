@@ -94,7 +94,7 @@ pub fn query_engine::rapids_backend::RapidsBackend::binary_output_type(&self, qu
 pub fn query_engine::rapids_backend::RapidsBackend::check_expression(&self, &query_planning::expr::Expr, query_planning::backend::ExpressionUse) -> query_planning::error::Result<()>
 pub fn query_engine::rapids_backend::RapidsBackend::check_projection_output(&self, &query_planning::plan::nodes::ProjectionOutput) -> query_planning::error::Result<()>
 pub fn query_engine::rapids_backend::RapidsBackend::supports_type(&self, &arrow_schema::datatype::DataType) -> bool
-pub fn query_engine::rapids_backend::rapids_analysis_context() -> query_planning::backend::AnalysisContext<'static>
+pub fn query_engine::rapids_backend::rapids_analysis_context(query_planning::policy::PlanningPolicy) -> query_planning::backend::AnalysisContext<'static>
 pub const fn query_engine::rapids_backend::rapids_backend() -> &'static query_engine::rapids_backend::RapidsBackend
 pub mod query_engine::shadow
 pub struct query_engine::shadow::NativeShadowEstimate

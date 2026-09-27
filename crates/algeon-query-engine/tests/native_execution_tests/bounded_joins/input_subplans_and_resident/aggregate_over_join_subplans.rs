@@ -43,10 +43,13 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .unwrap();
-    assert!(bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context()).is_none());
+    assert!(
+        bounded_join_unsupported_shape_facts(&plan, &decision, rapids_analysis_context(PlanningPolicy::default()))
+            .is_none()
+    );
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

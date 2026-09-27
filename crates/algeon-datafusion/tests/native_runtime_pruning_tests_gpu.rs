@@ -6,7 +6,7 @@ use algeon_datafusion::{
         GpuMemoryOwnership,
     },
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig, SourceChunking, below_native_admission},
-    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule},
+    planner::{AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, DataFusionCpuExecutionPolicy},
     report::PlanningReport,
 };
 use arrow::{
@@ -789,7 +789,9 @@ async fn assert_sql_native_parity(
 
 async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan>) {
     let cpu_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
-    let optimization = optimize_with_pruning_template(plan);
+    // A scan without files lowers to a zero-row literal, which a plan that
+    // allows DataFusion CPU execution keeps there by cost.
+    let optimization = optimize_with_pruning_template_requiring_native(plan);
     assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
     assert!(optimization.source_diagnostics.is_empty());

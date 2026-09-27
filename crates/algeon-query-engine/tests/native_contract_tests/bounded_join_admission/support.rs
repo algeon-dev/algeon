@@ -55,7 +55,7 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit should compile");
     pipeline.validate().expect("compiler output satisfies the fused top-k binding");
@@ -111,7 +111,7 @@ fn bounded_offset_only_limit_runs_below_a_full_sort() {
     let limit = builder.add_limit(sort, LimitSpec::offset(1), Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort offset should compile");
     let sort_task = pipeline
@@ -144,7 +144,7 @@ fn bounded_sort_strategy_records_fused_binding_once() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit should compile");
     let limit_task = pipeline
@@ -195,7 +195,7 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(filter);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit filter should compile");
     let task_id = |kind| {
@@ -239,7 +239,7 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
         )],
     );
     let dropped_plan = dropped.finish_with_host_sink(projection);
-    let dropped_analysis = dropped_plan.capability_analysis(rapids_analysis_context());
+    let dropped_analysis = dropped_plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let dropped_pipeline =
         compile_pipeline(&dropped_plan, &dropped_analysis)
             .expect("key-dropping projection should compile");
@@ -273,7 +273,7 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
         ])),
     );
     let aggregate_plan = aggregated.finish_with_host_sink(aggregate);
-    let aggregate_analysis = aggregate_plan.capability_analysis(rapids_analysis_context());
+    let aggregate_analysis = aggregate_plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let aggregate_pipeline =
         compile_pipeline(&aggregate_plan, &aggregate_analysis)
             .expect("grouped aggregate should compile");
@@ -302,7 +302,7 @@ fn bounded_aggregate_task_records_single_stage() {
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("grouped aggregate should compile");
     let aggregate_task = pipeline
@@ -354,7 +354,7 @@ fn bounded_aggregate_state_and_max_rows_are_node_facts() {
         Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)])),
     );
     let plan = builder.finish_with_host_sink(limit);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let node_fact = |id| {
         analysis.nodes.iter().find(|node| node.node_id == id).expect("node capability exists")
@@ -406,7 +406,7 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
         Arc::clone(&key_schema),
     );
     let plan = builder.finish_with_host_sink(anti);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let build_edge = analysis
         .edges
@@ -471,7 +471,7 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
     );
     let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let probe_edge = analysis
         .edges
@@ -561,7 +561,7 @@ fn bounded_compiled_aggregate_task_runs_single_stage_without_partial_edges() {
     );
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let analysis = plan.capability_analysis(rapids_analysis_context());
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline =
         compile_pipeline(&plan, &analysis).expect("join grouped aggregate compiles");
     let aggregate_task = pipeline

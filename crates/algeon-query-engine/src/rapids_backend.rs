@@ -18,6 +18,7 @@ use crate::{
     expr::{AggregateSpec, BinaryOp, Expr},
     native_error::{cudf_query_error, cudf_unsupported_type_error},
     plan::ProjectionOutput,
+    policy::PlanningPolicy,
     prepared::{
         lower_aggregate_spec, lower_expr, lower_filter_predicate_expr, lower_final_aggregate_spec,
         lower_projection_output_expr,
@@ -33,9 +34,9 @@ pub const fn rapids_backend() -> &'static RapidsBackend {
     &RapidsBackend
 }
 
-/// An analysis context bound to the native engine's backend.
-pub fn rapids_analysis_context() -> AnalysisContext<'static> {
-    AnalysisContext::new(rapids_backend())
+/// An analysis context bound to the native engine's backend under `policy`.
+pub fn rapids_analysis_context(policy: PlanningPolicy) -> AnalysisContext<'static> {
+    AnalysisContext::new(rapids_backend(), policy)
 }
 
 impl BackendCapabilities for RapidsBackend {

@@ -1381,7 +1381,7 @@ mod lane_width_tests {
             plan,
             StatisticalAggregateExecutionMode::default(),
             PlanningPolicy::default(),
-            rapids_analysis_context(),
+            rapids_analysis_context(PlanningPolicy::default()),
         )
         .expect("bounded admission should not error");
         decision.admission().expect("these plans use the compiled admission").pipeline().clone()

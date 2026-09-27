@@ -14,7 +14,7 @@ fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {
     let result = optimize_query_plan(
         plan.clone(),
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 
@@ -45,7 +45,7 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
     let result = optimize_query_plan(
         plan.clone(),
         &options,
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
 

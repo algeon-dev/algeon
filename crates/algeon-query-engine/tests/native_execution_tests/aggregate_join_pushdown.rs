@@ -25,7 +25,7 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
@@ -69,7 +69,7 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert_eq!(optimizer_result.change, NativeOptimizerChange::Changed);
@@ -394,7 +394,7 @@ fn bounded_native_query_filters_left_semi_groups_before_the_final_aggregate() {
     let optimizer_result = optimize_query_plan(
         plan.clone(),
         &Default::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     let pushdown = &optimizer_result.diagnostics.aggregate_join_pushdown;

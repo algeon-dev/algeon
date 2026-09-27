@@ -8,7 +8,7 @@ fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_righ
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -38,7 +38,7 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -64,7 +64,7 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
 fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side() {
     let plan = inner_join_over_projected_left_join_left_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -75,7 +75,7 @@ fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side(
 fn outer_join_null_rejection_rejects_shared_outer_join_output() {
     let plan = shared_left_join_output_with_one_null_rejecting_consumer_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -91,7 +91,7 @@ fn outer_join_null_rejection_rejects_shared_outer_join_output() {
 fn outer_join_null_rejection_keeps_left_join_below_limit() {
     let plan = inner_join_over_limited_projected_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -102,7 +102,7 @@ fn outer_join_null_rejection_keeps_left_join_below_limit() {
 fn outer_join_null_rejection_keeps_large_null_introducing_input() {
     let plan = inner_join_over_large_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -121,7 +121,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
     options.outer_join_null_rejection = OuterJoinNullRejectionOptions::default();
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -153,7 +153,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
 fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
     let plan = union_aggregate_over_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -177,7 +177,7 @@ fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
 fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::Eligible);
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -199,7 +199,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
 fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_nullable() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullableMarker);
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let PlanNode::Projection(projection) = &result.plan.root_node().kind else {
@@ -215,7 +215,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_null
 fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullsMatch);
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -226,7 +226,7 @@ fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
 fn outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::MarkerEscapes);
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);

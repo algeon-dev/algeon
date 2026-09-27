@@ -32,7 +32,7 @@ pub query_planning::backend::ExpressionUse::FilterPredicate
 pub query_planning::backend::ExpressionUse::Value
 pub struct query_planning::backend::AnalysisContext<'a>
 impl<'a> query_planning::backend::AnalysisContext<'a>
-pub fn query_planning::backend::AnalysisContext<'a>::new(&'a dyn query_planning::backend::BackendCapabilities) -> Self
+pub const fn query_planning::backend::AnalysisContext<'a>::new(&'a dyn query_planning::backend::BackendCapabilities, query_planning::policy::PlanningPolicy) -> Self
 pub const fn query_planning::backend::AnalysisContext<'a>::policy(&self) -> query_planning::policy::PlanningPolicy
 pub const fn query_planning::backend::AnalysisContext<'a>::with_policy(self, query_planning::policy::PlanningPolicy) -> Self
 pub trait query_planning::backend::BackendCapabilities: core::fmt::Debug + core::marker::Send + core::marker::Sync

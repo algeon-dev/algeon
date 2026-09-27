@@ -93,10 +93,11 @@ pub struct AnalysisContext<'a> {
 }
 
 impl<'a> AnalysisContext<'a> {
-    /// Binds an analysis pass to one backend implementation under the default
-    /// [`PlanningPolicy`].
-    pub fn new(backend: &'a dyn BackendCapabilities) -> Self {
-        Self { backend, policy: PlanningPolicy::default() }
+    /// Binds an analysis pass to one backend implementation under `policy`,
+    /// the execution policy the plan is optimized, admitted, and executed
+    /// with.
+    pub const fn new(backend: &'a dyn BackendCapabilities, policy: PlanningPolicy) -> Self {
+        Self { backend, policy }
     }
 
     /// The same pass under the execution policy the plan is optimized,

@@ -36,6 +36,7 @@ use query_engine::{
         integer_statistics_range, leaf_column_chunk, leaf_column_statistics, row_group_i64_range_for_root_column,
     },
     plan::{NodeId, QueryPlan},
+    policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
     runtime::SourceStorageProfile,
     source::{LocalParquetSource, SourceColumnRef},
@@ -80,6 +81,7 @@ pub(crate) async fn prune_native_query_plan(
     plan: QueryPlan,
     runtime_env: &Arc<RuntimeEnv>,
     source_storage_profiles: &[SourceStorageProfile],
+    planning_policy: PlanningPolicy,
 ) -> QueryPlan {
     let policy = TableFormatPruningPolicy::default();
     let mut resolver =
@@ -88,7 +90,7 @@ pub(crate) async fn prune_native_query_plan(
         plan,
         LakehouseFooterPruningOptions::new(policy.max_target_files_across_requests()),
         &mut resolver,
-        rapids_analysis_context(),
+        rapids_analysis_context(planning_policy),
     )
     .await;
 

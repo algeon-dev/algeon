@@ -58,7 +58,7 @@ fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("bounded admission should not error");
     let admission = decision.admission().expect("independent union branches use the same compiled admission");
@@ -151,7 +151,7 @@ fn lane_dispatch_executes_parquet_union_branches_on_production_path() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("bounded admission should not error");
     let admission = decision.admission().expect("parquet union branches use the compiled admission");
@@ -264,7 +264,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("scan/filter/aggregate admission should not error");
     let admission = decision.admission().expect("scan/filter/aggregate uses compiled admission");
@@ -345,7 +345,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         &resident_plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("resident aggregate admission should not error")
     .admission()
@@ -406,7 +406,7 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         &grouped_plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("grouped aggregate admission should not error");
     assert!(grouped_decision.admission().is_some(), "grouped aggregate uses compiled admission");
@@ -515,7 +515,7 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("overflow aggregate admission should not error");
     let admission = decision.admission().expect("overflow aggregate uses compiled admission");
@@ -604,7 +604,7 @@ fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("bounded admission should not error");
     let admission = decision.admission().expect("join branches use the compiled admission");
@@ -774,7 +774,7 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
             &plan,
             StatisticalAggregateExecutionMode::default(),
             PlanningPolicy::default(),
-            rapids_analysis_context(),
+            rapids_analysis_context(PlanningPolicy::default()),
         )
         .expect("join admission should not error");
         let admission = decision.admission().unwrap_or_else(|| panic!("join {join_type} uses compiled admission"));
@@ -985,7 +985,7 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("chained join admission should not error");
     let admission = decision.admission().expect("chained joins use compiled admission");
@@ -1166,7 +1166,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("partitioned chain admission should not error");
     let admission = decision.admission().expect("partitioned chain uses compiled admission");
@@ -1338,12 +1338,17 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
     }
 
     fn admitted_pipeline(label: &str, plan: &QueryPlan) -> CompiledPipeline {
-        admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("parity admission should not error")
-            .admission()
-            .unwrap_or_else(|| panic!("{label}: parity shape uses compiled admission"))
-            .pipeline()
-            .clone()
+        admit(
+            plan,
+            StatisticalAggregateExecutionMode::default(),
+            PlanningPolicy::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+        )
+        .expect("parity admission should not error")
+        .admission()
+        .unwrap_or_else(|| panic!("{label}: parity shape uses compiled admission"))
+        .pipeline()
+        .clone()
     }
 
     // (label, join_type, build_side, null_equality, residual)
@@ -1536,7 +1541,7 @@ fn join_lane_cancellation_drains_branch_work_without_committing() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("cancel admission should not error");
     let admission = decision.admission().expect("cancel join uses compiled admission");
@@ -1663,7 +1668,7 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
     let optimized = optimize_query_plan(
         raw,
         &NativeOptimizerOptions::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     );
     assert!(
@@ -1675,7 +1680,7 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("pruning admission should not error");
     let admission = decision.admission().expect("pruning shape uses compiled admission");
@@ -1785,7 +1790,7 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("resident admission should not error");
     assert!(decision.admission().is_some(), "resident join uses compiled admission");
@@ -1911,7 +1916,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("sort/top-k admission should not error");
     let admission = decision.admission().expect("union sort/top-k uses compiled admission");
@@ -2020,7 +2025,7 @@ fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("saturation admission should not error");
     let admission = decision.admission().expect("literal union uses compiled admission");
@@ -2116,7 +2121,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
         &plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
-        rapids_analysis_context(),
+        rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("offset sort admission should not error");
     let admission = decision.admission().expect("offset sort uses compiled admission");
@@ -2165,7 +2170,7 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
             &full_plan,
             StatisticalAggregateExecutionMode::default(),
             PlanningPolicy::default(),
-            rapids_analysis_context(),
+            rapids_analysis_context(PlanningPolicy::default()),
         )
         .expect("full sort admission should not error")
         .admission()

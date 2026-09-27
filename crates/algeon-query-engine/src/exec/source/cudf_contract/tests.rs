@@ -23,7 +23,9 @@ use crate::{
     },
     expr,
     expr::{BinaryOp, Expr, LiteralValue},
-    plan, rapids_backend, runtime, source,
+    plan,
+    policy::PlanningPolicy,
+    rapids_backend, runtime, source,
 };
 
 fn remote_direct_test_source() -> LocalParquetSource {
@@ -399,7 +401,12 @@ fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
         expr::Expr::literal(expr::LiteralValue::Boolean(true)),
     ));
     let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
-    assert!(source.reader_predicate_is_supported(predicate, rapids_backend::rapids_analysis_context()));
+    assert!(
+        source.reader_predicate_is_supported(
+            predicate,
+            rapids_backend::rapids_analysis_context(PlanningPolicy::default())
+        )
+    );
 
     let (cudf_source, _cudf_chunk) =
         cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
@@ -437,7 +444,12 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
         .with_column_file_indices(vec![0], vec![0], vec![])
         .with_reader_predicate(predicate);
     let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
-    assert!(source.reader_predicate_is_supported(predicate, rapids_backend::rapids_analysis_context()));
+    assert!(
+        source.reader_predicate_is_supported(
+            predicate,
+            rapids_backend::rapids_analysis_context(PlanningPolicy::default())
+        )
+    );
     assert!(source.reader_predicate_requires_source_contract(predicate));
     let file = &source.files[0];
     let chunk = SourceChunk {

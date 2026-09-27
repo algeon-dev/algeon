@@ -13,9 +13,13 @@ mod mixed_aggregate;
 pub(super) use mixed_aggregate::*;
 
 pub(super) fn assert_bounded_pipeline_admitted(plan: &QueryPlan) {
-    let decision =
-        admit(plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default(), rapids_analysis_context())
-            .expect("bounded admission should decide the plan");
+    let decision = admit(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        PlanningPolicy::default(),
+        rapids_analysis_context(PlanningPolicy::default()),
+    )
+    .expect("bounded admission should decide the plan");
     assert!(decision.admission().is_some(), "plan should be admitted as a compiled pipeline: {decision:?}");
 }
 

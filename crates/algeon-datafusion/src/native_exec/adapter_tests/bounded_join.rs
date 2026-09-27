@@ -1,4 +1,4 @@
-use query_engine::{pipeline::CompiledPipeline, rapids_backend::rapids_analysis_context};
+use query_engine::{pipeline::CompiledPipeline, policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
 
 use super::*;
 
@@ -18,9 +18,11 @@ async fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipe
     let native = optimized
         .downcast_ref::<AlgeonNativeExec>()
         .expect("single-join post-root pipeline should optimize to AlgeonNativeExec");
-    let pipeline =
-        compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis(rapids_analysis_context()))
-            .expect("lowered single-join post-root pipeline should compile");
+    let pipeline = compile_pipeline(
+        native.native_plan(),
+        &native.native_plan().capability_analysis(rapids_analysis_context(PlanningPolicy::default())),
+    )
+    .expect("lowered single-join post-root pipeline should compile");
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);

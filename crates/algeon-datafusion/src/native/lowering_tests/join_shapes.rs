@@ -1,4 +1,4 @@
-use query_engine::rapids_backend::rapids_analysis_context;
+use query_engine::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
 
 use super::*;
 

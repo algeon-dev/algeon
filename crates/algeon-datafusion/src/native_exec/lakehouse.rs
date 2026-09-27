@@ -22,8 +22,10 @@ pub(crate) async fn resolve_admitted_plan(
         return Ok(Arc::clone(admitted));
     }
     let runtime_env = task_context.runtime_env();
-    let resolved = prune_native_query_plan(admitted.plan().clone(), &runtime_env, source_storage_profiles).await;
-    admitted.with_pruned_sources(resolved, rapids_analysis_context()).map_err(|error| {
+    let resolved =
+        prune_native_query_plan(admitted.plan().clone(), &runtime_env, source_storage_profiles, admitted.policy())
+            .await;
+    admitted.with_pruned_sources(resolved, rapids_analysis_context(admitted.policy())).map_err(|error| {
         Error::from_native(
             "algeon_datafusion.native_exec.footer_pruning",
             "the footer-pruned native plan does not refine its admitted plan",

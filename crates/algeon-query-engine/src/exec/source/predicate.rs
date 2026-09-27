@@ -39,7 +39,7 @@ pub(super) fn lower_source_reader_predicate(
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
     };
-    if !source.reader_predicate_is_supported(predicate, rapids_analysis_context()) {
+    if !source.reader_predicate_is_supported(predicate, rapids_analysis_context(context.planning_policy())) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,
@@ -64,7 +64,7 @@ pub(super) fn lower_source_reader_batch_predicate(
     let Some(predicate) = &source.reader_predicate else {
         return Ok(None);
     };
-    if !source.reader_predicate_is_supported(predicate, rapids_analysis_context()) {
+    if !source.reader_predicate_is_supported(predicate, rapids_analysis_context(context.planning_policy())) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             OP_READER_PREDICATE,

@@ -234,7 +234,7 @@ pub(in crate::exec::bounded) fn execute_bounded_local_parquet_source(
     source: &LocalParquetSource,
     node_id: NodeId,
 ) -> Result<ResidentGpuFrame> {
-    validate_local_parquet_source(source, rapids_analysis_context())?;
+    validate_local_parquet_source(source, rapids_analysis_context(execution.context().planning_policy()))?;
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,

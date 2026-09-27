@@ -2,7 +2,7 @@
 fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
     let plan = shared_projected_probe_fanout_plan();
     let original_node_count = plan.node_count();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.stream_fanout_replay.considered_count, 1);
@@ -17,7 +17,7 @@ fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
 #[test]
 fn disabled_native_optimizer_keeps_stream_fanout_replay_off() {
     let plan = shared_projected_probe_fanout_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);

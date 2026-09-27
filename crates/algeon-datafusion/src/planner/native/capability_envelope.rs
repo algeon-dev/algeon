@@ -97,7 +97,7 @@ pub(super) fn native_admission_decision(
         plan,
         execution_config.statistical_aggregate_execution_mode(),
         execution_config.planning_policy(),
-        rapids_analysis_context(),
+        rapids_analysis_context(execution_config.planning_policy()),
     )
     .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))
 }
