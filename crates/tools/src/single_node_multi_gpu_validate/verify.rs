@@ -8,14 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    RUN_ARTIFACT_SCHEMA, RUN_ARTIFACT_VERSION,
     provenance::FileIdentity,
     timeseries::{
         DeviceSeriesRow, FleetUtilizationInterval, FleetUtilizationPolicy, ProcessSeriesRow, fleet_utilization_interval,
     },
     util::{sha256_file, write_new_named_artifact},
 };
-use crate::ToolResult;
+use crate::{SINGLE_NODE_RUN_ARTIFACT_SCHEMA, ToolResult};
 
 const QUALIFICATION_MANIFEST_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.qualification_manifest.v1";
 const QUALIFICATION_REPORT_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.qualification_report.v1";
@@ -141,7 +140,7 @@ pub(super) fn verify_bundle(
     let mut artifacts = Vec::new();
     for path in &artifact_paths {
         let value: Value = serde_json::from_slice(&fs::read(path)?)?;
-        if value.get("schema").and_then(Value::as_str) == Some(RUN_ARTIFACT_SCHEMA) {
+        if value.get("schema").and_then(Value::as_str) == Some(SINGLE_NODE_RUN_ARTIFACT_SCHEMA) {
             artifacts.push((path, value));
         }
     }
@@ -322,11 +321,10 @@ fn artifact_paths(root: &Path) -> ToolResult<Vec<PathBuf>> {
 }
 
 fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<String>, path: &Path) {
-    if artifact.get("version").and_then(Value::as_u64) != Some(u64::from(RUN_ARTIFACT_VERSION))
-        || artifact.get("status").and_then(Value::as_str) != Some("measured_run")
+    if artifact.get("status").and_then(Value::as_str) != Some("measured_run")
         || artifact.pointer("/execution/measurement/qualifying").and_then(Value::as_bool) != Some(true)
     {
-        failures.push(format!("{} is not a qualifying v{} measured run", path.display(), RUN_ARTIFACT_VERSION));
+        failures.push(format!("{} is not a qualifying measured run", path.display()));
     }
     if artifact
         .pointer("/execution/qualification_failures")
@@ -712,16 +710,6 @@ mod tests {
         assert!(contains_failed_status(&serde_json::json!({"status": "failed"})));
 
         let path = Path::new("artifact.json");
-        let manifest: QualificationManifest = serde_json::from_slice(PRODUCTION_MANIFEST).unwrap();
-        let cell = &manifest.cells[0];
-        let mut stale = qualifying_artifact(&cell.profile_sha256, 1);
-        stale["version"] = Value::from(RUN_ARTIFACT_VERSION - 1);
-        let mut stale_failures = Vec::new();
-        verify_artifact(cell, &stale, &mut stale_failures, path);
-        assert!(
-            stale_failures.contains(&format!("artifact.json is not a qualifying v{RUN_ARTIFACT_VERSION} measured run"))
-        );
-
         let mut artifact = serde_json::json!({
             "execution": {"measurement": {"aggregate": {"attempts": [{
                 "device_ordinal": null,

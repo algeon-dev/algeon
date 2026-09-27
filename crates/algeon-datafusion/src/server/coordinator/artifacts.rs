@@ -22,15 +22,7 @@ use super::{
     },
 };
 
-pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control.v1";
-/// Control frames that embed a compact sealed-attempt projection use a new
-/// schema/version so v1 consumers never mistake delivery `retryable` for
-/// attempt retry advice.
-pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2: &str = "algeon_datafusion.query_runtime_artifact.control.v2";
-/// The terminal control of a statement that ran without a runtime
-/// observation, such as a metadata statement. It states that explicitly, and
-/// it is the whole artifact: no runtime JSONL frame follows.
-pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3: &str = "algeon_datafusion.query_runtime_artifact.control.v3";
+pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control";
 pub(crate) const TOMBSTONE_STATS_MAX_BYTES: u64 = 1024;
 pub(crate) const QUERY_STATS_HEADER_LINE: &str = "# algeon_datafusion_query_stats=1\n";
 pub(crate) type QueryArtifactFrames = (Arc<[u8]>, Option<Arc<[u8]>>);
@@ -97,28 +89,28 @@ impl fmt::Debug for FinalizationTestGate {
     }
 }
 
+/// The first frame of every runtime artifact response. Every state
+/// serializes every field, so a reader sees one shape whose values depend on
+/// the state.
 #[derive(Serialize)]
 pub(crate) struct RuntimeArtifactControl<'a> {
     pub(crate) schema: &'static str,
-    pub(crate) version: u32,
     pub(crate) query_id: &'a str,
     pub(crate) state: &'static str,
     pub(crate) retryable: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<&'static str>,
-    #[serde(skip_serializing_if = "is_false")]
     pub(crate) incomplete: bool,
-    /// Present only in v2 sealed (or sealed-but-incomplete) controls. The
-    /// complete immutable report remains in the paired runtime JSONL frame.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Whether exactly one runtime JSONL frame follows this control in the
+    /// same response. Only a `sealed` control of a statement that ran with a
+    /// runtime observation sets it. Live and `unavailable` controls, and the
+    /// sealed control of a statement without a runtime observation (such as
+    /// a metadata statement), are the whole artifact.
+    pub(crate) runtime_jsonl_follows: bool,
+    /// The bounded projection of the attempt's sealed report, set on a
+    /// terminal control rendered from that report and null otherwise. The
+    /// complete report is in the footer of the runtime JSONL frame when that
+    /// frame follows.
     pub(crate) attempt: Option<SealedAttemptProjection>,
-    /// `"none"` in v3: the statement ran without a runtime observation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) runtime_observation: Option<&'static str>,
-}
-
-pub(crate) const fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 pub(crate) fn runtime_control(
@@ -130,14 +122,13 @@ pub(crate) fn runtime_control(
     Arc::from(
         serde_json::to_vec(&RuntimeArtifactControl {
             schema: RUNTIME_ARTIFACT_CONTROL_SCHEMA,
-            version: 1,
             query_id,
             state,
             retryable,
             reason,
             incomplete: false,
+            runtime_jsonl_follows: false,
             attempt: None,
-            runtime_observation: None,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
@@ -147,46 +138,39 @@ pub(crate) fn incomplete_runtime_control(query_id: &str, reason: RetainedUnavail
     Arc::from(
         serde_json::to_vec(&RuntimeArtifactControl {
             schema: RUNTIME_ARTIFACT_CONTROL_SCHEMA,
-            version: 1,
             query_id,
             state: "unavailable",
             retryable: false,
             reason: Some(reason.as_str()),
             incomplete: true,
+            runtime_jsonl_follows: false,
             attempt: None,
-            runtime_observation: None,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
 }
 
-/// Encodes a terminal control frame from the same immutable report paired
-/// with a retained snapshot. Live delivery frames continue to use v1; a sealed
-/// attempt gets v2's explicit bounded attempt projection, and a statement
-/// without an attempt (so without a runtime observation) gets v3.
+/// Encodes the terminal control of a finalized artifact from the attempt's
+/// immutable report, when the statement has one. `runtime_jsonl` states
+/// whether the artifact retains a runtime JSONL frame; an incomplete artifact
+/// is `unavailable` and never exposes that frame.
 pub(crate) fn sealed_runtime_control(
     query_id: &str,
     report: Option<&QueryAttemptReport>,
+    runtime_jsonl: bool,
     incomplete_reason: Option<RetainedUnavailableReason>,
 ) -> Arc<[u8]> {
-    let attempt = report.map(QueryAttemptReport::sealed_projection);
-    let (schema, version, runtime_observation) = if attempt.is_some() {
-        (RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2, 2, None)
-    } else {
-        (RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3, 3, Some("none"))
-    };
     Arc::from(
         serde_json::to_vec(&RuntimeArtifactControl {
-            schema,
-            version,
+            schema: RUNTIME_ARTIFACT_CONTROL_SCHEMA,
             query_id,
             state: incomplete_reason.map_or("sealed", |_| "unavailable"),
             // This remains delivery/frame retryability, never retry advice.
             retryable: false,
             reason: incomplete_reason.map(RetainedUnavailableReason::as_str),
             incomplete: incomplete_reason.is_some(),
-            attempt,
-            runtime_observation,
+            runtime_jsonl_follows: runtime_jsonl && incomplete_reason.is_none(),
+            attempt: report.map(QueryAttemptReport::sealed_projection),
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
@@ -327,8 +311,10 @@ impl io::Write for LimitedVecWriter {
 pub(crate) enum ArtifactFrameSnapshot {
     Encode { state: &'static str, retryable: bool, reason: Option<&'static str> },
     Incomplete { reason: RetainedUnavailableReason },
-    // Public framing is state-shaped: unavailable is control-only, while a
-    // sealed artifact owns exactly one complete JSONL frame.
+    // An unavailable artifact, and a sealed one without a runtime
+    // observation, is control-only; any other sealed artifact owns exactly
+    // one complete JSONL frame, as its control's `runtime_jsonl_follows`
+    // states.
     Control { control: Arc<[u8]> },
     Sealed { control: Arc<[u8]>, jsonl: Arc<[u8]> },
 }

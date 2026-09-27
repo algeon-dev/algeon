@@ -6,16 +6,19 @@ use std::{
 
 use arrow_flight::FlightData;
 use prost::Message as _;
-use query_engine::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA;
+use query_engine::observability::{
+    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptRetryAdvice,
+    RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+    SealedAttemptProjection,
+};
 use serde_json::{Value, json};
 
 use super::{
     evidence::{
-        ArtifactEvidence, CONTROL_SCHEMA, CONTROL_SCHEMA_V3, FLIGHT_MAX_ENCODED_FRAME_BYTES,
-        GLOBAL_BYTE_PRESSURE_MAX_QUERIES, GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_BYTES,
-        GLOBAL_BYTE_PRESSURE_RETAINED_COUNT, GLOBAL_BYTE_PRESSURE_SETUP_QUERIES, RunEvidence, ScenarioEvidence,
-        VariableFrameEvidence, active_attempts, artifact_charge, observe_encoded_frame, parse_artifact,
-        validate_variable_frame_evidence,
+        ArtifactEvidence, CONTROL_SCHEMA, FLIGHT_MAX_ENCODED_FRAME_BYTES, GLOBAL_BYTE_PRESSURE_MAX_QUERIES,
+        GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_COUNT,
+        GLOBAL_BYTE_PRESSURE_SETUP_QUERIES, RunEvidence, ScenarioEvidence, VariableFrameEvidence, active_attempts,
+        artifact_charge, observe_encoded_frame, parse_artifact, validate_variable_frame_evidence,
     },
     params::{EVIDENCE_SCHEMA, EVIDENCE_VERSION, ObservabilityLimits, RuntimeParams, ScenarioSelection},
     validation::diagnostics_are_idle,
@@ -24,16 +27,49 @@ use super::{
 const QUERY_ID: &str = "parser-fixture-query";
 const TRACE_ID: &str = "parser-fixture-correlation";
 
-fn control_frame(state: &str, retryable: bool, reason: Option<&str>) -> Vec<u8> {
-    serde_json::to_vec(&json!({
+/// A control frame in the one shape the server emits for every state.
+fn control(state: &str, retryable: bool, reason: Option<&str>, attempt: Option<Value>) -> Value {
+    let runtime_jsonl_follows = state == "sealed" && attempt.is_some();
+    json!({
         "schema": CONTROL_SCHEMA,
-        "version": 1,
         "query_id": QUERY_ID,
         "state": state,
         "retryable": retryable,
         "reason": reason,
-    }))
+        "incomplete": state == "unavailable",
+        "runtime_jsonl_follows": runtime_jsonl_follows,
+        "attempt": attempt,
+    })
+}
+
+fn control_frame(control: &Value) -> Vec<u8> {
+    serde_json::to_vec(control).unwrap()
+}
+
+fn attempt_projection() -> Value {
+    serde_json::to_value(SealedAttemptProjection {
+        schema: SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+        attempt_id: AttemptId::mint(),
+        disposition: AttemptDisposition::Native,
+        outcome: RuntimeTerminalOutcome::Succeeded,
+        cleanup_disposition: AttemptCleanupDisposition::Completed,
+        cleanup_failure_count: 0,
+        cleanup_failure_count_complete: true,
+        capacity_disposition: AttemptCapacityDisposition::Released,
+        health_transition: None,
+        retry_advice: AttemptRetryAdvice::no_retry_needed(),
+        observation_truncated: false,
+        observation_degraded: false,
+        native_fault_evidence_present: false,
+        resource_evidence_present: false,
+    })
     .unwrap()
+}
+
+/// The sealed control of an attempt-owned statement, which a runtime JSONL
+/// frame follows.
+fn sealed_control_frame() -> Vec<u8> {
+    control_frame(&control("sealed", false, None, Some(attempt_projection())))
 }
 
 fn manifest() -> Value {
@@ -89,7 +125,7 @@ fn sealed_frames(middle: Vec<Value>, footer: Value) -> Vec<Vec<u8>> {
         .join("\n")
         .into_bytes();
     jsonl.push(b'\n');
-    vec![control_frame("sealed", false, None), jsonl]
+    vec![sealed_control_frame(), jsonl]
 }
 
 fn canonical_middle() -> Vec<Value> {
@@ -129,39 +165,45 @@ fn control_fixture_accepts_pending_active_and_unavailable_states() {
         ("unavailable", false, Some("evicted")),
         ("unavailable", false, Some("global_budget")),
     ] {
-        let frames = vec![control_frame(state, retryable, reason)];
+        let frames = vec![control_frame(&control(state, retryable, reason, None))];
         let artifact = parse_artifact(QUERY_ID, None, &frames, None, None).unwrap();
         assert_eq!(artifact.state, state);
         assert_eq!(artifact.reason.as_deref(), reason);
         assert_eq!(artifact.frame_count, 1);
         assert_eq!(artifact.jsonl_records, 0);
     }
+    // A capture-truncated attempt keeps its attempt projection without
+    // exposing its JSONL frame.
+    let truncated = control("unavailable", false, Some("capture_budget"), Some(attempt_projection()));
+    let artifact = parse_artifact(QUERY_ID, None, &[control_frame(&truncated)], None, None).unwrap();
+    assert_eq!(artifact.state, "unavailable");
+    assert_eq!(artifact.frame_count, 1);
 }
 
 #[test]
-fn a_statement_without_runtime_observation_seals_in_one_v3_control_frame() {
-    let control = |runtime_observation: Option<&str>| {
-        let mut control = json!({
-            "schema": CONTROL_SCHEMA_V3,
-            "version": 3,
-            "query_id": QUERY_ID,
-            "state": "sealed",
-            "retryable": false,
-        });
-        if let Some(runtime_observation) = runtime_observation {
-            control["runtime_observation"] = json!(runtime_observation);
-        }
-        vec![serde_json::to_vec(&control).unwrap()]
-    };
+fn a_statement_without_runtime_observation_seals_in_one_control_frame() {
+    let sealed = control("sealed", false, None, None);
+    let frames = vec![control_frame(&sealed)];
 
-    let artifact = parse_artifact(QUERY_ID, None, &control(Some("none")), None, None).unwrap();
+    let artifact = parse_artifact(QUERY_ID, None, &frames, None, None).unwrap();
     assert_eq!(artifact.state, "sealed");
     assert_eq!(artifact.frame_count, 1);
     assert_eq!(artifact.jsonl_records, 0);
-    assert!(parse_artifact(QUERY_ID, None, &control(None), None, None).is_err());
     assert!(
-        parse_artifact(QUERY_ID, None, &control(Some("none")), Some("succeeded"), None).is_err(),
+        parse_artifact(QUERY_ID, None, &frames, Some("succeeded"), None).is_err(),
         "a sealed terminal with a runtime observation was expected"
+    );
+    let mut announcing = sealed.clone();
+    announcing["runtime_jsonl_follows"] = json!(true);
+    assert!(
+        parse_artifact(QUERY_ID, None, &[control_frame(&announcing)], None, None).is_err(),
+        "a control announcing a JSONL frame needs that frame"
+    );
+    let mut versioned = sealed;
+    versioned["version"] = json!(1);
+    assert!(
+        parse_artifact(QUERY_ID, None, &[control_frame(&versioned)], None, None).is_err(),
+        "the control has one shape"
     );
 }
 
@@ -319,7 +361,7 @@ fn footer_loss_fixture_reconciles_and_rejects_inconsistent_reason_loss() {
 
 #[test]
 fn parser_rejects_malformed_multiple_sessions_and_oversized_plan_execution_id() {
-    let malformed = vec![control_frame("sealed", false, None), b"{not-json}\n".to_vec()];
+    let malformed = vec![sealed_control_frame(), b"{not-json}\n".to_vec()];
     let error = parse_artifact(QUERY_ID, None, &malformed, Some("succeeded"), None).unwrap_err();
     assert!(error.to_string().contains("JSONL line 0 is invalid"), "{error}");
 

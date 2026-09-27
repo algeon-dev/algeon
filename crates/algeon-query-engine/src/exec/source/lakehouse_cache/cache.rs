@@ -24,7 +24,10 @@ use crate::{
     chunk::SourceChunkBatch,
     datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result},
-    parquet_metadata::{object_store_query_error, parquet_footer_sidecar_path, write_parquet_footer_sidecar_from_file},
+    parquet_metadata::{
+        PARQUET_FOOTER_SIDECAR_SUFFIX, object_store_query_error, parquet_footer_sidecar_path,
+        write_parquet_footer_sidecar_from_file,
+    },
     runtime::{
         CacheFillBytePermit, LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome,
         S3ObjectStoreKey,
@@ -1134,7 +1137,7 @@ fn is_lakehouse_cache_data_file(path: &Path) -> bool {
         return false;
     };
     !(name.ends_with(".lock")
-        || name.ends_with(".footer.v1")
+        || name.ends_with(PARQUET_FOOTER_SIDECAR_SUFFIX)
         || is_lakehouse_cache_read_pin_name(name)
         || (name.starts_with('.') && name.contains(".tmp.")))
 }

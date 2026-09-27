@@ -56,6 +56,8 @@ use arrow_flight::error::FlightError;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
+use crate::SINGLE_NODE_RUN_ARTIFACT_SCHEMA;
+
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const NO_ERROR_CLASS: &str = "none";
@@ -63,8 +65,6 @@ const PROFILE_SCHEMA: &str = "algeon_datafusion.flight_sql_stress.run_profile.v1
 const PROFILE_VERSION: u32 = 1;
 const ARTIFACT_SCHEMA: &str = "algeon_datafusion.flight_sql_stress.run_artifact.v1";
 const ARTIFACT_VERSION: u32 = 1;
-const IN_PROCESS_ARTIFACT_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.run_artifact.v2";
-const IN_PROCESS_ARTIFACT_VERSION: u64 = 2;
 const USAGE: &str = "flight-sql-stress --config flight-stress-profile.json --out-dir DIR";
 
 const ATTEMPT_COLUMNS: &[&str] = &[
@@ -303,7 +303,7 @@ impl FlightStressProfile {
 }
 
 #[derive(Debug, Clone)]
-struct StressConfig {
+pub(crate) struct StressConfig {
     /// Full connection URL. Never persisted; only `url_host_port` is echoed.
     url: String,
     /// URL redacted to `host:port` (no userinfo, path, or query).
@@ -415,7 +415,7 @@ struct MatchedInProcess {
     latency_p99_ns: u64,
 }
 
-fn read_stress_config(config_path: &Path, out_dir: PathBuf) -> Result<StressConfig, String> {
+pub(crate) fn read_stress_config(config_path: &Path, out_dir: PathBuf) -> Result<StressConfig, String> {
     let profile_bytes = fs::read(config_path).map_err(|_| format!("cannot read --config {}", config_path.display()))?;
     let profile = FlightStressProfile::parse_bytes(&profile_bytes)?;
     let profile_sha256 = sha256_bytes(&profile_bytes);
@@ -487,11 +487,8 @@ fn matched_in_process_from_value(
     load: &FlightLoadProfile,
 ) -> Result<MatchedInProcess, String> {
     let schema = string_at(artifact, "/schema", "matched in-process artifact")?;
-    if schema != IN_PROCESS_ARTIFACT_SCHEMA {
-        return Err(format!("matched in-process artifact schema must be {IN_PROCESS_ARTIFACT_SCHEMA}"));
-    }
-    if u64_at(artifact, "/version", "matched in-process artifact")? != IN_PROCESS_ARTIFACT_VERSION {
-        return Err(format!("matched in-process artifact version must be {IN_PROCESS_ARTIFACT_VERSION}"));
+    if schema != SINGLE_NODE_RUN_ARTIFACT_SCHEMA {
+        return Err(format!("matched in-process artifact schema must be {SINGLE_NODE_RUN_ARTIFACT_SCHEMA}"));
     }
     if string_at(artifact, "/status", "matched in-process artifact")? != "measured_run" {
         return Err("matched in-process artifact status must be measured_run".to_string());
@@ -1406,8 +1403,7 @@ mod tests {
 
     fn baseline_json() -> serde_json::Value {
         serde_json::json!({
-            "schema": IN_PROCESS_ARTIFACT_SCHEMA,
-            "version": IN_PROCESS_ARTIFACT_VERSION,
+            "schema": SINGLE_NODE_RUN_ARTIFACT_SCHEMA,
             "status": "measured_run",
             "profile": {
                 "name": "stress-s1-embedded-sf1",

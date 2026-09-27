@@ -753,7 +753,7 @@ mod correlation_tests {
     }
 
     #[tokio::test]
-    async fn get_query_runtime_artifact_action_returns_atomic_sanitized_versioned_frames() {
+    async fn get_query_runtime_artifact_action_returns_atomic_sanitized_frames() {
         const QUERY_ID: &str = "runtime-artifact-rpc-query";
         const SQL_SECRET: &str = "rpc-sql-literal-secret";
         const RAW_SOURCE: &str = "s3://reader:rpc-path-secret@private-bucket/customer.parquet?token=raw-token";
@@ -842,11 +842,14 @@ mod correlation_tests {
         assert_eq!(
             active_control,
             serde_json::json!({
-                "schema": "algeon_datafusion.query_runtime_artifact.control.v1",
-                "version": 1,
+                "schema": "algeon_datafusion.query_runtime_artifact.control",
                 "query_id": QUERY_ID,
                 "state": "active",
                 "retryable": true,
+                "reason": null,
+                "incomplete": false,
+                "runtime_jsonl_follows": false,
+                "attempt": null,
             })
         );
 
@@ -871,8 +874,8 @@ mod correlation_tests {
         assert_eq!(sealed.len(), 2, "sealed artifacts must emit one control frame and one complete JSONL frame");
         let sealed_control: serde_json::Value =
             serde_json::from_slice(&sealed[0].body).expect("control frame should be JSON");
-        assert_eq!(sealed_control["schema"], "algeon_datafusion.query_runtime_artifact.control.v2");
-        assert_eq!(sealed_control["version"], 2);
+        assert_eq!(sealed_control["schema"], "algeon_datafusion.query_runtime_artifact.control");
+        assert_eq!(sealed_control["runtime_jsonl_follows"], true);
         assert_eq!(sealed_control["query_id"], QUERY_ID);
         assert_eq!(sealed_control["state"], "sealed");
         assert_eq!(sealed_control["retryable"], false);
@@ -931,14 +934,14 @@ mod correlation_tests {
         assert_eq!(
             control,
             serde_json::json!({
-                "schema": "algeon_datafusion.query_runtime_artifact.control.v3",
-                "version": 3,
+                "schema": "algeon_datafusion.query_runtime_artifact.control",
                 "query_id": QUERY_ID,
                 "state": "unavailable",
                 "retryable": false,
                 "reason": "counter_overflow",
                 "incomplete": true,
-                "runtime_observation": "none",
+                "runtime_jsonl_follows": false,
+                "attempt": null,
             })
         );
         assert_eq!(service.coordinator.artifact_egress_usage(), (0, 0));

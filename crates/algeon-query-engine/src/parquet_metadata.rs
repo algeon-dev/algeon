@@ -32,15 +32,16 @@ pub(crate) const fn parquet_footer_prefetch_bytes(file_size: u64) -> u64 {
     if file_size < PARQUET_FOOTER_PREFETCH_BYTES { file_size } else { PARQUET_FOOTER_PREFETCH_BYTES }
 }
 
-/// Footer sidecar file signature.
-///
-/// The bytes spell "NQPFTR2\0": Algeon Query Parquet FooTeR sidecar, header
-/// format 2, NUL-padded to 8 bytes. Readers check this before interpreting the
-/// following little-endian u64 fields as file size, content-identity hash, and
-/// file modified time.
-const FOOTER_SIDECAR_MAGIC: &[u8; 8] = b"NQPFTR2\0";
+/// Footer sidecar file signature: "ALGEONPF", the Algeon Parquet Footer
+/// sidecar. Readers check it before interpreting the following little-endian
+/// u64 fields as file size, content-identity hash, and file modified time; a
+/// file without it is ignored, and the caller rewrites the sidecar.
+const FOOTER_SIDECAR_MAGIC: &[u8; 8] = b"ALGEONPF";
 const FOOTER_SIDECAR_HEADER_BYTES: usize =
     FOOTER_SIDECAR_MAGIC.len() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>();
+/// File-name suffix of a footer sidecar. The lakehouse cache directory scan
+/// skips files with it.
+pub(crate) const PARQUET_FOOTER_SIDECAR_SUFFIX: &str = ".footer";
 
 /// Fetches Parquet footer metadata from object storage without staging the full object.
 pub(crate) async fn fetch_object_store_parquet_metadata(
@@ -120,7 +121,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
 /// Footer sidecar path for a complete lakehouse cache data file.
 pub(crate) fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
     let file_name = data_path.file_name().and_then(|value| value.to_str()).unwrap_or("cache-entry");
-    data_path.with_file_name(format!(".{file_name}.footer.v1"))
+    data_path.with_file_name(format!(".{file_name}{PARQUET_FOOTER_SIDECAR_SUFFIX}"))
 }
 
 /// Reads a persisted footer sidecar for a complete cache file.

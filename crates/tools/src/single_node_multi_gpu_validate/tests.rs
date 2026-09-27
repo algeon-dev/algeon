@@ -45,6 +45,7 @@ use super::{
     workload::{SelectedQueryDescriptor, select_queries},
     *,
 };
+use crate::{SINGLE_NODE_RUN_ARTIFACT_SCHEMA, flight_sql_stress::read_stress_config};
 
 fn valid_profile_json() -> &'static str {
     include_str!("../../fixtures/p6-dry-run-profile.json")
@@ -434,12 +435,11 @@ fn cmake_version_parser_uses_exact_variable() {
 }
 
 #[test]
-fn artifact_v1_has_explicit_dry_run_and_redaction_sections() {
+fn artifact_has_explicit_dry_run_and_redaction_sections() {
     let profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
     let artifact = RunArtifact::dry_run(profile, "a".repeat(64), sample_provenance());
     let value = serde_json::to_value(artifact).unwrap();
-    assert_eq!(value["schema"], RUN_ARTIFACT_SCHEMA);
-    assert_eq!(value["version"], RUN_ARTIFACT_VERSION);
+    assert_eq!(value["schema"], SINGLE_NODE_RUN_ARTIFACT_SCHEMA);
     assert_eq!(value["status"], "dry_run");
     assert_eq!(value["execution"]["selected_workloads"], 0);
     assert_eq!(value["execution"]["attempted_workloads"], 0);
@@ -2419,15 +2419,9 @@ fn profile_scopes_finite_round_bounds_to_closed_loop_scheduling() {
     assert!(profile.validate().unwrap_err().to_string().contains("max_rounds"));
 }
 
-/// The end-to-end artifact shape for a measured run, assembled from the pure
-/// reduction so it needs no GPU. This is the schema contract published by the measured runner.
-#[test]
-fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gaps() {
-    let root = test_root("measured-artifact");
-    fs::create_dir(&root).unwrap();
-    let out_dir = root.join("run-artifacts");
-
-    let profile = measured_run_profile();
+/// Writes the measured-run artifact of `profile` through the runner's
+/// writer, assembled from the pure reduction so it needs no GPU.
+fn write_measured_run_artifact(profile: RunProfile, out_dir: &Path) -> PathBuf {
     let queries = select_queries(&profile.workloads).unwrap();
     let plan = ArrivalPlan::plan(&profile.scheduling, queries.len(), profile.session.shared_session_count).unwrap();
     let devices = vec![measured_device(0, 1 << 30, 2), measured_device(1, 2 << 30, 4)];
@@ -2504,10 +2498,21 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
         },
     };
     let artifact = RunArtifact::measured_run(profile, "a".repeat(64), Vec::new(), sample_provenance(), measurement);
-    let path = write_artifact(&out_dir, &artifact).unwrap();
+    write_artifact(out_dir, &artifact).unwrap()
+}
+
+/// The end-to-end artifact shape for a measured run. This is the schema
+/// contract published by the measured runner.
+#[test]
+fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gaps() {
+    let root = test_root("measured-artifact");
+    fs::create_dir(&root).unwrap();
+    let out_dir = root.join("run-artifacts");
+
+    let path = write_measured_run_artifact(measured_run_profile(), &out_dir);
     let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
 
-    assert_eq!(value["schema"], RUN_ARTIFACT_SCHEMA);
+    assert_eq!(value["schema"], SINGLE_NODE_RUN_ARTIFACT_SCHEMA);
     assert_eq!(value["status"], "measured_run");
     assert_eq!(value["execution"]["workload_execution"], "complete");
     assert_eq!(value["execution"]["attempted_backend_attempts"], 4);
@@ -2559,6 +2564,37 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
             .contains("SELECT")
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+/// flight-sql-stress compares a Flight run with the in-process cell its
+/// profile names, so its reader must accept the artifact this runner writes.
+#[test]
+fn flight_sql_stress_reads_the_measured_run_artifact_this_runner_writes() {
+    let root = TestDirectory::new("flight-stress-baseline");
+    let mut profile = measured_run_profile();
+    profile.workloads.truncate(1);
+    profile.workloads[0].queries = vec!["q06".to_string()];
+    profile.validate().unwrap();
+    let scheduling = profile.scheduling.clone();
+    let artifact_path = write_measured_run_artifact(profile, &root.path().join("run-artifacts"));
+
+    let mut flight_profile: Value =
+        serde_json::from_slice(include_bytes!("../../fixtures/stress/stress-s8-flight-pooled-sf1.flight-profile"))
+            .unwrap();
+    flight_profile["server"]["config_file"] = Value::from(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/stress/server-s8-s2-scan-sf1.toml").to_str().unwrap(),
+    );
+    flight_profile["load"]["clients"] = Value::from(scheduling.concurrency);
+    flight_profile["load"]["warmup_seconds"] = Value::from(scheduling.warmup_seconds);
+    flight_profile["load"]["measurement_seconds"] = Value::from(scheduling.measurement_seconds);
+    flight_profile["matched_in_process"] = serde_json::json!({
+        "run_artifact": artifact_path,
+        "workload": { "kind": "tpch", "query_label": "q06" },
+    });
+    let flight_profile_path = root.path().join("flight.flight-profile");
+    fs::write(&flight_profile_path, serde_json::to_vec(&flight_profile).unwrap()).unwrap();
+
+    read_stress_config(&flight_profile_path, root.path().join("flight-out")).unwrap();
 }
 
 /// A failed clause must flip the artifact status so a non-qualifying run can
