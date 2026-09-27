@@ -66,8 +66,6 @@ single-node-multi-gpu-validate = ["dep:workloads"]
 single-node-multi-gpu-validate-run = [
   "single-node-multi-gpu-validate",
   "dep:cudf",
-  # The physical memory-pressure probe is a cudf test seam (`cudf::testing::memory`).
-  "cudf/test-hooks",
   "dep:cudf-sys",
   "dep:cuvs-sys",
   "dep:cuml-sys",

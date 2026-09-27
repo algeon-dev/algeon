@@ -2,6 +2,7 @@
 algeon-cudf = [
   "core",
   "device",
+  "diagnostics",
   "frame",
   "hash",
   "interop",

@@ -96,6 +96,8 @@ pub(super) struct NativeLibraryIdentities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) libcudf_resolved: Option<FileIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) libcudf_rust_resolved: Option<FileIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) libcugraph_resolved: Option<FileIdentity>,
 }
 
@@ -103,6 +105,7 @@ impl NativeLibraryIdentities {
     fn collect() -> ToolResult<Self> {
         Ok(Self {
             libcudf_resolved: loaded_library_identity("libcudf.so")?,
+            libcudf_rust_resolved: loaded_library_identity("libcudf_rust.so")?,
             libcugraph_resolved: loaded_library_identity("libcugraph.so")?,
         })
     }

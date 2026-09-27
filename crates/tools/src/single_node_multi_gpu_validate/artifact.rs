@@ -503,6 +503,9 @@ fn qualification_failures(
     if provenance.native_libraries.libcudf_resolved.as_ref().is_none_or(|identity| identity.sha256.is_empty()) {
         failures.push(QualificationFailure { code: "missing_libcudf_hash", attempt_id: None });
     }
+    if provenance.native_libraries.libcudf_rust_resolved.as_ref().is_none_or(|identity| identity.sha256.is_empty()) {
+        failures.push(QualificationFailure { code: "missing_libcudf_rust_hash", attempt_id: None });
+    }
     if provenance.native_libraries.libcugraph_resolved.as_ref().is_none_or(|identity| identity.sha256.is_empty()) {
         failures.push(QualificationFailure { code: "missing_libcugraph_hash", attempt_id: None });
     }

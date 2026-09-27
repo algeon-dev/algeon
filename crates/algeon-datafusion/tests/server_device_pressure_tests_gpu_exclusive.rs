@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use arrow::record_batch::RecordBatch;
 use arrow_flight::error::FlightError;
-use cudf::{DeviceId, testing::memory::PhysicalMemoryPressureLease};
+use cudf::{DeviceId, diagnostics::memory::PhysicalMemoryPressureLease};
 use futures::TryStreamExt;
 use support::{CONCURRENCY_SQL, ConcurrencyServer, MANAGED_CAPACITY_BYTES, QUERY_CAP_BYTES};
 use tokio::time::sleep;
