@@ -1315,13 +1315,10 @@ impl MemoryGrant {
         if ledger.in_transition_observer() {
             ledger.panic_on_transition_observer_reentrancy("release_resident_owner_bytes");
         }
-        let mut state = match ledger.inner.state.lock() {
-            Ok(state) => state,
-            Err(_error) => {
-                eprintln!("[query-engine] warning: failed to release resident owner bytes");
-                return;
-            },
-        };
+        // Charge mutations update the grant row and its atomic projection under this lock,
+        // with no panicking operation between writes. Poison still permits this checked
+        // release; admission continues to reject the poisoned state.
+        let mut state = ledger.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
         self.release_locked(&ledger, &mut state, bytes);
     }
 

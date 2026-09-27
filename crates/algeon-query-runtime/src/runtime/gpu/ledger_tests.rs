@@ -280,12 +280,23 @@ fn grant_release_completes_after_the_ledger_lock_is_poisoned() {
     let ledger = DeviceLedger::new(profile(1_000, 800, 2));
     let released_live_bytes = Arc::new(Mutex::new(Vec::new()));
     let observed_live_bytes = Arc::clone(&released_live_bytes);
+    let released_resident_snapshots = Arc::new(Mutex::new(Vec::new()));
+    let observed_resident_snapshots = Arc::clone(&released_resident_snapshots);
+    ledger
+        .register_transition_observer(Arc::new(move |transition| {
+            if transition.kind == LedgerTransitionKind::ResidentOwnerReleased {
+                observed_resident_snapshots.lock().expect("resident release log").push(transition.snapshot.clone());
+            }
+        }))
+        .unwrap();
     ledger
         .register_admission_observer(Arc::new(move |transition| {
             observed_live_bytes.lock().expect("release log").push(transition.snapshot.live_grants_bytes);
         }))
         .unwrap();
     let grant = ledger.try_admit(request(1), Some(400)).unwrap().expect("grant admits");
+    let resident = grant.retain_resident_owner(120).unwrap().expect("resident owner retains its charge");
+    assert_eq!(grant.resident_owner_bytes(), 120);
 
     let poisoner = ledger.clone();
     std::thread::spawn(move || {
@@ -295,6 +306,22 @@ fn grant_release_completes_after_the_ledger_lock_is_poisoned() {
     .join()
     .expect_err("the poisoning thread panics while holding the ledger lock");
     assert!(ledger.snapshot().is_err(), "a poisoned ledger refuses snapshots and admission");
+
+    drop(resident);
+    assert_eq!(grant.resident_owner_bytes(), 0, "resident release updates the grant's atomic projection");
+    {
+        let state = ledger.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(state.grants[&grant.grant_id()].resident_owner_bytes, 0);
+        assert_eq!(state.health, DeviceAdmissionHealth::Open);
+    }
+    {
+        let snapshots = released_resident_snapshots.lock().unwrap();
+        assert_eq!(snapshots.len(), 1, "resident release still publishes its ledger transition");
+        assert_eq!(snapshots[0].resident_owner_bytes, 0);
+        assert_eq!(snapshots[0].live_grants_bytes, 400, "resident cleanup retains the surviving grant");
+        assert_eq!(snapshots[0].health, DeviceAdmissionHealth::Open);
+    }
+    assert!(ledger.try_admit(request(2), Some(100)).is_err(), "cleanup does not clear poison for admission");
 
     drop(grant);
 
