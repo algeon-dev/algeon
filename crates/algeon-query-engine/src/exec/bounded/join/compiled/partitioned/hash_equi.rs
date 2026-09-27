@@ -320,7 +320,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let probe_side = probe_side(build_side);
     let build_rows = build.input.rows;
     let build_bytes = build.input.bytes;
-    let probe_estimated_bytes = inputs.max_per_frame_reservation_bytes();
+    let probe_estimated_bytes = inputs.max_frame_bytes_hint();
     let partition_count =
         partitioned_join_partition_count(execution.context(), build.input.bytes, probe_estimated_bytes)
             .max(BoundedPartitionRowPolicy::default().hash_frame_stream_min_partitions());
@@ -436,8 +436,8 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
     node: &JoinNode,
     probe: PartitionedHashEquiJoinFrameStreamProbeState,
 ) -> ResidentFrameStreamPayload {
-    let max_per_frame_reservation_bytes = probe.partition_target_bytes;
-    let aggregate_reservation_bytes = probe.inputs.aggregate_reservation_bytes();
+    let max_frame_bytes_hint = probe.partition_target_bytes;
+    let total_bytes_hint = probe.inputs.total_bytes_hint();
     let aggregate_num_rows = probe.inputs.num_rows();
     let num_columns = node.spec.output_projection.len();
     let source = PartitionedHashEquiJoinProbeStreamSource {
@@ -465,8 +465,8 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
         metrics_recorded: false,
     };
     ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(source),

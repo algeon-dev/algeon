@@ -332,8 +332,8 @@ fn root_hash_join_frame_stream_probe_to_payload(
     node: &JoinNode,
     probe: RootHashJoinFrameStreamProbeState,
 ) -> ResidentFrameStreamPayload {
-    let max_per_frame_reservation_bytes = probe.inputs.max_per_frame_reservation_bytes();
-    let aggregate_reservation_bytes = probe.inputs.aggregate_reservation_bytes();
+    let max_frame_bytes_hint = probe.inputs.max_frame_bytes_hint();
+    let total_bytes_hint = probe.inputs.total_bytes_hint();
     let aggregate_num_rows = probe.inputs.num_rows();
     let num_columns = node.spec.output_projection.len();
     let source = RootHashJoinProbeStreamSource {
@@ -344,8 +344,8 @@ fn root_hash_join_frame_stream_probe_to_payload(
         pending_outputs: VecDeque::new(),
     };
     ResidentFrameStreamPayload::from_producer(
-        max_per_frame_reservation_bytes,
-        aggregate_reservation_bytes,
+        max_frame_bytes_hint,
+        total_bytes_hint,
         aggregate_num_rows,
         num_columns,
         Box::new(source),

@@ -4,10 +4,9 @@ use ::cudf::testing::device_copy;
 use arrow::array::{BooleanArray, Int64Array, StringArray};
 use query_engine::{
     dimension_pruning::local_dimension_pruning_resolver,
-    error::QueryErrorCode,
     exec::{
         CompiledGpuTaskExecutor, CompiledPipelineScheduler, ExecutionMetrics, LaneDispatchSupport,
-        is_lane_family_pipeline, run_lane_dispatched,
+        run_resident_lane_borrow,
     },
     optimizer::{NativeOptimizerOptions, optimize_query_plan},
     pipeline::SortStrategy,
@@ -24,99 +23,9 @@ fn lane_shared_runtime(runtime: cudf::Runtime) -> Arc<cudf::Runtime> {
     Arc::new(runtime)
 }
 
-/// Width 1, width 2, and the serial scheduler agree on independent union
-/// branches. Width 1 runs the lane protocol inline, width 2 runs it on pool
-/// blocking workers; the serial run is the pre-lane baseline. All three share
-/// `execute_task`, the claim/output-ready/commit protocol, and the release
-/// paths, so any divergence is a lane-dispatch defect.
+/// The admitted host pipeline returns every Parquet branch row through the serial scheduler.
 #[test]
-fn lane_dispatch_width_1_and_2_agree_with_serial_on_union_branches() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
-    let left_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
-            .expect("left literal batch");
-    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3])) as ArrayRef])
-        .expect("right literal batch");
-    let mut builder = QueryPlanBuilder::new();
-    let left =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let left = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
-    let right =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let right = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
-
-    let decision = admit(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-    )
-    .expect("bounded admission should not error");
-    let admission = decision.admission().expect("independent union branches use the same compiled admission");
-    let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline), "literal union branches dispatch on lanes");
-
-    let runtime = lane_shared_runtime(runtime);
-    let test_context = runtime.acquire_context_for_plan(&plan).expect("admitted union plan acquires a context");
-    let route = test_context.attempt_stream_provider_route().expect("admitted context carries a fork-stream route");
-    assert!(route.lane_capacity() > 0, "an admitted attempt owns at least one fork stream");
-
-    let run = |requested_lanes: Option<usize>| {
-        let metrics = ExecutionMetrics::detached("lane-parity");
-        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
-        let gpu_inputs = GpuResidentInputMap::new();
-        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
-        match requested_lanes {
-            None => {
-                let state = scheduler.run(&mut executor).expect("serial union branches should execute");
-                assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
-            },
-            Some(width) => {
-                let support = LaneDispatchSupport::new(
-                    Arc::clone(&route),
-                    metrics_context.clone(),
-                    plan.clone(),
-                    admission.policy(),
-                    pipeline.clone(),
-                    gpu_inputs.clone(),
-                    metrics.clone(),
-                )
-                .with_requested_lanes(width);
-                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                    .expect("lane-dispatched union branches should execute");
-                assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
-            },
-        }
-        let batch = executor.take_host_output().expect("compiled host sink should materialize");
-        let mut values = int32_values(&batch, 0);
-        values.sort();
-        values
-    };
-
-    let expected = vec![Some(1), Some(2), Some(3)];
-    assert_eq!(run(None), expected, "serial baseline computes every branch input once");
-    assert_eq!(run(Some(1)), expected, "width 1 runs the same lane protocol inline");
-    assert_eq!(run(Some(2)), expected, "width 2 computes every branch input exactly once");
-}
-
-/// Two materialized parquet scan/projection branches under union and limit,
-/// through the production query path. This is the overlap workload: both
-/// branches carry real decode, projection, and concat kernels on disjoint
-/// fork subsets.
-#[test]
-fn lane_dispatch_executes_parquet_union_branches_on_production_path() {
+fn serial_compiled_executes_parquet_union_branches_on_production_path() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("query-engine-lane-parquet-union");
     let left_path = dir.join("left.parquet");
@@ -162,9 +71,8 @@ fn lane_dispatch_executes_parquet_union_branches_on_production_path() {
     );
     assert!(
         pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::Limit),
-        "the trailing limit stays in the lane family"
+        "the trailing limit stays in the compiled pipeline"
     );
-    assert!(is_lane_family_pipeline(&pipeline));
 
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("admitted union plan acquires a context");
@@ -259,7 +167,8 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         ),
         Arc::clone(&aggregate_schema),
     );
-    let plan = builder.finish_with_host_sink(aggregate);
+    let host_plan = builder.finish_with_host_sink(aggregate);
+    let plan = host_plan.clone_with_gpu_resident_sink();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -269,10 +178,19 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     .expect("scan/filter/aggregate admission should not error");
     let admission = decision.admission().expect("scan/filter/aggregate uses compiled admission");
     let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline));
+
     assert_eq!(pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::Aggregate).count(), 1);
 
     let runtime = lane_shared_runtime(runtime);
+    {
+        let host_context = runtime.acquire_context_for_plan(&host_plan).expect("host aggregate acquires a context");
+        let result = execute_query_plan(&host_context, &host_plan).expect("host aggregate executes serially");
+        let batch = result.output().as_host_arrow().expect("host aggregate materializes");
+        assert_eq!(int64_values(batch, 0), vec![Some(counts.iter().sum())]);
+        assert_eq!(int64_values(batch, 1), vec![Some(*minima.iter().min().unwrap())]);
+        assert_eq!(int64_values(batch, 2), vec![Some(*maxima.iter().max().unwrap())]);
+    }
+
     let test_context = runtime.acquire_context_for_plan(&plan).expect("aggregate plan acquires an admitted context");
     let route = test_context.attempt_stream_provider_route().expect("admitted aggregate owns a fork route");
     assert!(route.lane_capacity() >= 4, "the test backend must provision four source-work forks");
@@ -287,17 +205,14 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("aggregate pipeline is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
         let mut support = LaneDispatchSupport::new(
             Arc::clone(&route),
-            metrics_context.clone(),
+            metrics_context,
             plan.clone(),
             admission.policy(),
             pipeline.clone(),
-            gpu_inputs.clone(),
-            metrics.clone(),
+            gpu_inputs,
+            metrics,
         )
         .with_requested_lanes(width);
         if coordinate {
@@ -313,10 +228,11 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
                 assert!(observed.len() >= 2, "two partial workers must reach completion before either can return");
             }));
         }
-        let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-            .expect("compiled aggregate lanes should complete");
-        assert_eq!(state.live_resource_count(), 0, "aggregate run releases every resource");
-        let batch = executor.take_host_output().expect("aggregate sink materializes one batch");
+        let (completed, output) =
+            run_resident_lane_borrow(&scheduler, None, &support).expect("resident aggregate chunks should complete");
+        assert_eq!(completed, pipeline.tasks().len());
+        let batch = materialize_gpu_result_to_host(output, &mut QueryMetrics::default())
+            .expect("resident aggregate output remains readable after lane release");
         let counts = int64_values(&batch, 0);
         let minima = int64_values(&batch, 1);
         let maxima = int64_values(&batch, 2);
@@ -341,18 +257,6 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     drop(test_context);
 
     let resident_plan = plan.clone_with_gpu_resident_sink();
-    let resident_pipeline = admit(
-        &resident_plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-    )
-    .expect("resident aggregate admission should not error")
-    .admission()
-    .expect("resident aggregate uses compiled admission")
-    .pipeline()
-    .clone();
-    assert!(!is_lane_family_pipeline(&resident_pipeline));
     let resident_context = runtime.acquire_context_for_plan(&resident_plan).expect("resident plan acquires context");
     let result =
         execute_query_plan(&resident_context, &resident_plan).expect("resident aggregate lanes should execute");
@@ -510,7 +414,7 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")]),
         output_schema,
     );
-    let plan = builder.finish_with_host_sink(aggregate);
+    let plan = builder.finish_gpu_resident(aggregate);
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -520,7 +424,6 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     .expect("overflow aggregate admission should not error");
     let admission = decision.admission().expect("overflow aggregate uses compiled admission");
     let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline));
 
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("overflow aggregate acquires context");
@@ -531,21 +434,22 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("overflow pipeline is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
         let support = LaneDispatchSupport::new(
             Arc::clone(&route),
-            metrics_context.clone(),
+            metrics_context,
             plan.clone(),
             admission.policy(),
             pipeline.clone(),
-            gpu_inputs.clone(),
-            metrics.clone(),
+            gpu_inputs,
+            metrics,
         )
         .with_requested_lanes(width);
-        match run_lane_dispatched(&scheduler, &mut executor, None, &support) {
-            Ok(_) => Ok(int64_values(&executor.take_host_output().expect("overflow sink output"), 0)),
+        match run_resident_lane_borrow(&scheduler, None, &support) {
+            Ok((_, output)) => {
+                let batch =
+                    materialize_gpu_result_to_host(output, &mut QueryMetrics::default()).expect("overflow sink output");
+                Ok(int64_values(&batch, 0))
+            },
             Err(error) => Err(error.code().to_string()),
         }
     };
@@ -555,156 +459,9 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     assert_eq!(run(4), expected, "four lanes preserve the single-lane overflow outcome");
 }
 
-/// Join DAG branches overlap on lanes while one build serves every probe.
-///
-/// The probe side is a union of two literal branches; the build side is a
-/// third literal. Width 1 runs the lane protocol inline, width 2 runs the
-/// two union branches on pool workers with disjoint forks, and the serial
-/// scheduler is the baseline. All three share `execute_task` and the
-/// claim/output-ready/commit protocol. The hash table is built once
-/// (`hash_join_build_count == 1`) regardless of probe branch count, and the
-/// lane gate proves the two branches occupied distinct lanes and forks.
+/// Larger inner and semi probe batches reuse one build and preserve duplicate rows.
 #[test]
-fn join_lane_dispatch_overlaps_branches_and_reuses_one_build() {
-    use std::sync::Mutex;
-
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let build_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
-            .expect("join build literal batch");
-    let left_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
-            .expect("join probe left literal batch");
-    let right_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 3])) as ArrayRef])
-            .expect("join probe right literal batch");
-    let mut builder = QueryPlanBuilder::new();
-    let build =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![build_batch])));
-    let left =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let right =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let probe = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let join = builder.add_join(
-        build,
-        probe,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
-        )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
-        .with_build_side(JoinSide::Left),
-        Arc::clone(&schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
-
-    let decision = admit(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-    )
-    .expect("bounded admission should not error");
-    let admission = decision.admission().expect("join branches use the compiled admission");
-    let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline), "join pipelines dispatch on lanes");
-    assert!(
-        pipeline.tasks().iter().any(|task| task.kind() == PipelineTaskKind::JoinBuild),
-        "the join trio stays in the lane family on the coordinator"
-    );
-
-    let runtime = lane_shared_runtime(runtime);
-    let test_context = runtime.acquire_context_for_plan(&plan).expect("join plan acquires a context");
-    let route = test_context.attempt_stream_provider_route().expect("join attempt owns a fork route");
-
-    let run = |requested_lanes: Option<usize>, gate: bool| {
-        let metrics = ExecutionMetrics::detached("join-lane-parity");
-        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
-        let gpu_inputs = GpuResidentInputMap::new();
-        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join pipeline is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
-        let observed = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
-        let completed = match requested_lanes {
-            None => {
-                let state = scheduler.run(&mut executor).expect("serial join should execute");
-                assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
-                executor.take_host_output().expect("serial join materializes")
-            },
-            Some(width) => {
-                let mut support = LaneDispatchSupport::new(
-                    Arc::clone(&route),
-                    metrics_context.clone(),
-                    plan.clone(),
-                    admission.policy(),
-                    pipeline.clone(),
-                    gpu_inputs.clone(),
-                    metrics.clone(),
-                )
-                .with_requested_lanes(width);
-                if gate {
-                    // Rendezvous gate: both lane workers must reach completion
-                    // (holding uncommitted outputs) before either returns.
-                    // Sequential execution on distinct forks cannot pass: the
-                    // first worker blocks in the gate until the second
-                    // arrives, proving simultaneous in-flight branch work and
-                    // distinct fork ownership, not just post-hoc IDs.
-                    let observed = Arc::clone(&observed);
-                    support = support.with_lane_completion_gate(Arc::new(move |lane, fork| {
-                        let (mutex, wake) = &*observed;
-                        let mut guard = mutex.lock().expect("lane observation mutex");
-                        guard.push((lane, fork));
-                        wake.notify_all();
-                        let (guard, _) = wake
-                            .wait_timeout_while(guard, Duration::from_secs(10), |guard| guard.len() < 2)
-                            .expect("lane rendezvous wait");
-                        assert!(guard.len() >= 2, "two branch lanes must hold uncommitted outputs simultaneously");
-                    }));
-                }
-                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                    .expect("lane-dispatched join should execute");
-                assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
-                executor.take_host_output().expect("lane join materializes")
-            },
-        };
-        let mut values = int32_values(&completed, 0);
-        values.sort();
-        let builds = metrics.snapshot().hash_join_build_count;
-        let observed = observed.0.lock().expect("observation mutex").clone();
-        (values, builds, observed)
-    };
-
-    let (expected, expected_builds, _) = run(None, false);
-    assert_eq!(expected, vec![Some(1), Some(2), Some(2)], "serial baseline joins every probe row once");
-    assert_eq!(expected_builds, 1, "serial build runs once for every probe branch");
-    let (width1, width1_builds, _) = run(Some(1), false);
-    assert_eq!(width1, expected, "width 1 runs the same lane protocol inline");
-    assert_eq!(width1_builds, 1, "width 1 still builds once");
-    let (width2, width2_builds, observed) = run(Some(2), true);
-    assert_eq!(width2, expected, "width 2 computes every branch input exactly once");
-    assert_eq!(width2_builds, 1, "probe branch count never grows the build count");
-    let mut lanes: Vec<_> = observed.iter().map(|(lane, _)| *lane).collect();
-    lanes.sort();
-    lanes.dedup();
-    assert!(lanes.len() >= 2, "two union branches occupied distinct lanes: {observed:?}");
-    let mut forks: Vec<_> = observed.iter().filter_map(|(_, fork)| *fork).collect();
-    forks.sort();
-    forks.dedup();
-    assert!(forks.len() >= 2, "two union branches owned distinct fork streams: {observed:?}");
-}
-
-/// Probe batch growth never grows the build count, across join kinds.
-///
-/// The probe parquet doubles its row groups while the build stays one
-/// literal; both shapes report exactly one hash build and identical joined
-/// rows. Inner and left-semi stand in for the parallel-safe chunk contract
-/// (concatenation preserves membership); the serial outer path is covered by
-/// width parity so a future parallel outer merge cannot drift semantics.
-#[test]
-fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
+fn compiled_join_probe_batches_scale_without_rebuilding() {
     let dir = unique_temp_dir("query-engine-join-probe-scaling");
     let build_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let probe_schema =
@@ -770,72 +527,41 @@ fn join_lane_dispatch_probe_batches_scale_without_rebuilding() {
             output_schema,
         );
         let plan = builder.finish_with_host_sink(join);
-        let decision = admit(
-            &plan,
-            StatisticalAggregateExecutionMode::default(),
-            PlanningPolicy::default(),
-            rapids_analysis_context(PlanningPolicy::default()),
-        )
-        .expect("join admission should not error");
-        let admission = decision.admission().unwrap_or_else(|| panic!("join {join_type} uses compiled admission"));
-        let pipeline = admission.pipeline().clone();
         let runtime = lane_shared_runtime(cudf::Runtime::new().expect("join scaling runtime"));
-        let test_context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
-        let route = test_context.attempt_stream_provider_route().expect("join scaling route");
-        let run = |width: usize| {
-            let metrics = ExecutionMetrics::detached("join-probe-scaling");
-            let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
-            let gpu_inputs = GpuResidentInputMap::new();
-            let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("join scaling schedulable");
-            let mut executor = CompiledGpuTaskExecutor::new(
-                &metrics_context,
-                &plan,
-                admission.policy(),
-                &pipeline,
-                &gpu_inputs,
-                &metrics,
-            )
-            .unwrap();
-            let support = LaneDispatchSupport::new(
-                Arc::clone(&route),
-                metrics_context.clone(),
-                plan.clone(),
-                admission.policy(),
-                pipeline.clone(),
-                gpu_inputs.clone(),
-                metrics.clone(),
-            )
-            .with_requested_lanes(width);
-            let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                .expect("join scaling lanes should execute");
-            assert_eq!(state.live_resource_count(), 0);
-            let batch = executor.take_host_output().expect("join scaling output");
-            let snapshot = metrics.snapshot();
-            (batch, snapshot.hash_join_build_count, snapshot.filtered_join_build_count)
-        };
-        (run(1), run(2))
+        let context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
+        let result = execute_query_plan(&context, &plan).expect("join scaling executes");
+        let batch = result.output().as_host_arrow().expect("join scaling materializes").clone();
+        (batch, result.metrics().hash_join_build_count, result.metrics().filtered_join_build_count)
     };
-    let ((inner_batch1, builds1, _), (inner_batch2, builds2, _)) = run_shape(vec![1, 2], JoinType::Inner);
-    let small1 = int32_int64_pairs_sorted(&inner_batch1, 0, 1);
-    assert_eq!((builds1, builds2), (1, 1), "small probe builds once on both widths");
-    assert_eq!(int32_int64_pairs_sorted(&inner_batch2, 0, 1), small1);
-    assert_eq!(small1, vec![(Some(1), Some(0)), (Some(2), Some(1))]);
-    let ((inner_batch1, builds1, _), (inner_batch2, builds2, _)) =
-        run_shape(vec![1, 2, 2, 3, 1, 2, 2, 3], JoinType::Inner);
-    let inner1 = int32_int64_pairs_sorted(&inner_batch1, 0, 1);
-    let inner2 = int32_int64_pairs_sorted(&inner_batch2, 0, 1);
-    assert_eq!(builds1, 1, "large probe still builds once (width 1)");
-    assert_eq!(builds2, 1, "large probe still builds once (width 2): batch growth never grows builds");
-    assert_eq!(inner1, inner2, "widths agree on large inner probe batches");
-    assert_eq!(inner1.len(), small1.len() * 2 + 2, "large probe joins every row once");
-    let ((semi_batch1, semi_hash1, semi_f1), (semi_batch2, semi_hash2, semi_f2)) =
-        run_shape(vec![1, 2, 2, 3, 1, 2, 2, 3], JoinType::LeftSemi);
-    let semi1 = int32_int64_pairs_sorted(&semi_batch1, 0, 1);
-    let semi2 = int32_int64_pairs_sorted(&semi_batch2, 0, 1);
-    assert_eq!((semi_hash1, semi_hash2), (0, 0), "filtered semi uses no hash build");
-    assert_eq!((semi_f1, semi_f2), (1, 1), "filtered build runs once for every probe batch count");
-    assert_eq!(semi1, semi2, "widths agree on semi probe batches");
-    assert_eq!(semi1, inner1, "semi keeps every matching probe row once");
+    let (small_batch, builds, _) = run_shape(vec![1, 2], JoinType::Inner);
+    assert_eq!(builds, 1, "small probe builds once");
+    assert_eq!(int32_int64_pairs_sorted(&small_batch, 0, 1), vec![(Some(1), Some(0)), (Some(2), Some(1))]);
+    let (large_batch, builds, _) = run_shape(vec![1, 2, 2, 3, 1, 2, 2, 3], JoinType::Inner);
+    assert_eq!(builds, 1, "larger probe batches reuse one build");
+    assert_eq!(
+        int32_int64_pairs_sorted(&large_batch, 0, 1),
+        vec![
+            (Some(1), Some(0)),
+            (Some(1), Some(4)),
+            (Some(2), Some(1)),
+            (Some(2), Some(2)),
+            (Some(2), Some(5)),
+            (Some(2), Some(6)),
+        ]
+    );
+    let (semi_batch, _, builds) = run_shape(vec![1, 2, 2, 3, 1, 2, 2, 3], JoinType::LeftSemi);
+    assert_eq!(builds, 1, "semi probe batches reuse one filtered build");
+    assert_eq!(
+        int32_int64_pairs_sorted(&semi_batch, 0, 1),
+        vec![
+            (Some(1), Some(0)),
+            (Some(1), Some(4)),
+            (Some(2), Some(1)),
+            (Some(2), Some(2)),
+            (Some(2), Some(5)),
+            (Some(2), Some(6)),
+        ]
+    );
 }
 
 fn bool_values(batch: &RecordBatch, column: usize) -> Vec<Option<bool>> {
@@ -893,15 +619,8 @@ fn int32_strlen_int64_triples_sorted(batch: &RecordBatch) -> Vec<(Option<i32>, u
     triples
 }
 
-/// A filtered semi over four leaf files feeds an eager four-frame stream
-/// into a second hash join, whose probe then shares one build across chunks
-/// on lanes. Wide payloads (~700KB per row) force the byte-driven chunk
-/// planner to keep every file in its own chunk; tiny rows would be merged
-/// into one chunk and collapse the stream to a single frame. The
-/// `parallel_probe=hash` strategy decision proves the new path ran (chunk
-/// count and lane width recorded); the hash/filtered build counts prove batch
-/// growth never rebuilds; serial/width-1/width-2 agreement plus the
-/// hand-checked rows prove semantics.
+/// A chained semi join feeds four hash-probe chunks through the serial DAG coordinator.
+/// The join owner borrows auxiliary lanes and reuses one build for those chunks.
 #[test]
 fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
     let dir = unique_temp_dir("query-engine-chained-hash-parallel-probe");
@@ -997,8 +716,7 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
     );
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("chained join runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("chained join context");
-    let route = test_context.attempt_stream_provider_route().expect("chained join route");
-    let run = |width: Option<usize>| {
+    let run = || {
         let metrics = ExecutionMetrics::detached("chained-hash-parallel");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
@@ -1006,48 +724,28 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         let mut executor =
             CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
                 .unwrap();
-        let batch = match width {
-            None => {
-                let state = scheduler.run(&mut executor).expect("serial chained joins should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("serial chained output")
-            },
-            Some(width) => {
-                let support = LaneDispatchSupport::new(
-                    Arc::clone(&route),
-                    metrics_context.clone(),
-                    plan.clone(),
-                    admission.policy(),
-                    pipeline.clone(),
-                    gpu_inputs.clone(),
-                    metrics.clone(),
-                )
-                .with_requested_lanes(width);
-                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                    .expect("lane chained joins should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("lane chained output")
-            },
-        };
+        let state = scheduler.run(&mut executor).expect("compiled join should execute");
+        assert_eq!(state.live_resource_count(), 0);
+        let batch = executor.take_host_output().expect("compiled join materializes");
         (batch, metrics.snapshot())
     };
     let wide_len = "x".repeat(700_000).len();
     let expected = vec![(Some(2), wide_len), (Some(2), wide_len), (Some(2), wide_len), (Some(2), wide_len)];
-    for (label, (batch, snapshot)) in [("serial", run(None)), ("width1", run(Some(1))), ("width2", run(Some(2)))] {
-        assert_eq!(int32_strlens_sorted(&batch), expected, "{label} joins every chained probe row once");
-        assert_eq!(snapshot.hash_join_build_count, 1, "{label} builds the hash table once");
-        assert_eq!(snapshot.filtered_join_build_count, 1, "{label} builds the filtered table once");
-        assert_eq!(
-            snapshot.source_chunks_committed, 4,
-            "{label} reads four probe files as four chunks feeding four probe batches"
-        );
-    }
-    let (_, width2_snapshot) = run(Some(2));
-    let parallel = width2_snapshot
+    let (batch, snapshot) = run();
+    let label = "serial";
+    assert_eq!(int32_strlens_sorted(&batch), expected, "{label} joins every chained probe row once");
+    assert_eq!(snapshot.hash_join_build_count, 1, "{label} builds the hash table once");
+    assert_eq!(snapshot.filtered_join_build_count, 1, "{label} builds the filtered table once");
+    assert_eq!(
+        snapshot.source_chunks_committed, 4,
+        "{label} reads four probe files as four chunks feeding four probe batches"
+    );
+    let probe_snapshot = snapshot;
+    let parallel = probe_snapshot
         .join_strategy_decisions
         .iter()
         .find(|decision| decision.facts.get("parallel_probe").map(String::as_str) == Some("hash"))
-        .expect("width-2 run records the hash parallel-probe decision");
+        .expect("serial coordinator records the hash parallel-probe decision");
     assert_eq!(
         parallel.facts.get("parallel_probe_chunks").map(String::as_str),
         Some("4"),
@@ -1060,11 +758,8 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
     );
 }
 
-/// Same chain shape with a faked-large build so the second join plans a
-/// split partitioned build; its lazy stream then drains probe chunks in
-/// parallel sharing the partitions. Skew handling stays inside the existing
-/// per-chunk driver (split/retry/typed failure), which lanes reuse
-/// unchanged; adding lanes never assumes the max partition shrinks.
+/// A chained semi join feeds four probe chunks through one partitioned build.
+/// The join owner retains its chunk lane dispatch under the serial DAG coordinator.
 #[test]
 fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     let dir = unique_temp_dir("query-engine-chained-partitioned-parallel-probe");
@@ -1173,8 +868,7 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("partitioned chain runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("partitioned chain context");
-    let route = test_context.attempt_stream_provider_route().expect("partitioned chain route");
-    let run = |width: Option<usize>| {
+    let run = || {
         let metrics = ExecutionMetrics::detached("chained-partitioned-parallel");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
@@ -1182,29 +876,9 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         let mut executor =
             CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
                 .unwrap();
-        let batch = match width {
-            None => {
-                let state = scheduler.run(&mut executor).expect("serial partitioned chain should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("serial partitioned output")
-            },
-            Some(width) => {
-                let support = LaneDispatchSupport::new(
-                    Arc::clone(&route),
-                    metrics_context.clone(),
-                    plan.clone(),
-                    admission.policy(),
-                    pipeline.clone(),
-                    gpu_inputs.clone(),
-                    metrics.clone(),
-                )
-                .with_requested_lanes(width);
-                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                    .expect("lane partitioned chain should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("lane partitioned output")
-            },
-        };
+        let state = scheduler.run(&mut executor).expect("compiled join should execute");
+        assert_eq!(state.live_resource_count(), 0);
+        let batch = executor.take_host_output().expect("compiled join materializes");
         (batch, metrics.snapshot())
     };
     let wide_len = "x".repeat(700_000).len();
@@ -1216,30 +890,26 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         (Some(2), wide_len, Some(200)),
         (Some(2), wide_len, Some(200)),
     ];
-    for (label, (batch, snapshot)) in [("serial", run(None)), ("width1", run(Some(1))), ("width2", run(Some(2)))] {
-        assert_eq!(
-            int32_strlen_int64_triples_sorted(&batch),
-            expected,
-            "{label} joins every partitioned probe row once"
-        );
-        assert_eq!(snapshot.hash_join_build_count, 0, "{label} builds no hash table");
-        assert_eq!(
-            snapshot.source_chunks_committed, 5,
-            "{label} reads four probe files plus one build file as five chunks"
-        );
-    }
-    let (_, width2_snapshot) = run(Some(2));
+    let (batch, snapshot) = run();
+    let label = "serial";
+    assert_eq!(int32_strlen_int64_triples_sorted(&batch), expected, "{label} joins every partitioned probe row once");
+    assert_eq!(snapshot.hash_join_build_count, 0, "{label} builds no hash table");
+    assert_eq!(
+        snapshot.source_chunks_committed, 5,
+        "{label} reads four probe files plus one build file as five chunks"
+    );
+    let probe_snapshot = snapshot;
     assert!(
-        width2_snapshot.join_strategy_decisions.iter().any(|decision| {
+        probe_snapshot.join_strategy_decisions.iter().any(|decision| {
             decision.facts.get("join_strategy").map(String::as_str) == Some("partitioned_hash_equi")
         }),
         "second join plans a split partitioned build"
     );
-    let parallel = width2_snapshot
+    let parallel = probe_snapshot
         .join_strategy_decisions
         .iter()
         .find(|decision| decision.facts.get("parallel_probe").map(String::as_str) == Some("partitioned"))
-        .expect("width-2 run records the partitioned parallel-probe decision");
+        .expect("serial coordinator records the partitioned parallel-probe decision");
     assert_eq!(
         parallel.facts.get("parallel_probe_chunks").map(String::as_str),
         Some("4"),
@@ -1252,16 +922,10 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
     );
 }
 
-/// Lane widths preserve every D-stage join contract: inner/left/semi/anti
-/// with null keys and duplicate fanout, nulls-match equality, mark
-/// membership, full-outer complements (serial fallback), build-left outer
-/// (serial fallback), and residual predicates (serial fallback). Serial is
-/// the CPU-oracle-checked baseline (existing bounded-join coverage proves
-/// serial semantics); width-1/width-2 agreement proves lanes preserve them.
-/// Hand-checked rows below pin the oracle for this data so a lane drift
-/// cannot hide behind agreement alone.
+/// Host and resident sinks preserve the same null-key, duplicate, and residual join results.
+/// The expected rows also cover mark membership and full-outer complements.
 #[test]
-fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
+fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
     let key = || Field::new("k", DataType::Int32, true);
     let left_schema = Arc::new(Schema::new(vec![key(), Field::new("v", DataType::Int64, false)]));
     let right_schema =
@@ -1294,47 +958,21 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         Field::new("mark", DataType::Boolean, false),
     ]));
 
-    fn execute3(plan: &QueryPlan, pipeline: &CompiledPipeline) -> (RecordBatch, RecordBatch, RecordBatch) {
+    fn execute_pair(plan: &QueryPlan) -> (RecordBatch, RecordBatch) {
         let runtime = lane_shared_runtime(cudf::Runtime::new().expect("parity runtime"));
-        let test_context = runtime.acquire_context_for_plan(plan).expect("parity context");
-        let route = test_context.attempt_stream_provider_route().expect("parity route");
-        let metrics = ExecutionMetrics::detached("join-kind-parity");
-        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
-        let gpu_inputs = GpuResidentInputMap::new();
-        let scheduler = CompiledPipelineScheduler::new(pipeline).expect("parity pipeline is schedulable");
-        let mut executor = CompiledGpuTaskExecutor::new(
-            &metrics_context,
-            plan,
-            PlanningPolicy::default(),
-            pipeline,
-            &gpu_inputs,
-            &metrics,
-        )
-        .unwrap();
-        let mut run = |width: Option<usize>| match width {
-            None => {
-                let state = scheduler.run(&mut executor).expect("serial parity should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("serial parity output")
-            },
-            Some(width) => {
-                let support = LaneDispatchSupport::new(
-                    Arc::clone(&route),
-                    metrics_context.clone(),
-                    plan.clone(),
-                    PlanningPolicy::default(),
-                    pipeline.clone(),
-                    gpu_inputs.clone(),
-                    metrics.clone(),
-                )
-                .with_requested_lanes(width);
-                let state =
-                    run_lane_dispatched(&scheduler, &mut executor, None, &support).expect("lane parity should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("lane parity output")
-            },
+        let host = {
+            let context = runtime.acquire_context_for_plan(plan).expect("host parity context");
+            let result = execute_query_plan(&context, plan).expect("host join executes");
+            result.output().as_host_arrow().expect("host parity output").clone()
         };
-        (run(None), run(Some(1)), run(Some(2)))
+        let resident_plan = plan.clone_with_gpu_resident_sink();
+        let context = runtime.acquire_context_for_plan(&resident_plan).expect("resident parity context");
+        let result = execute_query_plan(&context, &resident_plan).expect("resident join executes");
+        let output = result.output().as_gpu_resident().expect("resident parity output").clone();
+        drop(result);
+        let resident =
+            materialize_gpu_result_to_host(output, &mut QueryMetrics::default()).expect("resident join materializes");
+        (host, resident)
     }
 
     fn admitted_pipeline(label: &str, plan: &QueryPlan) -> CompiledPipeline {
@@ -1405,15 +1043,18 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         }
         let join = builder.add_join(left, right, spec, output_schema);
         let plan = builder.finish_with_host_sink(join);
-        let pipeline = admitted_pipeline(label, &plan);
-        let (serial, width1, width2) = execute3(&plan, &pipeline);
-        assert_eq!(width1.num_rows(), serial.num_rows(), "{label}: width 1 keeps row count");
-        assert_eq!(width2.num_rows(), serial.num_rows(), "{label}: width 2 keeps row count");
+        let _pipeline = admitted_pipeline(label, &plan);
+        let (serial, resident) = execute_pair(&plan);
+
         match join_type {
             JoinType::LeftSemi | JoinType::LeftAnti => {
                 let expected = int32_int64_pairs_sorted(&serial, 0, 1);
-                assert_eq!(int32_int64_pairs_sorted(&width1, 0, 1), expected, "{label}: width 1 preserves rows");
-                assert_eq!(int32_int64_pairs_sorted(&width2, 0, 1), expected, "{label}: width 2 preserves rows");
+                assert_eq!(
+                    int32_int64_pairs_sorted(&resident, 0, 1),
+                    expected,
+                    "{label}: resident sink preserves rows"
+                );
+
                 let oracle = match join_type {
                     JoinType::LeftSemi => vec![(Some(2), Some(30)), (Some(2), Some(40))],
                     _ => vec![(None, Some(20)), (Some(1), Some(10))],
@@ -1423,14 +1064,9 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
             _ => {
                 let expected = int32_int64_int64_triples_sorted(&serial, 0, 1, 2);
                 assert_eq!(
-                    int32_int64_int64_triples_sorted(&width1, 0, 1, 2),
+                    int32_int64_int64_triples_sorted(&resident, 0, 1, 2),
                     expected,
-                    "{label}: width 1 preserves rows"
-                );
-                assert_eq!(
-                    int32_int64_int64_triples_sorted(&width2, 0, 1, 2),
-                    expected,
-                    "{label}: width 2 preserves rows"
+                    "{label}: resident sink preserves rows"
                 );
                 let oracle = match (label, join_type) {
                     (_, JoinType::Inner) if !residual => {
@@ -1488,141 +1124,17 @@ fn join_lane_widths_preserve_join_kinds_with_nulls_duplicates_and_residuals() {
         Arc::clone(&mark_schema),
     );
     let plan = builder.finish_with_host_sink(mark);
-    let pipeline = admitted_pipeline("mark", &plan);
-    let (serial, width1, width2) = execute3(&plan, &pipeline);
+    let _pipeline = admitted_pipeline("mark", &plan);
+    let (serial, resident) = execute_pair(&plan);
     let oracle = vec![(None, Some(false)), (Some(1), Some(false)), (Some(2), Some(true)), (Some(2), Some(true))];
     assert_eq!(int32_bool_pairs_sorted(&serial), oracle, "mark: serial matches the membership oracle");
-    assert_eq!(int32_bool_pairs_sorted(&width1), oracle, "mark: width 1 preserves membership");
-    assert_eq!(int32_bool_pairs_sorted(&width2), oracle, "mark: width 2 preserves membership");
+    assert_eq!(int32_bool_pairs_sorted(&resident), oracle, "mark: resident sink preserves membership");
 }
 
-/// Cancelling while join branch workers hold uncommitted outputs drains
-/// without committing: the coordinator re-checks cancellation after joining
-/// workers, releases every uncommitted output through accounting (including
-/// coordinator-owned join state via the error-cleanup path), reports typed
-/// `Cancelled`, and materializes no sink output. Late completions can never
-/// resurrect because commit requires re-checking cancellation first.
+/// The compiled control dependency completes the build before the probe source.
+/// The source applies its dynamic filter and reads one matching row group.
 #[test]
-fn join_lane_cancellation_drains_branch_work_without_committing() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let build_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
-            .expect("cancel build batch");
-    let left_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
-            .expect("cancel left batch");
-    let right_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 3])) as ArrayRef])
-            .expect("cancel right batch");
-    let mut builder = QueryPlanBuilder::new();
-    let build =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![build_batch])));
-    let left =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let right =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let probe = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let join = builder.add_join(
-        build,
-        probe,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
-        )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
-        .with_build_side(JoinSide::Left),
-        Arc::clone(&schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
-    let decision = admit(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-    )
-    .expect("cancel admission should not error");
-    let admission = decision.admission().expect("cancel join uses compiled admission");
-    let pipeline = admission.pipeline().clone();
-    let runtime = lane_shared_runtime(runtime);
-    let test_context = runtime.acquire_context_for_plan(&plan).expect("cancel context");
-    let route = test_context.attempt_stream_provider_route().expect("cancel route");
-    assert!(route.lane_capacity() >= 2, "cancel test needs two branch lanes");
-    let metrics = ExecutionMetrics::detached("join-lane-cancel");
-    let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
-    let gpu_inputs = GpuResidentInputMap::new();
-    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("cancel pipeline is schedulable");
-    let mut executor =
-        CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-            .unwrap();
-    // Park the first two lane completions (holding uncommitted branch
-    // outputs) until the canceller fires; later rounds are unaffected. The
-    // Condvar timeouts turn a lost rendezvous into a test failure instead
-    // of a hung worker.
-    let entered = Arc::new((Mutex::new(0usize), Condvar::new()));
-    let released = Arc::new((Mutex::new(false), Condvar::new()));
-    let remaining = Arc::new(AtomicUsize::new(2));
-    let gate_entered = Arc::clone(&entered);
-    let gate_released = Arc::clone(&released);
-    let support = LaneDispatchSupport::new(
-        Arc::clone(&route),
-        metrics_context.clone(),
-        plan.clone(),
-        admission.policy(),
-        pipeline.clone(),
-        gpu_inputs.clone(),
-        metrics.clone(),
-    )
-    .with_requested_lanes(2)
-    .with_lane_completion_gate(Arc::new(move |_, _| {
-        // Only the first two completions park; later rounds skip the gate.
-        if remaining.fetch_sub(1, Ordering::AcqRel) < 1 {
-            return;
-        }
-        {
-            let (mutex, wake) = &*gate_entered;
-            *mutex.lock().expect("cancel gate mutex") += 1;
-            wake.notify_all();
-        }
-        let (mutex, wake) = &*gate_released;
-        let (guard, result) = wake
-            .wait_timeout_while(mutex.lock().expect("cancel release mutex"), Duration::from_secs(10), |ready| !*ready)
-            .expect("cancel release wait");
-        assert!(*guard || result.timed_out(), "release gate always wakes parked workers");
-    }));
-    let cancellation = test_context.cancellation().clone();
-    let waiter_entered = Arc::clone(&entered);
-    let waiter_released = Arc::clone(&released);
-    let canceller = std::thread::spawn(move || {
-        let (mutex, wake) = &*waiter_entered;
-        let (guard, result) = wake
-            .wait_timeout_while(mutex.lock().expect("canceller mutex"), Duration::from_secs(10), |count| *count < 2)
-            .expect("canceller wait");
-        assert_eq!(*guard, 2, "both branch workers park holding uncommitted outputs");
-        assert!(!result.timed_out(), "branch workers rendezvous before the timeout");
-        cancellation.cancel();
-        *waiter_released.0.lock().expect("release mutex") = true;
-        waiter_released.1.notify_all();
-    });
-    let error = match run_lane_dispatched(&scheduler, &mut executor, None, &support) {
-        Ok(_) => panic!("a cancelled join run must not commit its branch outputs"),
-        Err(error) => error,
-    };
-    canceller.join().expect("the cancelling thread joins");
-    assert_eq!(error.code(), QueryErrorCode::Cancelled, "cancellation is typed");
-    assert!(executor.take_host_output().is_err(), "no sink output is committed on a cancelled join run");
-}
-
-/// Eager lane scheduling must not lose dynamic-filter pruning: the optimized
-/// plan carries a build-complete-before-consumer route, so the probe source
-/// waits for the coordinator build and reads with the filter snapshot.
-/// Serial/width-1/width-2 must prune the same row groups, apply the filter,
-/// and return the same rows. The all-`3` row group is pruned by the `[2,2]`
-/// build range on every width.
-#[test]
-fn join_lane_widths_preserve_dynamic_filter_pruning() {
+fn serial_compiled_join_preserves_dynamic_filter_pruning() {
     let dir = unique_temp_dir("query-engine-join-lane-dynamic-filter-pruning");
     let probe_schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
@@ -1687,8 +1199,7 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
     let pipeline = admission.pipeline().clone();
     let runtime = lane_shared_runtime(cudf::Runtime::new().expect("pruning runtime"));
     let test_context = runtime.acquire_context_for_plan(&plan).expect("pruning context");
-    let route = test_context.attempt_stream_provider_route().expect("pruning route");
-    let run = |width: Option<usize>| {
+    let run = || {
         let metrics = ExecutionMetrics::detached("join-lane-pruning");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
@@ -1696,51 +1207,27 @@ fn join_lane_widths_preserve_dynamic_filter_pruning() {
         let mut executor =
             CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
                 .unwrap();
-        let batch = match width {
-            None => {
-                let state = scheduler.run(&mut executor).expect("serial pruning should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("serial pruning output")
-            },
-            Some(width) => {
-                let support = LaneDispatchSupport::new(
-                    Arc::clone(&route),
-                    metrics_context.clone(),
-                    plan.clone(),
-                    admission.policy(),
-                    pipeline.clone(),
-                    gpu_inputs.clone(),
-                    metrics.clone(),
-                )
-                .with_requested_lanes(width);
-                let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                    .expect("lane pruning should execute");
-                assert_eq!(state.live_resource_count(), 0);
-                executor.take_host_output().expect("lane pruning output")
-            },
-        };
+        let state = scheduler.run(&mut executor).expect("compiled join should execute");
+        assert_eq!(state.live_resource_count(), 0);
+        let batch = executor.take_host_output().expect("compiled join materializes");
         (batch, metrics.snapshot())
     };
     let expected = vec![(Some(2), Some(2)), (Some(2), Some(3))];
-    for (label, (batch, snapshot)) in [("serial", run(None)), ("width1", run(Some(1))), ("width2", run(Some(2)))] {
-        assert_eq!(int32_int64_pairs_sorted(&batch, 0, 1), expected, "{label} joins pruned probe rows once");
-        assert!(
-            snapshot.dynamic_filter_runtime_rows.iter().any(|row| row.event == "applied"),
-            "{label} applies the build filter on the probe source"
-        );
-        assert_eq!(
-            snapshot.row_groups_committed, 1,
-            "{label} prunes the all-1 and all-3 row groups instead of reading all three"
-        );
-    }
+    let (batch, snapshot) = run();
+    let label = "serial";
+    assert_eq!(int32_int64_pairs_sorted(&batch, 0, 1), expected, "{label} joins pruned probe rows once");
+    assert!(
+        snapshot.dynamic_filter_runtime_rows.iter().any(|row| row.event == "applied"),
+        "{label} applies the build filter on the probe source"
+    );
+    assert_eq!(
+        snapshot.row_groups_committed, 1,
+        "{label} prunes the all-1 and all-3 row groups instead of reading all three"
+    );
 }
 
-/// A GPU-resident sink over a join plus an aggregate still routes through the
-/// resident lane path after the lane-family widening, and the join trio keeps
-/// its serial coordinator contract there: `run_resident_aggregate_chunks`
-/// runs the DAG on one coordinator executor (join state never crosses lanes;
-/// only aggregate source chunks borrow lanes), and the sink adopts frames to
-/// the root runtime with lane leases held through the handoff.
+/// A resident join with an aggregate retains coordinator-owned join state.
+/// Its chunk lanes stay alive through output adoption onto the root runtime.
 #[test]
 fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
@@ -1881,12 +1368,7 @@ fn sort_lane_nullable_source(path: &Path, keys: &[Option<i32>], values: &[Option
     )
 }
 
-/// A fused top-k over a two-frame union stream sorts one candidate per
-/// frame on disjoint lanes and merges on the coordinator. The rendezvous
-/// gate proves both candidates are in execution simultaneously; the serial,
-/// width-1, and width-2 outputs must agree exactly, including null-key
-/// placement. Reverting the lane fan-out leaves the gate with a single
-/// arrival and fails the overlap assertions.
+/// Resident top-k candidate lanes preserve the host serial result, including null ordering.
 #[test]
 fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
@@ -1921,7 +1403,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     .expect("sort/top-k admission should not error");
     let admission = decision.admission().expect("union sort/top-k uses compiled admission");
     let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline), "union sort/top-k dispatches on lanes");
+
     let sort_task = pipeline
         .tasks()
         .iter()
@@ -1941,18 +1423,20 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("sort pipeline is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
-        if let Some(width) = requested_lanes {
+        let batch = if let Some(width) = requested_lanes {
+            let resident_plan = plan.clone_with_gpu_resident_sink();
+            let analysis = resident_plan.capability_analysis(rapids_analysis_context(admission.policy()));
+            let resident_pipeline = compile_pipeline(&resident_plan, &analysis).expect("resident top-k compiles");
+            let resident_scheduler =
+                CompiledPipelineScheduler::new(&resident_pipeline).expect("resident top-k is schedulable");
             let mut support = LaneDispatchSupport::new(
                 Arc::clone(&route),
-                metrics_context.clone(),
-                plan.clone(),
+                metrics_context,
+                resident_plan,
                 admission.policy(),
-                pipeline.clone(),
-                gpu_inputs.clone(),
-                metrics.clone(),
+                resident_pipeline.clone(),
+                gpu_inputs,
+                metrics,
             )
             .with_requested_lanes(width);
             if coordinate {
@@ -1968,14 +1452,23 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
                     assert!(observed.len() >= 2, "two top-k candidates must reach completion before either can return");
                 }));
             }
-            let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                .expect("lane-dispatched sort/top-k should complete");
-            assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
+            let (_, output) = run_resident_lane_borrow(&resident_scheduler, None, &support)
+                .expect("resident sort candidates should complete");
+            materialize_gpu_result_to_host(output, &mut QueryMetrics::default()).expect("resident sort materializes")
         } else {
-            let state = scheduler.run(&mut executor).expect("serial sort/top-k should complete");
-            assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
-        }
-        let batch = executor.take_host_output().expect("sort sink materializes one batch");
+            let mut executor = CompiledGpuTaskExecutor::new(
+                &metrics_context,
+                &plan,
+                admission.policy(),
+                &pipeline,
+                &gpu_inputs,
+                &metrics,
+            )
+            .unwrap();
+            let state = scheduler.run(&mut executor).expect("serial sort should complete");
+            assert_eq!(state.live_resource_count(), 0);
+            executor.take_host_output().expect("host sort materializes")
+        };
         int32_values(&batch, 0).into_iter().zip(int64_values(&batch, 1)).collect::<Vec<_>>()
     };
 
@@ -1997,103 +1490,7 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     assert_ne!(observed[0].2, observed[1].2, "candidates own distinct fork streams");
 }
 
-/// Saturating an attempt's auxiliary envelope never starves lane dispatch:
-/// with every permit held elsewhere, the run narrows to width 1 inline and
-/// still commits every task exactly once; releasing the permits restores the
-/// wide path. The lane gate proves the narrowing structurally: every claim
-/// runs on lane 0 while saturated, and both lanes serve work once released.
-/// No sleeps: the fallback is a structural property of try-acquire, not
-/// timing.
-#[test]
-fn lane_dispatch_falls_back_to_width_1_when_aux_permits_are_saturated() {
-    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int32, false)]));
-    let left_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef])
-            .expect("left literal batch");
-    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3])) as ArrayRef])
-        .expect("right literal batch");
-    let mut builder = QueryPlanBuilder::new();
-    let left =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let right =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
-
-    let decision = admit(
-        &plan,
-        StatisticalAggregateExecutionMode::default(),
-        PlanningPolicy::default(),
-        rapids_analysis_context(PlanningPolicy::default()),
-    )
-    .expect("saturation admission should not error");
-    let admission = decision.admission().expect("literal union uses compiled admission");
-    let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline), "literal union dispatches on lanes");
-
-    let runtime = lane_shared_runtime(runtime);
-    let test_context = runtime.acquire_context_for_plan(&plan).expect("saturation plan acquires a context");
-    let route = test_context.attempt_stream_provider_route().expect("admitted attempt owns a fork route");
-    // Hold the whole auxiliary envelope: no lane lease remains for the run.
-    let mut held = Vec::new();
-    while let Some(lease) =
-        test_context.try_acquire_attempt_work_lease().expect("auxiliary try-acquire should not error")
-    {
-        held.push(lease);
-    }
-    assert_eq!(held.len(), route.lane_capacity(), "the test holds every auxiliary permit");
-
-    let lanes = Arc::new(Mutex::new(Vec::new()));
-    let run = |lanes: &Arc<Mutex<Vec<usize>>>| {
-        let metrics = ExecutionMetrics::detached("saturation-fallback");
-        let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
-        let gpu_inputs = GpuResidentInputMap::new();
-        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("union pipeline is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
-        let lanes = Arc::clone(lanes);
-        let support = LaneDispatchSupport::new(
-            Arc::clone(&route),
-            metrics_context.clone(),
-            plan.clone(),
-            admission.policy(),
-            pipeline.clone(),
-            gpu_inputs.clone(),
-            metrics.clone(),
-        )
-        .with_requested_lanes(2)
-        .with_lane_completion_gate(Arc::new(move |lane, _| {
-            lanes.lock().expect("saturation lane mutex").push(lane);
-        }));
-        let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-            .expect("saturated lane dispatch should complete");
-        assert_eq!(state.live_resource_count(), 0, "saturated run releases every resource");
-        let batch = executor.take_host_output().expect("saturated sink materializes one batch");
-        let mut values = int32_values(&batch, 0);
-        values.sort();
-        values
-    };
-
-    let expected = vec![Some(1), Some(2), Some(3)];
-    assert_eq!(run(&lanes), expected, "a saturated attempt still computes every branch once");
-    assert!(!lanes.lock().expect("saturation lane mutex").is_empty(), "saturated claims still run");
-    assert!(
-        lanes.lock().expect("saturation lane mutex").iter().all(|lane| *lane == 0),
-        "no claim leaves lane 0 while every permit is held"
-    );
-    drop(held);
-    let lanes = Arc::new(Mutex::new(Vec::new()));
-    assert_eq!(run(&lanes), expected, "releasing the envelope restores result parity");
-    let observed = lanes.lock().expect("saturation lane mutex");
-    assert!(observed.contains(&0) && observed.contains(&1), "released permits serve both lanes: {observed:?}");
-}
-
-/// Offset, mixed sort directions, and null keys agree across widths on a
-/// single-frame sort input. The frame holds one chunk, so the lane protocol
-/// keeps the serial candidate path; this locks the coordinator-inline
-/// change to exact parity instead of silent drift.
+/// Resident top-k borrowing preserves the host serial offset and mixed-direction ordering.
 #[test]
 fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
@@ -2126,96 +1523,48 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
     .expect("offset sort admission should not error");
     let admission = decision.admission().expect("offset sort uses compiled admission");
     let pipeline = admission.pipeline().clone();
-    assert!(is_lane_family_pipeline(&pipeline), "single-frame sort dispatches on lanes");
 
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("offset sort acquires a context");
     let route = test_context.attempt_stream_provider_route().expect("admitted sort owns a fork route");
-    // A fused top-k over one source is not capped by the DAG leaf count:
-    // its input expands into local candidates, so production routing must
-    // offer the whole fork pool, not width 1.
-    {
-        let metrics = ExecutionMetrics::detached("sort-width-request");
-        let support = LaneDispatchSupport::new(
-            Arc::clone(&route),
-            (*test_context).clone(),
-            plan.clone(),
-            admission.policy(),
-            pipeline.clone(),
-            GpuResidentInputMap::new(),
-            metrics,
-        );
-        assert_eq!(
-            support.requested_lanes,
-            route.lane_capacity(),
-            "single-source fused top-k requests the full fork pool"
-        );
-    }
-    // A full sort without a fused limit expands nothing: it keeps the leaf
-    // cap instead of charging permits for lanes that stay idle.
-    {
-        let mut full_builder = QueryPlanBuilder::new();
-        let full_scan = full_builder.add_source(SourceNode::LocalParquet(sort_lane_nullable_source(
-            &dir.join("full.parquet"),
-            &[Some(2), Some(1)],
-            &[Some(20), Some(10)],
-        )));
-        let full_sort = full_builder.add_sort(
-            full_scan,
-            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-            Arc::clone(&schema),
-        );
-        let full_plan = full_builder.finish_with_host_sink(full_sort);
-        let full_pipeline = admit(
-            &full_plan,
-            StatisticalAggregateExecutionMode::default(),
-            PlanningPolicy::default(),
-            rapids_analysis_context(PlanningPolicy::default()),
-        )
-        .expect("full sort admission should not error")
-        .admission()
-        .expect("full sort uses compiled admission")
-        .pipeline()
-        .clone();
-        let metrics = ExecutionMetrics::detached("sort-width-request");
-        let support = LaneDispatchSupport::new(
-            Arc::clone(&route),
-            (*test_context).clone(),
-            full_plan,
-            PlanningPolicy::default(),
-            full_pipeline,
-            GpuResidentInputMap::new(),
-            metrics,
-        );
-        assert_eq!(support.requested_lanes, 1, "single-source full sort keeps the leaf cap");
-    }
     let run = |requested_lanes: Option<usize>| {
         let metrics = ExecutionMetrics::detached("sort-offset-parity");
         let metrics_context = metrics.scope_context(&test_context).expect("metrics scope applies");
         let gpu_inputs = GpuResidentInputMap::new();
         let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("offset sort is schedulable");
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&metrics_context, &plan, admission.policy(), &pipeline, &gpu_inputs, &metrics)
-                .unwrap();
-        if let Some(width) = requested_lanes {
+        let batch = if let Some(width) = requested_lanes {
+            let resident_plan = plan.clone_with_gpu_resident_sink();
+            let analysis = resident_plan.capability_analysis(rapids_analysis_context(admission.policy()));
+            let resident_pipeline = compile_pipeline(&resident_plan, &analysis).expect("resident top-k compiles");
+            let resident_scheduler =
+                CompiledPipelineScheduler::new(&resident_pipeline).expect("resident top-k is schedulable");
             let support = LaneDispatchSupport::new(
                 Arc::clone(&route),
-                metrics_context.clone(),
-                plan.clone(),
+                metrics_context,
+                resident_plan,
                 admission.policy(),
-                pipeline.clone(),
-                gpu_inputs.clone(),
-                metrics.clone(),
+                resident_pipeline.clone(),
+                gpu_inputs,
+                metrics,
             )
             .with_requested_lanes(width);
-            let state = run_lane_dispatched(&scheduler, &mut executor, None, &support)
-                .expect("lane-dispatched offset sort should complete");
-            assert_eq!(state.live_resource_count(), 0, "lane run releases every resource");
+            let (_, output) = run_resident_lane_borrow(&resident_scheduler, None, &support)
+                .expect("resident sort candidates should complete");
+            materialize_gpu_result_to_host(output, &mut QueryMetrics::default()).expect("resident sort materializes")
         } else {
-            let state = scheduler.run(&mut executor).expect("serial offset sort should complete");
-            assert_eq!(state.live_resource_count(), 0, "serial run releases every resource");
-        }
-        let batch = executor.take_host_output().expect("offset sort sink materializes one batch");
+            let mut executor = CompiledGpuTaskExecutor::new(
+                &metrics_context,
+                &plan,
+                admission.policy(),
+                &pipeline,
+                &gpu_inputs,
+                &metrics,
+            )
+            .unwrap();
+            let state = scheduler.run(&mut executor).expect("serial sort should complete");
+            assert_eq!(state.live_resource_count(), 0);
+            executor.take_host_output().expect("host sort materializes")
+        };
         int32_values(&batch, 0).into_iter().zip(int64_values(&batch, 1)).collect::<Vec<_>>()
     };
 

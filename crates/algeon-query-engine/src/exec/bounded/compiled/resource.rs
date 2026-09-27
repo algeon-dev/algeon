@@ -1,18 +1,11 @@
 use super::ResidentFrameStreamPayload;
 use crate::{
-    error::{QueryError, QueryErrorCode, Result},
     exec::bounded::{
         BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame,
     },
     plan::NodeId,
     runtime::resident::GpuDataFrame,
 };
-
-const OPERATION: &str = "query_engine.exec.bounded.compiled.lane";
-
-fn invalid(message: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, message)
-}
 
 /// GPU-resident payload stored in the compiled scheduler resource table.
 #[doc(hidden)]
@@ -57,42 +50,6 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn frame_stream_payload(stream: ResidentFrameStreamPayload) -> Self {
         Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(stream) }
-    }
-
-    /// Snapshots a shared input for lane-claim scratch state.
-    ///
-    /// Lane-family pipelines currently resolve single-consumer inputs by move;
-    /// this covers shared inputs without aliasing coordinator state. A
-    /// deferred source is a read plan that holds no GPU state, so each lane
-    /// consumer re-stages its own copy, as a serial consumer does. Lazy
-    /// streams that cannot alias and in-flight prefetches fail closed.
-    pub(in crate::exec::bounded) fn snapshot_for_lane_claim(&self) -> Result<CompiledGpuResource> {
-        match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: None } => {
-                Ok(CompiledGpuResource::new(ResidentGpuFrame {
-                    frame: frame.frame.clone(),
-                    device_bytes: frame.device_bytes(),
-                }))
-            },
-            // A fused limit is a terminal-executor marker (pass-through vs. re-slicing); rebuilding
-            // via `CompiledGpuResource::new` would drop it and risk re-applying the limit (double OFFSET).
-            CompiledGpuResourcePayload::ResidentFrame { applied_limit: Some(limit), .. } => {
-                Err(invalid("compiled lane task cannot snapshot a resident frame with a fused limit")
-                    .with_fact("applied_limit_node_id", *limit))
-            },
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                let Some(alias) = stream.try_alias() else {
-                    return Err(invalid("compiled lane task cannot snapshot a lazy shared frame stream"));
-                };
-                Ok(CompiledGpuResource::frame_stream_payload(alias))
-            },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
-                Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream.as_ref().clone()))
-            },
-            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
-                Err(invalid("compiled lane task cannot share a pending source read"))
-            },
-        }
     }
 
     pub(in crate::exec::bounded) fn clone_frame(&self) -> GpuDataFrame {

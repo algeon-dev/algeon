@@ -20,12 +20,10 @@ query_engine::exec::ExecutionMetrics	test-hooks	query-engine exec	tests: algeon-
 query_engine::exec::LaneDispatchSupport	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::LaneDispatchSupport	test-hooks	query-engine exec::bounded::compiled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::executor::CompiledGpuTaskExecutor	cross-crate	query-engine exec::bounded::compiled::executor	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::is_lane_family_pipeline	test-hooks	query-engine exec::bounded::compiled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::lanes::LaneDispatchSupport	cross-crate	query-engine exec::bounded::compiled::lanes	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::lanes::is_lane_family_pipeline	cross-crate	query-engine exec::bounded::compiled::lanes	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::lanes::run_lane_dispatched	cross-crate	query-engine exec::bounded::compiled::lanes	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::bounded::compiled::lanes::run_resident_lane_borrow	cross-crate	query-engine exec::bounded::compiled::lanes	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::resource::CompiledGpuResource	cross-crate	query-engine exec::bounded::compiled::resource	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::compiled::run_lane_dispatched	test-hooks	query-engine exec::bounded::compiled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::bounded::compiled::run_resident_lane_borrow	test-hooks	query-engine exec::bounded::compiled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::scheduler::CompiledPipelineScheduler	cross-crate	query-engine exec::bounded::compiled::scheduler	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::scheduler::CompiledTaskExecutor	cross-crate	query-engine exec::bounded::compiled::scheduler	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::compiled::state::CompiledPipelineState	cross-crate	query-engine exec::bounded::compiled::state	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
@@ -35,15 +33,13 @@ query_engine::exec::bounded::pipeline::CompiledPipelineScheduler	test-hooks	quer
 query_engine::exec::bounded::pipeline::CompiledPipelineState	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::pipeline::CompiledTaskExecutor	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::bounded::pipeline::LaneDispatchSupport	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::is_lane_family_pipeline	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::bounded::pipeline::run_lane_dispatched	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::bounded::pipeline::run_resident_lane_borrow	test-hooks	query-engine exec::bounded::pipeline	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::execution_metrics::ExecutionMetrics	cross-crate	query-engine exec::execution_metrics	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::is_lane_family_pipeline	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::ml_algorithm::enabled::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec::ml_algorithm::enabled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::ml_algorithm::enabled::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec::ml_algorithm::enabled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::ml_algorithm::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec::ml_algorithm	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::ml_algorithm::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec::ml_algorithm	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
-query_engine::exec::run_lane_dispatched	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::run_resident_lane_borrow	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::sanitize_cache_component	cross-crate	query-engine exec	prod: algeon-datafusion	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_engine::exec::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
