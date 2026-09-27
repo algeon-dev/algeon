@@ -354,20 +354,17 @@ bool memory_manager_options_equal(cudf_memory_manager_options_t const& left,
 std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_device(
   int32_t device,
   cudf_memory_failure_callback_t failure_callback,
-  cudf_memory_failure_callback_v2_t failure_callback_v2,
   void* failure_callback_arg,
   cudf_memory_manager_options_t const& options,
   cudf_memory_manager_installation_identity_t const* installation_identity)
 {
-  auto manager                  = std::make_shared<device_memory_manager_state>();
-  manager->device               = device;
-  manager->allocator_events     = std::make_unique<allocator_event_ring>();
-  manager->options              = options;
-  manager->failure_callback     = failure_callback;
-  manager->failure_callback_v2  = failure_callback_v2;
-  manager->failure_callback_arg = failure_callback_arg;
-  manager->failure_callback_installed =
-    failure_callback != nullptr || failure_callback_v2 != nullptr;
+  auto manager                        = std::make_shared<device_memory_manager_state>();
+  manager->device                     = device;
+  manager->allocator_events           = std::make_unique<allocator_event_ring>();
+  manager->options                    = options;
+  manager->failure_callback           = failure_callback;
+  manager->failure_callback_arg       = failure_callback_arg;
+  manager->failure_callback_installed = failure_callback != nullptr;
   if (installation_identity != nullptr) {
     manager->has_installation_identity = true;
     manager->installation_identity     = *installation_identity;
@@ -411,16 +408,7 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
   }
   auto adaptor              = std::make_unique<reservation_aware_resource_adaptor>(physical_base);
   owner.reservation_adaptor = adaptor.get();
-  if (failure_callback_v2 != nullptr) {
-    owner.reservation_mr = std::move(adaptor);
-    owner.mr             = make_bounded_failure_callback_resource(owner.reservation_mr.get(),
-                                                      failure_callback_v2,
-                                                      failure_callback_arg,
-                                                      async_pool_handle(owner.async_pool),
-                                                      device,
-                                                      manager->allocator_events.get(),
-                                                      &manager->failure_callback_panicked);
-  } else if (failure_callback != nullptr) {
+  if (failure_callback != nullptr) {
     owner.reservation_mr = std::move(adaptor);
     owner.mr             = make_bounded_failure_callback_resource(owner.reservation_mr.get(),
                                                       failure_callback,
@@ -471,7 +459,6 @@ cudf_status_t validate_stream_device_for_manager(cudf_stream_handle stream,
 cudf_status_t memory_manager_for_device_impl(
   int32_t device,
   cudf_memory_failure_callback_t failure_callback,
-  cudf_memory_failure_callback_v2_t failure_callback_v2,
   void* failure_callback_arg,
   cudf_memory_manager_options_t const* options,
   cudf_memory_manager_handle* out,
@@ -484,8 +471,7 @@ cudf_status_t memory_manager_for_device_impl(
   {
     cudf_status_t const validation_status = validate_memory_manager_device(device);
     if (validation_status != CUDF_SUCCESS) { return validation_status; }
-    if (failure_callback == nullptr && failure_callback_v2 == nullptr &&
-        failure_callback_arg != nullptr) {
+    if (failure_callback == nullptr && failure_callback_arg != nullptr) {
       set_error("failure callback argument requires a failure callback");
       return CUDF_ERROR_INVALID_OPERATION;
     }
@@ -507,7 +493,6 @@ cudf_status_t memory_manager_for_device_impl(
              .emplace(device,
                       make_memory_manager_for_current_device(device,
                                                              failure_callback,
-                                                             failure_callback_v2,
                                                              failure_callback_arg,
                                                              resolved_options,
                                                              installation_identity))
@@ -527,8 +512,7 @@ cudf_status_t memory_manager_for_device_impl(
         "options; "
         "the process-global allocator cannot be replaced after first use");
       return CUDF_ERROR_INVALID_OPERATION;
-    } else if ((failure_callback != nullptr || failure_callback_v2 != nullptr) &&
-               !it->second->failure_callback_installed) {
+    } else if (failure_callback != nullptr && !it->second->failure_callback_installed) {
       if (installation != nullptr) {
         fill_installation_record(it->second.get(), device, *installation);
       }
@@ -551,7 +535,6 @@ cudf_status_t memory_manager_for_device_impl(
         return CUDF_ERROR_INVALID_OPERATION;
       }
       if (it->second->failure_callback != failure_callback ||
-          it->second->failure_callback_v2 != failure_callback_v2 ||
           it->second->failure_callback_arg != failure_callback_arg) {
         if (installation != nullptr) {
           fill_installation_record(
@@ -689,42 +672,14 @@ void cudf_test_memory_manager_invoke_failure_callback_before_install_returns(voi
 #endif
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out)
 {
-  return memory_manager_for_device_impl(
-    device, nullptr, nullptr, nullptr, nullptr, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_options(
   int32_t device, cudf_memory_manager_options_t const* options, cudf_memory_manager_handle* out)
 {
   CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(
-    device, nullptr, nullptr, nullptr, options, out, nullptr, nullptr);
-}
-
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
-  int32_t device,
-  cudf_memory_failure_callback_t callback,
-  void* callback_arg,
-  cudf_memory_manager_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  return memory_manager_for_device_impl(
-    device, callback, nullptr, callback_arg, nullptr, out, nullptr, nullptr);
-}
-
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2(
-  int32_t device,
-  cudf_memory_failure_callback_v2_t callback,
-  void* callback_arg,
-  cudf_memory_manager_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  return memory_manager_for_device_impl(
-    device, nullptr, callback, callback_arg, nullptr, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(device, nullptr, nullptr, options, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
@@ -739,27 +694,12 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
   CUDF_RUST_NULL_CHECK(callback, "callback is null");
   CUDF_RUST_NULL_CHECK(options, "options is null");
   return memory_manager_for_device_impl(
-    device, callback, nullptr, callback_arg, options, out, nullptr, nullptr);
+    device, callback, callback_arg, options, out, nullptr, nullptr);
 }
 
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_and_options(
   int32_t device,
-  cudf_memory_failure_callback_v2_t callback,
-  void* callback_arg,
-  cudf_memory_manager_options_t const* options,
-  cudf_memory_manager_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(
-    device, nullptr, callback, callback_arg, options, out, nullptr, nullptr);
-}
-
-cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
-  int32_t device,
-  cudf_memory_failure_callback_v2_t callback,
+  cudf_memory_failure_callback_t callback,
   void* callback_arg,
   cudf_memory_manager_options_t const* options,
   cudf_memory_manager_installation_identity_t const* identity,
@@ -776,7 +716,7 @@ cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_v2_and_opt
   installation->struct_size    = sizeof(cudf_memory_manager_installation_record_t);
   installation->device_ordinal = device;
   return memory_manager_for_device_impl(
-    device, nullptr, callback, callback_arg, options, out, identity, installation);
+    device, callback, callback_arg, options, out, identity, installation);
 }
 
 cudf_status_t cudf_memory_manager_installation_record(

@@ -14,11 +14,6 @@ extern "C" {
 /// Opaque handle to an owning RMM device memory resource.
 typedef struct cudf_memory_resource_handle_state* cudf_memory_resource_handle;
 
-/// Observation callback invoked after an upstream RMM allocation failure.
-/// The return value is reserved and does not change allocation control flow;
-/// callbacks must not allocate through the same resource.
-typedef int32_t (*cudf_memory_failure_callback_t)(size_t bytes, void* callback_arg);
-
 enum { CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS = 8 };
 enum { CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS = 4 };
 enum { CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS = 4 };
@@ -96,9 +91,11 @@ typedef struct {
   uint64_t reserved[CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS - 1];
 } cudf_memory_failure_info_t;
 
-/// Observe a failed allocation. The return value is reserved and ignored.
-typedef int32_t (*cudf_memory_failure_callback_v2_t)(cudf_memory_failure_info_t const* info,
-                                                     void* callback_arg);
+/// Observation callback invoked after an upstream RMM allocation failure.
+/// The return value is reserved and does not change allocation control flow;
+/// callbacks must not allocate through the same resource.
+typedef int32_t (*cudf_memory_failure_callback_t)(cudf_memory_failure_info_t const* info,
+                                                  void* callback_arg);
 
 cudf_status_t cudf_memory_resource_create_cuda(cudf_memory_resource_handle* out);
 cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
@@ -114,11 +111,6 @@ cudf_status_t cudf_memory_resource_create_failure_callback(cudf_memory_resource_
                                                            cudf_memory_failure_callback_t callback,
                                                            void* callback_arg,
                                                            cudf_memory_resource_handle* out);
-cudf_status_t cudf_memory_resource_create_failure_callback_v2(
-  cudf_memory_resource_handle upstream,
-  cudf_memory_failure_callback_v2_t callback,
-  void* callback_arg,
-  cudf_memory_resource_handle* out);
 cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_handle upstream,
                                                           size_t allocation_limit,
                                                           cudf_memory_resource_handle* out);

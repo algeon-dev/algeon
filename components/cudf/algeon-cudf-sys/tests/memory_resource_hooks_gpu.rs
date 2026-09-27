@@ -122,12 +122,18 @@ fn create_failure_callback_memory_resource(
     RawMemoryResource::from_raw(raw)
 }
 
-unsafe extern "C" fn stateless_decline_callback(_bytes: usize, _callback_arg: *mut c_void) -> i32 {
+unsafe extern "C" fn stateless_decline_callback(
+    _info: *const cudf_sys::cudf_memory_failure_info_t,
+    _callback_arg: *mut c_void,
+) -> i32 {
     0
 }
 
-unsafe extern "C" fn record_failure_callback(bytes: usize, callback_arg: *mut c_void) -> i32 {
-    if bytes == 0 || callback_arg.is_null() {
+unsafe extern "C" fn record_failure_callback(
+    info: *const cudf_sys::cudf_memory_failure_info_t,
+    callback_arg: *mut c_void,
+) -> i32 {
+    if info.is_null() || callback_arg.is_null() || unsafe { (*info).requested_bytes } == 0 {
         return 0;
     }
     let calls = unsafe { &*(callback_arg as *const AtomicUsize) };

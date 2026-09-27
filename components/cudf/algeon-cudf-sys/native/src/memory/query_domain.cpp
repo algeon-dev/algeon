@@ -897,16 +897,7 @@ std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_
   owner.upstream_lifetime = member->resource;
   owner.query_domain      = member->domain;
   auto direct             = std::make_unique<shared_query_domain_member_resource>(member->resource);
-  if (manager->failure_callback_v2 != nullptr) {
-    owner.reservation_mr = std::move(direct);
-    owner.mr             = make_bounded_failure_callback_resource(owner.reservation_mr.get(),
-                                                      manager->failure_callback_v2,
-                                                      manager->failure_callback_arg,
-                                                      member->domain->pool,
-                                                      manager->device,
-                                                      manager->allocator_events.get(),
-                                                      &manager->failure_callback_panicked);
-  } else if (manager->failure_callback != nullptr) {
+  if (manager->failure_callback != nullptr) {
     owner.reservation_mr = std::move(direct);
     owner.mr             = make_bounded_failure_callback_resource(owner.reservation_mr.get(),
                                                       manager->failure_callback,

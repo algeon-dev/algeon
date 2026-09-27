@@ -101,31 +101,15 @@ typedef struct {
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out);
 cudf_status_t cudf_memory_manager_for_device_with_options(
   int32_t device, cudf_memory_manager_options_t const* options, cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
-  int32_t device,
-  cudf_memory_failure_callback_t callback,
-  void* callback_arg,
-  cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2(
-  int32_t device,
-  cudf_memory_failure_callback_v2_t callback,
-  void* callback_arg,
-  cudf_memory_manager_handle* out);
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
   int32_t device,
   cudf_memory_failure_callback_t callback,
   void* callback_arg,
   cudf_memory_manager_options_t const* options,
   cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_and_options(
   int32_t device,
-  cudf_memory_failure_callback_v2_t callback,
-  void* callback_arg,
-  cudf_memory_manager_options_t const* options,
-  cudf_memory_manager_handle* out);
-cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
-  int32_t device,
-  cudf_memory_failure_callback_v2_t callback,
+  cudf_memory_failure_callback_t callback,
   void* callback_arg,
   cudf_memory_manager_options_t const* options,
   cudf_memory_manager_installation_identity_t const* identity,
