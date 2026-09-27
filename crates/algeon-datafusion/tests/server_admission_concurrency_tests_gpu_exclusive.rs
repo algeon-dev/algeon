@@ -8,6 +8,9 @@
 #[path = "server_admission_concurrency/support.rs"]
 mod support;
 
+#[path = "server_admission_concurrency/transport.rs"]
+mod transport;
+
 use std::time::{Duration, Instant};
 
 use arrow::record_batch::RecordBatch;

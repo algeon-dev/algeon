@@ -87,10 +87,16 @@ fn write_rows_parquet(path: &Path, rows: i64) {
 pub(crate) struct ConcurrencyServer {
     pub(crate) backend: AlgeonGpuBackend,
     pub(crate) ctx: Arc<SessionContext>,
-    addr: SocketAddr,
+    pub(crate) addr: SocketAddr,
     shutdown: CancellationToken,
     server: JoinHandle<ServerResult<()>>,
     _dir: tempfile::TempDir,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ListenMode {
+    Addr,
+    Prebound,
 }
 
 impl ConcurrencyServer {
@@ -99,6 +105,15 @@ impl ConcurrencyServer {
     }
 
     pub(crate) async fn spawn_with(rows: i64, managed_capacity_bytes: u64, query_cap_bytes: u64) -> Self {
+        Self::spawn_with_listener(rows, managed_capacity_bytes, query_cap_bytes, ListenMode::Prebound).await
+    }
+
+    pub(crate) async fn spawn_with_listener(
+        rows: i64,
+        managed_capacity_bytes: u64,
+        query_cap_bytes: u64,
+        listen_mode: ListenMode,
+    ) -> Self {
         let _ = init_cuda_device(0);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener address");
@@ -111,14 +126,18 @@ impl ConcurrencyServer {
         write_rows_parquet(&parquet_path, rows);
 
         let shutdown = CancellationToken::new();
-        let server = FlightSqlServer::builder()
+        let builder = FlightSqlServer::builder()
             .config(config)
             .backend(backend.clone())
-            .listener(listener)
-            .shutdown(ServerShutdown::Token(shutdown.clone()))
-            .build()
-            .await
-            .expect("concurrency server must build");
+            .shutdown(ServerShutdown::Token(shutdown.clone()));
+        let builder = match listen_mode {
+            ListenMode::Addr => {
+                drop(listener);
+                builder
+            },
+            ListenMode::Prebound => builder.listener(listener),
+        };
+        let server = builder.build().await.expect("concurrency server must build");
         let ctx = Arc::clone(server.session_context());
         ctx.register_parquet("concurrency_rows", parquet_path.to_str().unwrap(), ParquetReadOptions::default())
             .await
