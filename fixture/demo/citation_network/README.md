@@ -54,10 +54,10 @@ uses it.
   tables.
 - Files declare `sorting_columns`, so DataFusion infers the scan ordering.
 - Edge footers carry two contracts:
-  - `algeon.graph.simple_directed_edge_topology.v1` certifies non-null
+  - `algeon.graph.simple_directed_edge_topology` certifies non-null
     `src`/`dst` and no duplicate directed pair. The writer checks every
     adjacent pair in sorted order.
-  - `algeon.graph.vertex_upper_bound.v1` is the paper count. It is emitted only
+  - `algeon.graph.vertex_upper_bound` is the paper count. It is emitted only
     for the complete V12 rowset, and the writer fails if any citation target is
     not a paper in the source.
 

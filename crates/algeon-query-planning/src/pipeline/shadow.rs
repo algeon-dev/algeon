@@ -160,7 +160,7 @@ impl CompiledPipeline {
             });
         }
         Ok(ShadowPipelineEstimate {
-            schema: "algeon.shadow_pipeline_estimate.v1".to_owned(),
+            schema: "algeon.shadow_pipeline_estimate".to_owned(),
             execution_scope: format!("blake3:{}", plan.execution_fingerprint()),
             query_owned_peak: maximum(envelopes.iter().map(|envelope| &envelope.query_owned_bytes)),
             borrowed_resident_peak: maximum(envelopes.iter().map(|envelope| &envelope.borrowed_resident_bytes)),
@@ -193,7 +193,7 @@ fn sum<'a>(values: impl Iterator<Item = &'a ShadowBytes>) -> ShadowBytes {
         };
         total = sum;
     }
-    ShadowBytes::estimated(total, "compiled_dependency_overlap_envelope_v1")
+    ShadowBytes::estimated(total, "compiled_dependency_overlap_envelope")
 }
 
 fn maximum<'a>(values: impl Iterator<Item = &'a ShadowBytes>) -> ShadowBytes {
@@ -204,5 +204,5 @@ fn maximum<'a>(values: impl Iterator<Item = &'a ShadowBytes>) -> ShadowBytes {
         };
         peak = peak.max(bytes);
     }
-    ShadowBytes::estimated(peak, "compiled_dependency_overlap_envelope_v1")
+    ShadowBytes::estimated(peak, "compiled_dependency_overlap_envelope")
 }

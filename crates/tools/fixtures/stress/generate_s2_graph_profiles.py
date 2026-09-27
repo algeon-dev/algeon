@@ -47,7 +47,7 @@ ALGORITHMS: dict[str, dict[str, Any]] = {
         "stream_pool_size": 6,
     },
 }
-PROFILE_SCHEMA = "algeon_tools.single_node_multi_gpu.run_profile.v1"
+PROFILE_SCHEMA = "algeon_tools.single_node_multi_gpu.run_profile"
 RATE_ARRIVAL_BUDGET = 80_000
 
 
@@ -183,8 +183,8 @@ def validate_profile(
     phase_seconds: int | None = None,
 ) -> None:
     overlay = ALGORITHMS[algorithm]
-    if profile.get("schema") != PROFILE_SCHEMA or profile.get("version") != 1:
-        raise ValueError(f"{name}: invalid run-profile schema/version")
+    if profile.get("schema") != PROFILE_SCHEMA:
+        raise ValueError(f"{name}: invalid run-profile schema")
     if profile.get("name") != name.removesuffix(".json"):
         raise ValueError(f"{name}: profile name does not match file name")
     if profile.get("graph_claim_calibration") != {}:
@@ -216,8 +216,8 @@ def validate_standard_rate(
     name: str, profile: dict[str, Any], profile_class: str, knee_qps: int, phase_seconds: int
 ) -> None:
     expected_query = {"aggregate": "q01", "scan": "q06", "graph-io": "edge_scan"}[profile_class]
-    if profile.get("schema") != PROFILE_SCHEMA or profile.get("version") != 1:
-        raise ValueError(f"{name}: invalid run-profile schema/version")
+    if profile.get("schema") != PROFILE_SCHEMA:
+        raise ValueError(f"{name}: invalid run-profile schema")
     if profile.get("name") != name.removesuffix(".json"):
         raise ValueError(f"{name}: profile name does not match file name")
     workloads = profile.get("workloads", [])

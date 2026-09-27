@@ -177,7 +177,6 @@ def write_manifest(cugraph_repo: Path, out_root: Path) -> None:
         references.append(reference_entry(path, spec))
 
     manifest = {
-        "schema_version": 1,
         "description": "Local cuGraph datasets and reference outputs prepared from the root-managed cuGraph gitlink.",
         "source_repo": "https://github.com/algeon-dev/cugraph",
         "source_repo_path": "components/cugraph/cugraph",

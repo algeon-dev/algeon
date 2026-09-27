@@ -60,8 +60,8 @@ use crate::native_plan_peel::peel_native_admitted_plan;
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const MANIFEST_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.manifest.v1";
-const COMPARE_RECORD_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.compare.v2";
+const MANIFEST_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.manifest";
+const COMPARE_RECORD_SCHEMA: &str = "algeon_datafusion.shadow_estimate_report.compare";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Workload {

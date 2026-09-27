@@ -8,7 +8,7 @@ use arrow_flight::FlightData;
 use prost::Message as _;
 use query_engine::observability::{
     AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptRetryAdvice,
-    RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+    RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA,
     SealedAttemptProjection,
 };
 use serde_json::{Value, json};
@@ -20,7 +20,7 @@ use super::{
         GLOBAL_BYTE_PRESSURE_SETUP_QUERIES, RunEvidence, ScenarioEvidence, VariableFrameEvidence, active_attempts,
         artifact_charge, observe_encoded_frame, parse_artifact, validate_variable_frame_evidence,
     },
-    params::{EVIDENCE_SCHEMA, EVIDENCE_VERSION, ObservabilityLimits, RuntimeParams, ScenarioSelection},
+    params::{EVIDENCE_SCHEMA, ObservabilityLimits, RuntimeParams, ScenarioSelection},
     validation::diagnostics_are_idle,
 };
 
@@ -48,7 +48,7 @@ fn control_frame(control: &Value) -> Vec<u8> {
 
 fn attempt_projection() -> Value {
     serde_json::to_value(SealedAttemptProjection {
-        schema: SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+        schema: SEALED_ATTEMPT_PROJECTION_SCHEMA,
         attempt_id: AttemptId::mint(),
         disposition: AttemptDisposition::Native,
         outcome: RuntimeTerminalOutcome::Succeeded,
@@ -193,17 +193,11 @@ fn a_statement_without_runtime_observation_seals_in_one_control_frame() {
         parse_artifact(QUERY_ID, None, &frames, Some("succeeded"), None).is_err(),
         "a sealed terminal with a runtime observation was expected"
     );
-    let mut announcing = sealed.clone();
+    let mut announcing = sealed;
     announcing["runtime_jsonl_follows"] = json!(true);
     assert!(
         parse_artifact(QUERY_ID, None, &[control_frame(&announcing)], None, None).is_err(),
         "a control announcing a JSONL frame needs that frame"
-    );
-    let mut versioned = sealed;
-    versioned["version"] = json!(1);
-    assert!(
-        parse_artifact(QUERY_ID, None, &[control_frame(&versioned)], None, None).is_err(),
-        "the control has one shape"
     );
 }
 
@@ -236,9 +230,8 @@ fn runtime_params_fixture() -> RuntimeParams {
 }
 
 #[test]
-fn evidence_v6_pins_datafusion_baseline_payload_shape() {
-    assert_eq!(EVIDENCE_SCHEMA, "algeon_datafusion.server_runtime_observability_e2e.v6");
-    assert_eq!(EVIDENCE_VERSION, 6);
+fn evidence_pins_datafusion_baseline_payload_shape() {
+    assert_eq!(EVIDENCE_SCHEMA, "algeon_datafusion.server_runtime_observability_e2e");
     const {
         assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
         assert!(
@@ -282,7 +275,6 @@ fn evidence_v6_pins_datafusion_baseline_payload_shape() {
     });
     let payload = serde_json::to_value(evidence).unwrap();
     assert_eq!(payload["schema"], EVIDENCE_SCHEMA);
-    assert_eq!(payload["version"], EVIDENCE_VERSION);
     let config = payload["config"].as_object().unwrap();
     assert_eq!(config.get("scenario_selection"), Some(&json!("matrix")));
     assert_eq!(config.get("native_once"), Some(&json!(false)));
@@ -419,7 +411,7 @@ fn variable_frame_evidence_aggregates_and_rejects_transport_oversize() {
 
 fn admission_payload(rows: &[(usize, u64, u64)]) -> String {
     let mut payload = String::from(
-        "# algeon_admission_stats=2\n# backend=query_service\n# device_ordinals=0,1\n# max_queued_attempts=64\n\n\
+        "# backend=query_service\n# device_ordinals=0,1\n# max_queued_attempts=64\n\n\
          [backend_metrics]\nbackend_generation\tgeneration\tconfigured_devices\n1\t9\t2\n\n\
          [backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tresident_owner_bytes\tmax_resident_owner_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n",
     );
@@ -441,8 +433,4 @@ fn admission_sections_drive_idle_and_overlap_checks() {
 
     let grant_outlives_attempt = admission_payload(&[(0, 0, 4096), (1, 0, 0)]);
     assert!(!diagnostics_are_idle(&grant_outlives_attempt).unwrap());
-
-    let removed_layout = "# algeon_admission_stats=1\n\n[admission]\nactive_queries\tqueued_queries\n0\t0\n";
-    let error = diagnostics_are_idle(removed_layout).unwrap_err();
-    assert!(error.to_string().contains("missing [backend_device_admission] section"), "{error}");
 }

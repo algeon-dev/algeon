@@ -73,10 +73,6 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
         "coverage_json",
     ];
     assert_eq!(advertised_schema.fields().iter().map(|field| field.name()).collect::<Vec<_>>(), expected_columns);
-    assert_eq!(
-        advertised_schema.metadata().get("algeon_datafusion.explain_gpu.schema_version"),
-        Some(&EXPLAIN_GPU_SCHEMA_VERSION.to_string())
-    );
     let (stream_schema, batches) = execute_flight_info_with_stream_schema(&mut client, rows_info).await;
     assert_eq!(stream_schema, advertised_schema);
     let batch = &batches[0];

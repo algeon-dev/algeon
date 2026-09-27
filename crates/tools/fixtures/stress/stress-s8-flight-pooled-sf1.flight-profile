@@ -1,6 +1,5 @@
 {
-  "schema": "algeon_datafusion.flight_sql_stress.run_profile.v1",
-  "version": 1,
+  "schema": "algeon_datafusion.flight_sql_stress.run_profile",
   "name": "stress-s8-flight-pooled-sf1",
   "server": {
     "url": "http://127.0.0.1:50051",

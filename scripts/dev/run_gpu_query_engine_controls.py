@@ -327,7 +327,7 @@ def valid_loaded_libraries(run_dir: Path, identity_document: dict[str, object]) 
     try:
         with snapshot_path.open(encoding="utf-8") as stream:
             snapshot = json.load(stream)
-        if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 2 or snapshot.get("source") != "/proc/self/maps":
+        if not isinstance(snapshot, dict) or snapshot.get("source") != "/proc/self/maps":
             return False
         binary = snapshot.get("binary")
         expected_binary = identity_document.get("binary")

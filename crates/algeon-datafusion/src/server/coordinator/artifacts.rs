@@ -14,7 +14,7 @@ use query_engine::observability::{QueryAttemptReport, SealedAttemptProjection};
 use serde::Serialize;
 
 use super::{
-    super::observability::{QueryStatsPayload, StableValue},
+    super::observability::{QUERY_STATS_HEADER_LINE, QueryStatsPayload, StableValue},
     QueryCoordinator,
     types::{
         QueryCoordinatorError, QueryCoordinatorErrorKind, QueryHotCounterSnapshot, QueryPhase, RetainedQueryBundle,
@@ -24,7 +24,6 @@ use super::{
 
 pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control";
 pub(crate) const TOMBSTONE_STATS_MAX_BYTES: u64 = 1024;
-pub(crate) const QUERY_STATS_HEADER_LINE: &str = "# algeon_datafusion_query_stats=1\n";
 pub(crate) type QueryArtifactFrames = (Arc<[u8]>, Option<Arc<[u8]>>);
 
 #[cfg(test)]

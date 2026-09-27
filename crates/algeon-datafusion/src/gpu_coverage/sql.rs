@@ -1,6 +1,6 @@
 //! SQL surface for query-level GPU coverage validation.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use arrow::{
     array::{ArrayRef, Int64Array, StringArray},
@@ -19,9 +19,8 @@ use datafusion::{
 use crate::{
     error::{Error, ErrorCode},
     gpu_coverage::{
-        ALGEON_EXPLAIN_COVERAGE_FUNCTION, EXPLAIN_GPU_SCHEMA_VERSION, ExplainGpuOutputMode, QueryGpuCoverage,
-        QueryGpuPlanningOutcome, coverage_validator_recursion_error, gpu_coverage_validation_in_progress,
-        validate_query,
+        ALGEON_EXPLAIN_COVERAGE_FUNCTION, ExplainGpuOutputMode, QueryGpuCoverage, QueryGpuPlanningOutcome,
+        coverage_validator_recursion_error, gpu_coverage_validation_in_progress, validate_query,
     },
     physical_plan::cpu_physical_boundary,
     planner::FinalPlanDisposition,
@@ -89,31 +88,25 @@ impl TableProvider for GpuCoverageProvider {
 /// `coverage_json`; every candidate row promotes its reason and remedy into
 /// first-class columns for tabular clients.
 pub fn coverage_schema() -> SchemaRef {
-    Arc::new(Schema::new_with_metadata(
-        vec![
-            Field::new("query_id", DataType::Utf8, true),
-            Field::new("row_kind", DataType::Utf8, false),
-            Field::new("gpu_path", DataType::Utf8, false),
-            Field::new("gpu_fragments", DataType::Int64, true),
-            Field::new("cpu_boundaries", DataType::Int64, true),
-            Field::new("physical_root", DataType::Utf8, true),
-            Field::new("post_native_plan_root", DataType::Utf8, true),
-            Field::new("candidate_shape", DataType::Utf8, true),
-            Field::new("candidate_family", DataType::Utf8, true),
-            Field::new("outcome", DataType::Utf8, false),
-            Field::new("reason_code", DataType::Utf8, true),
-            Field::new("unsupported_category", DataType::Utf8, true),
-            Field::new("remedy_code", DataType::Utf8, true),
-            Field::new("remedy_kind", DataType::Utf8, true),
-            Field::new("remedy", DataType::Utf8, true),
-            Field::new("detail_json", DataType::Utf8, true),
-            Field::new("coverage_json", DataType::Utf8, true),
-        ],
-        HashMap::from([(
-            "algeon_datafusion.explain_gpu.schema_version".to_string(),
-            EXPLAIN_GPU_SCHEMA_VERSION.to_string(),
-        )]),
-    ))
+    Arc::new(Schema::new(vec![
+        Field::new("query_id", DataType::Utf8, true),
+        Field::new("row_kind", DataType::Utf8, false),
+        Field::new("gpu_path", DataType::Utf8, false),
+        Field::new("gpu_fragments", DataType::Int64, true),
+        Field::new("cpu_boundaries", DataType::Int64, true),
+        Field::new("physical_root", DataType::Utf8, true),
+        Field::new("post_native_plan_root", DataType::Utf8, true),
+        Field::new("candidate_shape", DataType::Utf8, true),
+        Field::new("candidate_family", DataType::Utf8, true),
+        Field::new("outcome", DataType::Utf8, false),
+        Field::new("reason_code", DataType::Utf8, true),
+        Field::new("unsupported_category", DataType::Utf8, true),
+        Field::new("remedy_code", DataType::Utf8, true),
+        Field::new("remedy_kind", DataType::Utf8, true),
+        Field::new("remedy", DataType::Utf8, true),
+        Field::new("detail_json", DataType::Utf8, true),
+        Field::new("coverage_json", DataType::Utf8, true),
+    ]))
 }
 
 /// Project shared coverage evidence into the public multi-row Arrow shape.
@@ -329,10 +322,6 @@ mod tests {
         assert!(query_id.is_null(0), "embedded UDTF has no server query id");
         assert_eq!(string_value(batch, 1, 0), "summary");
         assert_eq!(string_value(batch, 2, 0), "native");
-        assert_eq!(
-            batch.schema().metadata().get("algeon_datafusion.explain_gpu.schema_version"),
-            Some(&EXPLAIN_GPU_SCHEMA_VERSION.to_string())
-        );
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 3, 0)).unwrap();
         assert_eq!(json["planning_outcome"]["status"], "planned");
         assert_eq!(json["planning_outcome"]["final_plan"]["disposition"], "native");

@@ -24,11 +24,11 @@ use query_engine::{
 use tokio::{task::yield_now, time::timeout};
 
 use super::{
-    super::observability::{CapturedError, QueryStatsPayload},
+    super::observability::{CapturedError, QUERY_STATS_HEADER_LINE, QueryStatsPayload},
     artifacts::{
         ArtifactEgressLimiter, FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult,
-        LiveStatsWaiter, QUERY_STATS_HEADER_LINE, RUNTIME_ARTIFACT_CONTROL_SCHEMA, compose_terminal_artifact,
-        incomplete_runtime_control, install_coordinator_render_probe,
+        LiveStatsWaiter, RUNTIME_ARTIFACT_CONTROL_SCHEMA, compose_terminal_artifact, incomplete_runtime_control,
+        install_coordinator_render_probe,
     },
     maintenance::{CoordinatorMaintenanceClock, QueryCoordinatorMaintenance},
     retention::checked_deadline,

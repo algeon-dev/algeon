@@ -39,7 +39,7 @@ use crate::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
         AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureOperation,
         AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptReportSealProvider, AttemptRetryAdvice,
-        AttemptTerminalCommit, AttemptTraceContext, CleanupFailureTally, QUERY_ATTEMPT_REPORT_SCHEMA_V2,
+        AttemptTerminalCommit, AttemptTraceContext, CleanupFailureTally, QUERY_ATTEMPT_REPORT_SCHEMA,
         QueryAttemptReport, QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig,
         RuntimeObservationFooter, RuntimeObservationHandle, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
         SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
@@ -427,7 +427,7 @@ impl AttemptCore {
             alternate_device_eligibility,
         );
         QueryAttemptReport {
-            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
+            schema: QUERY_ATTEMPT_REPORT_SCHEMA.to_string(),
             attempt_id: self.attempt_id,
             query_id: self.query_id.clone(),
             trace_context: self.trace_context.clone(),

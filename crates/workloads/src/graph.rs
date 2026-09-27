@@ -25,8 +25,6 @@ use crate::metadata::WorkloadDatasetMetadata;
 
 /// Dataset identifier written by `fixture/demo/citation_network/prepare.py`.
 pub const DBLP_DATASET_ID: &str = "citation-network";
-/// Generator manifest/source format accepted by this discovery contract.
-pub const DBLP_FIXTURE_SCHEMA_VERSION: u64 = 1;
 /// Canonical DBLP / AMiner Citation Network V12 paper count.
 pub const DBLP_EXPECTED_PAPERS: u64 = 4_894_081;
 /// Canonical DBLP / AMiner Citation Network V12 directed edge count.
@@ -38,16 +36,14 @@ pub const DBLP_EXPECTED_FOS_ROWS: u64 = 45_029_892;
 /// Parquet-footer key carrying the full edge rowset's graph vertex upper
 /// bound. The fixture generator writes it only for a complete DBLP V12
 /// fixture; prefix samples cannot safely make this claim.
-pub const DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY: &str = "algeon.graph.vertex_upper_bound.v1";
+pub const DBLP_GRAPH_VERTEX_UPPER_BOUND_FOOTER_KEY: &str = "algeon.graph.vertex_upper_bound";
 /// Parquet-footer key certifying that one complete DBLP edge file is a simple
 /// directed relation over the declared physical source/destination columns.
 /// The execution adapter may use this source-bound fact to omit Python edge
 /// normalization only when the exact complete file rowset remains intact.
-pub const DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY: &str = "algeon.graph.simple_directed_edge_topology.v1";
+pub const DBLP_SIMPLE_DIRECTED_EDGE_TOPOLOGY_FOOTER_KEY: &str = "algeon.graph.simple_directed_edge_topology";
 /// Manifest contract for a DBLP-derived source-hash graph slice.
-pub const DBLP_MULTI_GRAPH_SLICE_PARTITION: &str = "source_hash_splitmix64_v1";
-/// Version of the DBLP multi-graph slice manifest contract.
-pub const DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION: u64 = 1;
+pub const DBLP_MULTI_GRAPH_SLICE_PARTITION: &str = "source_hash_splitmix64";
 /// Required Parquet tables in deterministic artifact/report order.
 pub const DBLP_TABLES: &[&str] =
     &["edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"];
@@ -288,12 +284,6 @@ fn read_json_document(path: &Path, label: &str) -> WorkloadResult<Value> {
 }
 
 fn validate_manifest(manifest: &Value) -> WorkloadResult<String> {
-    let schema_version = required_u64(manifest, &["schema_version"], "manifest schema_version")?;
-    if schema_version != DBLP_FIXTURE_SCHEMA_VERSION {
-        return Err(WorkloadError::InvalidDataset(format!(
-            "unsupported manifest schema_version {schema_version}; expected {DBLP_FIXTURE_SCHEMA_VERSION}"
-        )));
-    }
     let generator = required_string(manifest, &["generator"], "manifest generator")?;
     // Fixtures prepared before the converter was renamed record `dblp_ingest.py`.
     if !(generator.ends_with("citation_network/prepare.py")
@@ -324,12 +314,6 @@ fn parse_multi_graph_slice(manifest: &Value) -> WorkloadResult<Option<DblpMultiG
 fn parse_multi_graph_slice_value(slice: &Value, label: &str) -> WorkloadResult<DblpMultiGraphSliceMetadata> {
     if !slice.is_object() {
         return Err(WorkloadError::InvalidDataset(format!("{label} must be an object")));
-    }
-    let schema_version = required_u64(slice, &["schema_version"], &format!("{label} schema_version"))?;
-    if schema_version != DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION {
-        return Err(WorkloadError::InvalidDataset(format!(
-            "unsupported {label} schema_version {schema_version}; expected {DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION}"
-        )));
     }
     let partition = required_string(slice, &["partition"], &format!("{label} partition"))?;
     if partition != DBLP_MULTI_GRAPH_SLICE_PARTITION {
@@ -505,12 +489,6 @@ fn validate_source_metadata(
     source: &Value,
     expected_multi_graph_slice: Option<&DblpMultiGraphSliceMetadata>,
 ) -> WorkloadResult<String> {
-    let schema_version = required_u64(source, &["schema_version"], "source schema_version")?;
-    if schema_version != DBLP_FIXTURE_SCHEMA_VERSION {
-        return Err(WorkloadError::InvalidDataset(format!(
-            "unsupported source metadata schema_version {schema_version}; expected {DBLP_FIXTURE_SCHEMA_VERSION}"
-        )));
-    }
     validate_dataset_id(source, "source metadata")?;
     let source_description = required_string(source, &["source"], "source metadata source")?;
     if source_description.is_empty() {

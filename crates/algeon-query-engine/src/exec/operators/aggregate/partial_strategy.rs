@@ -225,7 +225,6 @@ pub(in crate::exec::operators::aggregate) fn add_aggregate_strategy_execution_op
     facts: &mut BTreeMap<&'static str, String>,
     options: AggregateStrategyExecutionOptions,
 ) {
-    facts.insert("aggregate_strategy_options_version", "1".to_string());
     facts.insert(
         "aggregate_encoded_key_partial_low_cardinality_threshold_ppm",
         options.encoded_key_partial_low_cardinality_threshold_ppm().to_string(),

@@ -118,7 +118,7 @@ fn planning_report_json_includes_triage_summary() {
     assert_eq!(summary.signals[0].code, TriageCode::UnsupportedExpression);
 
     let json = report.to_json();
-    assert_eq!(json["schema"], "algeon_datafusion.planning_report.v3");
+    assert_eq!(json["schema"], "algeon_datafusion.planning_report");
     assert_eq!(json["triage"]["verdict"], "not_selected");
     assert_eq!(json["triage"]["signals"][0]["code"], "unsupported_expression");
     assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "query-42");

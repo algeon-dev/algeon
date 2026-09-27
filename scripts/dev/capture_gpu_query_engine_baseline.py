@@ -53,7 +53,6 @@ tpch_dataset_table_byte_sizes tpch_dataset_table_file_counts tpch_dataset_table_
 tpch_dataset_table_row_group_counts tpch_dataset_total_bytes tpch_dataset_total_rows""".split())
 SECRET_KEY = re.compile(r"(?:pass(word)?|secret|token|api[_-]?key|authorization|cookie|credential)", re.I)
 URI_CREDENTIALS = re.compile(r"^[a-z][a-z0-9+.-]*://[^/]*:[^/@]+@", re.I)
-LOADED_LIBRARY_SNAPSHOT_VERSION = 2
 REQUIRED_LOADED_LIBRARIES = ("libcudf_rust.so", "libcudf.so")
 
 
@@ -239,8 +238,6 @@ def loaded_library_snapshot(path: Path | None, repo: Path, binary: Path | None, 
         raise ManifestError(f"cannot read runtime loaded-library snapshot {path}: {error}") from error
     if not isinstance(raw, dict):
         raise ManifestError("runtime loaded-library snapshot must contain an object")
-    if raw.get("schema_version") != LOADED_LIBRARY_SNAPSHOT_VERSION:
-        raise ManifestError(f"runtime loaded-library snapshot schema_version must be {LOADED_LIBRARY_SNAPSHOT_VERSION}")
     if raw.get("source") != "/proc/self/maps":
         raise ManifestError("runtime loaded-library snapshot source must be /proc/self/maps")
     if binary is None:
@@ -281,7 +278,6 @@ def loaded_library_snapshot(path: Path | None, repo: Path, binary: Path | None, 
             raise ManifestError(f"runtime loaded-library snapshot is missing required dependency {required}")
     return {
         "snapshot": fingerprint(path, repo, source, "runtime loaded-library snapshot"),
-        "schema_version": raw["schema_version"],
         "source": raw["source"],
         "libraries": verified_libraries,
         "library_count": len(verified_libraries),
@@ -602,7 +598,7 @@ def main(argv=None):
         "source_cache_state": f(("source_cache_state",), str, "source cache state is not emitted by TPCH provenance and was not supplied"), "source_chunk_planning_mode": f(("source_chunk_planning_mode", "tpch_benchmark_native_source_chunk_planning_mode", "ALGEON_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE"), str, "source-chunk planning mode was not supplied or recorded"),
     }
     manifest = {
-        "kind": "algeon-gpu-query-engine-tpch-baseline", "schema_version": 1,
+        "kind": "algeon-gpu-query-engine-tpch-baseline",
         "source": {"root": git_snapshot(repo, repo, "root"), "native": {name: git_snapshot(repo / relative, repo, name) for name, relative in NATIVE_SOURCES.items()}},
         "hardware": gpu_info(), "run_start_hardware": {"driver_version": direct(log_values, ("driver_version",), str, "run log did not report driver version"), "gpu_model": direct(log_values, ("gpu0_model",), str, "run log did not report GPU model"), "gpu_uuid": direct(log_values, ("gpu0_uuid",), str, "run log did not report GPU UUID"), "gpu_count": direct(log_values, ("gpu_count",), pint, "run log did not report GPU count")},
         "rust": rust_info(), "benchmark": benchmark, "source_layout": layout,

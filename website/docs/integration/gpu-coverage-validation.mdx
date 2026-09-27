@@ -50,10 +50,8 @@ FROM lineitem GROUP BY l_returnflag;
 `VERBOSE` is accepted as the complete row mode. `FORMAT JSON` uses the same
 Arrow schema but returns only the summary row, whose `coverage_json` contains
 all candidate evidence. `EXPLAIN GPU` is Flight SQL statement-query syntax; it
-cannot be prepared or sent to an update endpoint. Both the UDTF and Flight
-schema carry `algeon_datafusion.explain_gpu.schema_version=2` in Arrow schema
-metadata so clients can identify this shared row contract without inspecting
-its columns. When planning produces no executable plan, the summary
+cannot be prepared or sent to an update endpoint. The UDTF and Flight return
+the same Arrow schema. When planning produces no executable plan, the summary
 `gpu_fragments` and `cpu_boundaries` cells are null, not zero.
 
 | Column | Meaning |

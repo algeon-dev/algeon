@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::attempt_report::{CleanupFailureSummary, QueryAttemptReport, RuntimeTerminalOutcome};
 
 /// JSONL schema emitted by sealed runtime observation snapshots.
-pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "query_engine.runtime_observation.v2";
+pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "query_engine.runtime_observation";
 
 macro_rules! string_id {
     ($name:ident, $doc:literal) => {
@@ -219,7 +219,7 @@ pub(crate) enum RuntimeClockDomain {
 /// First JSONL record describing immutable query identity and capture limits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeObservationManifest {
-    /// Versioned JSONL schema label.
+    /// JSONL schema label.
     pub schema: String,
     /// Query-wide diagnostic identity.
     pub query_id: RuntimeQueryId,

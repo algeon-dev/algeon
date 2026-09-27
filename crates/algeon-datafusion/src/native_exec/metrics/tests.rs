@@ -172,7 +172,6 @@ fn aggregate_strategy_rows_bridge_strategy_execution_option_labels() {
     let facts = BTreeMap::from([
         ("selected_strategy", "libcudf_groupby".to_string()),
         ("execution_stage", "partial".to_string()),
-        ("aggregate_strategy_options_version", "1".to_string()),
         ("aggregate_encoded_key_partial_low_cardinality_threshold_ppm", "175000".to_string()),
         ("aggregate_encoded_key_partial_min_input_rows", "123".to_string()),
         ("aggregate_exact_grouped_key_cardinality_probe_max_key_columns", "4".to_string()),
@@ -195,7 +194,6 @@ fn aggregate_strategy_rows_bridge_strategy_execution_option_labels() {
     assert_eq!(metrics.aggregate_strategy_rows.len(), 1);
     let row = &metrics.aggregate_strategy_rows[0];
     assert_eq!(row.node_id, "n13");
-    assert_eq!(row.aggregate_strategy_options_version, "1");
     assert_eq!(row.aggregate_encoded_key_partial_low_cardinality_threshold_ppm, 175_000);
     assert_eq!(row.aggregate_encoded_key_partial_min_input_rows, 123);
     assert_eq!(row.aggregate_exact_grouped_key_cardinality_probe_max_key_columns, 4);

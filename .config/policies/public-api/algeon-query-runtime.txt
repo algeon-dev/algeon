@@ -497,7 +497,7 @@ pub fn query_runtime::native_error::query_error_code_for_cudf_error(&cudf::core:
 pub mod query_runtime::observability
 pub use query_runtime::observability::AttemptComposedScheduleProjection
 pub use query_runtime::observability::AttemptId
-pub use query_runtime::observability::COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1
+pub use query_runtime::observability::COMPOSED_SCHEDULE_PROJECTION_SCHEMA
 pub use query_runtime::observability::RuntimeTaskId
 pub enum query_runtime::observability::AttemptAllocatorEventSource
 pub query_runtime::observability::AttemptAllocatorEventSource::AllocationLimit
@@ -1441,9 +1441,9 @@ pub query_runtime::observability::WorkerDefinitionRow::worker_id: query_runtime:
 pub query_runtime::observability::WorkerDefinitionRow::worker_kind: alloc::string::String
 pub const query_runtime::observability::MAX_ATTEMPT_QUERY_ID_BYTES: usize
 pub const query_runtime::observability::MAX_ATTEMPT_TRACE_CONTEXT_BYTES: usize
-pub const query_runtime::observability::QUERY_ATTEMPT_REPORT_SCHEMA_V2: &str
+pub const query_runtime::observability::QUERY_ATTEMPT_REPORT_SCHEMA: &str
 pub const query_runtime::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA: &str
-pub const query_runtime::observability::SEALED_ATTEMPT_PROJECTION_SCHEMA_V1: &str
+pub const query_runtime::observability::SEALED_ATTEMPT_PROJECTION_SCHEMA: &str
 pub fn query_runtime::observability::stage_context_from_execution(&impl query_runtime::observability::operator_stage::RuntimeExecutionStageContext) -> (query_runtime::observability::RuntimeObservationHandle, core::option::Option<query_runtime::observability::PlanExecutionId>, core::option::Option<query_runtime::observability::RuntimeSpanId>)
 pub fn query_runtime::observability::task_attempt_id(impl core::convert::Into<query_planning::execution_contracts::RuntimeTaskId>, u32) -> query_planning::execution_contracts::TaskAttemptId
 pub fn query_runtime::observability::write_runtime_observation_jsonl<W: core::io::write::Write>(&query_runtime::observability::SealedRuntimeObservationSnapshot, &mut W) -> core::result::Result<(), query_runtime::observability::RuntimeObservationExportError>

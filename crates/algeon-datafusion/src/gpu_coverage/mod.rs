@@ -48,8 +48,6 @@ pub use crate::{planner::FinalPlanCoverage, report::CandidateOutcomeKind};
 
 /// Metadata UDTF that exposes query GPU coverage validation.
 pub const ALGEON_EXPLAIN_COVERAGE_FUNCTION: &str = "algeon_explain_coverage";
-/// Version of the shared multi-row UDTF and `EXPLAIN GPU` output schema.
-pub const EXPLAIN_GPU_SCHEMA_VERSION: u8 = 2;
 pub(crate) const COVERAGE_VALIDATOR_RECURSION_REASON_CODE: &str = "coverage_validator_recursion_unsupported";
 pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_rejection_reason";
 

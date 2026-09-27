@@ -12,16 +12,13 @@ use serde::{
 };
 
 /// Schema label of [`QueryAttemptReport`]. Decoding rejects every other label.
-///
-/// V2 samples `admission_requested_ns` when the attempt claims its one
-/// admission and drops the finite-overtake queue facts.
-pub const QUERY_ATTEMPT_REPORT_SCHEMA_V2: &str = "query_engine.query_attempt_report.v2";
+pub const QUERY_ATTEMPT_REPORT_SCHEMA: &str = "query_engine.query_attempt_report";
 /// Schema label for the bounded public projection of a sealed attempt report.
 ///
 /// The projection deliberately omits correlations, diagnostics, allocator
 /// events, and other payloads that are not suitable for fixed-cardinality
 /// consumers such as DataFusion metrics and retained Flight control metadata.
-pub const SEALED_ATTEMPT_PROJECTION_SCHEMA_V1: &str = "query_engine.sealed_attempt_projection.v1";
+pub const SEALED_ATTEMPT_PROJECTION_SCHEMA: &str = "query_engine.sealed_attempt_projection";
 /// Maximum UTF-8 byte length for caller-supplied attempt query correlation.
 pub const MAX_ATTEMPT_QUERY_ID_BYTES: usize = 256;
 /// Maximum UTF-8 byte length for caller-supplied opaque trace context.
@@ -1383,9 +1380,9 @@ pub struct AttemptTimestamps {
 fn deserialize_query_attempt_report_schema<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
 where D: serde::Deserializer<'de> {
     let schema = String::deserialize(deserializer)?;
-    if schema != QUERY_ATTEMPT_REPORT_SCHEMA_V2 {
+    if schema != QUERY_ATTEMPT_REPORT_SCHEMA {
         return Err(de::Error::custom(format!(
-            "unsupported attempt report schema {schema:?}; expected {QUERY_ATTEMPT_REPORT_SCHEMA_V2:?}"
+            "unsupported attempt report schema {schema:?}; expected {QUERY_ATTEMPT_REPORT_SCHEMA:?}"
         )));
     }
     Ok(schema)
@@ -1550,7 +1547,7 @@ impl SealedAttemptProjection {
 impl From<&QueryAttemptReport> for SealedAttemptProjection {
     fn from(report: &QueryAttemptReport) -> Self {
         Self {
-            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA,
             attempt_id: report.attempt_id,
             disposition: report.disposition,
             outcome: report.outcome.clone(),

@@ -1,6 +1,5 @@
 {
-  "schema": "algeon_tools.single_node_multi_gpu.run_profile.v1",
-  "version": 1,
+  "schema": "algeon_tools.single_node_multi_gpu.run_profile",
   "name": "p6.6-after-admission-deadline",
   "backend": {
     "device_profiles": [

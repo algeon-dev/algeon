@@ -235,7 +235,7 @@ fn the_arrival_trace_is_reproducible_and_splits_warmup_from_the_window() {
 #[test]
 fn request_cap_assignments_are_reproducible_and_use_specificity_order() {
     let assignment = CapAssignment::parse(
-        "# schema=algeon-goodput-cap-assignment-v1\nkind\tkey\tcap_bytes\ndefault\t\t128\nfamily\ttpch\t256\nitem\ttpch.q06\t512\nsequence\t9\t1024\n",
+        "# schema=algeon-goodput-cap-assignment\nkind\tkey\tcap_bytes\ndefault\t\t128\nfamily\ttpch\t256\nitem\ttpch.q06\t512\nsequence\t9\t1024\n",
     )
     .unwrap();
 
@@ -251,7 +251,7 @@ fn request_cap_assignments_are_reproducible_and_use_specificity_order() {
 fn one_arrival_trace_can_carry_multiple_explicit_caps() {
     let mut config = test_config();
     config.cap_assignment = CapAssignment::parse(
-        "# schema=algeon-goodput-cap-assignment-v1\nkind\tkey\tcap_bytes\ndefault\t\t768\nsequence\t0\t256\n",
+        "# schema=algeon-goodput-cap-assignment\nkind\tkey\tcap_bytes\ndefault\t\t768\nsequence\t0\t256\n",
     )
     .unwrap();
 
@@ -270,7 +270,7 @@ fn one_arrival_trace_can_carry_multiple_explicit_caps() {
 #[test]
 fn sequence_only_assignments_cannot_silently_choose_a_calibration_cap() {
     let assignment =
-        CapAssignment::parse("# schema=algeon-goodput-cap-assignment-v1\nkind\tkey\tcap_bytes\nsequence\t0\t256\n")
+        CapAssignment::parse("# schema=algeon-goodput-cap-assignment\nkind\tkey\tcap_bytes\nsequence\t0\t256\n")
             .unwrap();
     let item = super::workload::resolve_item("tpch.q06", 0).unwrap();
     assert!(assignment.calibration_caps(&[item], 512).is_err());

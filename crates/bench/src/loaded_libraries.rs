@@ -108,8 +108,7 @@ pub(crate) fn write_loaded_libraries(dir: &Path) -> DataFusionResult<()> {
             )));
         }
     }
-    let record =
-        serde_json::json!({"schema_version": 2, "source": "/proc/self/maps", "binary": binary, "libraries": libraries});
+    let record = serde_json::json!({"source": "/proc/self/maps", "binary": binary, "libraries": libraries});
     let bytes = serde_json::to_vec_pretty(&record).map_err(|error| DataFusionError::External(Box::new(error)))?;
     fs::write(dir.join("loaded-native-libraries.json"), bytes)
         .map_err(|error| DataFusionError::External(Box::new(error)))

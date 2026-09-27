@@ -240,8 +240,8 @@ struct NativeDataFusionExecutionTsvTemplateRow {
 }
 
 impl NativeDataFusionExecutionTsvTemplate {
-    const QUERY_ID_FIELD: usize = 1;
-    const RUNTIME_FIELD_START: usize = 16;
+    const QUERY_ID_FIELD: usize = 0;
+    const RUNTIME_FIELD_START: usize = 15;
 
     pub fn from_report(report: NativeDataFusionExecutionReport) -> Self {
         let rows = report

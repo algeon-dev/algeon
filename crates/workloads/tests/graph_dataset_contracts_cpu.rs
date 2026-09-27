@@ -125,8 +125,7 @@ fn generic_dblp_discovery_preserves_multi_graph_slice_identity_and_requires_matc
     write_dblp_fixture(&root, None);
 
     let slice = json!({
-        "schema_version": 1,
-        "partition": "source_hash_splitmix64_v1",
+        "partition": "source_hash_splitmix64",
         "slice_count": 8,
         "slice_index": 3,
         "hash_seed": 20260804_u64,
@@ -143,7 +142,7 @@ fn generic_dblp_discovery_preserves_multi_graph_slice_identity_and_requires_matc
 
     let metadata = describe_dblp_dataset(&root, "v12_slice_03", "prepared").unwrap();
     let identity = metadata.multi_graph_slice.expect("slice fixture must expose its rowset identity");
-    assert_eq!(identity.partition, "source_hash_splitmix64_v1");
+    assert_eq!(identity.partition, "source_hash_splitmix64");
     assert_eq!(identity.slice_count, 8);
     assert_eq!(identity.slice_index, 3);
     assert_eq!(identity.hash_seed, 20_260_804);
@@ -173,7 +172,7 @@ fn canonical_dblp_discovery_requires_edge_footer_vertex_bounds_before_using_the_
     write_dblp_fixture(&root, None);
 
     let error = describe_canonical_dblp_dataset(&root, "v12", "prepared").unwrap_err();
-    assert!(error.to_string().contains("missing required footer key algeon.graph.vertex_upper_bound.v1"), "{error}");
+    assert!(error.to_string().contains("missing required footer key algeon.graph.vertex_upper_bound"), "{error}");
 }
 
 #[test]
@@ -184,7 +183,7 @@ fn generic_dblp_discovery_requires_complete_simple_directed_edge_footer() {
     write_dblp_fixture_with_edge_topology(&root, None, None);
     let error = describe_dblp_dataset(&root, "sample", "prepared").unwrap_err();
     assert!(
-        error.to_string().contains("missing required footer key algeon.graph.simple_directed_edge_topology.v1"),
+        error.to_string().contains("missing required footer key algeon.graph.simple_directed_edge_topology"),
         "{error}"
     );
 
@@ -253,7 +252,6 @@ fn write_dblp_fixture_with_edge_topology(
         })
     };
     let manifest = json!({
-        "schema_version": 1,
         "generator": "fixture/demo/citation_network/prepare.py",
         "dataset": {"dataset_id": DBLP_DATASET_ID, "source": "test source"},
         "max_papers": 3,
@@ -267,7 +265,6 @@ fn write_dblp_fixture_with_edge_topology(
         "paper_fos": entry("paper_fos")
     });
     let source = json!({
-        "schema_version": 1,
         "dataset_id": DBLP_DATASET_ID,
         "source": "test source",
         "source_json": {"path": "/data/dblp.v12.json", "bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}

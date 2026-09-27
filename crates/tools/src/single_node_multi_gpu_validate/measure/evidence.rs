@@ -6,7 +6,7 @@ use query_engine::{
 
 use super::*;
 use crate::single_node_multi_gpu_validate::{
-    COMPOSED_SCHEDULE_SCHEMA, COMPOSED_SCHEDULE_VERSION,
+    COMPOSED_SCHEDULE_SCHEMA,
     aggregate::{AdmissionWaitEvidence, QueryDomainPoolUsageObservation, SUCCEEDED_OUTCOME},
 };
 
@@ -59,7 +59,7 @@ pub(super) fn observe(
         composed_schedule: report
             .composed_schedule
             .as_ref()
-            .filter(|projection| projection.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1)
+            .filter(|projection| projection.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA)
             .map(project_composed_schedule_projection),
         device_ordinal: report.admission.as_ref().map(|admission| admission.device_ordinal).or(report.device_ordinal),
         grant_bytes: report.admission.as_ref().map(|admission| admission.grant_bytes),
@@ -98,7 +98,6 @@ pub(super) fn project_composed_schedule_projection(
 ) -> ComposedScheduleArtifact {
     ComposedScheduleArtifact {
         schema: COMPOSED_SCHEDULE_SCHEMA,
-        version: COMPOSED_SCHEDULE_VERSION,
         attempt_id: projection.attempt_id.to_string(),
         selected_ordinal: projection.device_ordinal,
         grant_id: projection.grant_id,
@@ -126,8 +125,8 @@ pub(super) fn project_composed_schedule_projection(
     }
 }
 
-/// Projects the DataFusion adapter's immutable typed snapshot into the versioned
-/// stress artifact. This intentionally reads engine fields directly rather
+/// Projects the DataFusion adapter's immutable typed snapshot into the stress
+/// artifact. This intentionally reads engine fields directly rather
 /// than reconstructing graph rows from DataFusion metric labels or error text.
 pub(super) fn project_graph_claim_calibration_snapshot(
     snapshot: SealedAttemptGraphClaimCalibrationSnapshot,

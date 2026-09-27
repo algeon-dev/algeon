@@ -4,7 +4,7 @@ use std::{error::Error, fmt};
 use crate::observability::{
     AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
     AttemptFailureOperation, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
-    COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1, RuntimeTerminalOutcome,
+    COMPOSED_SCHEDULE_PROJECTION_SCHEMA, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
 use crate::observability::{
@@ -355,7 +355,7 @@ impl AttemptLifecycle {
         &mut self,
         projection: AttemptComposedScheduleProjection,
     ) -> Result<(), AttemptLifecycleError> {
-        if projection.schema != COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1 {
+        if projection.schema != COMPOSED_SCHEDULE_PROJECTION_SCHEMA {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "composed_schedule",
                 reason: "unsupported_schedule_schema",

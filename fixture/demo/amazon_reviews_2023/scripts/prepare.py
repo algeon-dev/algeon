@@ -438,7 +438,6 @@ def main() -> int:
             shutil.rmtree(args.work_dir, ignore_errors=True)
 
     manifest = {
-        "schema_version": 1,
         "generator": GENERATOR,
         "generated_at_unix": int(time.time()),
         "dataset": {"source": SOURCE, "category": args.category},

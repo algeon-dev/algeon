@@ -472,7 +472,7 @@ impl PlanningReport {
     /// Serializes this planning report as structured candidate-outcome JSON.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": "algeon_datafusion.planning_report.v3",
+            "schema": "algeon_datafusion.planning_report",
             "query_id": self.query_id.as_ref().map(QueryId::as_str),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),

@@ -157,7 +157,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "row_groups_selected",
     "runtime_failure",
     "runtime_outcome",
-    "schema",
     "source_chunks_attempted",
     "source_chunks_committed",
     "source_chunks_planned",
@@ -311,7 +310,6 @@ fn healthy_for_name(name: &str) -> Option<&'static str> {
 fn semantics_for_name(name: &str) -> &'static str {
     match name {
         "query_id" => "Query-wide diagnostic correlation id.",
-        "schema" => "Versioned schema identifier of the report TSV family.",
         "reason_code" | "native_reason_code" => "Stable planning or runtime reason code.",
         "runtime_failure" | "native_runtime_failure" => "Stable runtime failure summary.",
         "physical_root" => "Root DataFusion physical operator label.",
@@ -381,7 +379,7 @@ fn is_label_field(name: &str) -> bool {
         || name.ends_with("_failure")
         || name.ends_with("_diagnostics")
         || name.ends_with("_reason_code")
-        || matches!(name, "query_id" | "outcome" | "reason_code" | "schema")
+        || matches!(name, "query_id" | "outcome" | "reason_code")
         || name == "comparison_mode"
         || name == "unsupported_category"
         || name == "native_optimizer"

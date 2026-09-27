@@ -16,8 +16,8 @@ use super::{
 };
 use crate::{SINGLE_NODE_RUN_ARTIFACT_SCHEMA, ToolResult};
 
-const QUALIFICATION_MANIFEST_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.qualification_manifest.v1";
-const QUALIFICATION_REPORT_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.qualification_report.v1";
+const QUALIFICATION_MANIFEST_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.qualification_manifest";
+const QUALIFICATION_REPORT_SCHEMA: &str = "algeon_tools.single_node_multi_gpu.qualification_report";
 const QUALIFICATION_REPORT_FILE: &str = "qualification-report.json";
 const PRODUCTION_CLAIM: &str = "cache-off production-qualified";
 const PRODUCTION_MANIFEST: &[u8] = include_bytes!("../../fixtures/qualification/cache-off-production.json");
@@ -26,7 +26,6 @@ const PRODUCTION_MANIFEST: &[u8] = include_bytes!("../../fixtures/qualification/
 #[serde(deny_unknown_fields)]
 struct QualificationManifest {
     schema: String,
-    version: u32,
     target_claim: String,
     cells: Vec<CellManifest>,
 }
@@ -63,7 +62,6 @@ struct MixedIntervalManifest {
 #[derive(Debug, Serialize)]
 struct QualificationReport {
     schema: &'static str,
-    version: u32,
     target_claim: String,
     status: &'static str,
     manifest: FileIdentity,
@@ -89,7 +87,7 @@ pub(super) fn verify_bundle(
 ) -> ToolResult<PathBuf> {
     let manifest_bytes = fs::read(manifest_path).map_err(|_| "cannot read qualification manifest")?;
     let manifest: QualificationManifest = serde_json::from_slice(&manifest_bytes)?;
-    if manifest.schema != QUALIFICATION_MANIFEST_SCHEMA || manifest.version != 1 {
+    if manifest.schema != QUALIFICATION_MANIFEST_SCHEMA {
         return Err("unsupported qualification manifest schema".into());
     }
     if manifest.target_claim.is_empty() {
@@ -223,7 +221,6 @@ pub(super) fn verify_bundle(
         .collect::<ToolResult<Vec<_>>>()?;
     let report = QualificationReport {
         schema: QUALIFICATION_REPORT_SCHEMA,
-        version: 1,
         target_claim: manifest.target_claim,
         status: "evidenced",
         manifest: FileIdentity::collect(manifest_path, "qualification manifest")?,
@@ -569,7 +566,6 @@ mod tests {
             &manifest,
             serde_json::to_vec(&serde_json::json!({
                 "schema": QUALIFICATION_MANIFEST_SCHEMA,
-                "version": 1,
                 "target_claim": "test",
                 "cells": [{
                     "name": "repeat",

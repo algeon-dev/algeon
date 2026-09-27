@@ -1,6 +1,5 @@
 {
-  "schema": "algeon_tools.single_node_multi_gpu.run_profile.v1",
-  "version": 1,
+  "schema": "algeon_tools.single_node_multi_gpu.run_profile",
   "completion_drain_grace_seconds": 60,
   "name": "stress-s3-utilization-telemetry-off-sf1",
   "scenario_requirements": { "require_all_device_progress": true },

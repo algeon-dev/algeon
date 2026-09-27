@@ -7,7 +7,7 @@ use query_engine::{
     error::QueryErrorCode,
     observability::{
         AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, MAX_ATTEMPT_QUERY_ID_BYTES,
-        MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA_V2,
+        MAX_ATTEMPT_TRACE_CONTEXT_BYTES, QUERY_ATTEMPT_REPORT_SCHEMA,
     },
 };
 
@@ -55,7 +55,7 @@ fn attempt_ids_are_unique_fixed_size_and_formatted() {
 
 #[test]
 fn attempt_report_schema_and_disposition_labels_are_stable() {
-    assert_eq!(QUERY_ATTEMPT_REPORT_SCHEMA_V2, "query_engine.query_attempt_report.v2");
+    assert_eq!(QUERY_ATTEMPT_REPORT_SCHEMA, "query_engine.query_attempt_report");
     let dispositions = [
         (AttemptDisposition::Unplanned, "\"unplanned\""),
         (AttemptDisposition::CpuFallback, "\"cpu_fallback\""),
@@ -80,7 +80,7 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         AttemptRetryAdvice, AttemptTimestamps, QueryAttemptReport, RuntimeTerminalOutcome,
     };
     let report = QueryAttemptReport {
-        schema: QUERY_ATTEMPT_REPORT_SCHEMA_V2.to_string(),
+        schema: QUERY_ATTEMPT_REPORT_SCHEMA.to_string(),
         attempt_id: AttemptId::mint(),
         query_id: Some(AttemptQueryId::new("q-7").expect("query id")),
         trace_context: None,
@@ -156,15 +156,12 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         "observation_degraded",
         "unix_epoch_ns",
     ] {
-        assert!(json.get(field).is_some(), "report field {field} is part of the v2 envelope");
+        assert!(json.get(field).is_some(), "report field {field} is part of the envelope");
     }
-    assert_eq!(json["schema"], QUERY_ATTEMPT_REPORT_SCHEMA_V2);
+    assert_eq!(json["schema"], QUERY_ATTEMPT_REPORT_SCHEMA);
     assert_eq!(json["disposition"], "native");
     assert_eq!(json["outcome"]["kind"], "succeeded");
     assert_eq!(json["admission_wait"], serde_json::json!({ "submission_sequence": 7 }));
-    let mut v1 = json.clone();
-    v1["schema"] = serde_json::json!("query_engine.query_attempt_report.v1");
-    assert!(serde_json::from_value::<QueryAttemptReport>(v1).is_err(), "decoding rejects every other schema label");
     let decoded: QueryAttemptReport = serde_json::from_value(json).expect("deserialize report");
     assert_eq!(decoded, report);
     assert_eq!(decoded.total_ns(), Some(8));

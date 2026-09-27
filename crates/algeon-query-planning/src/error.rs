@@ -855,7 +855,7 @@ impl QueryError {
         let query_id = self.0.query_id.as_ref().map(QueryId::as_str).or_else(|| self.fact_value("query_id"));
         let trace_id = self.0.trace_id.as_ref().map(TraceId::as_str).or_else(|| self.fact_value("trace_id"));
         json!({
-            "schema": "query_engine.query_error.v1",
+            "schema": "query_engine.query_error",
             "query_id": query_id,
             "trace_id": trace_id,
             "triage": self.triage_summary().to_json(),

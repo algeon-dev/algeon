@@ -98,7 +98,6 @@ def main() -> None:
         KMEANS_PATH,
     )
     capture = {
-        "schemaVersion": 1,
         "query": "21_segment_themes",
         "queryId": EXPECTED_QUERY_ID,
         "sql": sql,

@@ -59,12 +59,11 @@ DEFAULT_BUCKET_WIDTH = 100_000_000  # AMiner ids reach ~3e9; keep bucket ids com
 
 DATASET_ID = "citation-network"
 DISPLAY_NAME = "DBLP / AMiner Citation Network V12"
-GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY = "algeon.graph.vertex_upper_bound.v1"
+GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY = "algeon.graph.vertex_upper_bound"
 _GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY_BYTES = GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY.encode("ascii")
-GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY = "algeon.graph.simple_directed_edge_topology.v1"
+GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY = "algeon.graph.simple_directed_edge_topology"
 _GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY_BYTES = GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY.encode("ascii")
-MULTI_GRAPH_SLICE_PARTITION = "source_hash_splitmix64_v1"
-MULTI_GRAPH_SLICE_SCHEMA_VERSION = 1
+MULTI_GRAPH_SLICE_PARTITION = "source_hash_splitmix64"
 _U64_MASK = (1 << 64) - 1
 
 # ---------------------------------------------------------------------------
@@ -1180,7 +1179,6 @@ def write_multi_graph_slices(
             }
         rowset_sha256 = rowset_hasher.hexdigest()
         slice_metadata = {
-            "schema_version": MULTI_GRAPH_SLICE_SCHEMA_VERSION,
             "partition": MULTI_GRAPH_SLICE_PARTITION,
             "slice_count": slice_count,
             "slice_index": index,
@@ -1188,7 +1186,6 @@ def write_multi_graph_slices(
             "edge_rowset_sha256": rowset_sha256,
         }
         manifest = {
-            "schema_version": 1,
             "generator": GENERATOR,
             "generated_at_unix": int(time.time()),
             "repo_root": str(REPO_ROOT),
@@ -1539,7 +1536,6 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
         work_dir.rmdir()
 
     manifest = {
-        "schema_version": 1,
         "generator": GENERATOR,
         "generated_at_unix": int(time.time()),
         "repo_root": str(REPO_ROOT),
@@ -1587,7 +1583,6 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
     else:
         source_hash = sha256(args.source_json, logger)
     source_payload = {
-        "schema_version": 1,
         "source": spec.source,
         "retrieved_at_unix": int(time.time()),
         "source_json": {
@@ -1602,7 +1597,6 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
     if edge_slice_count > 1:
         slice_entries = write_multi_graph_slices(spec, args, root, source_payload, logger)
         manifest["multi_graph_slices"] = {
-            "schema_version": MULTI_GRAPH_SLICE_SCHEMA_VERSION,
             "partition": MULTI_GRAPH_SLICE_PARTITION,
             "slice_count": edge_slice_count,
             "hash_seed": edge_slice_seed,

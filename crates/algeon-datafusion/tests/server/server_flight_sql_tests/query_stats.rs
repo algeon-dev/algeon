@@ -18,7 +18,7 @@ async fn get_query_stats_returns_completed_statement_observability() {
 
     server.abort();
 
-    assert!(payload.contains("# algeon_datafusion_query_stats=1"), "{payload}");
+    assert!(payload.contains("# algeon_datafusion_query_stats\n"), "{payload}");
     assert!(payload.contains(&format!("# query_id={query_id}")), "{payload}");
     assert!(payload.contains("# outcome=succeeded"), "{payload}");
     assert!(payload.contains("[physical_plan]"), "{payload}");

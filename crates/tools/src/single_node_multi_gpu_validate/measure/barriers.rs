@@ -41,7 +41,7 @@ impl StormKnobs {
 
 /// Runner-local facts sampled around a synchronous controlled quarantine.
 /// `QuarantineFallbackEvidence` turns these plus sealed reports into the
-/// versioned artifact projection after all tasks have drained.
+/// artifact projection after all tasks have drained.
 pub(super) struct QuarantineBarrier {
     pub(super) target_ordinal: usize,
     pub(super) pre_ack_witness_offset_ns: u64,

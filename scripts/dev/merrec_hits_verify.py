@@ -482,7 +482,6 @@ def main() -> int:
         captures[name] = capture
 
     report = {
-        "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "purpose": "CPU reproduction of saved unweighted HITS rows and native convergence semantics",
         "graph": graph_metadata,

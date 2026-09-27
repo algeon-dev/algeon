@@ -530,7 +530,6 @@ def main(argv: list[str] | None = None) -> int:
 
     sources = [file_digest(p, args.skip_sha256) for p in input_files]
     manifest = {
-        "schema_version": 1,
         "generator": GENERATOR,
         "generated_at_unix": int(time.time()),
         "dataset": {"source": SOURCE, "partition": args.partition},

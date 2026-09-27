@@ -839,7 +839,7 @@ mod tests {
         metrics::{BackendMetric, backend_metric_descriptors},
         observability::{
             AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptId, AttemptRetryAdvice,
-            SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            SEALED_ATTEMPT_PROJECTION_SCHEMA,
         },
         runtime::gpu::LedgerSnapshot,
     };
@@ -881,7 +881,7 @@ mod tests {
 
     fn sealed_projection(disposition: AttemptDisposition, outcome: RuntimeTerminalOutcome) -> SealedAttemptProjection {
         SealedAttemptProjection {
-            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA,
             attempt_id: AttemptId::mint(),
             disposition,
             outcome,

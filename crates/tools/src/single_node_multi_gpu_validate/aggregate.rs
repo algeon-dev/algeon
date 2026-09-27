@@ -121,7 +121,7 @@ pub(super) struct GraphClaimCalibrationSnapshot {
 
 /// Typed execution semantics sealed with one graph calibration snapshot.
 ///
-/// This is the artifact-versioned serde projection. The closed vocabulary
+/// This is the artifact serde projection. The closed vocabulary
 /// itself is owned by the adapter
 /// (`algeon_datafusion::attempt::GraphClaimCalibrationExecution`); this
 /// wrapper stays `snake_case`-serialized so the stress artifact JSON is

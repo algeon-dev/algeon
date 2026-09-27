@@ -39,8 +39,7 @@ use futures::StreamExt as _;
 use query_engine::{
     metrics::{BackendMetric, backend_metric_descriptors},
     observability::{
-        AttemptComposedScheduleProjection, AttemptDisposition, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
-        QueryAttemptReport,
+        AttemptComposedScheduleProjection, AttemptDisposition, COMPOSED_SCHEDULE_PROJECTION_SCHEMA, QueryAttemptReport,
     },
     runtime::{
         BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptOutcome, BackendHistogramSnapshot,
@@ -1223,7 +1222,7 @@ mod tests {
     fn sealed_engine_composed_projection_is_copied_without_runner_byte_derivation() {
         let attempt_id = AttemptId::mint();
         let mut hasher = StableFnv1a64::new();
-        hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1);
+        hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA);
         hasher.update_field("10");
         hasher.update_field("2");
         for (id, scope, isolated, retained, stage) in [
@@ -1242,7 +1241,7 @@ mod tests {
         hasher.update_field("130");
         let fingerprint = format!("composed-schedule-fnv1a64:{:016x}", hasher.finish());
         let mut projection: AttemptComposedScheduleProjection = serde_json::from_value(serde_json::json!({
-            "schema": COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
+            "schema": COMPOSED_SCHEDULE_PROJECTION_SCHEMA,
             "attempt_id": attempt_id.to_string(),
             "device_ordinal": 3,
             "grant_id": 7,

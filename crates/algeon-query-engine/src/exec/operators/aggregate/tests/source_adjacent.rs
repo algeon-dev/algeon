@@ -272,7 +272,6 @@ fn aggregate_strategy_options_report_source_adjacent_thresholds_without_selectin
         decision.facts.get("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups").map(String::as_str),
         Some("65")
     );
-    assert_eq!(decision.facts.get("aggregate_strategy_options_version").map(String::as_str), Some("1"));
     assert_eq!(
         decision.facts.get("aggregate_encoded_key_partial_low_cardinality_threshold_ppm").map(String::as_str),
         Some("100000")

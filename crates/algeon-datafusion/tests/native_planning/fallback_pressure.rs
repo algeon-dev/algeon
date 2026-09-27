@@ -9,9 +9,9 @@ use algeon_datafusion::{
     native_exec::AlgeonNativeExecutionConfig,
     native_report::{
         CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA, NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport,
-        NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport,
-        NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem,
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+        NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureReport, NativeFallbackPressureRow,
+        NativeFallbackPressureWorkloadItem,
     },
     planner::{
         AlgeonNativeOptimizerConfig, AlgeonNativePhysicalOptimizerRule, NativePlanningDiagnostics,
@@ -471,11 +471,11 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     let text = accepted.to_tsv();
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "schema\tquery_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
     );
     assert!(text.starts_with(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
-    assert!(text.contains(&format!("\n{NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA}\tsum_session\t")));
+    assert!(text.contains("\nsum_session\t"));
     assert!(text.contains("\tselected\tnone\tnone\t"));
     assert!(text.contains("\tfalse\tnone\t"));
     assert!(text.contains("\tAlgeonNativeExec\tnative\t1\t0\tfalse"));
