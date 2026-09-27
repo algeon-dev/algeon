@@ -36,7 +36,7 @@ use query_engine::{
     source::SourceNode,
 };
 
-use super::{config::AlgeonNativeExecutionContext, metrics::DeferredHostMetrics};
+use super::metrics::DeferredHostMetrics;
 use crate::error::{Error, ErrorCode, Result};
 
 pub(super) const NATIVE_ALGEON_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "AlgeonNativeExec[host-output]";
@@ -129,12 +129,12 @@ pub(crate) struct NativeHostOutputCursor {
     cursor: GpuHostBatchCursor,
     executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
+    /// Also holds the admitted context, which owns the ticket/handle whose
+    /// resource epoch must remain live for each deferred GPU-to-host cursor
+    /// step. A resident result alone retains CUDA allocations, but not the
+    /// query-service admission lifetime that authorizes the next executor
+    /// submission.
     metrics: DeferredHostMetrics,
-    /// The admitted context owns the ticket/handle whose resource epoch must
-    /// remain live for each deferred GPU-to-host cursor step. A resident
-    /// result alone retains CUDA allocations, but not the query-service
-    /// admission lifetime that authorizes the next executor submission.
-    _context_lease: AlgeonNativeExecutionContext,
 }
 
 impl NativeHostOutputCursor {
@@ -143,9 +143,8 @@ impl NativeHostOutputCursor {
         executor: GpuExecutorLease,
         observation: RuntimeObservationHandle,
         metrics: DeferredHostMetrics,
-        context_lease: AlgeonNativeExecutionContext,
     ) -> Self {
-        Self { cursor, executor, observation, metrics, _context_lease: context_lease }
+        Self { cursor, executor, observation, metrics }
     }
 
     fn next(
@@ -156,7 +155,7 @@ impl NativeHostOutputCursor {
         publication: NativeOutputPublication,
     ) -> BoxedNativeHostOutputStepFuture {
         Box::pin(async move {
-            let Self { cursor, executor, observation, mut metrics, _context_lease } = self;
+            let Self { cursor, executor, observation, mut metrics } = self;
             let task_executor = executor.clone();
             let task_observation = observation.clone();
             let (cursor, batch, reservation) = run_gpu_execution_task(
@@ -208,7 +207,7 @@ impl NativeHostOutputCursor {
             metrics.record_materialization(&batch);
             let batch = batch.record_output(metrics.baseline());
             Ok(NativeHostOutputStep {
-                cursor: Some(Self { cursor, executor, observation, metrics, _context_lease }),
+                cursor: Some(Self { cursor, executor, observation, metrics }),
                 batch: Some(batch),
                 reservation,
             })

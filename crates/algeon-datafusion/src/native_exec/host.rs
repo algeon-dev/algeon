@@ -333,8 +333,9 @@ impl ExecutionPlan for AlgeonNativeExec {
                         // Once native execution starts, the attempt is terminal: errors are surfaced with stable
                         // facts by `native_query_runtime_error` and are not replayed through DataFusion.
                         let outcome = execute_query_plan(&context, QueryExecutionRequest::admitted(&admitted));
-                        let (output, deferred_metrics) =
-                            metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
+                        let (output, deferred_metrics) = metrics
+                            .finalize_query_outcome_for_deferred_host(outcome, context_lease)
+                            .map_err(|error| {
                                 DataFusionError::from(native_query_runtime_error(
                                     "algeon_datafusion.native_exec.execute",
                                     "Algeon native query execution failed",
@@ -369,7 +370,6 @@ impl ExecutionPlan for AlgeonNativeExec {
                             cursor_executor,
                             cursor_observation,
                             deferred_metrics,
-                            context_lease,
                         ))
                     },
                 )

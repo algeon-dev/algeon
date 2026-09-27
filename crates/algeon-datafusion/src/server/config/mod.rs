@@ -244,17 +244,30 @@ impl ServerConfig {
             .admission_logical_capture_bytes(admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles))
     }
 
-    /// The coordinator registers at most `MAX_LIVE_QUERIES` queries. Admission
-    /// must hold fewer attempts, so registration never refuses a query that
-    /// admission would accept.
-    fn validate_admission_within_live_query_capacity(&self) -> Result<()> {
+    /// The coordinator registers at most `MAX_LIVE_QUERIES` live statements of
+    /// every kind; admission bounds must stay below that cap. Statements that
+    /// hold no admission slot (planning, ticketed, CPU-only, metadata,
+    /// finalizing) count against the same cap, so registration can still
+    /// refuse a statement while admission has room. Config loading and
+    /// `FlightSqlServerBuilder::build` both run this one check.
+    pub(crate) fn validate_admission_within_live_query_capacity(&self) -> Result<()> {
         let admission_live_attempts = admission_live_attempts(&self.queue_policy, &self.gpu_device_profiles);
         let max_live_queries = QueryCoordinatorConfig::MAX_LIVE_QUERIES;
-        if admission_live_attempts < u64::try_from(max_live_queries).unwrap_or(u64::MAX) {
+        let capacity = u64::try_from(max_live_queries).unwrap_or(u64::MAX);
+        if admission_live_attempts < capacity {
             return Ok(());
         }
+        // The active attempts the device profiles allow fill registration on
+        // their own, or the queue added to them does.
+        let active_attempts = admission_live_attempts
+            .saturating_sub(u64::try_from(self.queue_policy.max_queued_attempts()).unwrap_or(u64::MAX));
+        let field = if active_attempts >= capacity {
+            "admission.device_profiles.max_active_attempts"
+        } else {
+            ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV
+        };
         Err(ServerError::invalid_config(
-            ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
+            field,
             "admission bounds must hold fewer attempts than the server registers live queries",
         )
         .with_fact("reason", "admission_exceeds_live_query_capacity")

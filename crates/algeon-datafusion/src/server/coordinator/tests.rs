@@ -28,7 +28,8 @@ use super::{
     artifacts::{
         ArtifactEgressLimiter, FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult,
         LiveStatsWaiter, QUERY_STATS_HEADER_LINE, RUNTIME_ARTIFACT_CONTROL_SCHEMA, RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2,
-        compose_terminal_artifact, incomplete_runtime_control, install_coordinator_render_probe,
+        RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3, compose_terminal_artifact, incomplete_runtime_control,
+        install_coordinator_render_probe,
     },
     maintenance::{CoordinatorMaintenanceClock, QueryCoordinatorMaintenance},
     retention::checked_deadline,
@@ -429,7 +430,10 @@ fn coordinator_only_statement_retains_stats_without_runtime_observation() {
     let (control, jsonl) = coordinator.artifact_frames("coordinator-only").expect("runtime artifact retained");
     assert!(jsonl.is_none(), "a coordinator-only statement has no runtime observation");
     let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
+    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3);
+    assert_eq!(control["version"], 3);
     assert_eq!(control["state"], "sealed");
+    assert_eq!(control["runtime_observation"], "none", "the control states that no runtime observation exists");
     assert!(control["reason"].is_null(), "{control}");
     let stats = String::from_utf8(coordinator.query_stats("coordinator-only").unwrap().to_vec()).unwrap();
     assert!(stats.contains("# outcome=succeeded\n"), "{stats}");
@@ -1428,7 +1432,17 @@ fn a_query_beyond_the_active_capture_budget_runs_without_capture() {
         assert_eq!(record.logical_capture_bytes, 0);
     }
 
-    second.into_execution().unwrap().succeed();
+    let execution = second.into_execution().unwrap();
+    for read in ["first", "second"] {
+        let stats = coordinator
+            .query_stats_result("second-capture")
+            .unwrap_or_else(|error| panic!("{read} live stats read failed: {error:?}"))
+            .unwrap_or_else(|| panic!("{read} live stats read found no stats"));
+        let stats = String::from_utf8(stats.to_vec()).unwrap();
+        assert!(stats.contains("# outcome=running\n"), "{stats}");
+        assert!(stats.contains("# unavailable_reason=active_capture_budget\n"), "{stats}");
+    }
+    execution.succeed();
     let stats = String::from_utf8(coordinator.query_stats("second-capture").unwrap().to_vec()).unwrap();
     assert!(stats.contains("# outcome=succeeded\n"), "{stats}");
     assert!(stats.contains("# unavailable_reason=active_capture_budget\n"), "{stats}");

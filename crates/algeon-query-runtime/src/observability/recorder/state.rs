@@ -91,10 +91,13 @@ pub(super) struct RuntimeObservationRecorderState {
     // Query-wide share of the limits already taken by budget detail rows.
     pub(super) budget_detail_records: u64,
     pub(super) budget_detail_bytes: u64,
-    // Retained background cache-fill completions not yet carried by a plan.
-    // A fill finishes on its own schedule, so the next plan execution to
-    // freeze its metrics takes them.
+    // Background cache-fill completions no plan execution carries yet. A fill
+    // finishes on its own schedule, so the next plan execution to freeze its
+    // metrics takes them and offers them for retention. At most the record
+    // limit wait; later ones only count as overflow, since no more than the
+    // limit can be retained.
     pub(super) cache_fill_events: Vec<LakehouseCacheFillEventSnapshot>,
+    pub(super) cache_fill_events_overflow: u64,
 }
 
 // Bounded by the number of plan executions in the query, not by data volume;

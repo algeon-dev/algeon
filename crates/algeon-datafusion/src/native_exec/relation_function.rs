@@ -565,7 +565,7 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                             )
                             .await?;
                         let (output, deferred_metrics) = metrics
-                            .finalize_query_outcome_for_deferred_host(outcome)
+                            .finalize_query_outcome_for_deferred_host(outcome, context_lease)
                             .map_err(relation_execution_error::<S>)?;
                         let QueryOutput::GpuResident(handle) = output else {
                             return Err(Error::new(
@@ -589,13 +589,8 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
                                     error,
                                 ))
                             })?;
-                        let cursor = NativeHostOutputCursor::new(
-                            cursor,
-                            cursor_executor,
-                            cursor_observation,
-                            deferred_metrics,
-                            context_lease,
-                        );
+                        let cursor =
+                            NativeHostOutputCursor::new(cursor, cursor_executor, cursor_observation, deferred_metrics);
                         if let Some(host_occurrence) = host_occurrence {
                             // The GPU result is now complete and owned by the
                             // host cursor. DataFusion may validly stop polling

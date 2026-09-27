@@ -5,7 +5,7 @@ use std::{
     fmt, mem,
     panic::{self, AssertUnwindSafe},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -317,6 +317,41 @@ impl RuntimeObservationHandle {
             state = inner.wait_for_seal(state);
         }
         inner.sealed.store(true, Ordering::Release);
+        // Every exit after `sealed` publishes a snapshot, so a seal waiting in
+        // `wait_for_seal` never waits on one that unwound.
+        match panic::catch_unwind(AssertUnwindSafe(|| {
+            self.publish_seal(inner, state, outcome, attempt_report_provider)
+        })) {
+            Ok(deferred) => deferred,
+            Err(panic) => {
+                let mut state = inner.lock_state();
+                if state.sealed_snapshot.is_none() {
+                    let mut data = inner.take_sealed_snapshot_data(&mut state, Some(RuntimeTerminalOutcome::Panicked));
+                    data.footer.degraded = true;
+                    state.sealed_snapshot = Some(SealedRuntimeObservationSnapshot { data: Arc::new(data) });
+                }
+                let deferred = DeferredRuntimeObservationSeal {
+                    snapshot: state.sealed_snapshot.clone(),
+                    observers: mem::take(&mut state.seal_observers),
+                };
+                inner.seal_published.notify_all();
+                drop(state);
+                deferred.invoke_observers();
+                panic::resume_unwind(panic);
+            },
+        }
+    }
+
+    /// Builds and publishes the sealed snapshot of a seal that has set
+    /// `sealed`.
+    fn publish_seal<'a>(
+        &self,
+        inner: &'a RuntimeObservationSessionInner,
+        mut state: MutexGuard<'a, RuntimeObservationRecorderState>,
+        outcome: Option<RuntimeTerminalOutcome>,
+        attempt_report_provider: Option<&AttemptReportSealProvider>,
+    ) -> DeferredRuntimeObservationSeal {
+        settle_cache_fill_events(&mut state, inner.manifest.limits);
         let mut data = inner.take_sealed_snapshot_data(&mut state, outcome);
         data.plans = self.sealed_plan_metrics(&state, &inner.manifest);
         let mut provider_panic = None;
@@ -453,10 +488,12 @@ impl RuntimeObservationHandle {
     /// Offers one background lakehouse cache-fill completion for bounded
     /// retention.
     ///
-    /// With trace capture disabled the event is not kept. Otherwise it shares
-    /// the query's record and byte limits, and a declined event is counted as
-    /// a `LakehouseCacheFillDetail` loss. The next plan execution to freeze its
-    /// metrics carries the retained events.
+    /// With trace capture disabled the event is not kept. Otherwise the next
+    /// plan execution to freeze its metrics offers it under the query's record
+    /// and byte limits, and a declined event is a `LakehouseCacheFillDetail`
+    /// loss in that plan's completeness. The seal settles events no plan froze
+    /// with: an unfrozen plan execution carries them, or each is an
+    /// `Unassigned` loss.
     #[doc(hidden)]
     pub fn record_lakehouse_cache_fill(&self, event: &LakehouseCacheFillEvent) {
         let Some(inner) = self.trace_inner() else {
@@ -466,19 +503,11 @@ impl RuntimeObservationHandle {
         if inner.sealed.load(Ordering::Acquire) {
             return;
         }
-        let event = LakehouseCacheFillEventSnapshot::from(event);
-        let logical_bytes = debug_logical_bytes(&event);
-        let sequence = state.take_sequence();
-        if state
-            .admit(
-                inner.manifest.limits,
-                RuntimeObservationRecordClass::LakehouseCacheFillDetail,
-                sequence,
-                logical_bytes,
-            )
-            .is_ok()
-        {
-            state.cache_fill_events.push(event);
+        let waiting = u64::try_from(state.cache_fill_events.len()).unwrap_or(u64::MAX);
+        if waiting < inner.manifest.limits.max_retained_records {
+            state.cache_fill_events.push(LakehouseCacheFillEventSnapshot::from(event));
+        } else {
+            state.cache_fill_events_overflow = state.cache_fill_events_overflow.saturating_add(1);
         }
     }
 
@@ -527,11 +556,13 @@ impl RuntimeObservationHandle {
     pub(crate) fn freeze_plan_metrics(&self, plan_execution_id: &PlanExecutionId) -> Option<QueryMetricsCheckpoint> {
         let inner = self.inner.as_ref()?;
         let mut state = inner.lock_state();
-        if !state.metrics.get(plan_execution_id).is_some_and(PlanExecutionMetrics::is_frozen) {
-            let cache_fill_events = mem::take(&mut state.cache_fill_events);
-            let execution = state.metrics.entry(plan_execution_id.clone()).or_default();
-            execution.reduction.lakehouse_cache_fill_events.extend(cache_fill_events);
+        let mut execution = state.metrics.remove(plan_execution_id).unwrap_or_default();
+        // After the seal a plan's metrics are the sealed snapshot's value; the
+        // seal already settled every waiting cache-fill event.
+        if !execution.is_frozen() && !inner.sealed.load(Ordering::Acquire) {
+            assign_cache_fill_events(&mut state, &mut execution, inner.manifest.limits);
         }
+        state.metrics.insert(plan_execution_id.clone(), execution);
         let checkpoint = self.plan_checkpoint(&state, plan_execution_id, true);
         state.metrics.entry(plan_execution_id.clone()).or_default().frozen = Some(checkpoint.clone());
         Some(checkpoint)
@@ -679,6 +710,64 @@ impl RuntimeObservationHandle {
             peaks.retained_bytes,
         );
         state.metrics_revision = state.metrics_revision.saturating_add(1);
+    }
+}
+
+/// Offers the waiting cache-fill events for retention as `execution`'s rows. A
+/// declined or overflowed event counts against `execution`'s completeness.
+fn assign_cache_fill_events(
+    state: &mut RuntimeObservationRecorderState,
+    execution: &mut PlanExecutionMetrics,
+    limits: RuntimeObservationLimits,
+) {
+    for event in mem::take(&mut state.cache_fill_events) {
+        let logical_bytes = debug_logical_bytes(&event);
+        let sequence = state.take_sequence();
+        if state
+            .admit_detail(limits, RuntimeObservationRecordClass::LakehouseCacheFillDetail, sequence, logical_bytes)
+            .is_ok()
+        {
+            execution.reduction.lakehouse_cache_fill_events.push(event);
+        } else {
+            execution.detail_rows_dropped = execution.detail_rows_dropped.saturating_add(1);
+        }
+    }
+    let overflow = mem::take(&mut state.cache_fill_events_overflow);
+    drop_cache_fill_events(state, overflow, RuntimeObservationLossReason::RecordLimit);
+    execution.detail_rows_dropped = execution.detail_rows_dropped.saturating_add(overflow);
+}
+
+/// Settles the cache-fill events no plan froze with when the session seals:
+/// the first plan execution still unfrozen carries them, and with none left
+/// each is an `Unassigned` loss.
+fn settle_cache_fill_events(state: &mut RuntimeObservationRecorderState, limits: RuntimeObservationLimits) {
+    if state.cache_fill_events.is_empty() && state.cache_fill_events_overflow == 0 {
+        return;
+    }
+    let carrier = state.metrics.iter().find(|(_, execution)| !execution.is_frozen()).map(|(id, _)| id.clone());
+    match carrier {
+        Some(carrier) => {
+            let mut execution = state.metrics.remove(&carrier).unwrap_or_default();
+            assign_cache_fill_events(state, &mut execution, limits);
+            state.metrics.insert(carrier, execution);
+        },
+        None => {
+            let unassigned = u64::try_from(mem::take(&mut state.cache_fill_events).len()).unwrap_or(u64::MAX);
+            drop_cache_fill_events(state, unassigned, RuntimeObservationLossReason::Unassigned);
+            let overflow = mem::take(&mut state.cache_fill_events_overflow);
+            drop_cache_fill_events(state, overflow, RuntimeObservationLossReason::RecordLimit);
+        },
+    }
+}
+
+fn drop_cache_fill_events(
+    state: &mut RuntimeObservationRecorderState,
+    count: u64,
+    reason: RuntimeObservationLossReason,
+) {
+    for _ in 0..count {
+        let sequence = state.take_sequence();
+        state.record_drop(RuntimeObservationRecordClass::LakehouseCacheFillDetail, sequence, reason);
     }
 }
 

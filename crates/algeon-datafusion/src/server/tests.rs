@@ -281,6 +281,20 @@ async fn builder_rejects_session_context_without_injected_backend() {
     assert_eq!(error.fact_value("reason"), Some("server_session_without_backend"));
 }
 
+#[tokio::test]
+async fn builder_rejects_admission_bounds_the_coordinator_cannot_register() {
+    let mut queued = bounded_config(1);
+    queued.queue_policy = queued.queue_policy.clone().with_max_queued_attempts(1023);
+    let error = builder_error(FlightSqlServer::builder().config(queued)).await;
+    assert_eq!(error.fact_value("reason"), Some("admission_exceeds_live_query_capacity"));
+    assert_eq!(error.fact_value("config_field"), Some(ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV));
+
+    let active = bounded_config(1024);
+    let error = builder_error(FlightSqlServer::builder().config(active)).await;
+    assert_eq!(error.fact_value("reason"), Some("admission_exceeds_live_query_capacity"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
+}
+
 #[test]
 fn builder_rejects_injected_backend_admission_conflict() {
     let backend = runtime_backend(1);

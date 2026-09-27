@@ -27,6 +27,10 @@ pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA: &str = "algeon_datafusion.quer
 /// schema/version so v1 consumers never mistake delivery `retryable` for
 /// attempt retry advice.
 pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2: &str = "algeon_datafusion.query_runtime_artifact.control.v2";
+/// The terminal control of a statement that ran without a runtime
+/// observation, such as a metadata statement. It states that explicitly, and
+/// it is the whole artifact: no runtime JSONL frame follows.
+pub(crate) const RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3: &str = "algeon_datafusion.query_runtime_artifact.control.v3";
 pub(crate) const TOMBSTONE_STATS_MAX_BYTES: u64 = 1024;
 pub(crate) const QUERY_STATS_HEADER_LINE: &str = "# algeon_datafusion_query_stats=1\n";
 pub(crate) type QueryArtifactFrames = (Arc<[u8]>, Option<Arc<[u8]>>);
@@ -108,6 +112,9 @@ pub(crate) struct RuntimeArtifactControl<'a> {
     /// complete immutable report remains in the paired runtime JSONL frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attempt: Option<SealedAttemptProjection>,
+    /// `"none"` in v3: the statement ran without a runtime observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) runtime_observation: Option<&'static str>,
 }
 
 pub(crate) const fn is_false(value: &bool) -> bool {
@@ -130,6 +137,7 @@ pub(crate) fn runtime_control(
             reason,
             incomplete: false,
             attempt: None,
+            runtime_observation: None,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
@@ -146,22 +154,27 @@ pub(crate) fn incomplete_runtime_control(query_id: &str, reason: RetainedUnavail
             reason: Some(reason.as_str()),
             incomplete: true,
             attempt: None,
+            runtime_observation: None,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
 }
 
 /// Encodes a terminal control frame from the same immutable report paired
-/// with a retained snapshot. Live delivery frames continue to use v1; only a
-/// sealed attempt gets v2's explicit bounded attempt projection.
+/// with a retained snapshot. Live delivery frames continue to use v1; a sealed
+/// attempt gets v2's explicit bounded attempt projection, and a statement
+/// without an attempt (so without a runtime observation) gets v3.
 pub(crate) fn sealed_runtime_control(
     query_id: &str,
     report: Option<&QueryAttemptReport>,
     incomplete_reason: Option<RetainedUnavailableReason>,
 ) -> Arc<[u8]> {
     let attempt = report.map(QueryAttemptReport::sealed_projection);
-    let (schema, version) =
-        if attempt.is_some() { (RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2, 2) } else { (RUNTIME_ARTIFACT_CONTROL_SCHEMA, 1) };
+    let (schema, version, runtime_observation) = if attempt.is_some() {
+        (RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2, 2, None)
+    } else {
+        (RUNTIME_ARTIFACT_CONTROL_SCHEMA_V3, 3, Some("none"))
+    };
     Arc::from(
         serde_json::to_vec(&RuntimeArtifactControl {
             schema,
@@ -173,6 +186,7 @@ pub(crate) fn sealed_runtime_control(
             reason: incomplete_reason.map(RetainedUnavailableReason::as_str),
             incomplete: incomplete_reason.is_some(),
             attempt,
+            runtime_observation,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
@@ -185,8 +199,6 @@ pub(crate) fn unavailable_stats_payload(
     reason: RetainedUnavailableReason,
     max_bytes: usize,
 ) -> QueryStatsPayload {
-    let max_bytes = max_bytes.min(TOMBSTONE_STATS_MAX_BYTES as usize);
-    let mut bytes = Vec::with_capacity(max_bytes.min(1024));
     let mut lines = vec![
         QUERY_STATS_HEADER_LINE.to_string(),
         format!("# query_id={}\n", StableValue(query_id)),
@@ -200,13 +212,34 @@ pub(crate) fn unavailable_stats_payload(
         "# incomplete=true\n".to_string(),
         format!("# unavailable_reason={}\n", reason.as_str()),
     ]);
+    QueryStatsPayload { bytes: bounded_stats_lines(lines, max_bytes), incomplete: true }
+}
+
+/// Live stats of a query registered beyond the active capture budget. It
+/// keeps no capture to render, so its stats carry the running outcome and
+/// the reason.
+pub(crate) fn uncaptured_live_stats_payload(query_id: &str, max_bytes: usize) -> Arc<[u8]> {
+    let lines = [
+        QUERY_STATS_HEADER_LINE.to_string(),
+        format!("# query_id={}\n", StableValue(query_id)),
+        "# outcome=running\n".to_string(),
+        "# sealed=false\n".to_string(),
+        "# incomplete=true\n".to_string(),
+        format!("# unavailable_reason={}\n", RetainedUnavailableReason::ActiveCaptureBudget.as_str()),
+    ];
+    bounded_stats_lines(lines, max_bytes)
+}
+
+fn bounded_stats_lines(lines: impl IntoIterator<Item = String>, max_bytes: usize) -> Arc<[u8]> {
+    let max_bytes = max_bytes.min(TOMBSTONE_STATS_MAX_BYTES as usize);
+    let mut bytes = Vec::with_capacity(max_bytes.min(1024));
     for line in lines {
         if line.len() > max_bytes.saturating_sub(bytes.len()) {
             break;
         }
         bytes.extend_from_slice(line.as_bytes());
     }
-    QueryStatsPayload { bytes: Arc::from(bytes), incomplete: true }
+    Arc::from(bytes)
 }
 
 pub(crate) struct ComposedTerminalArtifact {
@@ -743,9 +776,14 @@ impl QueryCoordinator {
                         }
                     },
                     LiveStatsRead::Render(read) => {
+                        // Only a query registered beyond the active capture
+                        // budget is live without a capture; finalization
+                        // closes the cache before it takes one.
                         let Some(captured) = record.captured.as_ref().cloned() else {
-                            drop(read);
-                            return Ok(None);
+                            let max_bytes = usize::try_from(record.artifact_max_bytes).unwrap_or(usize::MAX);
+                            let stats = uncaptured_live_stats_payload(query_id, max_bytes);
+                            drop(state);
+                            return Ok(read.complete(stats));
                         };
                         (captured, hot, record.artifact_max_bytes, read)
                     },

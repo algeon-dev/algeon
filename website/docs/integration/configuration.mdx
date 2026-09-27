@@ -7,11 +7,11 @@ description: Configure the Flight SQL server, GPU admission, native execution, a
 
 Algeon has three configuration owners. Keep them separate:
 
-| Surface | Configure with | Owns |
-| --- | --- | --- |
-| Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, workspace overlay, and retention |
-| Embedded GPU backend | `AlgeonGpuBackend::builder()` | Device ownership, capacity, queues, and execution mode |
-| DataFusion session | `SessionConfig` | Standard DataFusion behavior (catalogs, batch size, target partitions) |
+| Surface              | Configure with                                  | Owns                                                                   |
+|----------------------|-------------------------------------------------|------------------------------------------------------------------------|
+| Flight SQL process   | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, workspace overlay, and retention      |
+| Embedded GPU backend | `AlgeonGpuBackend::builder()`                   | Device ownership, capacity, queues, and execution mode                 |
+| DataFusion session   | `SessionConfig`                                 | Standard DataFusion behavior (catalogs, batch size, target partitions) |
 
 This page covers the Flight SQL process. For an embedded Rust service, use [DataFusion Session](./datafusion-session.mdx).
 
@@ -203,19 +203,29 @@ Every live Flight SQL query reserves logical capture bytes from
 40 MiB with the defaults. A query also holds its reservation while it plans
 and finalizes, outside its admission slot. The budget never refuses a query.
 One that does not fit runs without capture: the server keeps none of its SQL
-text, and its query stats report `unavailable_reason=active_capture_budget`.
+text, and its query stats, while it runs and after it ends, report
+`unavailable_reason=active_capture_budget`.
 Admission alone decides overload.
 
 When the field is unset, the server sets it to the capture of every attempt
 admission can hold at once (the sum of each device profile's
-`max_active_attempts` and `admission.max_queued_attempts`) plus 1 GiB, so every
-query within the admission bounds keeps a full capture. The server logs the
-budget and that admission requirement at startup.
+`max_active_attempts` and `admission.max_queued_attempts`) plus 1 GiB. Queries
+reserve capture in the order they register, and statements that plan,
+finalize, or never take an admission slot hold reservations too, so a query
+within the admission bounds can still run without capture. The server logs
+the budget and that admission requirement at startup.
 
-The server registers at most 1024 live Flight SQL queries. Startup fails with
-`admission_exceeds_live_query_capacity` when the admission bounds hold 1024
-attempts or more, so registration never refuses a query that admission would
-accept.
+The server registers at most 1024 live Flight SQL statements. This is a hard
+cap on every live statement: one that is planning, ticketed but not yet read,
+executing (CPU-only and metadata statements included), or finalizing counts
+against it. Startup and `FlightSqlServerBuilder::build` fail with
+`admission_exceeds_live_query_capacity` when the admission bounds alone hold
+1024 attempts or more. Its `config_field` is
+`ALGEON_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS`, or
+`admission.device_profiles.max_active_attempts` when the device profiles fill
+the cap by themselves.
+Because statements outside admission share the cap, registration can refuse a
+statement while admission still has room.
 
 ## GPU SQL UDTFs
 

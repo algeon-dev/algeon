@@ -931,13 +931,14 @@ mod correlation_tests {
         assert_eq!(
             control,
             serde_json::json!({
-                "schema": "algeon_datafusion.query_runtime_artifact.control.v1",
-                "version": 1,
+                "schema": "algeon_datafusion.query_runtime_artifact.control.v3",
+                "version": 3,
                 "query_id": QUERY_ID,
                 "state": "unavailable",
                 "retryable": false,
                 "reason": "counter_overflow",
                 "incomplete": true,
+                "runtime_observation": "none",
             })
         );
         assert_eq!(service.coordinator.artifact_egress_usage(), (0, 0));

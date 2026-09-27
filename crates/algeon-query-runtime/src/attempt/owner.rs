@@ -151,10 +151,11 @@ impl AttemptReportPublisher {
         self.0.observation.begin_cleanup();
     }
 
-    /// Seals the attempt's observation with `outcome` and its report,
-    /// deferring observer delivery to the returned value.
-    pub(crate) fn seal(&self, outcome: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
-        self.0.observation.seal(outcome, &self.0.report_seal_provider())
+    /// Seals the attempt's observation and its report with the attempt's
+    /// terminal outcome, `fallback` only when none is recorded yet; observer
+    /// delivery is deferred to the returned value.
+    pub(crate) fn seal(&self, fallback: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
+        self.0.seal_observation(fallback)
     }
 
     /// The attempt's record-only capability.
@@ -518,6 +519,15 @@ impl AttemptCore {
         lifecycle.terminal_outcome().cloned().unwrap_or(fallback)
     }
 
+    /// Seals the attempt's observation with its canonical terminal outcome, so
+    /// the footer, the terminal boundary event, and the report built from the
+    /// lifecycle carry one value. A recovery seal's mechanical fallback never
+    /// replaces an outcome the lifecycle already holds.
+    fn seal_observation(self: &Arc<Self>, fallback: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
+        let outcome = self.canonical_terminal_outcome(fallback);
+        self.observation.seal(outcome, &self.report_seal_provider())
+    }
+
     /// The report provider for this attempt's observation seal. Every seal of
     /// the attempt's session passes it, so the sealed snapshot embeds the
     /// report that completion receivers publish.
@@ -762,7 +772,7 @@ impl AttemptOwner {
     fn commit_resolved_terminal(&self, terminal: RuntimeTerminalOutcome) -> Result<(), AttemptLifecycleError> {
         match self.0.finalizer_slot.finalize_not_admitted(terminal) {
             Ok(terminal) => {
-                let _ = self.0.core.observation.seal(terminal, &self.0.core.report_seal_provider()).deliver();
+                let _ = self.0.core.seal_observation(terminal).deliver();
                 Ok(())
             },
             // An admission claim holds the finalizer, or a not-admitted
@@ -934,7 +944,7 @@ impl AttemptAdmissionRejection {
             lifecycle.terminalize_admission_rejection(outcome.clone(), summary, self.core.monotonic_ns())?;
         }
         let outcome = self.finalizer_slot.finalize_not_admitted(outcome)?;
-        let _ = self.core.observation.seal(outcome, &self.core.report_seal_provider()).deliver();
+        let _ = self.core.seal_observation(outcome).deliver();
         Ok(())
     }
 }

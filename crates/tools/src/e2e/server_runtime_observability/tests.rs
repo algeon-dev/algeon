@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 
 use super::{
     evidence::{
-        ArtifactEvidence, CONTROL_SCHEMA, FLIGHT_MAX_ENCODED_FRAME_BYTES, GLOBAL_BYTE_PRESSURE_MAX_QUERIES,
-        GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_COUNT,
-        GLOBAL_BYTE_PRESSURE_SETUP_QUERIES, RunEvidence, ScenarioEvidence, VariableFrameEvidence, active_attempts,
-        artifact_charge, observe_encoded_frame, parse_artifact, validate_variable_frame_evidence,
+        ArtifactEvidence, CONTROL_SCHEMA, CONTROL_SCHEMA_V3, FLIGHT_MAX_ENCODED_FRAME_BYTES,
+        GLOBAL_BYTE_PRESSURE_MAX_QUERIES, GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES, GLOBAL_BYTE_PRESSURE_RETAINED_BYTES,
+        GLOBAL_BYTE_PRESSURE_RETAINED_COUNT, GLOBAL_BYTE_PRESSURE_SETUP_QUERIES, RunEvidence, ScenarioEvidence,
+        VariableFrameEvidence, active_attempts, artifact_charge, observe_encoded_frame, parse_artifact,
+        validate_variable_frame_evidence,
     },
     params::{EVIDENCE_SCHEMA, EVIDENCE_VERSION, ObservabilityLimits, RuntimeParams, ScenarioSelection},
     validation::diagnostics_are_idle,
@@ -135,6 +136,33 @@ fn control_fixture_accepts_pending_active_and_unavailable_states() {
         assert_eq!(artifact.frame_count, 1);
         assert_eq!(artifact.jsonl_records, 0);
     }
+}
+
+#[test]
+fn a_statement_without_runtime_observation_seals_in_one_v3_control_frame() {
+    let control = |runtime_observation: Option<&str>| {
+        let mut control = json!({
+            "schema": CONTROL_SCHEMA_V3,
+            "version": 3,
+            "query_id": QUERY_ID,
+            "state": "sealed",
+            "retryable": false,
+        });
+        if let Some(runtime_observation) = runtime_observation {
+            control["runtime_observation"] = json!(runtime_observation);
+        }
+        vec![serde_json::to_vec(&control).unwrap()]
+    };
+
+    let artifact = parse_artifact(QUERY_ID, None, &control(Some("none")), None, None).unwrap();
+    assert_eq!(artifact.state, "sealed");
+    assert_eq!(artifact.frame_count, 1);
+    assert_eq!(artifact.jsonl_records, 0);
+    assert!(parse_artifact(QUERY_ID, None, &control(None), None, None).is_err());
+    assert!(
+        parse_artifact(QUERY_ID, None, &control(Some("none")), Some("succeeded"), None).is_err(),
+        "a sealed terminal with a runtime observation was expected"
+    );
 }
 
 fn runtime_params_fixture() -> RuntimeParams {

@@ -22,6 +22,7 @@ use super::{
 
 pub(super) const CONTROL_SCHEMA: &str = "algeon_datafusion.query_runtime_artifact.control.v1";
 pub(super) const CONTROL_SCHEMA_V2: &str = "algeon_datafusion.query_runtime_artifact.control.v2";
+pub(super) const CONTROL_SCHEMA_V3: &str = "algeon_datafusion.query_runtime_artifact.control.v3";
 pub(super) const QUERY_ID_METADATA: &str = "x-algeon-query-id";
 pub(super) const CORRELATION_HEADER: &str = "x-algeon-correlation-id";
 pub(super) const FLIGHT_MAX_ENCODED_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -329,7 +330,7 @@ pub(super) fn artifact_charge(runtime_wire_bytes: usize, stats_bytes: usize) -> 
 fn is_known_control_schema(control: &Value) -> bool {
     matches!(
         (control.get("schema").and_then(Value::as_str), control.get("version").and_then(Value::as_u64)),
-        (Some(CONTROL_SCHEMA), Some(1)) | (Some(CONTROL_SCHEMA_V2), Some(2))
+        (Some(CONTROL_SCHEMA), Some(1)) | (Some(CONTROL_SCHEMA_V2), Some(2)) | (Some(CONTROL_SCHEMA_V3), Some(3))
     )
 }
 
@@ -395,7 +396,13 @@ pub(super) fn parse_artifact(
         .and_then(Value::as_bool)
         .ok_or_else(|| format!("runtime artifact control lacks retryable: {control}"))?;
     let reason = control.get("reason").and_then(Value::as_str).map(str::to_string);
-    let expected_frame_count = if state == "sealed" { 2 } else { 1 };
+    // A v3 control belongs to a statement without a runtime observation, so
+    // even a sealed one has no runtime JSONL frame.
+    let without_observation = control_schema == Some(CONTROL_SCHEMA_V3);
+    if without_observation && control.get("runtime_observation").and_then(Value::as_str) != Some("none") {
+        return Err(format!("v3 runtime artifact control lacks runtime_observation=none: {control}").into());
+    }
+    let expected_frame_count = if state == "sealed" && !without_observation { 2 } else { 1 };
     if frames.len() != expected_frame_count {
         return Err(format!(
             "runtime artifact {query_id} state {state} returned {} frames, expected {expected_frame_count}",
@@ -431,9 +438,10 @@ pub(super) fn parse_artifact(
             return Err(format!("sealed v2 runtime artifact control has incomplete retry advice: {control}").into());
         }
     }
-    if state != "sealed" {
+    if state != "sealed" || without_observation {
         if expected_terminal.is_some() {
-            return Err(format!("runtime artifact {query_id} is {state}, expected sealed terminal").into());
+            let observation = if without_observation { " without a runtime observation" } else { "" };
+            return Err(format!("runtime artifact {query_id} is {state}{observation}, expected sealed terminal").into());
         }
         return Ok(ArtifactEvidence {
             state: state.to_string(),

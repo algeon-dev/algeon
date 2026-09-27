@@ -313,10 +313,26 @@ impl QueryHandleLifetime {
     /// commit and before the observation seal. The barrier fires exactly once.
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn arm_release_commit_gate(&self) -> Arc<ReleaseCommitGate> {
-        let gate =
-            Arc::new(ReleaseCommitGate { entered: sync::atomic::AtomicUsize::new(0), gate: sync::Barrier::new(2) });
+        let gate = Arc::new(ReleaseCommitGate {
+            entered: sync::atomic::AtomicUsize::new(0),
+            gate: sync::Barrier::new(2),
+            drop_completion: false,
+        });
         *self.release_commit_gate.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
         gate
+    }
+
+    /// Arms this handle's release commit to drop its completion payload after
+    /// the attempt is finalized and before the observation seal, so the
+    /// payload's recovery path seals instead.
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn arm_release_commit_completion_drop(&self) {
+        let gate = ReleaseCommitGate {
+            entered: sync::atomic::AtomicUsize::new(0),
+            gate: sync::Barrier::new(1),
+            drop_completion: true,
+        };
+        *self.release_commit_gate.lock().unwrap_or_else(sync::PoisonError::into_inner) = Some(Arc::new(gate));
     }
 
     /// Arms a barrier that holds the attempt at the point where it still owns
@@ -676,6 +692,9 @@ impl AdmittedGrantRelease for QueryHandleLifetime {
 pub(in crate::runtime::query_service) struct ReleaseCommitGate {
     pub(super) entered: AtomicUsize,
     pub(super) gate: Barrier,
+    // Drops the completion payload at the barrier instead of sealing it, as
+    // a release that unwinds between finalization and the seal would.
+    pub(super) drop_completion: bool,
 }
 
 /// Barrier held while the attempt still owns its admission envelope, so a

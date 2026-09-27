@@ -169,6 +169,7 @@ impl FlightSqlServerBuilder {
         // `ServerConfig::from_env*` validates these during TOML loading, but
         // callers can also construct the public config struct directly.
         config.auth.mode.validate()?;
+        config.validate_admission_within_live_query_capacity()?;
         let active_logical_capture_budget_bytes = config.active_logical_capture_budget_bytes()?;
         ensure_single_librmm_runtime_mapping()?;
         let listen = match self.listener {

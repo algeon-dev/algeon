@@ -8,12 +8,13 @@ use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard},
 };
 
+#[cfg(any(test, feature = "test-hooks"))]
+use super::{AttemptReportProvider, RuntimeObservationFooter};
 use super::{
-    AttemptReportProvider, AttemptReportSealProvider, DeferredRuntimeObservationSeal, LiveRuntimeObservationSnapshot,
-    QueryBoundaryKind, QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig,
-    RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeObservationSealObserver,
-    RuntimeObservationSession, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
-    SealedRuntimeObservationSnapshot,
+    AttemptReportSealProvider, DeferredRuntimeObservationSeal, LiveRuntimeObservationSnapshot, QueryBoundaryKind,
+    QueryCleanupSealDelivery, RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationHandle,
+    RuntimeObservationPayload, RuntimeObservationSealObserver, RuntimeObservationSession, RuntimeQueryId,
+    RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
 };
 
 /// Cloneable shared ownership of one query observation session.
@@ -25,6 +26,10 @@ use super::{
 pub struct RuntimeObservationOwner {
     session: Arc<RuntimeObservationSession>,
     lifecycle: Arc<RuntimeObservationOwnerLifecycle>,
+    // A fixed report for tests that seal an owner with no attempt. In
+    // production an attempt passes its own report provider to each seal, the
+    // only report source.
+    #[cfg(any(test, feature = "test-hooks"))]
     attempt_report_provider: Option<AttemptReportProvider>,
 }
 
@@ -170,6 +175,7 @@ impl RuntimeObservationOwner {
         let owner = Self {
             session: Arc::new(session),
             lifecycle: Arc::new(RuntimeObservationOwnerLifecycle::default()),
+            #[cfg(any(test, feature = "test-hooks"))]
             attempt_report_provider: None,
         };
         owner.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started });
@@ -177,9 +183,23 @@ impl RuntimeObservationOwner {
     }
 
     /// Installs a construction-time fixed attempt-summary provider.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
     pub fn with_attempt_report_provider(mut self, provider: AttemptReportProvider) -> Self {
         self.attempt_report_provider = Some(provider);
         self
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn fixed_report_provider(&self) -> Option<AttemptReportSealProvider> {
+        self.attempt_report_provider.as_ref().map(|provider| {
+            let provider = Arc::clone(provider);
+            Arc::new(move |footer: &RuntimeObservationFooter, _: &_| {
+                let mut report = provider();
+                report.set_observation_completeness(footer);
+                Arc::new(report)
+            }) as AttemptReportSealProvider
+        })
     }
 
     /// Creates a disabled shared owner.
@@ -432,18 +452,9 @@ impl RuntimeObservationOwner {
     {
         let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             before_seal(outcome.as_ref());
-            let attempt_report_provider = outcome.as_ref().and_then(|_| {
-                attempt_report.or_else(|| {
-                    self.attempt_report_provider.as_ref().map(|provider| {
-                        let provider = Arc::clone(provider);
-                        Arc::new(move |footer: &RuntimeObservationFooter, _: &_| {
-                            let mut report = provider();
-                            report.set_observation_completeness(footer);
-                            Arc::new(report)
-                        }) as AttemptReportSealProvider
-                    })
-                })
-            });
+            #[cfg(any(test, feature = "test-hooks"))]
+            let attempt_report = attempt_report.or_else(|| self.fixed_report_provider());
+            let attempt_report_provider = outcome.as_ref().and(attempt_report);
             self.session.seal_deferred(outcome, attempt_report_provider.as_ref())
         }));
         match finishing {

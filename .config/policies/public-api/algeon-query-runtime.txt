@@ -622,6 +622,7 @@ pub query_runtime::observability::RuntimeObservationLossReason::ByteLimit
 pub query_runtime::observability::RuntimeObservationLossReason::Oversized
 pub query_runtime::observability::RuntimeObservationLossReason::RecordLimit
 pub query_runtime::observability::RuntimeObservationLossReason::SourceLocationKeyUnavailable
+pub query_runtime::observability::RuntimeObservationLossReason::Unassigned
 pub enum query_runtime::observability::RuntimeObservationPayload
 pub query_runtime::observability::RuntimeObservationPayload::Admission(alloc::boxed::Box<query_runtime::observability::runtime_observation::RuntimeAdmissionObservation>)
 pub query_runtime::observability::RuntimeObservationPayload::CleanupFailure(alloc::boxed::Box<query_runtime::observability::RuntimeCleanupFailureObservation>)
@@ -1155,7 +1156,6 @@ pub fn query_runtime::observability::RuntimeObservationOwner::register_seal_obse
 pub fn query_runtime::observability::RuntimeObservationOwner::seal(&self, query_runtime::observability::RuntimeTerminalOutcome) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationOwner::sealed_snapshot(&self) -> core::option::Option<query_runtime::observability::SealedRuntimeObservationSnapshot>
 pub fn query_runtime::observability::RuntimeObservationOwner::trace_id(&self) -> core::option::Option<&query_runtime::observability::RuntimeTraceId>
-pub fn query_runtime::observability::RuntimeObservationOwner::with_attempt_report_provider(self, alloc::sync::Arc<(dyn core::ops::function::Fn() -> query_runtime::observability::QueryAttemptReport + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn query_runtime::observability::RuntimeObservationOwner::with_clock(impl core::convert::Into<query_runtime::observability::RuntimeQueryId>, core::option::Option<query_runtime::observability::RuntimeTraceId>, query_runtime::observability::RuntimeObservationConfig, alloc::sync::Arc<dyn query_runtime::observability::clock::RuntimeObservationClock>) -> Self
 impl core::default::Default for query_runtime::observability::RuntimeObservationOwner
 pub fn query_runtime::observability::RuntimeObservationOwner::default() -> Self
