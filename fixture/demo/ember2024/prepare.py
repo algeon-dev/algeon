@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Prepare the EMBER2024 forest-inference fixture.
 
-Downloads the 14 pretrained LightGBM benchmark models and the raw weekly
-JSONL archives via `thrember`, vectorizes them into the `X_*.dat` / `y_*.dat`
-memmaps `thrember` uses natively, then re-exports each requested split as
-Parquet with columns `id` (row ordinal within the split), `f0..f{d-1}`
-(feature vector, d taken from the vectorized files), and `label` (EMBER's
-raw int32 label).
+Downloads the 14 pretrained LightGBM benchmark models into `models/` and the
+raw weekly JSONL archives into `raw/` via `thrember`, vectorizes them into the
+`raw/X_*.dat` / `raw/y_*.dat` memmaps `thrember` uses natively, then
+re-exports each requested split as `parquet/<split>.parquet` with columns `id`
+(row ordinal within the split), `f0..f{d-1}` (feature vector, d taken from the
+vectorized files), and `label` (EMBER's raw int32 label).
 
-Run with the venv described in fixture/ember2024/README.md:
-    ~/.venvs/forest/bin/python fixture/ember2024/prepare.py --split test
+Run with the venv described in fixture/demo/ember2024/README.md:
+    ~/.venvs/forest/bin/python fixture/demo/ember2024/prepare.py --split test
 """
 
 from __future__ import annotations
@@ -30,17 +30,17 @@ EXPECTED_MODEL_COUNT = 14
 DEFAULT_ROW_GROUP_ROWS = 100_000
 
 
-def raw_jsonl_present(root: Path) -> bool:
-    return sum(1 for _ in root.glob("*.jsonl")) >= EXPECTED_RAW_JSONL_COUNT
+def raw_jsonl_present(raw_dir: Path) -> bool:
+    return sum(1 for _ in raw_dir.glob("*.jsonl")) >= EXPECTED_RAW_JSONL_COUNT
 
 
 def models_present(models_dir: Path) -> bool:
     return models_dir.is_dir() and sum(1 for _ in models_dir.glob("*.model")) >= EXPECTED_MODEL_COUNT
 
 
-def vectorized_present(root: Path) -> bool:
+def vectorized_present(raw_dir: Path) -> bool:
     return all(
-        (root / f"{prefix}_{split}.dat").is_file() and (root / f"{prefix}_{split}.dat").stat().st_size > 0
+        (raw_dir / f"{prefix}_{split}.dat").is_file() and (raw_dir / f"{prefix}_{split}.dat").stat().st_size > 0
         for prefix in ("X", "y")
         for split in SPLITS
     )
@@ -55,9 +55,9 @@ def run_in_dir(fn, *args) -> None:
         os.chdir(cwd)
 
 
-def ensure_models(root: Path, force: bool) -> None:
+def ensure_models(root: Path) -> None:
     models_dir = root / "models"
-    if not force and models_present(models_dir):
+    if models_present(models_dir):
         print(f"models: {sum(1 for _ in models_dir.glob('*.model'))} .model files present, skipping download")
         return
     import thrember
@@ -67,33 +67,33 @@ def ensure_models(root: Path, force: bool) -> None:
     run_in_dir(thrember.download_models, str(models_dir))
 
 
-def ensure_raw_data(root: Path, force: bool) -> None:
-    if not force and raw_jsonl_present(root):
-        print(f"raw data: {sum(1 for _ in root.glob('*.jsonl'))} weekly JSONL files present, skipping download")
+def ensure_raw_data(raw_dir: Path) -> None:
+    if raw_jsonl_present(raw_dir):
+        print(f"raw data: {sum(1 for _ in raw_dir.glob('*.jsonl'))} weekly JSONL files present, skipping download")
         return
     import thrember
 
-    root.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
     print("raw data: downloading full EMBER2024 dataset (train + test + challenge, ~24.3 GB compressed)")
-    run_in_dir(thrember.download_dataset, str(root), "all", "all")
+    run_in_dir(thrember.download_dataset, str(raw_dir), "all", "all")
 
 
-def ensure_vectorized(root: Path, force: bool) -> None:
-    if not force and vectorized_present(root):
+def ensure_vectorized(raw_dir: Path) -> None:
+    if vectorized_present(raw_dir):
         print("vectorized features: X_*.dat / y_*.dat present for all splits, skipping vectorization")
         return
     import thrember
 
     print("vectorizing raw features into X_*.dat / y_*.dat (thrember.create_vectorized_features)")
-    thrember.create_vectorized_features(str(root))
+    thrember.create_vectorized_features(str(raw_dir))
 
 
-def split_shape(root: Path, split: str) -> tuple[int, int]:
+def split_shape(raw_dir: Path, split: str) -> tuple[int, int]:
     """Derive (rows, feature_dim) from file sizes rather than hardcoding d,
     so a thrember feature-version bump is caught by the byte-alignment
     assertion instead of silently misreading the memmap."""
-    x_path = root / f"X_{split}.dat"
-    y_path = root / f"y_{split}.dat"
+    x_path = raw_dir / f"X_{split}.dat"
+    y_path = raw_dir / f"y_{split}.dat"
     if not x_path.is_file() or not y_path.is_file():
         raise FileNotFoundError(f"missing vectorized files for split {split!r}: {x_path}, {y_path}")
 
@@ -110,7 +110,7 @@ def split_shape(root: Path, split: str) -> tuple[int, int]:
 
 
 def write_split_parquet(
-    root: Path,
+    raw_dir: Path,
     out_dir: Path,
     split: str,
     *,
@@ -123,11 +123,11 @@ def write_split_parquet(
         print(f"{split}: {out_path} already present, skipping (use --force to regenerate)")
         return
 
-    rows_total, ndim = split_shape(root, split)
+    rows_total, ndim = split_shape(raw_dir, split)
     rows = rows_total if row_limit is None else min(rows_total, row_limit)
 
-    x = np.memmap(root / f"X_{split}.dat", dtype=np.float32, mode="r", shape=(rows_total, ndim))
-    y = np.memmap(root / f"y_{split}.dat", dtype=np.int32, mode="r", shape=(rows_total,))
+    x = np.memmap(raw_dir / f"X_{split}.dat", dtype=np.float32, mode="r", shape=(rows_total, ndim))
+    y = np.memmap(raw_dir / f"y_{split}.dat", dtype=np.int32, mode="r", shape=(rows_total,))
 
     feature_names = [f"f{i}" for i in range(ndim)]
     schema = pa.schema(
@@ -141,7 +141,18 @@ def write_split_parquet(
 
     nonfinite_total = 0
     t0 = time.time()
-    with pq.ParquetWriter(tmp_path, schema, compression="snappy") as writer:
+    # Feature columns are model inputs, never filter predicates, so only `id`
+    # and `label` carry min/max statistics: that trims 22% off the footer every
+    # scan parses. Dictionary encoding stays on for features (many histogram
+    # and count features repeat values; disabling it grew files by 23%) and off
+    # for the unique `id`.
+    with pq.ParquetWriter(
+        tmp_path,
+        schema,
+        compression="snappy",
+        write_statistics=["id", "label"],
+        use_dictionary=feature_names + ["label"],
+    ) as writer:
         for start in range(0, rows, row_group_rows):
             end = min(start + row_group_rows, rows)
             x_block = np.asarray(x[start:end])
@@ -183,7 +194,11 @@ def main() -> None:
         help="Split to export as Parquet; repeat for multiple splits",
     )
     parser.add_argument("--rows", type=int, help="Cap the number of rows written per split (first N rows)")
-    parser.add_argument("--force", action="store_true", help="Redownload / revectorize even if outputs exist")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rewrite existing Parquet splits; downloads and vectorization run only when their outputs are missing",
+    )
     parser.add_argument(
         "--row-group-rows",
         type=int,
@@ -194,7 +209,7 @@ def main() -> None:
         "--root",
         type=Path,
         default=Path(__file__).resolve().parent,
-        help="Fixture root containing raw JSONL, models/, and X_*.dat / y_*.dat (default: this directory)",
+        help="Dataset root holding raw/ (JSONL, X_*.dat, y_*.dat), models/, and parquet/ (default: this directory)",
     )
     args = parser.parse_args()
 
@@ -206,15 +221,16 @@ def main() -> None:
         parser.error("--row-group-rows must be positive")
 
     root: Path = args.root
+    raw_dir = root / "raw"
     out_dir = root / "parquet"
 
-    ensure_models(root, args.force)
-    ensure_raw_data(root, args.force)
-    ensure_vectorized(root, args.force)
+    ensure_models(root)
+    ensure_raw_data(raw_dir)
+    ensure_vectorized(raw_dir)
 
     for split in args.split:
         write_split_parquet(
-            root,
+            raw_dir,
             out_dir,
             split,
             row_limit=args.rows,

@@ -23,7 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::metadata::WorkloadDatasetMetadata;
 
-/// Dataset identifier written by `fixture/graph/dblp_ingest.py`.
+/// Dataset identifier written by `fixture/demo/citation_network/prepare.py`.
 pub const DBLP_DATASET_ID: &str = "citation-network";
 /// Generator manifest/source format accepted by this discovery contract.
 pub const DBLP_FIXTURE_SCHEMA_VERSION: u64 = 1;
@@ -295,9 +295,10 @@ fn validate_manifest(manifest: &Value) -> WorkloadResult<String> {
         )));
     }
     let generator = required_string(manifest, &["generator"], "manifest generator")?;
-    if !generator.ends_with("dblp_ingest.py") {
+    // Fixtures prepared before the converter was renamed record `dblp_ingest.py`.
+    if !(generator.ends_with("citation_network/prepare.py") || generator.ends_with("dblp_ingest.py")) {
         return Err(WorkloadError::InvalidDataset(
-            "manifest generator must identify fixture/graph/dblp_ingest.py".to_string(),
+            "manifest generator must identify fixture/demo/citation_network/prepare.py".to_string(),
         ));
     }
     validate_dataset_id(manifest, "manifest")?;

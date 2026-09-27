@@ -149,16 +149,14 @@ server workspace overlay to expose these unqualified names:
 - `citation_edges_by_dst`
 
 The source `dblp.v12.json` is about 12.5 GB. The local developer fixture path
-is `fixture/graph/dblp.v12.json`; substitute your own path if you keep the dataset
-outside the repo. Keep `fixture/graph/demo` on fast local storage, for example
+is `fixture/demo/citation_network/raw/dblp.v12.json`; pass `--source-json` if
+you keep the dataset outside the repo. Keep
+`fixture/demo/citation_network/v1/parquet` on fast local storage, for example
 with a symlink to NVMe, and allow roughly 30 GB of transient space for ingest
 plus Parquet output. The ingest script requires Python with `pyarrow`.
 
 ```bash
-python3 fixture/graph/dblp_ingest.py \
-  --source-json fixture/graph/dblp.v12.json \
-  --out-root fixture/graph/demo \
-  --overwrite
+python3 fixture/demo/citation_network/prepare.py --overwrite
 ```
 
 Start the local REST/RustFS stack and register the generated Parquet files with

@@ -11,12 +11,16 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +29,8 @@ GEN_TPCH = REPO_ROOT / "fixture" / "tpc-h" / "generate.py"
 GEN_TPCDS = REPO_ROOT / "fixture" / "tpc-ds" / "generate.py"
 SPARK_WRITE_ICEBERG = REPO_ROOT / "fixture" / "iceberg-local" / "spark_write_iceberg.py"
 TPC_PARQUET_LAYOUT = REPO_ROOT / "fixture" / "tpc" / "parquet_layout.py"
-DBLP_INGEST = REPO_ROOT / "fixture" / "graph" / "dblp_ingest.py"
+CITATION_NETWORK_PREPARE = REPO_ROOT / "fixture" / "demo" / "citation_network" / "prepare.py"
+AMAZON_REVIEWS_PREPARE = REPO_ROOT / "fixture" / "demo" / "amazon_reviews_2023" / "prepare.py"
 
 
 def run_cmd(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -58,6 +63,58 @@ def fake_tpcgen_root(root: Path, backend: str) -> Path:
     bin_dir.mkdir(parents=True)
     (bin_dir / "tpcgen-cli").symlink_to(backend)
     return tpcgen_root
+
+
+def amazon_review(parent_asin: str, user_id: str, timestamp: int, rating: float, images: int = 0) -> dict:
+    return {
+        "rating": rating,
+        "title": "t",
+        "text": "body",
+        "images": [{"small_image_url": "u", "attachment_type": "IMAGE"}] * images,
+        "asin": parent_asin,
+        "parent_asin": parent_asin,
+        "user_id": user_id,
+        "timestamp": timestamp,
+        "helpful_vote": 0,
+        "verified_purchase": True,
+    }
+
+
+def write_amazon_reviews_source(root: Path) -> tuple[Path, Path]:
+    meta = root / "meta.jsonl"
+    products = [
+        {"parent_asin": "P2", "title": "b", "price": "from 1.00", "categories": [], "details": {}},
+        {"parent_asin": "P1", "title": "a", "price": 9.5, "categories": ["Electronics", "Audio"],
+         "details": {"Brand": "X", "Date First Available": "August 2, 2014"}, "author": {"name": "n"}},
+        {"parent_asin": "P3", "title": "c", "price": None, "categories": [], "details": {}},
+    ]
+    meta.write_text("".join(json.dumps(product) + "\n" for product in products), encoding="utf-8")
+    reviews = root / "reviews.jsonl"
+    rows = [
+        amazon_review("P2", "U2", 1_600_000_000_000, 5.0, images=2),
+        amazon_review("P2", "U1", 1_700_000_000_000, 1.0),
+        amazon_review("P3", "U1", 1_500_000_000_000, 3.0),
+    ]
+    reviews.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    return meta, reviews
+
+
+def amazon_reviews_prepare_command(root: Path, meta: Path, reviews: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(AMAZON_REVIEWS_PREPARE),
+        "--meta-jsonl",
+        str(meta),
+        "--reviews-jsonl",
+        str(reviews),
+        "--out-dir",
+        str(root / "out"),
+        "--review-row-group-rows",
+        "2",
+        "--product-row-group-rows",
+        "2",
+        "--skip-sha256",
+    ]
 
 
 class FakeRow:
@@ -150,7 +207,7 @@ class FakeSpark:
 
 class FixtureGeneratorCompatibilityTests(unittest.TestCase):
     def test_dblp_edge_footer_carries_simple_topology_and_only_full_fixture_carries_vertex_bound(self) -> None:
-        dblp = load_script_module("dblp_ingest_footer_contract_under_test", DBLP_INGEST)
+        dblp = load_script_module("citation_network_footer_contract_under_test", CITATION_NETWORK_PREPARE)
 
         with tempfile.TemporaryDirectory(prefix="algeon_dblp_footer_contract.") as tmp:
             root = Path(tmp)
@@ -215,14 +272,54 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                     {topology_key: expected_topology},
                 )
 
+    def test_dblp_vertex_bound_requires_every_citation_target_in_source(self) -> None:
+        dblp = load_script_module("citation_network_vertex_bound_under_test", CITATION_NETWORK_PREPARE)
+
+        with tempfile.TemporaryDirectory(prefix="algeon_dblp_vertex_bound.") as tmp:
+            root = Path(tmp)
+            source = root / "dblp.json"
+            # Paper 101 cites 303, which is not a paper in the source.
+            source.write_text(
+                "[\n"
+                '{"id": 101, "references": [202, 303]},\n'
+                '{"id": 202, "references": [101]}\n'
+                "]\n",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                source_json=source,
+                out_root=root / "output",
+                row_group_size=2,
+                profile_row_group_size=2,
+                bucket_width=10,
+                max_papers=0,
+                overwrite=False,
+                sort_buffer_rows=2,
+                merge_fan_in=2,
+                sort_temp_dir=None,
+                keep_work=False,
+                skip_sha256=True,
+                progress_interval=0.0,
+                quiet=True,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "references paper 303"):
+                dblp.convert(dblp.DatasetSpec(expected_papers=2, expected_edges=3), args)
+
+            # A sample emits no vertex bound, so the dangling target is kept.
+            args.max_papers = 1
+            args.overwrite = True
+            sample = dblp.convert(dblp.DatasetSpec(expected_papers=2, expected_edges=3), args)
+            self.assertEqual(sample["counts"]["edges"], 2)
+
     def test_dblp_multi_graph_slices_are_disjoint_discoverable_and_rowset_distinct(self) -> None:
-        dblp = load_script_module("dblp_ingest_multigraph_contract_under_test", DBLP_INGEST)
+        dblp = load_script_module("citation_network_multigraph_contract_under_test", CITATION_NETWORK_PREPARE)
 
         with tempfile.TemporaryDirectory(prefix="algeon_dblp_multigraph_contract.") as tmp:
             root = Path(tmp)
             source = root / "dblp.json"
             papers = [
-                {"id": paper_id, "references": [100_000 + paper_id], "title": f"paper-{paper_id}"}
+                {"id": paper_id, "references": [paper_id % 128 + 1], "title": f"paper-{paper_id}"}
                 for paper_id in range(1, 129)
             ]
             source.write_text("[\n" + ",\n".join(json.dumps(paper) for paper in papers) + "\n]\n")
@@ -298,6 +395,55 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
                 [entry["edge_rowset_sha256"] for entry in repeated["multi_graph_slices"]["slices"]],
                 [entry["edge_rowset_sha256"] for entry in slice_index["slices"]],
             )
+
+    @unittest.skipUnless(shutil.which("duckdb"), "duckdb CLI is required")
+    def test_amazon_reviews_prepare_writes_gpu_scannable_keyed_tables(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="algeon_amazon_reviews.") as tmp:
+            root = Path(tmp)
+            meta, reviews = write_amazon_reviews_source(root)
+            result = run_cmd(amazon_reviews_prepare_command(root, meta, reviews))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            products = pq.read_table(root / "out" / "parquet" / "products.parquet")
+            self.assertEqual(products.column("parent_asin").to_pylist(), ["P1", "P2", "P3"])
+            self.assertEqual(products.column("product_id").to_pylist(), [0, 1, 2])
+            self.assertEqual(products.column("price").to_pylist(), [9.5, None, None])
+            self.assertEqual(products.column("category_path").to_pylist()[0], "Electronics > Audio")
+
+            review_file = pq.ParquetFile(root / "out" / "parquet" / "reviews.parquet")
+            review_table = review_file.read()
+            # review_id is the source line; rows are ordered by review_time.
+            self.assertEqual(review_table.column("review_id").to_pylist(), [2, 0, 1])
+            self.assertEqual(review_table.column("product_id").to_pylist(), [2, 1, 1])
+            self.assertEqual(review_table.column("user_key").to_pylist(), [0, 1, 0])
+            self.assertEqual(review_table.column("rating").to_pylist(), [3, 5, 1])
+            self.assertEqual(review_table.column("image_count").to_pylist(), [0, 2, 0])
+
+            # Timezone-aware timestamps and nested columns cannot be filtered,
+            # grouped, or joined by the native GPU engine.
+            for table in (products, review_table):
+                for field in table.schema:
+                    self.assertFalse(pa.types.is_nested(field.type), field)
+                    self.assertFalse(pa.types.is_dictionary(field.type), field)
+            self.assertEqual(review_table.schema.field("review_time").type, pa.timestamp("ms"))
+            metadata = review_file.metadata
+            for index in range(metadata.num_row_groups):
+                for column in range(metadata.num_columns):
+                    self.assertEqual(metadata.row_group(index).column(column).compression, "SNAPPY")
+            self.assertEqual(metadata.row_group(0).sorting_columns, ())
+
+    @unittest.skipUnless(shutil.which("duckdb"), "duckdb CLI is required")
+    def test_amazon_reviews_prepare_rejects_reviews_without_metadata(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="algeon_amazon_reviews_orphan.") as tmp:
+            root = Path(tmp)
+            meta, reviews = write_amazon_reviews_source(root)
+            with reviews.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(amazon_review("P9", "U1", 1_600_000_000_000, 4.0)) + "\n")
+            result = run_cmd(amazon_reviews_prepare_command(root, meta, reviews))
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing from metadata", result.stderr)
+            self.assertFalse((root / "out" / "parquet" / "reviews.parquet").exists())
 
     def test_generators_default_to_repo_sf1_roots(self) -> None:
         layout = load_script_module("tpc_parquet_layout_under_test", TPC_PARQUET_LAYOUT)
@@ -543,7 +689,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("missing citation network parquet", result.stderr)
         self.assertIn("dblp.v12.json", result.stderr)
-        self.assertIn("dblp_ingest.py", result.stderr)
+        self.assertIn("citation_network/prepare.py", result.stderr)
 
     def test_citation_network_loader_rejects_partial_parquet_before_staging(self) -> None:
         with tempfile.TemporaryDirectory(prefix="algeon_fixture_citation_partial.") as tmp:
@@ -573,7 +719,7 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("missing parquet inputs for citation_network", result.stderr)
         self.assertIn("papers: expected", result.stderr)
-        self.assertIn("dblp_ingest.py", result.stderr)
+        self.assertIn("citation_network/prepare.py", result.stderr)
 
     def test_spark_iceberg_writer_parses_add_files_s3_sources_without_pyspark(self) -> None:
         writer = load_script_module("spark_write_iceberg_under_test", SPARK_WRITE_ICEBERG)

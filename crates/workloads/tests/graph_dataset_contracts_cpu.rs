@@ -94,6 +94,28 @@ fn generic_dblp_discovery_rejects_stale_parquet_metadata_and_missing_source_fing
 }
 
 #[test]
+fn dblp_discovery_accepts_the_pre_rename_generator_and_rejects_other_converters() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("citation_network").join("v1");
+    let manifest = root.join("manifest.json");
+    for (generator, accepted) in [
+        ("fixture/graph/dblp_ingest.py", true),
+        ("fixture/demo/citation_network/dblp_ingest.py", true),
+        ("fixture/demo/amazon_reviews_2023/prepare.py", false),
+    ] {
+        write_dblp_fixture(&root, None);
+        let mut document: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        document["generator"] = json!(generator);
+        fs::write(&manifest, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let result = describe_dblp_dataset(&root, "sample", "prepared");
+        assert_eq!(result.is_ok(), accepted, "{generator}: {result:?}");
+        if let Err(error) = result {
+            assert!(error.to_string().contains("manifest generator"), "{error}");
+        }
+    }
+}
+
+#[test]
 fn generic_dblp_discovery_preserves_multi_graph_slice_identity_and_requires_matching_source_metadata() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("citation_network").join("v1");
@@ -229,7 +251,7 @@ fn write_dblp_fixture_with_edge_topology(
     };
     let manifest = json!({
         "schema_version": 1,
-        "generator": "fixture/graph/dblp_ingest.py",
+        "generator": "fixture/demo/citation_network/prepare.py",
         "dataset": {"dataset_id": DBLP_DATASET_ID, "source": "test source"},
         "max_papers": 3,
         "counts": {"papers": 3, "edges": 2, "author_rows": 4, "fos_rows": 5},

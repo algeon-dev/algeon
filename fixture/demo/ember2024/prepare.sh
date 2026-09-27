@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare the EMBER2024 forest-inference fixture (models, raw data, vectorization, Parquet export).
 #
-# Usage: fixture/ember2024/prepare.sh [prepare.py options]
+# Usage: fixture/demo/ember2024/prepare.sh [prepare.py options]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
