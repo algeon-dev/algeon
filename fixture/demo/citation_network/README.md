@@ -1,7 +1,7 @@
 # Citation Network (DBLP / AMiner V12)
 
 The cuGraph examples and the embedded-backend example query this dataset.
-`website/docs/cugraph/demo-dataset.mdx` documents the tables from the SQL
+`website/docs/guides/datasets/citation-network.mdx` documents the tables from the SQL
 side; this file covers acquisition and conversion.
 
 ## Source

@@ -112,7 +112,7 @@ fixture/fixture.sh merrec prepare --force                     # demo/merrec/parq
 ```
 
 For the Citation Network, follow the
-[demo walkthrough](../website/docs/cugraph/demo-dataset.mdx) to start a local
+[demo walkthrough](../website/docs/guides/datasets/citation-network.mdx) to start a local
 server, register the generated Parquet files, and run the first graph query.
 
 ## Graph fixtures

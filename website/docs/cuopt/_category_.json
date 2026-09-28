@@ -1,9 +1,0 @@
-{
-  "label": "Optimization · cuOpt (planned)",
-  "position": 5.7,
-  "collapsed": true,
-  "link": {
-    "type": "doc",
-    "id": "cuopt/overview"
-  }
-}

@@ -1,0 +1,288 @@
+{
+  "conditions": {
+    "candidate_generation": {
+      "step_1": "Personalized PageRank on the undirected sample-to-symbol graph using the seed as personalization.",
+      "step_2": "Keep top 25 other sample vertices with at least 5 retained imports.",
+      "step_3": "Compute undirected Jaccard for each candidate against the seed.",
+      "step_4": "Join shared sample-symbol edges, count shared imports, select MIN symbol for the example_shared_import field, then return the top 15 by similarity and candidate ID."
+    },
+    "challenge_cohort": {
+      "all_labels": 1,
+      "positive_only": true,
+      "win32_rows": 3225
+    },
+    "not_a_campaign_or_family_attribution": true,
+    "not_a_classifier": true,
+    "output_observation": {
+      "all_result_family_values_blank": true,
+      "interpretation": "Common runtime imports can explain overlap; a high symbol-set similarity needs analyst inspection and does not establish family membership or campaign identity.",
+      "jaccard_formula": "54 / (58 + 130 - 54)",
+      "rows": 15,
+      "seed_retained_import_count": 58,
+      "top_four_candidate_retained_import_count": 130,
+      "top_four_jaccard": 0.4029850661754608,
+      "top_four_shared_imports": 54,
+      "top_rows_example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521"
+    },
+    "seed": {
+      "eligibility": "retained import count in [10,100] and undirected kNN degree >= 5",
+      "eligible_candidate_count": 424,
+      "family": "",
+      "id": 20005740,
+      "label": 1,
+      "retained_import_count": 58,
+      "selection": "eligible Win32 challenge sample with lexicographically smallest SHA-256",
+      "selection_uses_label_or_family": false,
+      "sha256": "004ed0c4c3beadf297651f8f7dbfae41c8103e248f33fab9194213809e9cb7be",
+      "undirected_knn_degree": 7
+    },
+    "task": "Create a static-analysis comparison queue for human review using import-symbol structure."
+  },
+  "dataset": "EMBER2024",
+  "edge_provenance": {
+    "counts": {
+      "all_sample_vertices_in_counts_table": 3225,
+      "distinct_symbols_before_filter": 19178,
+      "retained_edges": 80673,
+      "retained_symbols": 4988,
+      "sample_vertices_without_retained_edges": 2299,
+      "samples_with_retained_edges": 926,
+      "win32_samples": 3225
+    },
+    "direction": "sample Int32 ID to symbol Int32 ID",
+    "edge_parquet": {
+      "path": "target/ember2024-research/input_48_challenge_import_edges.parquet",
+      "rows": 80673,
+      "size_bytes": 124152
+    },
+    "edge_table": "ember_48_challenge_import_edges",
+    "graph_preparation_profile": "docs/research/ember2024/results/graph_preparation.json",
+    "labels_or_families_used_for_edge_construction_or_seed_selection": false,
+    "per_sample_symbol_deduplication": true,
+    "seed_provenance": "docs/research/ember2024/results/graph_seed_selection.json",
+    "source_tables": [
+      "input_imports_challenge.parquet (selected sample ID and deduplicated import symbol)",
+      "input_metadata_challenge.parquet (ID and file_type filter only)"
+    ],
+    "support_rule": "Retain symbols observed in 3 through 100 distinct Win32 challenge samples, inclusive.",
+    "symbol_mapping": "Lexically sorted retained symbol strings map to Int32 IDs starting at 100000000."
+  },
+  "name": "ember2024_import_review_queue",
+  "registered_input_parquets": {
+    "input_48_challenge_import_edges.parquet": {
+      "path": "target/ember2024-research/input_48_challenge_import_edges.parquet",
+      "rows": 80673,
+      "size_bytes": 124152
+    },
+    "input_48_challenge_import_exclusions.parquet": {
+      "path": "target/ember2024-research/input_48_challenge_import_exclusions.parquet",
+      "rows": 14190,
+      "size_bytes": 163547
+    },
+    "input_48_challenge_import_sample_counts.parquet": {
+      "path": "target/ember2024-research/input_48_challenge_import_sample_counts.parquet",
+      "rows": 3225,
+      "size_bytes": 18260
+    },
+    "input_48_challenge_import_symbol_counts.parquet": {
+      "path": "target/ember2024-research/input_48_challenge_import_symbol_counts.parquet",
+      "rows": 19178,
+      "size_bytes": 212751
+    },
+    "input_48_challenge_import_symbols.parquet": {
+      "path": "target/ember2024-research/input_48_challenge_import_symbols.parquet",
+      "rows": 4988,
+      "size_bytes": 72688
+    },
+    "input_49_challenge_graph_seed.parquet": {
+      "path": "target/ember2024-research/input_49_challenge_graph_seed.parquet",
+      "rows": 1,
+      "size_bytes": 1564
+    },
+    "input_49_challenge_knn_affinity.parquet": {
+      "path": "target/ember2024-research/input_49_challenge_knn_affinity.parquet",
+      "rows": 12479,
+      "size_bytes": 78423
+    },
+    "input_49_challenge_knn_directed.parquet": {
+      "path": "target/ember2024-research/input_49_challenge_knn_directed.parquet",
+      "rows": 16125,
+      "size_bytes": 102106
+    },
+    "input_49_challenge_knn_distance.parquet": {
+      "path": "target/ember2024-research/input_49_challenge_knn_distance.parquet",
+      "rows": 12479,
+      "size_bytes": 83449
+    }
+  },
+  "result": {
+    "csv_export_status": "ok",
+    "data": [
+      {
+        "candidate_id": 20005223,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 130,
+        "sha256": "e5ae07f0231f38b198e6bdcfdd7d7e34a46e827fe0d96559142fad570f33819b",
+        "shared_rare_imports": 54,
+        "similarity": 0.4029850661754608
+      },
+      {
+        "candidate_id": 20005770,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 130,
+        "sha256": "27f325be33ede05815db2b0d031d38db0525a9ea0f455c18895de10fa6ae0fc9",
+        "shared_rare_imports": 54,
+        "similarity": 0.4029850661754608
+      },
+      {
+        "candidate_id": 20005854,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 130,
+        "sha256": "120a34116e4278e765e2dc0eda832da42ce28b408d5264b71d9dff936608f86c",
+        "shared_rare_imports": 54,
+        "similarity": 0.4029850661754608
+      },
+      {
+        "candidate_id": 20006065,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 130,
+        "sha256": "47fa9dfd3521e55370ec808809c2e53fc50a7482f040f0d1124ccc164c7f0add",
+        "shared_rare_imports": 54,
+        "similarity": 0.4029850661754608
+      },
+      {
+        "candidate_id": 20005238,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "1343afad7b0b92616a8024c462b1b38269fc4e946894cd44efe8de56074882a0",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005457,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "f2003f08f702c94094c6377e2a44389b2ec85c9504cf237c1d369e2beef511a0",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005509,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "488465741e320d7c6ac22fc60e83ec1453398801f67f965e018d79e48ed62219",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005606,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "382a2a9097f2fa1b7c23a5fef8882b277da9d9f5a546fe7c3e1721d12c158def",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005701,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "5e1a123a2b394d9f9160e7c3a99aa90c47d8f1ee35710a98dddf6649ee5a360c",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005765,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "1d5752004f69983488297f21b78e7cb86165ef93543a2b361d3da646945fad15",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005863,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "22a35833fd88d4622b3b626932e20debc984e6311eb54bb25d93e9e6f7bfb91b",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005946,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal521",
+        "family": "",
+        "retained_import_count": 108,
+        "sha256": "0c4660fff96037bf0bff27c9f41a04dca126f3a297bfd60d9039c48d38adf458",
+        "shared_rare_imports": 47,
+        "similarity": 0.3949579894542694
+      },
+      {
+        "candidate_id": 20005163,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal572",
+        "family": "",
+        "retained_import_count": 137,
+        "sha256": "112217f96b44f0827e15b8c89bef20187e102841323ab4ba2a03853be10edfd6",
+        "shared_rare_imports": 48,
+        "similarity": 0.3265306055545807
+      },
+      {
+        "candidate_id": 20005412,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal572",
+        "family": "",
+        "retained_import_count": 137,
+        "sha256": "547d7da5c9b05a164595891912b893ebbad341081e8abf7cfd52235a0e8d3123",
+        "shared_rare_imports": 48,
+        "similarity": 0.3265306055545807
+      },
+      {
+        "candidate_id": 20005478,
+        "example_shared_import": "msvbvm60.dll!MSVBVM60.DLL:ordinal572",
+        "family": "",
+        "retained_import_count": 137,
+        "sha256": "09ad1819f6cef5c46dea599f5e39da3439a359b6906e02a3ed5e26049246ee73",
+        "shared_rare_imports": 48,
+        "similarity": 0.3265306055545807
+      }
+    ],
+    "elapsed_s": 0.23244416300440207,
+    "name": "87_import_review_queue",
+    "rows": 15,
+    "schema": "candidate_id: int32 not null\nsha256: string_view not null\nfamily: string_view not null\nretained_import_count: int32 not null\nsimilarity: double not null\nshared_rare_imports: int64 not null\nexample_shared_import: string_view",
+    "sql": "WITH candidates AS (\n  SELECT p.vertex\n  FROM cugraph_personalized_pagerank(\n    edges => (\n      SELECT src_id AS src, dst_id AS dst\n      FROM ember_48_challenge_import_edges\n    ),\n    personalization => (\n      SELECT id AS vertex, CAST(1.0 AS DOUBLE) AS value\n      FROM ember_49_challenge_graph_seed\n    ),\n    directed => false\n  ) p\n  JOIN ember_48_challenge_import_sample_counts c ON c.id = p.vertex\n  CROSS JOIN ember_49_challenge_graph_seed seed\n  WHERE p.vertex <> seed.id AND c.retained_import_count >= 5\n  ORDER BY p.value DESC, p.vertex\n  LIMIT 25\n), similarities AS (\n  SELECT * FROM cugraph_jaccard(\n    edges => (\n      SELECT src_id AS src, dst_id AS dst\n      FROM ember_48_challenge_import_edges\n    ),\n    vertex_pairs => (\n      SELECT seed.id AS first, c.vertex AS second\n      FROM candidates c CROSS JOIN ember_49_challenge_graph_seed seed\n    ),\n    directed => false\n  )\n)\nSELECT j.second AS candidate_id, m.sha256, m.family,\n       counts.retained_import_count, j.similarity,\n       COUNT(*) AS shared_rare_imports,\n       MIN(symbols.symbol) AS example_shared_import\nFROM similarities j\nJOIN ember_48_challenge_import_edges seed_edges ON seed_edges.src_id = j.first\nJOIN ember_48_challenge_import_edges candidate_edges\n  ON candidate_edges.src_id = j.second AND candidate_edges.dst_id = seed_edges.dst_id\nJOIN ember_48_challenge_import_symbols symbols ON symbols.symbol_id = seed_edges.dst_id\nJOIN ember_metadata_challenge m ON m.id = j.second\nJOIN ember_48_challenge_import_sample_counts counts ON counts.id = j.second\nGROUP BY j.second, m.sha256, m.family, counts.retained_import_count, j.similarity\nORDER BY j.similarity DESC, j.second\nLIMIT 15;\n",
+    "status": "ok"
+  },
+  "source_query_id": "7e26a7d3-b2b1-45b3-83df-837ea347b55e",
+  "source_sql": "docs/research/ember2024/sql/87_import_review_queue.sql",
+  "validation": {
+    "cpu_checker_status": "passed",
+    "publication_status": "cpu-validated",
+    "query_capture_status": "ok",
+    "cpu_checker_report": "docs/research/ember2024/results/import_review_check.json",
+    "cpu_checker": {
+      "query": "87_import_review_queue",
+      "rows": 15,
+      "reference_seed": 20005740,
+      "seed_imports": 58,
+      "candidate_pool": 25,
+      "exact_candidate_order_matches_gpu_ppr_then_cpu_jaccard": true,
+      "all_intersection_counts_and_min_symbols_match": true,
+      "all_metadata_matches": true,
+      "ppr_max_abs_error": 7.422997822838229e-08,
+      "ppr_l1_error": 1.0934087607900129e-05,
+      "ppr_sum": 0.9999999958564537,
+      "ppr_comparison_atol": 0.0001,
+      "networkx_version": "3.7",
+      "family_labels_blank_for_all_results": true
+    }
+  }
+}

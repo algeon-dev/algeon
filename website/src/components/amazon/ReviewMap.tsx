@@ -84,7 +84,7 @@ export default function ReviewMap({data}: {data: ReviewMapData}): React.ReactEle
             stroke={active?.id === point.id ? 'var(--ifm-font-color-base)' : 'none'}
             onMouseEnter={() => { if (enabled) setHoverId(point.id); }}
             onClick={() => { if (enabled) setSelectedId(point.id); }}>
-            <title>{point.product}, {point.year}, rating {point.rating}/5</title>
+            <title>{`${point.product}, ${point.year}, rating ${point.rating}/5`}</title>
           </circle>;
         })}
       </svg>

@@ -1,4 +1,10 @@
-This example uses the [Amazon Reviews demo dataset](../demo-dataset.mdx).
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import EmberHistoricalSearch from './ember2024_historical_search.mdx';
+
+<Tabs>
+  <TabItem value="amazon-reviews" label="Amazon Reviews">
+This example uses the [Amazon Reviews demo dataset](../../guides/datasets/amazon-reviews.mdx).
 
 ### Which travel headphones meet our price and review-history criteria?
 
@@ -63,7 +69,7 @@ The office headset in second place meets the SQL conditions, but its title
 describes on-ear office use. A catalog reviewer can reject it on that basis
 while keeping the price and review-history evidence attached to the other
 candidates. The complete statement took a median 1.54 seconds over three
-runs; [capture conditions](../demo-dataset.mdx#captured-run) include index
+runs; [capture conditions](../../guides/datasets/amazon-reviews.mdx#captured-run) include index
 construction and Flight result transfer.
 
 The shortlist supports catalog review. A high similarity score does not
@@ -114,3 +120,8 @@ Float32 `l2_expanded` can round near-identical vectors to zero distance.
 In the separate 100,000-neighbor verification, three reported zeros had
 positive Float64 distances, at most 0.0002202. A zero distance alone does
 not establish a duplicate listing.
+  </TabItem>
+  <TabItem value="ember2024-reference-search" label="EMBER2024 references">
+    <EmberHistoricalSearch />
+  </TabItem>
+</Tabs>

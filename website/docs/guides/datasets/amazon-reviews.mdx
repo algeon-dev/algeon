@@ -1,0 +1,215 @@
+---
+sidebar_position: 3
+title: Amazon Reviews
+description: Combine Amazon review history and product text embeddings inside SQL queries.
+---
+
+# Amazon Reviews
+
+The Electronics category of Amazon Reviews 2023 holds 43,886,944 reviews and
+1,610,012 products. Reviews join to the catalog through `product_id`. The
+examples add a 1,024-dimension text embedding to sampled products and reviews,
+then use SQL to restrict a semantic search with review history and to trace a
+change in review topics back to a product and its original text.
+
+This is a historical snapshot. Prices describe the captured catalog; review
+counts and ratings do not measure sales or product failures.
+
+## At a glance
+
+| Item | Details |
+|---|---|
+| Source | [Amazon Reviews 2023](https://amazon-reviews-2023.github.io/), Electronics category |
+| Scale | 43.9M reviews and 1.6M products; embeddings for 1,010,000 products, 1M low-rating reviews, and 14 written search requests |
+| Preparation | Convert JSONL to Parquet, then embed text with PyTorch on the GPU. Each million-row vector matrix holds 4.096 GB of values |
+| Python packages | `torch`, `sentence-transformers`, `duckdb`, `numpy`, `pyarrow`, `faiss-cpu`, `scikit-learn` |
+| Server | `127.0.0.1:50062`; at least 64 GiB of device memory, with 32 GiB per query |
+| Examples | cuVS brute-force KNN, KMeans, and Top-K; cuML UMAP |
+
+## Examples
+
+- [Search travel headphones constrained by review history](../../cuvs/functions/cuvs_brute_force_knn.mdx#examples).
+- [Find products whose low-rating reviews changed topic](../../cuvs/functions/cuvs_kmeans.mdx#examples).
+- [Open a map of headphone reviews](../../cuml/functions/cuml_umap.mdx#examples)
+  whose points link to the original review text.
+- [Describe product groups by complaint keywords](../../cuvs/functions/cuvs_top_k.mdx#examples)
+  with KMeans followed by Top-K. This example reads only the converted
+  `products` and `reviews` tables and skips the embedding step.
+
+## Prepare the data
+
+Run these commands from the repository root on a Linux host with the
+[native stack built](../../build/from-source.md).
+
+### Convert reviews and products
+
+The
+[fixture README](https://github.com/algeon-dev/algeon/blob/main/fixture/demo/amazon_reviews_2023/README.md)
+lists source downloads and checksums. Place the Electronics review and
+metadata JSONL files in the paths listed there, then convert them:
+
+```bash
+fixture/fixture.sh amazon-reviews prepare
+```
+
+Conversion writes `products.parquet` and `reviews.parquet` to the Amazon
+fixture's `parquet/` directory. An existing converted fixture can be reused.
+
+### Embed products and reviews
+
+The embeddings come from the dense output of
+[`BAAI/bge-m3`](https://huggingface.co/BAAI/bge-m3), pinned to
+[revision 5617a9f6](https://huggingface.co/BAAI/bge-m3/tree/5617a9f61b028005a4858fdac845db406aefb181).
+The model accepts up to 8,192 tokens, including multilingual input, and longer
+text is truncated.
+
+```bash
+python3 -m venv target/amazon-reviews-venv
+source target/amazon-reviews-venv/bin/activate
+python -m pip install torch sentence-transformers duckdb numpy pyarrow faiss-cpu scikit-learn
+
+python fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_semantic.py --profile bge-m3 prepare
+flock -x /tmp/cudf-gpu.lock \
+  python fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_semantic.py --profile bge-m3 embed
+python fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_semantic.py --profile bge-m3 compact
+python fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_semantic.py --profile bge-m3 verify-inputs
+python fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_semantic.py --profile bge-m3 sql
+```
+
+The stages do the following:
+
+- `prepare` selects 1,010,000 products in `hash(product_id), product_id`
+  order. The first million form the search corpus and the last 10,000 form a
+  disjoint query set. It also samples one million reviews with a rating of
+  at most two, a body of at least 40 characters, and a date in 2021 or 2022.
+  Both samples keep their original IDs, and no rows are duplicated. Product
+  text combines the title, features, and description with HTML removed;
+  review text is the title and body.
+- `embed` runs the model in PyTorch, casts its FP16 output to Float32, and
+  normalizes each vector to unit length. Output goes to
+  `target/amazon-reviews-bge-m3/` as a non-null `FixedSizeList<Float32, 1024>`
+  column named `vector`, the source text, and NumPy copies.
+- `verify-inputs` checks every vector against its NumPy copy, source ID, and
+  sample rank, and checks normalization and finite values.
+- `sql` writes the registration SQL and the example queries.
+
+Model inference happens before any SQL runs. Algeon reads the existing
+vectors and has no SQL text encoder in these examples. The model revision,
+vector checksums, and preparation timings are recorded in
+`docs/research/amazon_reviews_2023/semantic/bge-m3/`. The script's default
+`minilm` profile belongs to an earlier research workflow in separate
+directories, which is why every command above passes `--profile bge-m3`.
+
+## Start the server
+
+```bash
+cargo build --workspace --all-features --release --bin algeon_server
+
+cat > target/amazon-semantic-server.toml <<'TOML'
+[native]
+execution_mode = "native_preferred"
+
+[[admission.device_profiles]]
+device_ordinal = 0
+memory_limit_bytes = 68719476736
+backend_reserve_bytes = 1073741824
+cache_cap_bytes = 0
+default_query_limit_bytes = 34359738368
+max_active_attempts = 1
+source_work_per_attempt = 2
+stream_pool_size = 8
+worker_count = 4
+lane_count = 4
+TOML
+
+ALGEON_SERVER_CONFIG_FILE="$PWD/target/amazon-semantic-server.toml" \
+ALGEON_SERVER_BIND=127.0.0.1:50062 \
+flock -x /tmp/cudf-gpu.lock target/release/algeon_server
+```
+
+This configuration requires a device with at least 64 GiB available to the
+configured backend, and gives each query a 32 GiB limit. The capture used an
+RTX PRO 6000 Blackwell with 96 GiB. Before lowering those limits, check the
+working set of the query you plan to run.
+
+## Register the tables
+
+From another terminal, activate the Python environment. The runner's
+`--register` flag executes the generated `sql/00_register.sql` before it runs
+any query:
+
+```bash
+source target/amazon-reviews-venv/bin/activate
+python fixture/demo/amazon_reviews_2023/scripts/amazon_reviews_semantic.py --profile bge-m3 run \
+  --register --names travel_shortlist catalog_batch headphone_emerging inline_kmeans_topk headphone_umap2 \
+  --repeats 3
+```
+
+The same command runs the five captured examples three times each. Table
+registrations last until the server stops; after a restart, keep `--register`
+on the first run.
+
+## Run the examples
+
+The runner saves the executed SQL, Flight query ID, complete result Parquet,
+and sealed query statistics for each statement. Its elapsed time ends when the
+Flight result has been read, before the result file is written, and includes
+planning and result transfer. `EXPLAIN GPU` and the saved statistics show the
+execution path of each query.
+
+To run a single example in another client, copy its SQL from the example page.
+The registered objects are views over Parquet; their names do not imply a
+retained vector index. Each algorithm call builds its index or fits its model
+within the statement.
+
+## Tables
+
+| Table or view | Rows | Contents |
+|---|---|---|
+| `products` | 1,610,012 | Product catalog keyed by `product_id`: title, brand, categories, price, and rating summary |
+| `reviews` | 43,886,944 | Reviews with `product_id`, `rating`, `review_time`, `title`, and `text` |
+| `semantic_products_text` | 1,010,000 | Sampled products: `sample_rank`, title, brand, price, categories, rating summary, and `embedding_text` |
+| `semantic_products_vectors` | 1,010,000 | `id`, `sample_rank`, and the 1,024-dimension `vector` |
+| `semantic_reviews_text` | 1,000,000 | Sampled reviews: `sample_rank`, `product_id`, `review_time`, `rating`, categories, and `embedding_text` |
+| `semantic_reviews_vectors` | 1,000,000 | `id`, `sample_rank`, and the 1,024-dimension `vector` |
+| `semantic_intents_text`, `semantic_intents_vectors` | 14 | Written search requests and their embeddings |
+
+`sql/00_register.sql` also defines views over these tables by
+`sample_rank`, such as `product_corpus_1000000` for the first million products,
+`product_queries_10000` for the disjoint query set, and `intent_queries`.
+
+## Captured run
+
+The examples were executed on 2026-09-28 using one RTX PRO 6000 Blackwell.
+Times below are medians of three sequential statements in the same release
+server. Each statement reads its Parquet inputs and builds its own index or
+fits its model. The clock includes planning and receipt of the complete
+Flight result, with existing vectors and a reusable OS file cache; embedding
+generation and writing result Parquet are outside this interval.
+
+| Question | Result rows | Median | Execution path |
+| --- | ---: | ---: | --- |
+| Travel headphones with price and review constraints | 10 | 1.544 s | native |
+| Similar products for 10,000 catalog entries against 1M products | 100,000 | 2.584 s | native |
+| Products with a changed mix of low-rating reviews | 10 | 0.752 s | mixed |
+| Largest keyword rates within six product clusters | 18 | 0.776 s | native |
+| Review map with product names and original text | 9,967 | 3.882 s | native |
+
+The four native captures recorded zero host DataFusion boundaries. The
+annual-change query recorded 20 because its partition-preserving sort is
+outside native coverage; its vector input and KMeans still execute on the
+GPU. These are observed query paths for this build and do not guarantee the
+same path for arbitrary input schemas or SQL changes.
+
+The [capture record](/data/amazon-reviews-capture.json) includes query IDs,
+executed SQL, model and vector checksums, and the result rows shown in the
+examples. Independent DuckDB aggregation and Float64 distance calculations
+matched the travel shortlist, and the annual denominators and linked review
+text were also checked. These checks verify those values; they do not assign
+human relevance labels to the embeddings or complaint clusters.
+
+KMeans cluster IDs belong to one fit. The input subqueries use `ORDER BY id`
+to fix row order, but floating-point reductions can still change membership
+between fits. Keep a captured assignment set when comparing reports that need
+identical membership. A rise in a cluster's share is a prompt to read its
+reviews, and its denominator contains only sampled low-rating reviews.

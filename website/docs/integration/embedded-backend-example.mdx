@@ -58,7 +58,7 @@ not by a fictional product domain.
 
 ## Data Prerequisite
 
-[Prepare the Citation Network Parquet files](../cugraph/demo-dataset.mdx#prepare-the-data)
+[Prepare the Citation Network Parquet files](../guides/datasets/citation-network.mdx#prepare-the-data)
 on the host that will run this process. The dataset contains 4,894,081 papers
 and 45,564,149 citation edges.
 
@@ -93,7 +93,7 @@ flock /tmp/cudf-gpu.lock "${CARGO_TARGET_DIR:-target}/release/embedded_backend"
 ```
 
 In another terminal, run the demo's
-[table registration commands](../cugraph/demo-dataset.mdx#register-the-tables).
+[table registration commands](../guides/datasets/citation-network.mdx#register-the-tables).
 The REST pipelines and Flight SQL queries share those registered tables.
 Repeat registration after restarting the process.
 

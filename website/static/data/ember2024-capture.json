@@ -1,0 +1,636 @@
+{
+  "captured": "2026-09-28",
+  "dataset": {
+    "name": "EMBER2024",
+    "source_url": "https://github.com/FutureComputing4AI/EMBER2024",
+    "split": "challenge",
+    "positive_only": true,
+    "challenge_rows": 6315,
+    "win32_rows": 3225,
+    "feature": {
+      "name": "normalized histogram",
+      "dimensions": 512,
+      "source_columns": "f7..f518"
+    }
+  },
+  "query": {
+    "name": "46_challenge_triage_groups",
+    "query_id": "ecf66e6b-0d89-4658-b245-4384489f4294",
+    "status": "ok",
+    "row_count": 8,
+    "result_schema": "cluster_id: int64 not null\ncluster_files: int64\nfamily_labeled_files: int64\nmost_common_family: string_view not null\nmost_common_family_files: int64 not null\nexample_sha256: string_view",
+    "execution": {
+      "disposition": "partial_native",
+      "conditions": "Dedicated EMBER server run. PCA and HDBSCAN executed on the GPU; relational and window processing ran on the CPU. This capture records the execution path, not an isolated timing or speedup."
+    },
+    "method": {
+      "reduction": "cuVS PCA to 16 components",
+      "clustering": "cuML HDBSCAN with min_cluster_size=30 and min_samples=10",
+      "labels_used": "post-fit only, to summarize family composition",
+      "input_order": "Win32 challenge rows ordered by id",
+      "cluster_ids": "local to this captured fit",
+      "noise_cluster_id": -1,
+      "example_sha256": "Minimum SHA-256 within the most common labeled family for that cluster; not a centroid or a representative sample."
+    },
+    "sql": "WITH reduced AS (\n  SELECT id, pc_0, pc_1, pc_2, pc_3, pc_4, pc_5, pc_6, pc_7,\n         pc_8, pc_9, pc_10, pc_11, pc_12, pc_13, pc_14, pc_15\n  FROM cuvs_pca(\n    input => (\n      SELECT v.id, v.histogram AS vector\n      FROM ember_research_vectors_challenge v\n      JOIN ember_metadata_challenge m ON m.id = v.id\n      WHERE m.file_type = 'Win32'\n      ORDER BY v.id\n    ),\n    n_components => 16\n  )\n), assignments AS (\n  SELECT id, cluster_id\n  FROM cuml_hdbscan(\n    input => (SELECT * FROM reduced ORDER BY id),\n    min_cluster_size => 30,\n    min_samples => 10\n  )\n), family_counts AS (\n  SELECT a.cluster_id, m.family, COUNT(*) AS files,\n         MIN(m.sha256) AS example_sha256\n  FROM assignments a\n  JOIN ember_metadata_challenge m ON m.id = a.id\n  GROUP BY a.cluster_id, m.family\n), ranked AS (\n  SELECT *,\n         SUM(files) OVER (PARTITION BY cluster_id) AS cluster_files,\n         SUM(CASE WHEN family <> '' THEN files ELSE 0 END)\n           OVER (PARTITION BY cluster_id) AS family_labeled_files,\n         ROW_NUMBER() OVER (\n           PARTITION BY cluster_id\n           ORDER BY CASE WHEN family = '' THEN 1 ELSE 0 END,\n                    files DESC, family\n         ) AS family_rank\n  FROM family_counts\n)\nSELECT cluster_id, cluster_files, family_labeled_files,\n       family AS most_common_family, files AS most_common_family_files,\n       example_sha256\nFROM ranked\nWHERE family_rank = 1\nORDER BY cluster_files DESC, cluster_id;\n",
+    "rows": [
+      {
+        "cluster_id": 6,
+        "cluster_files": 1005,
+        "family_labeled_files": 734,
+        "most_common_family": "malicord",
+        "most_common_family_files": 547,
+        "example_sha256": "0053be564665d5f46f9a5e80e446411e02b2a128bf0f9d34d36ec4c8e9dcfe88"
+      },
+      {
+        "cluster_id": 1,
+        "cluster_files": 930,
+        "family_labeled_files": 929,
+        "most_common_family": "snackarcin",
+        "most_common_family_files": 736,
+        "example_sha256": "001f8268d251cbd409f83eb5d1eafff804ef330e54986f15c07b9c0650865ce3"
+      },
+      {
+        "cluster_id": -1,
+        "cluster_files": 508,
+        "family_labeled_files": 246,
+        "most_common_family": "fragtor",
+        "most_common_family_files": 23,
+        "example_sha256": "0489544711016fc7a7ad89d7a84e0c18934b44f9077e07011bdb44bb094ae0c2"
+      },
+      {
+        "cluster_id": 3,
+        "cluster_files": 451,
+        "family_labeled_files": 174,
+        "most_common_family": "fragtor",
+        "most_common_family_files": 28,
+        "example_sha256": "043a19ed6a8903bd99ffef3960ce6a5a74a9dc505ba06185419f6350c1760df0"
+      },
+      {
+        "cluster_id": 5,
+        "cluster_files": 146,
+        "family_labeled_files": 123,
+        "most_common_family": "doenerium",
+        "most_common_family_files": 110,
+        "example_sha256": "0106201b17d3c2e0f84c351446f42d79a788a80bba13a23453a5fa47a99027dc"
+      },
+      {
+        "cluster_id": 4,
+        "cluster_files": 91,
+        "family_labeled_files": 57,
+        "most_common_family": "innobundle",
+        "most_common_family_files": 14,
+        "example_sha256": "09286de89061f17e95b3fe806c90c7c120682b4ee787986777ec13c7699bebf6"
+      },
+      {
+        "cluster_id": 0,
+        "cluster_files": 59,
+        "family_labeled_files": 59,
+        "most_common_family": "snackarcin",
+        "most_common_family_files": 46,
+        "example_sha256": "0706a9691e878493bc98f39b31faeace945d05f0ae3d9b2bc9f96e72526fa9c0"
+      },
+      {
+        "cluster_id": 2,
+        "cluster_files": 35,
+        "family_labeled_files": 3,
+        "most_common_family": "fragtor",
+        "most_common_family_files": 2,
+        "example_sha256": "4016bd6d97977aa591d174c4d0fcdaec0e07f85d6cc6fe65d5414c2a8fe40ecb"
+      }
+    ]
+  },
+  "source_artifacts": {
+    "sql": "docs/research/ember2024/sql/46_challenge_triage_groups.sql",
+    "result": "docs/research/ember2024/results/46_challenge_triage_groups.json",
+    "forest_sql": "docs/research/ember2024/sql/12_forest_review_explanations.sql",
+    "forest_result": "docs/research/ember2024/results/12_forest_review_explanations.json",
+    "forest_result_parquet": "target/ember2024-research/12_forest_review_explanations.parquet",
+    "forest_cpu_check": "docs/research/ember2024/results/forest_cpu_check.json",
+    "forest_attributions": "docs/research/ember2024/results/attributions.json"
+  },
+  "forest_review": {
+    "name": "12_forest_review_explanations",
+    "query_id": "843cec8e-82f2-4025-ba95-0f5e532fc8f9",
+    "status": "ok",
+    "row_count": 30,
+    "result_schema": "id: int64 not null\nsha256: string_view not null\nfile_type: string_view not null\nweek_id: int32 not null\nprediction: float not null\nrank: uint32 not null\ngroup_name: string_view not null\npositive_log_odds_contribution: float not null",
+    "sql": "SELECT p.id, m.sha256, m.file_type, m.week_id, p.prediction,\n       t.rank, g.group_name, t.value AS positive_log_odds_contribution\nFROM cuml_forest_predict(\n  input => (\n    SELECT id, vector\n    FROM ember_research_vectors_challenge\n    ORDER BY id\n  ),\n  model => 'EMBER2024_all.model',\n  model_format => 'lightgbm'\n) p\nJOIN cuvs_top_k(\n  input => (SELECT id, vector FROM ember_attributions ORDER BY id),\n  k => 3,\n  select => 'max'\n) t ON t.id = p.id\nJOIN ember_feature_groups g ON g.group_index = t.position\nJOIN ember_metadata_challenge m ON m.id = p.id\nWHERE p.prediction >= 0.99 AND t.value > 0\nORDER BY p.prediction DESC, p.id, t.rank\nLIMIT 30;\n",
+    "cohort": {
+      "split": "challenge",
+      "rows_scored": 6315,
+      "positive_labels": 6315,
+      "threshold": 0.99,
+      "rows_at_or_above_threshold_before_limit": 1616,
+      "output_limit": 30,
+      "model": "EMBER2024_all.model",
+      "model_format": "lightgbm",
+      "model_feature_count": 2568,
+      "labels_used_as_model_input": false
+    },
+    "attributions": {
+      "source_script": "fixture/demo/ember2024/scripts/research_attributions.py",
+      "computed_on": "CPU with LightGBM pred_contrib",
+      "rows": 6315,
+      "feature_groups": 12,
+      "units": "signed SHAP contributions in raw-margin (log-odds) units; bias excluded",
+      "bias_included_in_ranked_groups": false,
+      "pred_contrib_elapsed_seconds": 13.311242587980814,
+      "elapsed_scope": "CPU attribution preparation only, separate from SQL execution"
+    },
+    "cpu_score_comparison": {
+      "status": "passed",
+      "rows": 6315,
+      "max_absolute_error": 2.9801783152372252e-08,
+      "absolute_tolerance": 1e-06,
+      "threshold_agreement": {
+        "0.5": {
+          "agreement_rate": 1.0,
+          "matching_rows": 6315
+        },
+        "0.9": {
+          "agreement_rate": 1.0,
+          "matching_rows": 6315
+        },
+        "0.99": {
+          "agreement_rate": 1.0,
+          "matching_rows": 6315
+        },
+        "0.999": {
+          "agreement_rate": 1.0,
+          "matching_rows": 6315
+        }
+      }
+    },
+    "execution": {
+      "disposition": "native",
+      "conditions": "Dedicated EMBER server. The SQL forest prediction and Top-K operations ran as native GPU work. The attribution values were precomputed on CPU before the query. No end-to-end speedup is claimed."
+    },
+    "interpretation_limits": [
+      "The challenge split contains only positive examples, so this capture cannot estimate a false-positive rate.",
+      "The query threshold does not establish score calibration.",
+      "Only the top three positive feature-group contributions are displayed. Negative groups and the model bias are omitted, so the table is not a complete explanation.",
+      "SHAP contributions describe model score contributions and do not establish causal risk effects."
+    ],
+    "rows": [
+      {
+        "id": 20001348,
+        "sha256": "8f392dc01595d3c9f94b495b10d7c106db04a1e8a5d608fc16e2ebed65968f33",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9998510479927063,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.504060745239258
+      },
+      {
+        "id": 20001348,
+        "sha256": "8f392dc01595d3c9f94b495b10d7c106db04a1e8a5d608fc16e2ebed65968f33",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9998510479927063,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.2490041255950928
+      },
+      {
+        "id": 20001348,
+        "sha256": "8f392dc01595d3c9f94b495b10d7c106db04a1e8a5d608fc16e2ebed65968f33",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9998510479927063,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2354497909545898
+      },
+      {
+        "id": 20000677,
+        "sha256": "7d60904d4ff5850cabf02052c0153796d880ccf0e1f30f7e1885a59a9c9633e0",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9998448491096497,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.653215169906616
+      },
+      {
+        "id": 20000677,
+        "sha256": "7d60904d4ff5850cabf02052c0153796d880ccf0e1f30f7e1885a59a9c9633e0",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9998448491096497,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.279698133468628
+      },
+      {
+        "id": 20000677,
+        "sha256": "7d60904d4ff5850cabf02052c0153796d880ccf0e1f30f7e1885a59a9c9633e0",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9998448491096497,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2871712446212769
+      },
+      {
+        "id": 20001872,
+        "sha256": "f7fc0feb5382e217b3f8e8d8cab3d8e2e0e26528fe48dd6eff36433aea1aa5fe",
+        "file_type": "Win32",
+        "week_id": 9,
+        "prediction": 0.9998319745063782,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.4706199169158936
+      },
+      {
+        "id": 20001872,
+        "sha256": "f7fc0feb5382e217b3f8e8d8cab3d8e2e0e26528fe48dd6eff36433aea1aa5fe",
+        "file_type": "Win32",
+        "week_id": 9,
+        "prediction": 0.9998319745063782,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.2060446739196777
+      },
+      {
+        "id": 20001872,
+        "sha256": "f7fc0feb5382e217b3f8e8d8cab3d8e2e0e26528fe48dd6eff36433aea1aa5fe",
+        "file_type": "Win32",
+        "week_id": 9,
+        "prediction": 0.9998319745063782,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.3059159517288208
+      },
+      {
+        "id": 20000657,
+        "sha256": "741993591142c20588fa6d84fec1328ddec0c7e7ca52f1f8159d5b4d338df129",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9998298287391663,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.676525115966797
+      },
+      {
+        "id": 20000657,
+        "sha256": "741993591142c20588fa6d84fec1328ddec0c7e7ca52f1f8159d5b4d338df129",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9998298287391663,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.0841829776763916
+      },
+      {
+        "id": 20000657,
+        "sha256": "741993591142c20588fa6d84fec1328ddec0c7e7ca52f1f8159d5b4d338df129",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9998298287391663,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.253233790397644
+      },
+      {
+        "id": 20001066,
+        "sha256": "bc1a7acf1299f586547f50f02b9022f48536189339bc67d6fa71531555dc092d",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.9998181462287903,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.6891658306121826
+      },
+      {
+        "id": 20001066,
+        "sha256": "bc1a7acf1299f586547f50f02b9022f48536189339bc67d6fa71531555dc092d",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.9998181462287903,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.167897939682007
+      },
+      {
+        "id": 20001066,
+        "sha256": "bc1a7acf1299f586547f50f02b9022f48536189339bc67d6fa71531555dc092d",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.9998181462287903,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2629570960998535
+      },
+      {
+        "id": 20000934,
+        "sha256": "5262627abc1cfda4e04fdd3b2235c24e8bde4f407d8b0e0d798affca932bf164",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.999813973903656,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.5647921562194824
+      },
+      {
+        "id": 20000934,
+        "sha256": "5262627abc1cfda4e04fdd3b2235c24e8bde4f407d8b0e0d798affca932bf164",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.999813973903656,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.0581016540527344
+      },
+      {
+        "id": 20000934,
+        "sha256": "5262627abc1cfda4e04fdd3b2235c24e8bde4f407d8b0e0d798affca932bf164",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.999813973903656,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2353472709655762
+      },
+      {
+        "id": 20001351,
+        "sha256": "903bdbfd1a3cef73d8cb4d76cf532c9ac2fa5309e5c1962dc69d581e221ff31d",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9997722506523132,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.2951345443725586
+      },
+      {
+        "id": 20001351,
+        "sha256": "903bdbfd1a3cef73d8cb4d76cf532c9ac2fa5309e5c1962dc69d581e221ff31d",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9997722506523132,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.220750331878662
+      },
+      {
+        "id": 20001351,
+        "sha256": "903bdbfd1a3cef73d8cb4d76cf532c9ac2fa5309e5c1962dc69d581e221ff31d",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9997722506523132,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2022656202316284
+      },
+      {
+        "id": 20000564,
+        "sha256": "24958d9b40f313bf0384d519fc94bd1183f0d8fb16537af96522c24576c5a54b",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9997715950012207,
+        "rank": 1,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.2527315616607666
+      },
+      {
+        "id": 20000564,
+        "sha256": "24958d9b40f313bf0384d519fc94bd1183f0d8fb16537af96522c24576c5a54b",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9997715950012207,
+        "rank": 2,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.2486515045166016
+      },
+      {
+        "id": 20000564,
+        "sha256": "24958d9b40f313bf0384d519fc94bd1183f0d8fb16537af96522c24576c5a54b",
+        "file_type": "Win32",
+        "week_id": 6,
+        "prediction": 0.9997715950012207,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.3175327777862549
+      },
+      {
+        "id": 20000877,
+        "sha256": "26808557486ab16e5780cf95f9bb3edcff40d555596ed5b207d489e4eeb531b3",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.9997712969779968,
+        "rank": 1,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.4213366508483887
+      },
+      {
+        "id": 20000877,
+        "sha256": "26808557486ab16e5780cf95f9bb3edcff40d555596ed5b207d489e4eeb531b3",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.9997712969779968,
+        "rank": 2,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.1408941745758057
+      },
+      {
+        "id": 20000877,
+        "sha256": "26808557486ab16e5780cf95f9bb3edcff40d555596ed5b207d489e4eeb531b3",
+        "file_type": "Win32",
+        "week_id": 7,
+        "prediction": 0.9997712969779968,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2247951030731201
+      },
+      {
+        "id": 20001402,
+        "sha256": "b7b36aeb8ce645642f7f5ed073b1e27e3a904f032e048d8fcbb9dd172fe1a144",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9997693300247192,
+        "rank": 1,
+        "group_name": "strings",
+        "positive_log_odds_contribution": 2.424008369445801
+      },
+      {
+        "id": 20001402,
+        "sha256": "b7b36aeb8ce645642f7f5ed073b1e27e3a904f032e048d8fcbb9dd172fe1a144",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9997693300247192,
+        "rank": 2,
+        "group_name": "histogram",
+        "positive_log_odds_contribution": 2.1620566844940186
+      },
+      {
+        "id": 20001402,
+        "sha256": "b7b36aeb8ce645642f7f5ed073b1e27e3a904f032e048d8fcbb9dd172fe1a144",
+        "file_type": "Win32",
+        "week_id": 8,
+        "prediction": 0.9997693300247192,
+        "rank": 3,
+        "group_name": "header",
+        "positive_log_odds_contribution": 1.2133150100708008
+      }
+    ],
+    "temporal_test_at_threshold_0_99": {
+      "source_query": "15_forest_temporal_test",
+      "query_id": "3c3ae508-178f-4f15-9ab5-c483ba987231",
+      "metrics": {
+        "by_file_type": {
+          "APK": {
+            "accuracy": 0.6174636174636174,
+            "confusion_matrix": {
+              "fn": 184,
+              "fp": 0,
+              "tn": 248,
+              "tp": 49
+            },
+            "f1": 0.3475177304964539,
+            "false_positive_rate": 0.0,
+            "false_positive_rate_wilson_95": {
+              "lower": 0.0,
+              "upper": 0.01525348065676972
+            },
+            "negative_rows": 248,
+            "positive_rows": 233,
+            "precision": 1.0,
+            "recall": 0.21030042918454936,
+            "rows": 481
+          },
+          "Dot_Net": {
+            "accuracy": 0.8210862619808307,
+            "confusion_matrix": {
+              "fn": 112,
+              "fp": 0,
+              "tn": 329,
+              "tp": 185
+            },
+            "f1": 0.7676348547717843,
+            "false_positive_rate": 0.0,
+            "false_positive_rate_wilson_95": {
+              "lower": 0.0,
+              "upper": 0.01154140723425794
+            },
+            "negative_rows": 329,
+            "positive_rows": 297,
+            "precision": 1.0,
+            "recall": 0.622895622895623,
+            "rows": 626
+          },
+          "ELF": {
+            "accuracy": 0.8169014084507042,
+            "confusion_matrix": {
+              "fn": 13,
+              "fp": 0,
+              "tn": 38,
+              "tp": 20
+            },
+            "f1": 0.7547169811320755,
+            "false_positive_rate": 0.0,
+            "false_positive_rate_wilson_95": {
+              "lower": 0.0,
+              "upper": 0.09180986822558396
+            },
+            "negative_rows": 38,
+            "positive_rows": 33,
+            "precision": 1.0,
+            "recall": 0.6060606060606061,
+            "rows": 71
+          },
+          "PDF": {
+            "accuracy": 0.8207547169811321,
+            "confusion_matrix": {
+              "fn": 19,
+              "fp": 0,
+              "tn": 65,
+              "tp": 22
+            },
+            "f1": 0.6984126984126985,
+            "false_positive_rate": 0.0,
+            "false_positive_rate_wilson_95": {
+              "lower": 0.0,
+              "upper": 0.05580153132285689
+            },
+            "negative_rows": 65,
+            "positive_rows": 41,
+            "precision": 1.0,
+            "recall": 0.5365853658536586,
+            "rows": 106
+          },
+          "Win32": {
+            "accuracy": 0.884742951907131,
+            "confusion_matrix": {
+              "fn": 417,
+              "fp": 0,
+              "tn": 1831,
+              "tp": 1370
+            },
+            "f1": 0.8679125752296484,
+            "false_positive_rate": 0.0,
+            "false_positive_rate_wilson_95": {
+              "lower": 0.0,
+              "upper": 0.0020936189348823315
+            },
+            "negative_rows": 1831,
+            "positive_rows": 1787,
+            "precision": 1.0,
+            "recall": 0.7666480134303302,
+            "rows": 3618
+          },
+          "Win64": {
+            "accuracy": 0.9133333333333333,
+            "confusion_matrix": {
+              "fn": 104,
+              "fp": 0,
+              "tn": 575,
+              "tp": 521
+            },
+            "f1": 0.9092495636998255,
+            "false_positive_rate": 0.0,
+            "false_positive_rate_wilson_95": {
+              "lower": 0.0,
+              "upper": 0.006636461093371823
+            },
+            "negative_rows": 575,
+            "positive_rows": 625,
+            "precision": 1.0,
+            "recall": 0.8336,
+            "rows": 1200
+          }
+        },
+        "overall": {
+          "accuracy": 0.86086529006883,
+          "confusion_matrix": {
+            "fn": 849,
+            "fp": 0,
+            "tn": 3086,
+            "tp": 2167
+          },
+          "f1": 0.8361952537140653,
+          "false_positive_rate": 0.0,
+          "false_positive_rate_wilson_95": {
+            "lower": 0.0,
+            "upper": 0.0012432543455353539
+          },
+          "negative_rows": 3086,
+          "positive_rows": 3016,
+          "precision": 1.0,
+          "recall": 0.718501326259947,
+          "rows": 6102
+        },
+        "threshold": 0.99
+      },
+      "score_comparison": {
+        "atol": 1e-06,
+        "matched_within_tolerance": true,
+        "max_abs_error": 2.9793863709492996e-08,
+        "p50_abs_error": 1.965393056635456e-09,
+        "p99_abs_error": 2.920239044912343e-08,
+        "rows": 6102,
+        "rtol": 0.0
+      }
+    }
+  }
+}

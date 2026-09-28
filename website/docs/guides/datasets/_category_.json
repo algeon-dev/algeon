@@ -1,0 +1,9 @@
+{
+  "label": "Demo Datasets",
+  "position": 3,
+  "collapsed": true,
+  "link": {
+    "type": "doc",
+    "id": "guides/datasets/index"
+  }
+}

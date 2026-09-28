@@ -1,0 +1,637 @@
+{
+  "cohort": {
+    "feature_input": {
+      "column": "histogram",
+      "dimension": 512,
+      "element_type": "Float32, promoted to Float64 only for the CPU oracle",
+      "labels_or_family_in_search_input": false,
+      "search_projection": [
+        "id",
+        "vector"
+      ],
+      "source_features": "f7..f518"
+    },
+    "sha256_disjoint": {
+      "disjoint": true,
+      "first_overlapping_hashes": [],
+      "intersection_rows": 0
+    },
+    "test": {
+      "id_range": [
+        10021055,
+        11161956
+      ],
+      "known_family_rows": 1575,
+      "label_counts": {
+        "0": 1831,
+        "1": 1787
+      },
+      "metadata_relation_rows": 605929,
+      "sampled_vector_relation_rows": 6102,
+      "sha256_unique": true,
+      "unique_sha256_rows": 3618,
+      "week_id_range": [
+        52,
+        63
+      ],
+      "win32_cohort_rows": 3618
+    },
+    "train": {
+      "id_range": [
+        21019,
+        5201878
+      ],
+      "known_family_rows": 6895,
+      "label_counts": {
+        "0": 7737,
+        "1": 7851
+      },
+      "metadata_relation_rows": 2626000,
+      "sampled_vector_relation_rows": 26277,
+      "sha256_unique": true,
+      "unique_sha256_rows": 15588,
+      "week_id_range": [
+        0,
+        51
+      ],
+      "win32_cohort_rows": 15588
+    }
+  },
+  "conditions": {
+    "distance": "expanded squared L2",
+    "execution_server": "dedicated EMBER Flight SQL server grpc://127.0.0.1:50062 for base, r2, and r3 captures",
+    "query_scope": "3,618 unique Win32 test vectors from weeks 52\u201363; separate later test period.",
+    "search_features": "512-element Float32 normalized byte and byte-entropy histograms (source features f7..f518)",
+    "search_inputs": "Only id and histogram-as-vector are passed to each search UDTF. Labels, family, week, and SHA-256 metadata are joined only after search.",
+    "search_k": 10,
+    "timing_scope": "Whole statement through complete result fetch and CSV export, including per-statement index construction.",
+    "training_scope": "15,588 unique Win32 train vectors from weeks 0\u201351; SHA-256 sampled from unique rows at the same 1% hash rule as test."
+  },
+  "dataset": "EMBER2024",
+  "evaluation": {
+    "cpu_oracle": {
+      "compute_dtype": "Float64",
+      "corpus_rows": 15588,
+      "dimensions": 512,
+      "elapsed_seconds": 38.354854513017926,
+      "k": 10,
+      "largest_difference_buffer_bytes": 63848448,
+      "largest_difference_buffer_mib": 60.890625,
+      "maximum_rank10_tie_set_size": 1,
+      "method": "direct squared L2 from (Float64(train_feature) - Float64(query_feature)) differences, with no square root",
+      "peak_rss_bytes": 921378816,
+      "peak_rss_mib": 878.6953125,
+      "queries": 3618,
+      "queries_with_rank10_boundary_ties": 0,
+      "query_batch_size": 1,
+      "source_feature_dtype": "Float32",
+      "tie_tolerance": {
+        "absolute": 1e-12,
+        "relative": 1e-12
+      }
+    },
+    "known_family_rate_definition": "Post-search fraction of all top-k result slots for test queries with a known family whose returned training reference has the same known family. References with an empty family count as nonmatches. This is not precision.",
+    "performance_conclusion": "At this cohort size brute force had the lowest three-run median whole-statement time. These captures are not a controlled performance study, and no ANN speedup claim is made.",
+    "random_reference_baseline": 0.027555710334771152
+  },
+  "methods": [
+    {
+      "cpu_oracle_metrics": {
+        "max_absolute_returned_distance_error": 6.715530329985675e-06,
+        "strict_id_recall_at_10": 0.9990326147042565,
+        "tie_aware_recall_at_10": 0.9990326147042565
+      },
+      "first_query_top_10_preview": [
+        {
+          "distance": 0.0053381994,
+          "neighbor_family": "berbew",
+          "neighbor_id": 935830,
+          "neighbor_label": 1,
+          "neighbor_sha256": "28f7f530ca09de7301c7753fefd975d3421820fc988c6a3dd440d1fedd2e4bb4",
+          "neighbor_week": 9,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 1
+        },
+        {
+          "distance": 0.0058313087,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1663154,
+          "neighbor_label": 1,
+          "neighbor_sha256": "d89b45c8b3f137673b0a15de8b5c798044f84190c2c0d5f32d75c72107310774",
+          "neighbor_week": 16,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 2
+        },
+        {
+          "distance": 0.005877316,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1032030,
+          "neighbor_label": 1,
+          "neighbor_sha256": "07d7e70c0fb9a1c2dbb361496a6bb2c707c36d89a921903d81dddeea95d84aa3",
+          "neighbor_week": 10,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 3
+        },
+        {
+          "distance": 0.0060468167,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1058641,
+          "neighbor_label": 1,
+          "neighbor_sha256": "e9038ce03613755c6d90910fd39a29f890664463adf587675a45ce61bb7486fa",
+          "neighbor_week": 10,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 4
+        },
+        {
+          "distance": 0.0062066317,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4977458,
+          "neighbor_label": 1,
+          "neighbor_sha256": "32ae62943b48a52ec1fef632d42fa94298b9feb50c4193c6d4ba127a2a0362c0",
+          "neighbor_week": 49,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 5
+        },
+        {
+          "distance": 0.0063282177,
+          "neighbor_family": "berbew",
+          "neighbor_id": 5081711,
+          "neighbor_label": 1,
+          "neighbor_sha256": "4c9face4d99362a04c2373c1466b802c652aa5358fca9b933fc9ab30d6808131",
+          "neighbor_week": 50,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 6
+        },
+        {
+          "distance": 0.0065051317,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4789409,
+          "neighbor_label": 1,
+          "neighbor_sha256": "a3c91294f79f294e5be7bcb00c2a3d4e0840a566bf04087d1ba95cfe285bebdc",
+          "neighbor_week": 47,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 7
+        },
+        {
+          "distance": 0.006523907,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4590592,
+          "neighbor_label": 1,
+          "neighbor_sha256": "c6cfad5c598d2dd3c5f3cc3b6c1669e9165d3743bcc2255218db137ca1c70c15",
+          "neighbor_week": 45,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 8
+        },
+        {
+          "distance": 0.006597914,
+          "neighbor_family": "berbew",
+          "neighbor_id": 3658000,
+          "neighbor_label": 1,
+          "neighbor_sha256": "064a8b9c6fb223b50fc8838e0ee8393a5275f2d08a2ef0e7ef30ced07b906795",
+          "neighbor_week": 36,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 9
+        },
+        {
+          "distance": 0.0067412257,
+          "neighbor_family": "berbew",
+          "neighbor_id": 3771949,
+          "neighbor_label": 1,
+          "neighbor_sha256": "6dfb666c9e898b2c846b4c134bd51942f6cef01006aedfb17d599635992d58db",
+          "neighbor_week": 37,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 10
+        }
+      ],
+      "function": "cuvs_brute_force_knn",
+      "posthoc_family_metrics": {
+        "top_1": {
+          "denominator_query_known_family_pairs": 1575,
+          "expected_uniform_random_train_reference_rate": 0.027555710334771152,
+          "known_neighbor_family_coverage": 0.7682539682539683,
+          "matching_pairs": 718,
+          "same_known_family_rate": 0.4558730158730159
+        },
+        "top_10": {
+          "denominator_query_known_family_pairs": 15750,
+          "expected_uniform_random_train_reference_rate": 0.027555710334771152,
+          "known_neighbor_family_coverage": 0.7040634920634921,
+          "matching_pairs": 5574,
+          "same_known_family_rate": 0.3539047619047619
+        }
+      },
+      "r3_capture": {
+        "elapsed_s": 0.8757813919801265,
+        "query_id": "73f3ec94-7127-4b7f-95a7-6a949ceeaa98",
+        "rows": 36180,
+        "schema": "query_ordinal: uint64 not null\nquery_id: int64 not null\nquery_week: int32 not null\nquery_label: int32 not null\nrank: uint32 not null\nneighbor_id: int64 not null\nneighbor_week: int32 not null\nneighbor_label: int32 not null\nneighbor_sha256: string_view not null\nneighbor_family: string_view not null\ndistance: float not null",
+        "source_result": "docs/research/ember2024/results/20_cuvs_brute_force_knn_r3.json",
+        "status": "ok"
+      },
+      "source_sql": "docs/research/ember2024/sql/20_cuvs_brute_force_knn.sql",
+      "three_run_captures": [
+        {
+          "capture": "20_cuvs_brute_force_knn",
+          "elapsed_seconds": 0.8429117809864692,
+          "query_id": "08e940e1-0926-4188-bf19-284df8374ae1",
+          "rows": 36180,
+          "status": "ok"
+        },
+        {
+          "capture": "20_cuvs_brute_force_knn_r2",
+          "elapsed_seconds": 0.9443700580159202,
+          "query_id": "05e859f5-0456-4957-a1f5-edd2f5da4164",
+          "rows": 36180,
+          "status": "ok"
+        },
+        {
+          "capture": "20_cuvs_brute_force_knn_r3",
+          "elapsed_seconds": 0.8757813919801265,
+          "query_id": "73f3ec94-7127-4b7f-95a7-6a949ceeaa98",
+          "rows": 36180,
+          "status": "ok"
+        }
+      ],
+      "three_run_median_whole_statement_seconds": 0.8757813919801265
+    },
+    {
+      "cpu_oracle_metrics": {
+        "max_absolute_returned_distance_error": 1.251895841436479e-07,
+        "strict_id_recall_at_10": 0.9968214483139857,
+        "tie_aware_recall_at_10": 0.9968214483139857
+      },
+      "first_query_top_10_preview": [
+        {
+          "distance": 0.0053382036,
+          "neighbor_family": "berbew",
+          "neighbor_id": 935830,
+          "neighbor_label": 1,
+          "neighbor_sha256": "28f7f530ca09de7301c7753fefd975d3421820fc988c6a3dd440d1fedd2e4bb4",
+          "neighbor_week": 9,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 1
+        },
+        {
+          "distance": 0.0058313385,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1663154,
+          "neighbor_label": 1,
+          "neighbor_sha256": "d89b45c8b3f137673b0a15de8b5c798044f84190c2c0d5f32d75c72107310774",
+          "neighbor_week": 16,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 2
+        },
+        {
+          "distance": 0.005877316,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1032030,
+          "neighbor_label": 1,
+          "neighbor_sha256": "07d7e70c0fb9a1c2dbb361496a6bb2c707c36d89a921903d81dddeea95d84aa3",
+          "neighbor_week": 10,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 3
+        },
+        {
+          "distance": 0.006046837,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1058641,
+          "neighbor_label": 1,
+          "neighbor_sha256": "e9038ce03613755c6d90910fd39a29f890664463adf587675a45ce61bb7486fa",
+          "neighbor_week": 10,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 4
+        },
+        {
+          "distance": 0.006206628,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4977458,
+          "neighbor_label": 1,
+          "neighbor_sha256": "32ae62943b48a52ec1fef632d42fa94298b9feb50c4193c6d4ba127a2a0362c0",
+          "neighbor_week": 49,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 5
+        },
+        {
+          "distance": 0.0063282084,
+          "neighbor_family": "berbew",
+          "neighbor_id": 5081711,
+          "neighbor_label": 1,
+          "neighbor_sha256": "4c9face4d99362a04c2373c1466b802c652aa5358fca9b933fc9ab30d6808131",
+          "neighbor_week": 50,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 6
+        },
+        {
+          "distance": 0.0065051503,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4789409,
+          "neighbor_label": 1,
+          "neighbor_sha256": "a3c91294f79f294e5be7bcb00c2a3d4e0840a566bf04087d1ba95cfe285bebdc",
+          "neighbor_week": 47,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 7
+        },
+        {
+          "distance": 0.006523908,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4590592,
+          "neighbor_label": 1,
+          "neighbor_sha256": "c6cfad5c598d2dd3c5f3cc3b6c1669e9165d3743bcc2255218db137ca1c70c15",
+          "neighbor_week": 45,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 8
+        },
+        {
+          "distance": 0.0065978924,
+          "neighbor_family": "berbew",
+          "neighbor_id": 3658000,
+          "neighbor_label": 1,
+          "neighbor_sha256": "064a8b9c6fb223b50fc8838e0ee8393a5275f2d08a2ef0e7ef30ced07b906795",
+          "neighbor_week": 36,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 9
+        },
+        {
+          "distance": 0.006741244,
+          "neighbor_family": "berbew",
+          "neighbor_id": 3771949,
+          "neighbor_label": 1,
+          "neighbor_sha256": "6dfb666c9e898b2c846b4c134bd51942f6cef01006aedfb17d599635992d58db",
+          "neighbor_week": 37,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 10
+        }
+      ],
+      "function": "cuvs_cagra",
+      "posthoc_family_metrics": {
+        "top_1": {
+          "denominator_query_known_family_pairs": 1575,
+          "expected_uniform_random_train_reference_rate": 0.027555710334771152,
+          "known_neighbor_family_coverage": 0.766984126984127,
+          "matching_pairs": 717,
+          "same_known_family_rate": 0.4552380952380952
+        },
+        "top_10": {
+          "denominator_query_known_family_pairs": 15750,
+          "expected_uniform_random_train_reference_rate": 0.027555710334771152,
+          "known_neighbor_family_coverage": 0.7041904761904761,
+          "matching_pairs": 5570,
+          "same_known_family_rate": 0.35365079365079366
+        }
+      },
+      "r3_capture": {
+        "elapsed_s": 1.318975768983364,
+        "query_id": "c0f13481-511d-4600-815e-b43ab2685418",
+        "rows": 36180,
+        "schema": "query_ordinal: uint64 not null\nquery_id: int64 not null\nquery_week: int32 not null\nquery_label: int32 not null\nrank: uint32 not null\nneighbor_id: int64 not null\nneighbor_week: int32 not null\nneighbor_label: int32 not null\nneighbor_sha256: string_view not null\nneighbor_family: string_view not null\ndistance: float not null",
+        "source_result": "docs/research/ember2024/results/21_cuvs_cagra_r3.json",
+        "status": "ok"
+      },
+      "source_sql": "docs/research/ember2024/sql/21_cuvs_cagra.sql",
+      "three_run_captures": [
+        {
+          "capture": "21_cuvs_cagra",
+          "elapsed_seconds": 5.694671254022978,
+          "query_id": "546078a4-9c63-4f2f-a114-50e7c96f86fb",
+          "rows": 36180,
+          "status": "ok"
+        },
+        {
+          "capture": "21_cuvs_cagra_r2",
+          "elapsed_seconds": 1.2946850380394608,
+          "query_id": "a9477ff2-ad72-4b60-ac00-dab482acbbd2",
+          "rows": 36180,
+          "status": "ok"
+        },
+        {
+          "capture": "21_cuvs_cagra_r3",
+          "elapsed_seconds": 1.318975768983364,
+          "query_id": "c0f13481-511d-4600-815e-b43ab2685418",
+          "rows": 36180,
+          "status": "ok"
+        }
+      ],
+      "three_run_median_whole_statement_seconds": 1.318975768983364
+    },
+    {
+      "cpu_oracle_metrics": {
+        "max_absolute_returned_distance_error": 9.62484400179875e-07,
+        "strict_id_recall_at_10": 0.9954394693200663,
+        "tie_aware_recall_at_10": 0.9954394693200663
+      },
+      "first_query_top_10_preview": [
+        {
+          "distance": 0.005338205,
+          "neighbor_family": "berbew",
+          "neighbor_id": 935830,
+          "neighbor_label": 1,
+          "neighbor_sha256": "28f7f530ca09de7301c7753fefd975d3421820fc988c6a3dd440d1fedd2e4bb4",
+          "neighbor_week": 9,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 1
+        },
+        {
+          "distance": 0.0058313366,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1663154,
+          "neighbor_label": 1,
+          "neighbor_sha256": "d89b45c8b3f137673b0a15de8b5c798044f84190c2c0d5f32d75c72107310774",
+          "neighbor_week": 16,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 2
+        },
+        {
+          "distance": 0.005877315,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1032030,
+          "neighbor_label": 1,
+          "neighbor_sha256": "07d7e70c0fb9a1c2dbb361496a6bb2c707c36d89a921903d81dddeea95d84aa3",
+          "neighbor_week": 10,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 3
+        },
+        {
+          "distance": 0.0060468377,
+          "neighbor_family": "berbew",
+          "neighbor_id": 1058641,
+          "neighbor_label": 1,
+          "neighbor_sha256": "e9038ce03613755c6d90910fd39a29f890664463adf587675a45ce61bb7486fa",
+          "neighbor_week": 10,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 4
+        },
+        {
+          "distance": 0.0062066265,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4977458,
+          "neighbor_label": 1,
+          "neighbor_sha256": "32ae62943b48a52ec1fef632d42fa94298b9feb50c4193c6d4ba127a2a0362c0",
+          "neighbor_week": 49,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 5
+        },
+        {
+          "distance": 0.0063282074,
+          "neighbor_family": "berbew",
+          "neighbor_id": 5081711,
+          "neighbor_label": 1,
+          "neighbor_sha256": "4c9face4d99362a04c2373c1466b802c652aa5358fca9b933fc9ab30d6808131",
+          "neighbor_week": 50,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 6
+        },
+        {
+          "distance": 0.00650515,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4789409,
+          "neighbor_label": 1,
+          "neighbor_sha256": "a3c91294f79f294e5be7bcb00c2a3d4e0840a566bf04087d1ba95cfe285bebdc",
+          "neighbor_week": 47,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 7
+        },
+        {
+          "distance": 0.0065239035,
+          "neighbor_family": "berbew",
+          "neighbor_id": 4590592,
+          "neighbor_label": 1,
+          "neighbor_sha256": "c6cfad5c598d2dd3c5f3cc3b6c1669e9165d3743bcc2255218db137ca1c70c15",
+          "neighbor_week": 45,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 8
+        },
+        {
+          "distance": 0.006597892,
+          "neighbor_family": "berbew",
+          "neighbor_id": 3658000,
+          "neighbor_label": 1,
+          "neighbor_sha256": "064a8b9c6fb223b50fc8838e0ee8393a5275f2d08a2ef0e7ef30ced07b906795",
+          "neighbor_week": 36,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 9
+        },
+        {
+          "distance": 0.006741242,
+          "neighbor_family": "berbew",
+          "neighbor_id": 3771949,
+          "neighbor_label": 1,
+          "neighbor_sha256": "6dfb666c9e898b2c846b4c134bd51942f6cef01006aedfb17d599635992d58db",
+          "neighbor_week": 37,
+          "query_id": 10021055,
+          "query_ordinal": 0,
+          "query_week": 52,
+          "rank": 10
+        }
+      ],
+      "function": "cuvs_ivf_flat",
+      "posthoc_family_metrics": {
+        "top_1": {
+          "denominator_query_known_family_pairs": 1575,
+          "expected_uniform_random_train_reference_rate": 0.027555710334771152,
+          "known_neighbor_family_coverage": 0.765079365079365,
+          "matching_pairs": 717,
+          "same_known_family_rate": 0.4552380952380952
+        },
+        "top_10": {
+          "denominator_query_known_family_pairs": 15750,
+          "expected_uniform_random_train_reference_rate": 0.027555710334771152,
+          "known_neighbor_family_coverage": 0.7036190476190476,
+          "matching_pairs": 5564,
+          "same_known_family_rate": 0.3532698412698413
+        }
+      },
+      "r3_capture": {
+        "elapsed_s": 1.0037028609658591,
+        "query_id": "02f1af3f-270f-4a22-8559-dee13bd59478",
+        "rows": 36180,
+        "schema": "query_ordinal: uint64 not null\nquery_id: int64 not null\nquery_week: int32 not null\nquery_label: int32 not null\nrank: uint32 not null\nneighbor_id: int64 not null\nneighbor_week: int32 not null\nneighbor_label: int32 not null\nneighbor_sha256: string_view not null\nneighbor_family: string_view not null\ndistance: float not null",
+        "source_result": "docs/research/ember2024/results/22_cuvs_ivf_flat_r3.json",
+        "status": "ok"
+      },
+      "source_sql": "docs/research/ember2024/sql/22_cuvs_ivf_flat.sql",
+      "three_run_captures": [
+        {
+          "capture": "22_cuvs_ivf_flat",
+          "elapsed_seconds": 1.1665845430106856,
+          "query_id": "987bf00a-e48b-434f-b3e9-8824c1e3b46e",
+          "rows": 36180,
+          "status": "ok"
+        },
+        {
+          "capture": "22_cuvs_ivf_flat_r2",
+          "elapsed_seconds": 1.005402005976066,
+          "query_id": "804bd975-c20f-4156-b0c2-57827865ecf9",
+          "rows": 36180,
+          "status": "ok"
+        },
+        {
+          "capture": "22_cuvs_ivf_flat_r3",
+          "elapsed_seconds": 1.0037028609658591,
+          "query_id": "02f1af3f-270f-4a22-8559-dee13bd59478",
+          "rows": 36180,
+          "status": "ok"
+        }
+      ],
+      "three_run_median_whole_statement_seconds": 1.005402005976066
+    }
+  ],
+  "name": "ember2024_historical_reference_search"
+}

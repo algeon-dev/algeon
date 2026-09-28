@@ -1,0 +1,54 @@
+This example uses the prepared graph inputs described on the
+[MerRec dataset and graph capture page](../../guides/datasets/merrec.mdx).
+
+### Which collectible categories should accompany a Nintendo games landing page?
+
+Personalized PageRank ranks the top 100 non-seed product groups from observed
+browsing transitions around the captured Nintendo Games seed. Jaccard then
+compares distinct item-view audiences for those groups and the seed. The final
+filter keeps `Toys & Collectibles` groups with at least 30 viewers.
+
+```sql
+SELECT m.product_id, m.brand_name, m.category, m.leaf_category,
+       m.viewers, r.similarity AS audience_jaccard
+FROM cugraph_jaccard(
+  edges => (SELECT src, dst FROM mr_audience),
+  vertex_pairs => (
+    SELECT CAST(672 AS INT) AS first, candidates.vertex AS second
+    FROM (
+      SELECT vertex, value
+      FROM cugraph_personalized_pagerank(
+        edges => (SELECT src, dst, weight FROM mr_edges),
+        personalization => (
+          SELECT id AS vertex, CAST(1.0 AS DOUBLE) AS value
+          FROM mr_nodes WHERE product_id = '15928_1315'))
+      WHERE vertex <> 672
+      ORDER BY value DESC, vertex LIMIT 100
+    ) candidates
+  ), directed => false
+) r
+JOIN mr_nodes m ON m.id = r.second
+WHERE m.category = 'Toys & Collectibles' AND m.viewers >= 30
+ORDER BY r.similarity DESC, m.product_id
+LIMIT 10;
+```
+
+The captured query returns 10 rows. The table shows its first six rows, with
+Jaccard rounded to six decimal places.
+
+| Rank | Product ID | Brand | Leaf category | Viewers | Audience Jaccard |
+|---:|---|---|---|---:|---:|
+| 1 | `17470_3525` | Pokemon | Single Cards | 135 | 0.134286 |
+| 2 | `0_561` | NULL | Action Figures | 395 | 0.128866 |
+| 3 | `7969_2428` | Funko | Bobbleheads | 315 | 0.116054 |
+| 4 | `12864_2430` | LEGO | LEGO Toys | 211 | 0.102564 |
+| 5 | `0_3525` | NULL | Single Cards | 159 | 0.096354 |
+| 6 | `7969_561` | Funko | Action Figures | 234 | 0.094923 |
+
+`product_id` groups listings by brand and leaf category, and each row can
+represent multiple items. The score measures audience overlap for relevance
+review. The query does not evaluate purchases, conversions, or revenue uplift. The
+source sample covers one October 2023 shard.
+
+See the [full query capture](/data/merrec-graph-capture.json) for the exact
+result schema, query ID, SQL, and all ten captured rows.
