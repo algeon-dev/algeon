@@ -211,7 +211,7 @@ fn attach_cancelled_attempt_then_fail_delivery(
         .expect("attempt-owned query registers");
     let (report, snapshot) = cancelled_attempt_report_snapshot(query_id);
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot), None)
         .expect("sealed attempt report attaches to its exact coordinator generation");
     let delivery = tonic::Status::internal("Flight delivery failed after the attempt sealed");
     planning
@@ -241,7 +241,7 @@ fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
     assert_eq!(snapshot.footer().terminal.as_ref(), Some(&RuntimeTerminalOutcome::Succeeded));
 
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot), None)
         .expect("the matching sealed attempt snapshot is accepted");
     planning.into_execution().expect("planning promotes to execution").succeed();
 
@@ -437,7 +437,7 @@ fn execution_tsv_projects_the_sealed_attempt_fact_matrix() {
             expected_failure_summary =
                 report.primary_failure.as_ref().map(|summary| serde_json::to_string(summary).unwrap());
             coordinator
-                .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+                .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot), None)
                 .expect("sealed attempt report attaches to its exact coordinator generation");
         }
 
@@ -515,7 +515,7 @@ fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
     let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
 
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot), None)
         .expect("the matching sealed attempt snapshot is accepted");
     let delivery = tonic::Status::resource_exhausted("attempt failed after sealed report publication");
     planning
@@ -563,7 +563,7 @@ fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
     let mut mismatched = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
     mismatched.timestamps.report_ready_ns = None;
     let error = coordinator
-        .attach_attempt_report(_planning.key(), Arc::new(mismatched), Some(snapshot))
+        .attach_attempt_report(_planning.key(), Arc::new(mismatched), Some(snapshot), None)
         .expect_err("coordinator rejects a pre-ready report that only shares the attempt identity");
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::InvalidTransition);
 }
@@ -917,7 +917,7 @@ fn stale_generation_and_observation_identity_cannot_mutate_replacement() {
     let error = coordinator.acquire_activity(&first_key, &first_observation).unwrap_err();
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::StaleGeneration);
     let error = coordinator
-        .attach_attempt_report(&first_key, Arc::new(cpu_attempt_report("same-id")), None)
+        .attach_attempt_report(&first_key, Arc::new(cpu_attempt_report("same-id")), None, None)
         .expect_err("a delayed report cannot attach to a reused query id");
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::StaleGeneration);
     assert!(
@@ -964,7 +964,7 @@ fn planning_report_handoff_keeps_attempt_owned_record_live_until_the_sealed_repo
 
     let (report, snapshot) = cancelled_attempt_report_snapshot("planning-handoff-gate");
     coordinator
-        .attach_attempt_report(&key, Arc::new(report), Some(snapshot))
+        .attach_attempt_report(&key, Arc::new(report), Some(snapshot), None)
         .expect("the registered handoff accepts its exact sealed report");
     coordinator
         .register_with_id_with_attempt_observation(
@@ -1454,7 +1454,7 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         .unwrap();
     let (report, snapshot) = cancelled_attempt_report_snapshot("forced-shutdown");
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot), None)
         .expect("sealed cancelled attempt report attaches before shutdown delivery times out");
     let execution = planning.into_execution().unwrap();
     execution.hot_counters().record_output(3, 64);
@@ -1684,7 +1684,7 @@ fn terminal_runtime_footer_preserves_structured_error_identity_after_capture_tru
     report.primary_failure = Some(failure);
     let (report, snapshot) = sealed_attempt_report_snapshot(report);
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot), None)
         .expect("sealed failed attempt report attaches before delivery terminalization");
     planning
         .into_execution()
@@ -2132,7 +2132,7 @@ fn retained_unavailable_runtime_artifact_v2_keeps_attempt_projection_when_captur
         .unwrap();
     let (report, snapshot) = cancelled_attempt_report_snapshot("bounded-capture");
     coordinator
-        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot), None)
         .expect("capture-truncated query accepts its canonical sealed report");
     planning.into_execution().unwrap().succeed();
 

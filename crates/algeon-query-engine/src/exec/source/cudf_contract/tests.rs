@@ -390,6 +390,33 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
 }
 
 #[test]
+fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() {
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let source = local_test_source(vec![
+        local_test_file("/tmp/sparse-payload.parquet", "sparse", 2)
+            .with_row_group_null_counts(1, vec![Some(10), Some(4)]),
+    ]);
+    let plan = chunk::plan_local_parquet_source_chunks(
+        plan::NodeId::from_index_for_internal_use(1),
+        &source,
+        chunk::SourceChunkPlanningPolicy::new(None, 1),
+    )
+    .expect("one row group per chunk splits the file");
+    let expected = BTreeMap::from([("payload".to_string(), vec![Some(10), Some(4)])]);
+
+    let (chunk_source, _) = cudf_local_parquet_source_chunk(&context, &source, &plan.chunks[0])
+        .expect("single chunk lowers through the cudf contract");
+    let (batch_source, _) = cudf_local_parquet_source_chunk_batch(&context, &source, &plan.chunks)
+        .expect("chunk batch lowers through the cudf contract");
+    let (file_source, _) = cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 0)
+        .expect("file selection lowers through the cudf contract");
+
+    for cudf_source in [chunk_source, batch_source, file_source] {
+        assert_eq!(cudf_source.files()[0].row_group_null_counts(), &expected);
+    }
+}
+
+#[test]
 fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
     let context = ExecutionContext::builder().build().expect("execution context builds");
     let source = remote_direct_test_source().with_reader_predicate(expr::Expr::binary(

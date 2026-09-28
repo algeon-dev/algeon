@@ -18,6 +18,12 @@ column:
 
 - The ID must be non-null `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`.
 - IDs may repeat. Result ordinals disambiguate physical rows with equal IDs.
+- A subquery's top-level `ORDER BY` fixes the order its rows are numbered in.
+  Sort keys must be output columns of the subquery, by name or 1-based
+  position; other keys are rejected with `input_ordering_key_not_projected`
+  unless `LIMIT`, `OFFSET`, or `FETCH` bounds the rows. Without a top-level
+  `ORDER BY`, row order is unspecified, and rows that tie on every key have no
+  stable order.
 - The ID comes from a relation field. Name the field in each JSON binding with
   `"id"`; cuVS does not assign a logical ID from row position.
 
@@ -47,6 +53,11 @@ Each binding chooses one vector shape. Feature order defines dimension order.
 - List elements are non-null. `FixedSizeList` has a positive dimension `D`.
 - Variable-width `List` and `LargeList` rows must have one uniform, positive
   dimension after evaluation.
+
+`WHERE column IS NOT NULL` filters rows but does not make a column
+non-nullable in the schema, so it cannot satisfy the non-null feature
+requirements above. Use `COALESCE(column, CAST(0 AS REAL))` or another
+null-free expression in the subquery projection instead.
 
 ## Element types
 

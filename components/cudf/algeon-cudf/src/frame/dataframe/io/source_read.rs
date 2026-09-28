@@ -1,15 +1,5 @@
 //! Physical Parquet reads for planned source chunks.
 
-use std::{fs::File, sync::Arc};
-
-use ::parquet::{
-    file::{
-        metadata::ParquetMetaData,
-        reader::{FileReader, SerializedFileReader},
-    },
-    schema::types::ColumnDescriptor,
-};
-
 use super::{
     super::owned::DataFrame,
     require_reader_schema_names,
@@ -52,7 +42,11 @@ impl ParquetPhysicalReadPlan {
         Self { read_columns, all_null_read_columns: Vec::new(), row_count: None, requires_per_chunk_batch: false }
     }
 
-    fn from_footer(read_columns: Vec<String>, all_null_read_columns: Vec<String>, selected_row_count: usize) -> Self {
+    fn without_all_null_columns(
+        read_columns: Vec<String>,
+        all_null_read_columns: Vec<String>,
+        selected_row_count: usize,
+    ) -> Self {
         let all_null_set: FastHashSet<&str> = all_null_read_columns.iter().map(String::as_str).collect();
         let read_columns = read_columns.into_iter().filter(|column| !all_null_set.contains(column.as_str())).collect();
         Self {
@@ -82,55 +76,55 @@ fn parquet_physical_read_plan(
         return Ok(ParquetPhysicalReadPlan::new(read_columns));
     }
 
-    let Some((all_null_read_columns, selected_row_count)) =
-        parquet_all_null_read_columns_from_footer(source, chunk, &read_columns)?
-    else {
-        return Ok(ParquetPhysicalReadPlan::new(read_columns));
-    };
-    if all_null_read_columns.is_empty() {
-        return Ok(ParquetPhysicalReadPlan::new(read_columns));
+    match parquet_all_null_read_columns(source, chunk, &read_columns)? {
+        Some((all_null_read_columns, selected_row_count)) => Ok(ParquetPhysicalReadPlan::without_all_null_columns(
+            read_columns,
+            all_null_read_columns,
+            selected_row_count,
+        )),
+        None => Ok(ParquetPhysicalReadPlan::new(read_columns)),
     }
-
-    Ok(ParquetPhysicalReadPlan::from_footer(read_columns, all_null_read_columns, selected_row_count))
 }
 
-fn parquet_all_null_read_columns_from_footer(
+/// Returns the nullable read columns that the source file's row-group null
+/// counts prove all-null across the chunk's row groups, with the selected row
+/// count, or `None` when no read column is proven all-null.
+fn parquet_all_null_read_columns(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     read_columns: &[String],
 ) -> Result<Option<(Vec<String>, usize)>> {
-    let file = match File::open(chunk.path()) {
-        Ok(file) => file,
-        Err(_) => return Ok(None),
-    };
-    let reader = match SerializedFileReader::new(file) {
-        Ok(reader) => reader,
-        Err(_) => return Ok(None),
-    };
-    let metadata = reader.metadata();
-    let Some(selected_row_groups) = selected_footer_row_groups(metadata, chunk) else {
+    let Some(file) = source.files().get(chunk.file_index()) else {
         return Ok(None);
     };
-    if selected_row_groups.is_empty() {
+    let Some(row_group_rows) = file.row_group_rows() else {
+        return Ok(None);
+    };
+    let selected_row_groups = if chunk.reads_all_row_groups() {
+        (0..row_group_rows.len()).collect()
+    } else {
+        chunk.row_group_indexes().to_vec()
+    };
+    if selected_row_groups.is_empty() || selected_row_groups.iter().any(|row_group| *row_group >= row_group_rows.len())
+    {
         return Ok(None);
     }
-    let selected_row_count = selected_footer_row_count(metadata, &selected_row_groups)?;
-    let schema = metadata.file_metadata().schema_descr();
-    let mut all_null_read_columns = Vec::new();
-    for (read_index, read_column) in read_columns.iter().enumerate() {
-        let Some(schema_column) = source.schema().column(read_column) else {
-            continue;
-        };
-        if !schema_column.nullable() {
-            continue;
-        }
-        let Some(column_index) = footer_column_index(schema.columns(), read_index, read_column) else {
-            continue;
-        };
-        if footer_column_all_null(metadata, &selected_row_groups, column_index)? {
-            all_null_read_columns.push(read_column.clone());
-        }
+    let all_null_read_columns = read_columns
+        .iter()
+        .filter(|read_column| source.schema().column(read_column).is_some_and(|column| column.nullable()))
+        .filter(|read_column| {
+            file.row_group_null_counts().get(read_column.as_str()).is_some_and(|null_counts| {
+                selected_row_groups
+                    .iter()
+                    .all(|row_group| null_counts.get(*row_group).copied().flatten() == Some(row_group_rows[*row_group]))
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if all_null_read_columns.is_empty() {
+        return Ok(None);
     }
+    let selected_row_count = selected_row_group_row_count(row_group_rows, &selected_row_groups)?;
     Ok(Some((all_null_read_columns, selected_row_count)))
 }
 
@@ -174,81 +168,23 @@ fn parquet_multi_physical_read_plan(
         return Ok(ParquetPhysicalReadPlan::new(read_columns));
     }
 
-    Ok(ParquetPhysicalReadPlan::from_footer(read_columns, all_null_read_columns, selected_row_count))
+    Ok(ParquetPhysicalReadPlan::without_all_null_columns(read_columns, all_null_read_columns, selected_row_count))
 }
 
-fn selected_footer_row_groups(metadata: &ParquetMetaData, chunk: &SourceChunk) -> Option<Vec<usize>> {
-    if chunk.reads_all_row_groups() {
-        return Some((0..metadata.num_row_groups()).collect());
-    }
-    if chunk.row_group_indexes().iter().all(|row_group| *row_group < metadata.num_row_groups()) {
-        Some(chunk.row_group_indexes().to_vec())
-    } else {
-        None
-    }
-}
-
-fn selected_footer_row_count(metadata: &ParquetMetaData, row_groups: &[usize]) -> Result<usize> {
-    row_groups.iter().try_fold(0usize, |total, row_group| {
-        let rows = metadata.row_group(*row_group).num_rows();
-        let rows = usize::try_from(rows).map_err(|_| {
-            Error::new_with(
-                ErrorCode::UnsupportedOperation,
-                "dataframe::read_parquet_source",
-                "Parquet footer row count exceeds usize",
-            )
-            .with_detail("reason", "parquet_footer_row_count_exceeds_usize")
-            .with_detail("row_group", row_group.to_string())
-            .with_detail("row_count", rows.to_string())
-        })?;
-        total.checked_add(rows).ok_or_else(|| {
-            Error::new_with(
-                ErrorCode::UnsupportedOperation,
-                "dataframe::read_parquet_source",
-                "Parquet footer selected row count overflows usize",
-            )
-            .with_detail("reason", "parquet_footer_selected_row_count_overflow")
-        })
+fn selected_row_group_row_count(row_group_rows: &[u64], row_groups: &[usize]) -> Result<usize> {
+    let row_count = row_groups
+        .iter()
+        .try_fold(0u64, |total, row_group| total.checked_add(row_group_rows[*row_group]))
+        .and_then(|row_count| usize::try_from(row_count).ok());
+    row_count.ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            "dataframe::read_parquet_source",
+            "selected Parquet row-group row count exceeds usize",
+        )
+        .with_detail("reason", "selected_row_group_row_count_exceeds_usize")
+        .with_detail("chunk_row_groups", row_groups.len().to_string())
     })
-}
-
-fn footer_column_index(columns: &[Arc<ColumnDescriptor>], read_index: usize, read_column: &str) -> Option<usize> {
-    columns
-        .get(read_index)
-        .filter(|descriptor| parquet_descriptor_matches_column(descriptor, read_column))
-        .map(|_| read_index)
-        .or_else(|| columns.iter().position(|descriptor| parquet_descriptor_matches_column(descriptor, read_column)))
-}
-
-fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name: &str) -> bool {
-    // `column_name` is a top-level schema column, so it may only match a leaf
-    // whose full dotted path is exactly that name (depth 1). Matching on leaf
-    // name alone would let a nested leaf like `s.id` shadow top-level `id`.
-    let parts = descriptor.path().parts();
-    parts.len() == 1 && parts[0] == column_name
-}
-
-fn footer_column_all_null(metadata: &ParquetMetaData, row_groups: &[usize], column_index: usize) -> Result<bool> {
-    for row_group in row_groups {
-        let row_group_metadata = metadata.row_group(*row_group);
-        let rows = u64::try_from(row_group_metadata.num_rows()).map_err(|_| {
-            Error::new_with(
-                ErrorCode::UnsupportedOperation,
-                "dataframe::read_parquet_source",
-                "Parquet footer row count is negative",
-            )
-            .with_detail("reason", "parquet_footer_negative_row_count")
-            .with_detail("row_group", row_group.to_string())
-            .with_detail("row_count", row_group_metadata.num_rows().to_string())
-        })?;
-        let Some(statistics) = row_group_metadata.column(column_index).statistics() else {
-            return Ok(false);
-        };
-        if statistics.null_count_opt() != Some(rows) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 pub(super) fn read_parquet_source_chunk_frame(

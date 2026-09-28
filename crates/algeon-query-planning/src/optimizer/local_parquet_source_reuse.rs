@@ -830,7 +830,7 @@ fn branch_replay_predicate(predicate: Expr) -> Expr {
         },
         Expr::Concat(exprs) => Expr::concat(exprs.into_iter().map(branch_replay_predicate).collect()),
         Expr::Abs(expr) => Expr::abs(branch_replay_predicate(*expr)),
-        Expr::Sqrt { expr, output_type } => Expr::sqrt(branch_replay_predicate(*expr), output_type),
+        Expr::UnaryMath { op, expr, output_type } => Expr::unary_math(op, branch_replay_predicate(*expr), output_type),
         Expr::Round { expr, decimal_places, output_type } => {
             Expr::round(branch_replay_predicate(*expr), decimal_places, output_type)
         },

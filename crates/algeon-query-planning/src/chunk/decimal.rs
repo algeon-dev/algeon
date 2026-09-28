@@ -178,7 +178,7 @@ fn collect_reader_predicate_decimal_columns(source: &LocalParquetSource, expr: &
         | Expr::StringLength { expr: inner, .. }
         | Expr::RegexpReplace { expr: inner, .. }
         | Expr::Abs(inner)
-        | Expr::Sqrt { expr: inner, .. }
+        | Expr::UnaryMath { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
         | Expr::Extract { expr: inner, .. }
         | Expr::DateTrunc { expr: inner, .. } => collect_reader_predicate_decimal_columns(source, inner, columns),

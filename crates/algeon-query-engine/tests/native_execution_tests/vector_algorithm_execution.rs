@@ -7,7 +7,7 @@ use arrow::{
 };
 use cudf::DataFrame;
 use query_engine::{
-    error::QueryErrorCode,
+    error::{QueryError, QueryErrorCode},
     exec::{QueryExecutionRequest, output::QueryOutput},
     expr::Expr,
     plan::{
@@ -215,21 +215,43 @@ fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
 
 #[test]
 fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_allocations() {
+    let error = execute_failing_columns_knn(vec![1.0], 2);
+    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+    assert_eq!(error.operation(), "query_engine.vector_algorithm.execute");
+    assert_eq!(error.fact_value("algorithm"), Some("brute_force_knn"));
+    assert_eq!(error.fact_value("reason"), Some("k_exceeds_dataset_rows"));
+}
+
+#[test]
+fn compiled_knn_non_finite_input_projects_cudf_validation_details() {
+    let error = execute_failing_columns_knn(vec![1.0, f32::NAN, f32::INFINITY], 1);
+    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+    assert_eq!(error.operation(), "query_engine.vector_algorithm.pack");
+    assert_eq!(error.fact_value("relation_role"), Some("dataset"));
+    assert_eq!(error.fact_value("validation_reason"), Some("non_finite_vector_value"));
+    assert_eq!(error.fact_value("non_finite_count"), Some("2"));
+    assert!(error.fact_value("remedy").is_some_and(|remedy| remedy.contains("NaN")));
+}
+
+/// Runs a single-column kNN whose failure must surface at the vector operator
+/// and checks that the attempt records the vector task and releases its domain.
+fn execute_failing_columns_knn(dataset_x: Vec<f32>, k: usize) -> QueryError {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
-    let plan = knn_plan(Arc::clone(&dataset_schema), Arc::clone(&query_schema), VectorFixtureShape::Columns, 2);
+    let plan = knn_plan(Arc::clone(&dataset_schema), Arc::clone(&query_schema), VectorFixtureShape::Columns, k);
+    let dataset_ids = (7..).take(dataset_x.len()).collect::<Vec<i64>>();
     let dataset_batch = RecordBatch::try_new(
         Arc::clone(&dataset_schema),
-        vec![Arc::new(Int64Array::from(vec![7])), Arc::new(Float32Array::from(vec![1.0]))],
+        vec![Arc::new(Int64Array::from(dataset_ids)), Arc::new(Float32Array::from(dataset_x))],
     )
-    .expect("single-row dataset fixture matches schema");
+    .expect("dataset fixture matches schema");
     let query_batch = RecordBatch::try_new(
         Arc::clone(&query_schema),
         vec![Arc::new(Int64Array::from(vec![9])), Arc::new(Float32Array::from(vec![2.0]))],
     )
     .expect("query fixture matches schema");
     let context = backend_context();
-    let admitted = context.admit_plan(&plan).expect("kNN plan with runtime-checked k is admitted");
+    let admitted = context.admit_plan(&plan).expect("kNN plan with runtime-checked inputs is admitted");
     let runtime = Arc::new(admitted.runtime().expect("query runtime is available"));
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
@@ -258,12 +280,8 @@ fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_alloc
     .into_parts();
     let error = match result {
         Err(error) => error,
-        Ok(_) => panic!("k larger than the dataset row count must fail at the vector operator"),
+        Ok(_) => panic!("invalid kNN input must fail at the vector operator"),
     };
-    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
-    assert_eq!(error.operation(), "query_engine.vector_algorithm.execute");
-    assert_eq!(error.fact_value("algorithm"), Some("brute_force_knn"));
-    assert_eq!(error.fact_value("reason"), Some("k_exceeds_dataset_rows"));
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(
         metrics
@@ -275,6 +293,7 @@ fn compiled_knn_input_failure_records_the_vector_task_and_releases_attempt_alloc
     drop(runtime);
     assert_attempt_domain_released(&admitted);
     admitted.finish();
+    error
 }
 
 #[test]

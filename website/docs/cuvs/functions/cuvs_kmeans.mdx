@@ -77,7 +77,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. |
+| `row_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
 | `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
 | `cluster_id` | `Int32` | no | Query-local numeric assignment label, not a stable business or topic identifier. |
 

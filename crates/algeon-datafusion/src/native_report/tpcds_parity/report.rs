@@ -714,7 +714,7 @@ fn planning_outcome_diagnostics(
         }
         return (Some(CandidateOutcomeKind::Selected), None, None);
     }
-    for outcome in diagnostics.report.outcomes() {
+    for (outcome_index, outcome) in diagnostics.report.outcomes().iter().enumerate() {
         match outcome {
             CandidateOutcome::Selected { .. } => {},
             CandidateOutcome::Deferred { .. } => {
@@ -728,7 +728,12 @@ fn planning_outcome_diagnostics(
                 return (
                     Some(CandidateOutcomeKind::NotSupported),
                     Some(capability_reason.code().to_string()),
-                    unsupported_category(plan, candidate, *capability_reason),
+                    unsupported_category(
+                        plan,
+                        candidate,
+                        *capability_reason,
+                        diagnostics.report.expression_rejection(outcome_index),
+                    ),
                 );
             },
             CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {

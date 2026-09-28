@@ -9,6 +9,7 @@ use std::{
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     common::{DataFusionError, Result},
+    physical_expr::LexOrdering,
     physical_plan::ExecutionPlan,
 };
 use query_engine::plan::QueryPlan;
@@ -45,6 +46,7 @@ impl RelationFunctionExec<CuvsRelationFunctionSpec> {
         operation: CuvsOperation,
         options: CuvsValidatedOptions,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
+        input_orderings: Vec<Option<LexOrdering>>,
         output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
     ) -> Result<Self> {
@@ -58,6 +60,7 @@ impl RelationFunctionExec<CuvsRelationFunctionSpec> {
             output_schema,
             native_execution_config,
             input_names,
+            input_orderings,
             format!("__algeon_datafusion_cuvs_result_{id}"),
         )
     }

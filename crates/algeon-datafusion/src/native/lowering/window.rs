@@ -34,6 +34,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
+        LoweringRejection,
         expression_contract::validate_physical_expr_contract,
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeSort, NormalizedNativeWindow},
@@ -45,7 +46,7 @@ pub(super) fn lower_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
     _required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     validate_schema(Arc::clone(sort.sort.output_schema()))?;
     validate_sort_ordering(sort.sort.ordering(), sort.sort.input_schema())?;
     let mut child_required = BTreeSet::new();
@@ -64,7 +65,7 @@ fn apply_sort_fetch_limit(
     builder: &mut NativeQueryPlanBuilder,
     sorted: LoweredNativeInput,
     fetch: Option<NativeLimitSpec>,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let Some(fetch) = fetch else {
         return Ok(sorted);
     };
@@ -76,7 +77,7 @@ pub(super) fn lower_window_input(
     window: &NormalizedNativeWindow<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let window_schema = window.window.schema();
     let window_input_schema = window.window.input_schema();
     validate_schema(Arc::clone(&window_schema))?;
@@ -100,9 +101,9 @@ pub(super) fn lower_window_input(
 fn validate_window_exprs(
     window_exprs: &[Arc<dyn WindowExpr>],
     input_schema: &SchemaRef,
-) -> Result<(), CapabilityReason> {
+) -> Result<(), LoweringRejection> {
     if window_exprs.is_empty() {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     for window_expr in window_exprs {
         for expr in window_expr.partition_by() {
@@ -116,13 +117,13 @@ fn validate_window_exprs(
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
             validate_standard_window(standard, input_schema)?;
         } else {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
     }
     Ok(())
 }
 
-fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
     validate_physical_expr_contract(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_supported_arrow_type(&data_type)
@@ -131,33 +132,33 @@ fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaR
     {
         Ok(())
     } else {
-        Err(CapabilityReason::UnsupportedType)
+        Err(CapabilityReason::UnsupportedType.into())
     }
 }
 
 fn validate_plain_aggregate_window(
     plain: &PlainAggregateWindowExpr,
     input_schema: &SchemaRef,
-) -> Result<(), CapabilityReason> {
+) -> Result<(), LoweringRejection> {
     let whole_partition = is_whole_partition_frame(plain.get_window_frame());
     let cumulative = is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame());
     if !whole_partition && !cumulative {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     if !plain.order_by().is_empty() && !cumulative {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     if plain.order_by().is_empty() && !whole_partition {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     let aggregate = plain.get_aggregate_expr();
     if aggregate.is_distinct() || !aggregate.order_bys().is_empty() {
-        return Err(CapabilityReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator.into());
     }
     lower_native_aggregate_function(aggregate.fun().name())?;
     let expressions = aggregate.expressions();
     let [arg] = expressions.as_slice() else {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     };
     validate_window_value_expr(arg, input_schema)
 }
@@ -170,13 +171,13 @@ enum StandardWindowKind {
     Lead,
 }
 
-fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
     match standard_window_kind(standard)? {
-        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(CapabilityReason::UnsupportedOperator),
+        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(CapabilityReason::UnsupportedOperator.into()),
         StandardWindowKind::Rank | StandardWindowKind::RowNumber => Ok(()),
         StandardWindowKind::Lag | StandardWindowKind::Lead => {
             if standard.order_by().is_empty() {
-                return Err(CapabilityReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator.into());
             }
             // Parsing the offset / default literals here keeps validation
             // and lowering in sync. We do not commit a fallback reason for
@@ -188,13 +189,13 @@ fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &Schema
     }
 }
 
-fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, CapabilityReason> {
+fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, LoweringRejection> {
     match standard_window_function_name(standard).to_ascii_lowercase().as_str() {
         "rank" => Ok(StandardWindowKind::Rank),
         "row_number" => Ok(StandardWindowKind::RowNumber),
         "lag" => Ok(StandardWindowKind::Lag),
         "lead" => Ok(StandardWindowKind::Lead),
-        _ => Err(CapabilityReason::UnsupportedOperator),
+        _ => Err(CapabilityReason::UnsupportedOperator.into()),
     }
 }
 
@@ -223,7 +224,7 @@ struct LagLeadArgs {
 fn parse_lag_lead_args(
     standard: &StandardWindowExpr,
     input_schema: &SchemaRef,
-) -> Result<LagLeadArgs, CapabilityReason> {
+) -> Result<LagLeadArgs, LoweringRejection> {
     let udf = standard
         .get_standard_func_expr()
         .as_any()
@@ -231,7 +232,7 @@ fn parse_lag_lead_args(
         .ok_or(CapabilityReason::UnsupportedOperator)?;
     let args = udf.args();
     if args.is_empty() || args.len() > 3 {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     let value_expr = Arc::clone(&args[0]);
     validate_physical_expr_contract(&value_expr, input_schema)?;
@@ -241,7 +242,7 @@ fn parse_lag_lead_args(
         || is_timestamp_with_timezone(&value_type)
         || is_supported_list_carry_type(&value_type)
     {
-        return Err(CapabilityReason::UnsupportedType);
+        return Err(CapabilityReason::UnsupportedType.into());
     }
     let offset = match args.get(1) {
         None => 1u32,
@@ -254,7 +255,7 @@ fn parse_lag_lead_args(
     Ok(LagLeadArgs { value_expr, offset, default })
 }
 
-fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
+fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
     validate_physical_expr_contract(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_supported_arrow_type(&data_type)
@@ -263,11 +264,11 @@ fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schem
     {
         Ok(())
     } else {
-        Err(CapabilityReason::UnsupportedType)
+        Err(CapabilityReason::UnsupportedType.into())
     }
 }
 
-fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, CapabilityReason> {
+fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, LoweringRejection> {
     let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     match literal.value() {
         ScalarValue::Null => Ok(1u32),
@@ -289,7 +290,7 @@ fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, Capability
         ScalarValue::UInt64(Some(value)) => {
             offset_from_i64(i64::try_from(*value).map_err(|_| CapabilityReason::UnsupportedExpression)?)
         },
-        _ => Err(CapabilityReason::UnsupportedExpression),
+        _ => Err(CapabilityReason::UnsupportedExpression.into()),
     }
 }
 
@@ -300,20 +301,20 @@ fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, Capability
 /// `[0, i32::MAX]`. Rejecting larger offsets here means the plan falls back
 /// to CPU DataFusion instead of admitting a native plan that would error at
 /// execute time.
-fn offset_from_i64(value: i64) -> Result<u32, CapabilityReason> {
+fn offset_from_i64(value: i64) -> Result<u32, LoweringRejection> {
     if value < 0 {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     let value = u64::try_from(value).map_err(|_| CapabilityReason::UnsupportedExpression)?;
     if value > i32::MAX as u64 {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     Ok(value as u32)
 }
 
-fn offset_from_u32(value: u32) -> Result<u32, CapabilityReason> {
+fn offset_from_u32(value: u32) -> Result<u32, LoweringRejection> {
     if value > i32::MAX as u32 {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     Ok(value)
 }
@@ -321,7 +322,7 @@ fn offset_from_u32(value: u32) -> Result<u32, CapabilityReason> {
 fn parse_lag_lead_default(
     expr: &Arc<dyn PhysicalExpr>,
     value_type: &DataType,
-) -> Result<Option<NativeLiteralValue>, CapabilityReason> {
+) -> Result<Option<NativeLiteralValue>, LoweringRejection> {
     let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     let scalar = literal.value();
     // Match DataFusion's lag/lead constructor, which encodes the missing
@@ -338,7 +339,7 @@ fn parse_lag_lead_default(
         return Ok(None);
     }
     if &lowered.data_type() != value_type {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
     // Mirror the literal families that the engine's
     // `build_lag_lead_value_fill_scalar` can lower to a cudf Scalar today.
@@ -368,7 +369,7 @@ fn parse_lag_lead_default(
         | NativeLiteralValue::Timestamp { .. }
         | NativeLiteralValue::Duration { .. }
         | NativeLiteralValue::IntervalMonthDayNano { .. }
-        | NativeLiteralValue::Null(_) => Err(CapabilityReason::UnsupportedExpression),
+        | NativeLiteralValue::Null(_) => Err(CapabilityReason::UnsupportedExpression.into()),
     }
 }
 
@@ -391,9 +392,9 @@ fn scalar_is_unbounded(value: &ScalarValue) -> bool {
 fn native_window_output_schema_and_bindings(
     input: &LoweredNativeInput,
     window_schema: &SchemaRef,
-) -> Result<(SchemaRef, Vec<FieldBinding>), CapabilityReason> {
+) -> Result<(SchemaRef, Vec<FieldBinding>), LoweringRejection> {
     if window_schema.fields().len() < input.bindings.len() {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
 
     let frontend_names = window_schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
@@ -427,7 +428,7 @@ fn materialize_window_key_expressions(
     window_exprs: &[Arc<dyn WindowExpr>],
     input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<PreparedWindowInput, CapabilityReason> {
+) -> Result<PreparedWindowInput, LoweringRejection> {
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     let mut materialized_keys = Vec::<MaterializedWindowKey>::new();
     let mut prepared_keys = Vec::with_capacity(window_exprs.len());
@@ -448,7 +449,7 @@ fn materialize_window_key_expressions(
                     sort_expr.options.nulls_first,
                 ))
             })
-            .collect::<Result<Vec<_>, CapabilityReason>>()?;
+            .collect::<Result<Vec<_>, LoweringRejection>>()?;
         prepared_keys.push(PreparedWindowKeys { partition_by, order_by });
     }
 
@@ -488,7 +489,7 @@ fn window_key_expr(
     input: &LoweredNativeInput,
     used_names: &mut BTreeSet<String>,
     materialized_keys: &mut Vec<MaterializedWindowKey>,
-) -> Result<NativeExpr, CapabilityReason> {
+) -> Result<NativeExpr, LoweringRejection> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let binding = input.binding_for_column(column)?;
         return Ok(NativeExpr::column(binding.native_name.as_str()));
@@ -524,10 +525,10 @@ fn lower_window_spec(
     input: &LoweredNativeInput,
     output_bindings: &[FieldBinding],
     prepared_keys: &[PreparedWindowKeys],
-) -> Result<NativeWindowSpec, CapabilityReason> {
+) -> Result<NativeWindowSpec, LoweringRejection> {
     let input_field_count = input_schema.fields().len();
     if output_bindings.len() != input_field_count + window_exprs.len() || prepared_keys.len() != window_exprs.len() {
-        return Err(CapabilityReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression.into());
     }
 
     let first_keys = &prepared_keys[0];
@@ -539,10 +540,10 @@ fn lower_window_spec(
         let partition_by = keys.partition_by.clone();
         let order_by = keys.order_by.clone();
         if expected_partition_by != partition_by {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
         if expected_order_by != order_by {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
 
         let alias = output_bindings
@@ -554,7 +555,7 @@ fn lower_window_spec(
             let aggregate = plain.get_aggregate_expr();
             let expressions = aggregate.expressions();
             let [arg] = expressions.as_slice() else {
-                return Err(CapabilityReason::UnsupportedExpression);
+                return Err(CapabilityReason::UnsupportedExpression.into());
             };
             let expr = lower_physical_expr_with_bindings(arg, input_schema, Some(&input.bindings))?;
             let frame = if is_whole_partition_frame(plain.get_window_frame()) {
@@ -562,7 +563,7 @@ fn lower_window_spec(
             } else if is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame()) {
                 NativeWindowFrame::RowsUnboundedPrecedingToCurrent
             } else {
-                return Err(CapabilityReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator.into());
             };
             functions.push(NativeWindowFunction::Aggregate {
                 function: lower_native_aggregate_function(aggregate.fun().name())?,
@@ -594,7 +595,7 @@ fn lower_window_spec(
                 },
             }
         } else {
-            return Err(CapabilityReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator.into());
         }
     }
 

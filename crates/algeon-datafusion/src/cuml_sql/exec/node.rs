@@ -9,6 +9,7 @@ use std::{
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     common::{DataFusionError, Result},
+    physical_expr::LexOrdering,
     physical_plan::ExecutionPlan,
 };
 use query_engine::plan::{MlForestModelSnapshot, QueryPlan};
@@ -47,6 +48,7 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
         options: CumlValidatedOptions,
         model: Option<Arc<MlForestModelSnapshot>>,
         inputs: Vec<Arc<dyn ExecutionPlan>>,
+        input_orderings: Vec<Option<LexOrdering>>,
         output_schema: SchemaRef,
         native_execution_config: AlgeonNativeExecutionConfig,
     ) -> Result<Self> {
@@ -60,6 +62,7 @@ impl RelationFunctionExec<CumlRelationFunctionSpec> {
             output_schema,
             native_execution_config,
             input_names,
+            input_orderings,
             format!("__algeon_datafusion_cuml_result_{id}"),
         )
     }

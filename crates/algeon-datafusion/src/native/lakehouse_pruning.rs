@@ -336,7 +336,7 @@ fn static_row_group_pruning_expr(source: &LocalParquetSource, expr: &Expr) -> Op
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }

@@ -782,7 +782,7 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }
         | Expr::Substring { expr, .. }

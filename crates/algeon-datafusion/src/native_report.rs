@@ -20,29 +20,15 @@ use std::sync::Arc;
 
 use datafusion::{
     common::ScalarValue,
-    datasource::{
-        memory::MemorySourceConfig,
-        physical_plan::{FileSource, ParquetSource},
-        source::DataSourceExec,
-    },
-    logical_expr::{Operator, WindowFrame, WindowFrameBound, WindowFrameUnits},
-    physical_expr::{
-        PhysicalExpr, ScalarFunctionExpr,
-        expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal,
-            NegativeExpr, NotExpr, TryCastExpr,
-        },
-        window::{PlainAggregateWindowExpr, SlidingAggregateWindowExpr, StandardWindowExpr, WindowExpr},
-    },
+    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
+    logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits},
+    physical_expr::window::{PlainAggregateWindowExpr, SlidingAggregateWindowExpr, StandardWindowExpr, WindowExpr},
     physical_plan::{
         ExecutionPlan,
         aggregates::AggregateExec,
         empty::EmptyExec,
-        filter::FilterExec,
         joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
         placeholder_row::PlaceholderRowExec,
-        projection::ProjectionExec,
-        sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
         windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
 };
@@ -218,7 +204,8 @@ fn report_rows_for_plan(
         .report
         .outcomes()
         .iter()
-        .map(|outcome| match outcome {
+        .enumerate()
+        .map(|(outcome_index, outcome)| match outcome {
             CandidateOutcome::Selected { candidate } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
                 physical_root: physical_root.clone(),
@@ -257,6 +244,7 @@ fn report_rows_for_plan(
                     source_diagnostics_plan.as_ref(),
                     candidate,
                     *capability_reason,
+                    result.report.expression_rejection(outcome_index),
                 ),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
@@ -351,7 +339,8 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
         .report
         .outcomes()
         .iter()
-        .map(|outcome| match outcome {
+        .enumerate()
+        .map(|(outcome_index, outcome)| match outcome {
             CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
                 NativeDataFusionPlanningRow {
                     query_id: item.query_id.clone(),
@@ -395,7 +384,12 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
-                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
+                unsupported_category: unsupported_category(
+                    planned_plan.as_ref(),
+                    candidate,
+                    *capability_reason,
+                    native_diagnostics.report.expression_rejection(outcome_index),
+                ),
                 capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
                     candidate,
@@ -462,7 +456,8 @@ fn datafusion_execution_rows_for_item(
         .report
         .outcomes()
         .iter()
-        .map(|outcome| match outcome {
+        .enumerate()
+        .map(|(outcome_index, outcome)| match outcome {
             CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
                 NativeDataFusionExecutionRow {
                     query_id: item.query_id.clone(),
@@ -506,7 +501,12 @@ fn datafusion_execution_rows_for_item(
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 planning_outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
-                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
+                unsupported_category: unsupported_category(
+                    planned_plan.as_ref(),
+                    candidate,
+                    *capability_reason,
+                    native_diagnostics.report.expression_rejection(outcome_index),
+                ),
                 capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
                     candidate,

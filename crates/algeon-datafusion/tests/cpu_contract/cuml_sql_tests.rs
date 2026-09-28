@@ -406,15 +406,8 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             .split_once("```sql\n")
             .and_then(|(_, rest)| rest.split_once("\n```").map(|(sql, _)| sql))
             .unwrap_or_else(|| panic!("{} is missing Quickstart SQL", page_path.display()));
-        let compact_sql = |sql: &str| {
-            sql.chars().filter(|ch| !ch.is_whitespace()).collect::<String>()
-        };
-        assert_eq!(
-            compact_sql(rendered_sql),
-            compact_sql(descriptor.quickstart_sql),
-            "{}",
-            page_path.display()
-        );
+        let compact_sql = |sql: &str| sql.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+        assert_eq!(compact_sql(rendered_sql), compact_sql(descriptor.quickstart_sql), "{}", page_path.display());
         assert!(page.contains(descriptor.summary), "{}", page_path.display());
         for limit in descriptor.limitations {
             assert!(page.contains(&mdx_table_text(limit)), "{}", page_path.display());
@@ -520,6 +513,32 @@ async fn sql_schemas_match_ir_and_physical_nodes() {
         let physical = ctx.state().create_physical_plan(&logical).await.unwrap();
         assert!(find_exec(physical.as_ref()).is_some(), "{}", operation.descriptor().sql_function_name);
     }
+}
+
+#[tokio::test]
+async fn ordered_input_relations_keep_their_sort_through_physical_optimization() {
+    let ctx = context();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("d0", DataType::Float32, false),
+        Field::new("d1", DataType::Float32, false),
+    ]));
+    let partitions = (0..3).map(|_| vec![RecordBatch::new_empty(Arc::clone(&schema))]).collect();
+    ctx.register_table("partitioned_vectors", Arc::new(MemTable::try_new(schema, partitions).unwrap())).unwrap();
+    let statement = format!(
+        "SELECT * FROM {CUML_TSVD_FUNCTION}(\
+             input => (SELECT id, d0, d1 FROM partitioned_vectors ORDER BY id DESC), n_components => 1)"
+    );
+    let logical = ctx.state().create_logical_plan(&statement).await.unwrap();
+    let physical = ctx.state().create_physical_plan(&logical).await.unwrap();
+    let exec = find_exec(physical.as_ref()).expect("CumlAlgoExec");
+    let [Some(_)] = &exec.required_input_ordering()[..] else {
+        panic!("the input ORDER BY must become a required input ordering")
+    };
+    let input = exec.children()[0];
+    assert_eq!(input.properties().output_partitioning().partition_count(), 1, "{}", input.name());
+    let ordering = input.properties().output_ordering().expect("the planned input must keep its ordering");
+    assert_eq!(ordering.to_string(), "id@0 DESC");
 }
 
 #[derive(Debug)]
@@ -689,6 +708,11 @@ async fn schema_rejections_preserve_structured_reasons_and_float32_support() {
         let typed = error.find_algeon_error().unwrap();
         if let Some(reason) = reason {
             assert_eq!(typed.fact_value("reason"), Some(reason));
+            if reason == "nullable_feature_field" {
+                let remedy = typed.fact_value("remedy").expect("nullable feature rejection carries a remedy fact");
+                assert!(remedy.contains("COALESCE"), "{remedy}");
+                assert!(remedy.contains("IS NOT NULL"), "{remedy}");
+            }
         } else {
             assert_eq!(typed.code(), ErrorCode::UnsupportedType);
             assert_eq!(typed.fact_value("expected_type"), Some("Float32"));

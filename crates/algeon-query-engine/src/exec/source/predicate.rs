@@ -242,7 +242,7 @@ fn lower_source_reader_ast_expr(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }

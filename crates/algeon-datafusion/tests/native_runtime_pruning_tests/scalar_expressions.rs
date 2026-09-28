@@ -1,6 +1,11 @@
 use std::fs;
 
 use algeon_datafusion::{capability::CapabilityReason, report::CandidateOutcome};
+use arrow::{
+    array::{Array, AsArray},
+    compute::concat_batches,
+    datatypes::{Float32Type, Float64Type},
+};
 use cudf::testing::arrow::{
     arrow_host_export_call_count_for_test, arrow_host_import_call_count_for_test,
     reset_arrow_host_interop_observation_for_test,
@@ -141,6 +146,87 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
 
         fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[tokio::test]
+async fn native_runtime_ln_exp_match_cpu_ieee_results() {
+    let dir = unique_temp_dir("algeon-datafusion-native-runtime-ln-exp");
+    let path = dir.join("input.parquet");
+    write_nullable_scalar_expression_input_parquet(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_LN_EXP_SCALAR_QUERY).await;
+    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_LN_EXP_SCALAR_QUERY).await;
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_algeon_native_exec(&optimization.plan, "LN/EXP plan must rewrite to AlgeonNativeExec");
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    let cpu = concat_batches(&cpu_batches[0].schema(), &cpu_batches).unwrap();
+    let native = concat_batches(&native_batches[0].schema(), &native_batches).unwrap();
+    assert_eq!(cpu.schema().fields(), native.schema().fields());
+    assert_eq!(cpu.num_rows(), 6);
+    assert_eq!(native.num_rows(), cpu.num_rows());
+    assert_eq!(cpu.column(0).as_ref(), native.column(0).as_ref(), "row_id order must match");
+
+    let cpu_ln_f64 = cpu.column(1).as_primitive::<Float64Type>();
+    assert!(cpu_ln_f64.value(0).is_nan(), "fixture must cover LN of a negative input");
+    assert_eq!(cpu_ln_f64.value(1), f64::NEG_INFINITY, "fixture must cover LN(0)");
+    assert!(cpu_ln_f64.is_null(2), "fixture must cover a null input");
+    assert_eq!(cpu.column(3).as_primitive::<Float64Type>().value(4), f64::INFINITY, "fixture must cover EXP overflow");
+    assert_eq!(cpu.column(4).as_primitive::<Float32Type>().value(4), f32::INFINITY, "fixture must cover EXP overflow");
+
+    for (column, ulp_distance) in [
+        (1, f64_ulp_distance as fn(f64, f64) -> u64),
+        (2, f32_ulp_distance),
+        (3, f64_ulp_distance),
+        (4, f32_ulp_distance),
+    ] {
+        let name = cpu.schema().field(column).name().clone();
+        let expected = float_values(cpu.column(column).as_ref());
+        let actual = float_values(native.column(column).as_ref());
+        for (row, (expected, actual)) in expected.into_iter().zip(actual).enumerate() {
+            assert!(
+                ieee_values_match(expected, actual, ulp_distance),
+                "{name} row {row}: cpu={expected:?} native={actual:?}"
+            );
+        }
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Null, NaN, and infinity must match exactly. Finite values may differ by a
+/// few units in the last place: DataFusion evaluates LN/EXP with the host libm
+/// while cuDF uses CUDA's device math library, and neither is required to be
+/// correctly rounded.
+fn ieee_values_match(expected: Option<f64>, actual: Option<f64>, ulp_distance: fn(f64, f64) -> u64) -> bool {
+    const MAX_ULP_DISTANCE: u64 = 2;
+    match (expected, actual) {
+        (None, None) => true,
+        (Some(expected), Some(actual)) if !expected.is_finite() || !actual.is_finite() => {
+            expected == actual || (expected.is_nan() && actual.is_nan())
+        },
+        (Some(expected), Some(actual)) => ulp_distance(expected, actual) <= MAX_ULP_DISTANCE,
+        _ => false,
+    }
+}
+
+fn float_values(array: &dyn Array) -> Vec<Option<f64>> {
+    match array.data_type() {
+        DataType::Float64 => array.as_primitive::<Float64Type>().iter().collect(),
+        DataType::Float32 => array.as_primitive::<Float32Type>().iter().map(|value| value.map(f64::from)).collect(),
+        other => panic!("expected a floating-point column, got {other:?}"),
+    }
+}
+
+fn f64_ulp_distance(expected: f64, actual: f64) -> u64 {
+    expected.to_bits().abs_diff(actual.to_bits())
+}
+
+// Both values were widened from Float32, so narrowing them back is exact.
+fn f32_ulp_distance(expected: f64, actual: f64) -> u64 {
+    u64::from((expected as f32).to_bits().abs_diff((actual as f32).to_bits()))
 }
 
 #[tokio::test]

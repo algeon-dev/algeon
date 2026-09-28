@@ -69,6 +69,75 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
     fs::remove_dir_all(dir).unwrap();
 }
 
+// A full sort between a dynamic-filter consumer source and its join probe
+// accepts only a resident frame, so the source cannot stay a deferred leaf.
+#[test]
+fn bounded_native_query_applies_dynamic_filter_to_source_under_full_sort_probe() {
+    let runtime = backend_runtime();
+    let dir = unique_temp_dir("query-engine-bounded-root-hash-join-dynamic-filter-sorted-probe");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_dynamic_filter_probe_parquet(&left_path);
+    write_join_right_keys_parquet(&runtime, &right_path, &[2, 3]);
+    let right_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let qty_descending = || SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&left_path)
+                .with_file_size_bytes(fs::metadata(&left_path).unwrap().len())
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let sorted_left = builder.add_sort(left, qty_descending(), Arc::clone(&left_schema));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string()],
+    )));
+    let join = builder.add_join(
+        sorted_left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sorted_join = builder.add_sort(join, qty_descending(), Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(sorted_join);
+    let optimized = optimize_query_plan(
+        plan,
+        &NativeOptimizerOptions::default(),
+        rapids_analysis_context(),
+        local_dimension_pruning_resolver(),
+    );
+    assert_eq!(optimized.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Sort(_))).count(), 2);
+    assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| matches!(
+        route.consumer,
+        DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == left
+    )));
+    let context = backend_context_with_grant(1024 * 1024);
+
+    let result = execute_query_plan(&context, &optimized.plan).unwrap();
+    let output = result.output().as_host_arrow().unwrap();
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[3, 3, 2, 2]);
+    assert_eq!(int32_array(output, 1).values().as_ref(), &[31, 30, 21, 20]);
+    // One build row group plus the two probe row groups inside the build-key range.
+    assert_eq!(result.metrics().row_groups_committed, 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame() {
     let dir = unique_temp_dir("query-engine-bounded-shared-source-post-decode-dynamic-filter");

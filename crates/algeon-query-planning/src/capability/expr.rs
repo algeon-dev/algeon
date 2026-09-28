@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     error::Result,
-    expr::{ColumnQualifier, DatePart},
+    expr::{ColumnQualifier, DatePart, UnaryMathOp},
 };
 
 // Stable report facts for an expression capability miss.
@@ -151,7 +151,7 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> std::result::Resu
             validate_date_trunc_field_capability(*field)
         },
         Expr::Abs(expr) => validate_general_expr_capability(expr),
-        Expr::Sqrt { expr, .. } => validate_general_expr_capability(expr),
+        Expr::UnaryMath { expr, .. } => validate_general_expr_capability(expr),
         Expr::Concat(exprs) => {
             if exprs.is_empty() {
                 return Err(ExpressionCapabilityRejection {
@@ -244,7 +244,7 @@ pub(super) fn validate_join_residual_expr_capability(
             reason: "join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),
         }),
-        Expr::Abs(_) | Expr::Sqrt { .. } | Expr::Round { .. } => Err(ExpressionCapabilityRejection {
+        Expr::Abs(_) | Expr::UnaryMath { .. } | Expr::Round { .. } => Err(ExpressionCapabilityRejection {
             reason: "join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),
         }),
@@ -308,7 +308,7 @@ pub(super) fn validate_post_join_residual_expr_capability(
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. } => validate_post_join_residual_expr_capability(expr),
+        | Expr::UnaryMath { expr, .. } => validate_post_join_residual_expr_capability(expr),
         Expr::Extract { field, expr } => {
             validate_post_join_residual_expr_capability(expr)?;
             validate_post_join_extract_field_capability(*field)
@@ -574,7 +574,9 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::RegexpReplace { .. } => "regexp_replace",
         Expr::Concat(_) => "concat",
         Expr::Abs(_) => "abs",
-        Expr::Sqrt { .. } => "sqrt",
+        Expr::UnaryMath { op: UnaryMathOp::Sqrt, .. } => "sqrt",
+        Expr::UnaryMath { op: UnaryMathOp::Ln, .. } => "ln",
+        Expr::UnaryMath { op: UnaryMathOp::Exp, .. } => "exp",
         Expr::Round { .. } => "round",
         Expr::InList { .. } => "in_list",
         Expr::IsDistinctFrom { .. } => "is_distinct_from",

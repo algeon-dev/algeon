@@ -45,7 +45,7 @@ The supported DataFusion scalar-function names are:
 | Family | Functions and important limits |
 | --- | --- |
 | Strings | `substring`/`substr`, `lower`, `upper`, `trim`/`btrim`, `ltrim`, `rtrim`, `contains`, `starts_with`, `ends_with`, `character_length`/`length`, `regexp_replace`, and `concat`. A substring start and optional length must be literal integers with start >= 1 and length >= 0. Pattern, trim, and replacement arguments that define the other operations must be literals. |
-| Numeric | `abs`, `sqrt`, and `round`; `round` accepts an optional literal integer scale. |
+| Numeric | `abs`, `sqrt`, `ln`, `exp`, and `round`; `round` accepts an optional literal integer scale. `ln` and `exp` follow IEEE results (`ln(0)` is `-inf`, a negative `ln` input is `NaN`) and can differ from DataFusion CPU in the last bits of finite results. |
 | Nulls | `nullif` for compatible native types. |
 | Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
 

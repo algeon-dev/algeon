@@ -556,7 +556,7 @@ fn expr_references_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
         | Expr::StartsWith { expr, .. }
         | Expr::EndsWith { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }

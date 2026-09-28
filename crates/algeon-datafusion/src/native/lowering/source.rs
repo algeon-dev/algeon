@@ -40,7 +40,10 @@ use super::{
 };
 use crate::{
     capability::CapabilityReason,
-    native::normalize::{NormalizedNativeScan, NormalizedNativeSource},
+    native::{
+        LoweringRejection,
+        normalize::{NormalizedNativeScan, NormalizedNativeSource},
+    },
 };
 
 pub(super) fn lower_source_input(
@@ -48,7 +51,7 @@ pub(super) fn lower_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     match source.scan {
         NormalizedNativeScan::LocalParquet(source_exec) => lower_local_parquet_source_input(
             source_exec,
@@ -99,7 +102,7 @@ pub(super) fn project_scan_output_columns(
     input_schema: SchemaRef,
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let selected_bindings = selected_source_bindings_in_frontend_order(&input_bindings, required_output_fields)?;
     if selected_bindings.len() == input_schema.fields().len()
         && selected_bindings.iter().zip(input_bindings.iter()).all(|(selected, input)| {
@@ -128,7 +131,7 @@ pub(super) fn project_scan_output_columns(
 fn selected_source_bindings_in_frontend_order(
     input_bindings: &[super::FieldBinding],
     required_output_fields: &RequiredFields,
-) -> Result<Vec<super::FieldBinding>, CapabilityReason> {
+) -> Result<Vec<super::FieldBinding>, LoweringRejection> {
     let mut selected_bindings = match required_output_fields {
         RequiredFields::All => input_bindings.to_vec(),
         RequiredFields::Only { .. } => {
@@ -230,7 +233,7 @@ pub(super) fn add_source_filter_projection(
     filter_schema: SchemaRef,
     projection: &[usize],
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     let requested_output_indices = required_output_fields.requested_indices(filter_schema.fields().len())?;
     let requested = RequiredFields::only(requested_output_indices.iter().copied().collect());
     let (schema, bindings) = executable_schema_and_bindings(&filter_schema, &requested)?;
@@ -245,7 +248,7 @@ pub(super) fn add_source_filter_projection(
                 output_binding.native_name.as_str(),
             ))
         })
-        .collect::<Result<Vec<_>, CapabilityReason>>()?;
+        .collect::<Result<Vec<_>, LoweringRejection>>()?;
     let node = builder.add_projection(filtered_node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
@@ -257,7 +260,7 @@ pub(super) fn lower_source_filter_and_projection(
     reader_pushdown_covers_filter: bool,
     required_output_fields: &RequiredFields,
     unprojected_output: SourceUnprojectedFilterOutput,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     if reader_pushdown_covers_filter {
         if let Some(projection) = filter.projection() {
             return add_source_filter_projection(
@@ -304,7 +307,7 @@ fn unprojected_source_filter_output(
     scan_output: LoweredNativeInput,
     required_output_fields: &RequiredFields,
     unprojected_output: SourceUnprojectedFilterOutput,
-) -> Result<LoweredNativeInput, CapabilityReason> {
+) -> Result<LoweredNativeInput, LoweringRejection> {
     match unprojected_output {
         SourceUnprojectedFilterOutput::PreserveScanOutput => Ok(scan_output),
         SourceUnprojectedFilterOutput::ProjectRequiredOutput => project_scan_output_columns(
@@ -346,7 +349,7 @@ pub(super) fn required_scan_projection<'a>(
 pub(super) fn lower_required_file_source_projection_exprs(
     projection: &[RequiredScanProjectionExpr<'_>],
     input_schema: &SchemaRef,
-) -> Result<Vec<NativeExpr>, CapabilityReason> {
+) -> Result<Vec<NativeExpr>, LoweringRejection> {
     projection
         .iter()
         .map(|projection_expr| {
@@ -373,7 +376,7 @@ pub(super) fn required_scan_projection_needs_native_projection(
     input_schema: &SchemaRef,
     current_source_schema: &SchemaRef,
     scan_output_schema: SchemaRef,
-) -> Result<bool, CapabilityReason> {
+) -> Result<bool, LoweringRejection> {
     if required_scan_projection_requires_native_projection(projection, input_schema) {
         return Ok(true);
     }
@@ -384,7 +387,7 @@ pub(super) fn required_scan_projection_needs_native_projection(
 pub(super) fn required_scan_projection_schema(
     projection: &[RequiredScanProjectionExpr<'_>],
     scan_output_schema: SchemaRef,
-) -> Result<SchemaRef, CapabilityReason> {
+) -> Result<SchemaRef, LoweringRejection> {
     let fields = projection
         .iter()
         .map(|projection_expr| {

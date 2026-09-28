@@ -189,6 +189,11 @@ impl Expr {
         Expr::UnaryOp { op: UnaryOperator::Log, input: Box::new(self) }
     }
 
+    /// Element-wise natural exponential (`e ^ self`).
+    pub fn exp(self) -> Expr {
+        Expr::UnaryOp { op: UnaryOperator::Exp, input: Box::new(self) }
+    }
+
     /// Element-wise square root.
     pub fn sqrt(self) -> Expr {
         Expr::UnaryOp { op: UnaryOperator::Sqrt, input: Box::new(self) }

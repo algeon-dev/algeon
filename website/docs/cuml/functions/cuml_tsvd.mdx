@@ -72,7 +72,7 @@ The list-column shape excludes other feature columns. See [ML Inputs](../ml-inpu
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
 | `id` | `same_as_input.id` | no | Logical input ID. |
 | `pc_<index>` | `Float32` | no | Transformed component value, repeated n_components times. The output contains `n_components` such columns, `pc_0` through `pc_&lt;n_components - 1&gt;`. |
 

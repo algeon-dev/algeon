@@ -136,7 +136,7 @@ pub(in crate::exec) fn walk_join_residual_columns(
         | Expr::EndsWith { expr: inner, .. }
         | Expr::DateTrunc { expr: inner, .. }
         | Expr::Abs(inner)
-        | Expr::Sqrt { expr: inner, .. }
+        | Expr::UnaryMath { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
         | Expr::Alias { expr: inner, .. } => {
             walk_join_residual_columns(inner, operation, bad_qualifier_message, on_input)
@@ -409,7 +409,7 @@ fn lower_join_ast_expr(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }
@@ -599,7 +599,7 @@ fn expr_contains_interval_literal(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }
         | Expr::Substring { expr, .. }

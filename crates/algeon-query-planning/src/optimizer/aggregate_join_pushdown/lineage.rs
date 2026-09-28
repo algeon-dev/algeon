@@ -236,7 +236,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn collect_unqualified_column_
         | Expr::Substring { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
@@ -326,8 +326,8 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn substitute_unqualified_colu
             Expr::Concat(parts.into_iter().map(|part| substitute_unqualified_columns(part, map)).collect())
         },
         Expr::Abs(inner) => Expr::Abs(Box::new(substitute_unqualified_columns(*inner, map))),
-        Expr::Sqrt { expr, output_type } => {
-            Expr::Sqrt { expr: Box::new(substitute_unqualified_columns(*expr, map)), output_type }
+        Expr::UnaryMath { op, expr, output_type } => {
+            Expr::UnaryMath { op, expr: Box::new(substitute_unqualified_columns(*expr, map)), output_type }
         },
         Expr::Round { expr, decimal_places, output_type } => {
             Expr::Round { expr: Box::new(substitute_unqualified_columns(*expr, map)), decimal_places, output_type }

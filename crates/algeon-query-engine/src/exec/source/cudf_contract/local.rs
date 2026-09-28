@@ -115,6 +115,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
             std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::btree_map::Entry::Vacant(entry) => {
                 let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
+                let cudf_file = attach_cudf_row_group_null_counts(cudf_file, source, file);
                 cudf_files.push(attach_cudf_variable_width_payload_evidence(cudf_file, file));
                 *entry.insert(cudf_files.len() - 1)
             },
@@ -265,6 +266,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_chunk(
 ) -> Result<CudfLocalParquetSource> {
     let file = source_file_for_chunk(source, chunk, "query_engine.local_parquet_chunk.source_cudf")?;
     let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
+    let cudf_file = attach_cudf_row_group_null_counts(cudf_file, source, file);
     let cudf_file = attach_cudf_variable_width_payload_evidence(cudf_file, file);
     cudf_local_parquet_source_from_file(
         source,
@@ -291,7 +293,7 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_file(
     file_index: usize,
     chunk_index: usize,
 ) -> Result<CudfLocalParquetSource> {
-    let cudf_file = cudf_local_parquet_file(context, file)?;
+    let cudf_file = attach_cudf_row_group_null_counts(cudf_local_parquet_file(context, file)?, source, file);
     cudf_local_parquet_source_from_file(
         source,
         cudf_file,
@@ -567,6 +569,24 @@ pub(in crate::exec::source) fn cudf_local_parquet_file(
         &file.location,
     )?;
     Ok(attach_cudf_variable_width_payload_evidence(cudf_file, file))
+}
+
+/// Re-keys the file's planned row-group null counts from physical file-column
+/// index to the read-column name the cuDF reader receives.
+fn attach_cudf_row_group_null_counts(
+    cudf_file: CudfLocalParquetFile,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> CudfLocalParquetFile {
+    let null_counts = source
+        .read_columns
+        .iter()
+        .zip(&source.read_column_file_indices)
+        .filter_map(|(read_column, file_column_index)| {
+            Some((read_column.clone(), file.row_group_null_counts.get(file_column_index)?.clone()))
+        })
+        .collect();
+    cudf_file.with_row_group_null_counts(null_counts)
 }
 
 fn attach_cudf_variable_width_payload_evidence(

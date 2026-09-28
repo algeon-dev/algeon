@@ -10,7 +10,7 @@ use crate::{
         plan_bounded_shared_join_aggregate_local_parquet_source_stream,
         try_start_bounded_join_leaf_local_parquet_source_prefetch,
     },
-    pipeline::{PipelineTask, ResidentResourceId, ResourceSharing},
+    pipeline::{PipelineTask, ResidentDataForm, ResidentResourceId, ResourceSharing},
     plan::PlanNode,
     source::SourceNode,
 };
@@ -32,7 +32,11 @@ impl CompiledGpuTaskExecutor<'_> {
                 SourceNode::LocalParquet(source) if !source.has_position_delete_visible_scan_limit() => {
                     let sharing = self.resource_sharing(output);
                     let has_multiple_consumers = sharing != ResourceSharing::SingleConsume;
-                    let can_defer_source = sharing != ResourceSharing::SharedImmutableFrame;
+                    // Only consumers the compiled contract resolved as source-stream capable
+                    // re-stage a deferred leaf; a frame-only consumer such as a full sort
+                    // between this source and a join reads one resident frame.
+                    let can_defer_source = sharing != ResourceSharing::SharedImmutableFrame
+                        && self.resource_data_form(output) == ResidentDataForm::SourceStream;
                     let feeds_direct_join = self.task_feeds_direct_join_input(task.id());
                     let feeds_join_through_unary = self.task_feeds_any_join_input_through_unary_chain(task.id());
                     let feeds_aggregate = self.task_feeds_aggregate_input(task.id());
@@ -41,14 +45,20 @@ impl CompiledGpuTaskExecutor<'_> {
                     let has_join_source_adjacent_stages = feeds_join_through_unary;
                     let feeds_join = feeds_direct_join || feeds_join_through_unary;
                     let has_dynamic_filter_routes = self.source_has_dynamic_filter_routes(node_id);
-                    if !can_defer_source && feeds_join {
-                        let stream = plan_bounded_join_leaf_local_parquet_source_stream(
+                    if !can_defer_source && (feeds_join || (has_dynamic_filter_routes && !has_multiple_consumers)) {
+                        let mut stream = plan_bounded_join_leaf_local_parquet_source_stream(
                             self.execution.context(),
                             source,
                             node_id,
                             has_join_source_adjacent_stages,
                             self.execution.metrics(),
                         )?;
+                        // Route producers precede this task through compiled control edges, so a
+                        // sole consumer's routes are ready here. Shared frames keep their routes
+                        // for per-consumer post-decode application.
+                        if !has_multiple_consumers {
+                            stream = self.apply_dynamic_filters_to_source_stream(stream)?;
+                        }
                         materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)
                             .map(CompiledGpuResource::new)
                     } else if !can_defer_source || (!feeds_join && !feeds_aggregate && !has_dynamic_filter_routes) {

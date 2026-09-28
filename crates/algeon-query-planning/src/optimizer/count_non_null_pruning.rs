@@ -689,7 +689,7 @@ fn collect_expr_columns(expr: &Expr, out: &mut BTreeSet<String>) {
         | Expr::Substring { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }

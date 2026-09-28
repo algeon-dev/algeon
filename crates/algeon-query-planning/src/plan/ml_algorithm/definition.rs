@@ -506,7 +506,7 @@ const OUTPUT_FIELDS: &[GpuOutputFieldDefinition] = &[
         data_type: "UInt64",
         nullable: false,
         repeats: None,
-        description: "Evaluated input row position, including when IDs repeat.",
+        description: "Evaluated input row position, including when IDs repeat. Follows the input's top-level ORDER BY on output columns; unspecified without one.",
     },
     GpuOutputFieldDefinition {
         name: "id",

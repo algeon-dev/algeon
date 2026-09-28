@@ -143,7 +143,7 @@ pub fn reader_predicate_expr_references_decimal_column(
             | Expr::StringLength { expr, .. }
             | Expr::RegexpReplace { expr, .. }
             | Expr::Abs(expr)
-            | Expr::Sqrt { expr, .. }
+            | Expr::UnaryMath { expr, .. }
             | Expr::Round { expr, .. }
             | Expr::Extract { expr, .. }
             | Expr::DateTrunc { expr, .. } => visit(expr, column_is_decimal),

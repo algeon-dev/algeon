@@ -813,7 +813,7 @@ pub(super) fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. } => expr_references_input(expr, input_index),

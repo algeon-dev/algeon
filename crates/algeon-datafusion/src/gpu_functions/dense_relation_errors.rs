@@ -49,6 +49,25 @@ impl DenseRelationErrorContext {
             .with_log_safe_fact("reason", reason)
     }
 
+    pub(crate) fn input_ordering_key_not_projected(
+        &self,
+        operation: &'static str,
+        relation_role: &'static str,
+        key: String,
+    ) -> DataFusionError {
+        self.invalid_call_error(
+            operation,
+            "input_ordering_key_not_projected",
+            format!(
+                "{} {relation_role} ORDER BY key '{key}' is not an output column of the input; project the key in the input or drop the ORDER BY",
+                self.family
+            ),
+        )
+        .with_log_safe_fact("relation_role", relation_role)
+        .with_fact("key", key)
+        .into()
+    }
+
     pub(crate) fn field_not_found(
         &self,
         operation: &'static str,
@@ -88,6 +107,28 @@ impl DenseRelationErrorContext {
         .with_fact("field", field)
         .with_log_safe_fact("actual_type", actual)
         .with_log_safe_fact("expected_type", expected)
+        .into()
+    }
+
+    /// Nullable feature/vector-element field rejection, with a remedy fact:
+    /// `WHERE column IS NOT NULL` filters rows but does not change the
+    /// DataFusion schema's nullability, so it cannot satisfy this contract.
+    pub(crate) fn nullable_feature_field(
+        &self,
+        operation: &'static str,
+        relation_role: &'static str,
+        field: &str,
+    ) -> DataFusionError {
+        self.invalid_call_error(
+            operation,
+            "nullable_feature_field",
+            format!("{} {relation_role} feature field '{field}' must be non-nullable", self.family),
+        )
+        .with_fact(
+            "remedy",
+            "wrap the column with COALESCE(column, <fallback>) or CAST a null-free expression; \
+             WHERE column IS NOT NULL does not change schema nullability",
+        )
         .into()
     }
 

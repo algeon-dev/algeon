@@ -138,6 +138,40 @@ const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     GpuGapCase {
+        id: "ln_scalar_function",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, CAST(LN(1.0 + payload) AS REAL) AS log_payload FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    GpuGapCase {
+        id: "exp_scalar_function",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, EXP(score) AS exp_score FROM bench",
+        expected: ExpectedGpuCoverageOutcome::Selected,
+    },
+    // The CASE yields Int64, and narrowing it to Int32 has no admitted native
+    // cast; the category names the rejected type pair.
+    GpuGapCase {
+        id: "narrowing_cast_of_case",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, CAST(CASE WHEN score >= 3.0 THEN 1 ELSE 0 END AS INT) AS label FROM bench",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedType,
+            unsupported_category: "type_cast_int64_to_int32",
+        },
+    },
+    // Only the integer modulo is rejected; the supported SQRT beside it must
+    // not be reported as the unsupported expression.
+    GpuGapCase {
+        id: "supported_function_beside_integer_modulo",
+        feature: GpuGapFeature::ScalarExpression,
+        sql: "SELECT id, sqrt(score) AS root_score FROM bench WHERE payload % 2 = 1",
+        expected: ExpectedGpuCoverageOutcome::NotSupported {
+            reason: CapabilityReason::UnsupportedExpression,
+            unsupported_category: "expression",
+        },
+    },
+    GpuGapCase {
         id: "string_concat_operator",
         feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, name || '-x' AS label FROM bench",

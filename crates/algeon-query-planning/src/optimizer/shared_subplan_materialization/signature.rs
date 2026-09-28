@@ -471,7 +471,8 @@ fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Exp
             Expr::Concat(exprs.iter().map(|expr| canonicalize_aggregate_input_expr(plan, input, expr)).collect())
         },
         Expr::Abs(expr) => Expr::Abs(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
-        Expr::Sqrt { expr, output_type } => Expr::Sqrt {
+        Expr::UnaryMath { op, expr, output_type } => Expr::UnaryMath {
+            op: *op,
             expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
             output_type: output_type.clone(),
         },
@@ -534,7 +535,9 @@ fn canonicalize_aggregate_input_column(plan: &QueryPlan, input: NodeId, column: 
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => None,
     }
 }
 
@@ -555,7 +558,8 @@ fn aggregate_alias_canonicalization_input_is_rowset_preserving(plan: &QueryPlan,
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_)
+        | PlanNode::MlAlgorithm(_) => false,
     }
 }
-

@@ -949,6 +949,10 @@ impl GpuResidentProducer for CugraphAlgoExec {
         true
     }
 
+    fn execution_metrics(&self) -> Option<&ExecutionPlanMetricsSet> {
+        Some(&self.metrics)
+    }
+
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
         cugraph_schema_query_plan(&self.plan_definition()).ok().as_ref().and_then(query_plan_hard_row_upper_bound)
     }

@@ -3,6 +3,7 @@
 use std::{fs::File, sync::Arc, time::Duration};
 
 use algeon_datafusion::{
+    attempt::AttemptOptions,
     backend::{
         AlgeonGpuBackend, AlgeonGpuDeviceConfig, AlgeonGpuDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     },
@@ -39,7 +40,6 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, displayable},
     prelude::{ParquetReadOptions, SessionContext},
 };
-#[cfg(feature = "cugraph")]
 use futures::StreamExt;
 use parquet::arrow::ArrowWriter;
 #[cfg(feature = "cugraph")]
@@ -767,6 +767,42 @@ async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_b
 }
 
 #[tokio::test]
+async fn row_ordinal_follows_the_input_order_by_across_partitions() {
+    for (mode, planned_input) in [
+        (AlgeonGpuExecutionMode::NativePreferred, "AlgeonNativeGpuProducerExec"),
+        (AlgeonGpuExecutionMode::FunctionsOnly, "SortPreservingMergeExec"),
+    ] {
+        let (backend, ctx) = cuvs_bounded_context_with_mode(mode);
+        let schema = wide_vector_schema("item_id");
+        let partitions = [[5_i64, 3], [9, 1], [7, 2]]
+            .into_iter()
+            .map(|ids| {
+                let values = ids.map(|id| id as f32);
+                vec![wide_vector_batch(Arc::clone(&schema), "item_id", &ids, &values, &values)]
+            })
+            .collect();
+        ctx.register_table("scrambled_vectors", Arc::new(MemTable::try_new(schema, partitions).unwrap())).unwrap();
+        let plan = plan_sql(
+            &ctx,
+            "SELECT row_ordinal, id FROM cuvs_top_k(\
+                 input => (SELECT item_id AS id, d0, d1 FROM scrambled_vectors ORDER BY id DESC), \
+                 k => 1, select => 'max') \
+             ORDER BY row_ordinal",
+        )
+        .await;
+        let exec = find_cuvs_exec(plan.as_ref()).expect("ordered input must plan a CuvsAlgoExec");
+        assert_eq!(exec.children()[0].name(), planned_input, "{mode:?}");
+        let batches = collect(plan, ctx.task_ctx()).await.expect("ordered Top-K SQL");
+        let ids = batches
+            .iter()
+            .flat_map(|batch| batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [9, 7, 5, 3, 2, 1], "{mode:?}");
+        close_cuvs_test_backend(backend, ctx);
+    }
+}
+
+#[tokio::test]
 async fn cuvs_sql_executes_parquet_relations_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context_with_mode(AlgeonGpuExecutionMode::FunctionsOnly);
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
@@ -936,6 +972,71 @@ async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
     assert_eq!(pca.schema().field(0).name(), "id");
     assert_eq!(pca.schema().field(1).name(), "pc_0");
     assert_cuvs_results(pca, &ctx).await;
+    close_cuvs_test_backend(backend, ctx);
+}
+
+#[tokio::test]
+async fn composed_cuvs_attempt_seals_metrics_of_every_native_wrapper() {
+    let (backend, ctx) = cuvs_bounded_context();
+    let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
+    let input_path = temp_dir.path().join("sealed_vector_input.parquet");
+    let input_schema = wide_vector_schema("item_id");
+    let input = wide_vector_batch(
+        Arc::clone(&input_schema),
+        "item_id",
+        &[1, 2, 3, 4],
+        &[0.0, 0.2, 10.0, 10.2],
+        &[0.0, 0.1, 10.0, 10.1],
+    );
+    let file = File::create(&input_path).expect("create Parquet fixture");
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&input_schema), None).expect("create Parquet writer");
+    writer.write(&input).expect("write Parquet fixture");
+    writer.close().expect("finish Parquet fixture");
+    ctx.register_parquet(
+        "sealed_vector_input",
+        input_path.to_str().expect("UTF-8 Parquet path"),
+        ParquetReadOptions::default(),
+    )
+    .await
+    .expect("register Parquet vector input");
+
+    let attempt = backend.begin_attempt(AttemptOptions::default()).expect("begin cuVS attempt");
+    let completion = attempt.completion();
+    let plan = attempt
+        .plan_sql(
+            &ctx,
+            "SELECT id, cluster_id \
+             FROM cuvs_kmeans(\
+                 input => (SELECT item_id AS id, d0, d1 FROM sealed_vector_input WHERE item_id > 0), \
+                 n_clusters => 2, init => 'kmeans++')",
+        )
+        .await
+        .expect("plan composed cuVS K-means");
+    let rendered = displayable(plan.as_ref()).indent(false).to_string();
+    assert!(rendered.contains("AlgeonNativeComposedExec:"), "{rendered}");
+    assert!(rendered.contains("AlgeonNativeGpuProducerExec:"), "{rendered}");
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).expect("execute composed cuVS K-means");
+    let mut rows = 0;
+    while let Some(batch) = stream.next().await {
+        rows += batch.expect("composed cuVS K-means batch").num_rows();
+    }
+    assert_eq!(rows, 4);
+    drop(stream);
+    let report = completion.await;
+    let admission = report.admission.as_ref().expect("composed cuVS attempt is admitted");
+    let execution = attempt.sealed_native_execution_snapshot().expect("sealed native execution snapshot");
+    let metrics = &execution.metrics;
+    assert_eq!(metrics.device_ordinal, Some(admission.device_ordinal));
+    assert_eq!(metrics.query_grant_bytes, Some(usize::try_from(admission.grant_bytes).unwrap()));
+    // The GPU producer below the relation function reads Parquet; the composed
+    // root only consumes GPU-resident inputs.
+    assert_eq!(metrics.parquet_files, 1, "{metrics:?}");
+    // One handoff into the relation function and one into the composed root.
+    assert_eq!(metrics.gpu_resident_input_handoffs, 2, "{metrics:?}");
+    assert_eq!(metrics.device_to_host_materialized_rows, 4, "{metrics:?}");
+    assert!(metrics.device_to_host_materialized_bytes > 0, "{metrics:?}");
+    assert!(metrics.max_task_observed_peak_bytes.is_some(), "{metrics:?}");
+    drop(attempt);
     close_cuvs_test_backend(backend, ctx);
 }
 

@@ -27,7 +27,7 @@ use super::{
         QueryKey, QueryPhase, QueryTerminal, QueryTerminalOutcome, RetainedQueryBundle, RetainedUnavailableReason,
     },
 };
-use crate::attempt::server_internal::AlgeonAttemptServerExt;
+use crate::{attempt::server_internal::AlgeonAttemptServerExt, native_report::NativeDataFusionExecutionMetrics};
 
 #[derive(Debug)]
 pub(crate) struct QueryRecord {
@@ -340,7 +340,8 @@ impl QueryCoordinator {
             .count()
     }
 
-    /// Attach the report published by the single execution-attempt owner.
+    /// Attach the report published by the single execution-attempt owner,
+    /// with the native execution metrics sealed at the same point.
     /// This is a retained read-only projection: the coordinator has no
     /// terminalization or observation-sealing authority over the report.
     pub(crate) fn attach_attempt_report(
@@ -348,6 +349,7 @@ impl QueryCoordinator {
         key: &QueryKey,
         report: Arc<QueryAttemptReport>,
         snapshot: Option<SealedRuntimeObservationSnapshot>,
+        native_metrics: Option<NativeDataFusionExecutionMetrics>,
     ) -> Result<(), QueryCoordinatorError> {
         let mut state = self.lock_state();
         let record = Self::record_mut(&mut state, key)?;
@@ -381,7 +383,7 @@ impl QueryCoordinator {
             }
         }
         if let Some(captured) = &mut record.captured {
-            captured.set_attempt_report(Arc::clone(&report));
+            captured.set_attempt_report(Arc::clone(&report), native_metrics);
         }
         record.attempt_outcome = Some(report.outcome.clone());
         record.attempt_report = Some(report);

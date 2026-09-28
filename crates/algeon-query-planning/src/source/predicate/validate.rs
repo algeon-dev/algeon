@@ -42,7 +42,7 @@ pub(in crate::source) fn reader_predicate_root_is_supported(expr: &Expr) -> bool
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }
@@ -108,7 +108,7 @@ pub(in crate::source) fn reader_predicate_expr_is_supported(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }
@@ -230,7 +230,7 @@ fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Optio
         Expr::Substring { .. }
         | Expr::Like { .. }
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::Binary { .. } => None,
@@ -372,7 +372,7 @@ pub(in crate::source) fn reader_predicate_source_contract_shape_is_supported(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }

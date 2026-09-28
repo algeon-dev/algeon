@@ -4,8 +4,8 @@ use arrow::datatypes::Field;
 use datafusion::physical_expr::PhysicalExpr;
 
 use super::{
-    AggregateExec, CapabilityReason, Column, FieldBinding, LoweredNativeInput, NativeExpr, NativeQueryPlanBuilder,
-    Schema, SchemaRef, alias_if_needed, lower_physical_expr_with_bindings, projection_outputs,
+    AggregateExec, CapabilityReason, Column, FieldBinding, LoweredNativeInput, LoweringRejection, NativeExpr,
+    NativeQueryPlanBuilder, Schema, SchemaRef, alias_if_needed, lower_physical_expr_with_bindings, projection_outputs,
 };
 use crate::native::lowering::{
     expr::physical_expr_field,
@@ -25,7 +25,7 @@ pub(super) struct SyntheticAggregateInputProjection {
 pub(super) fn synthetic_aggregate_input_projection(
     aggregate: &AggregateExec,
     input: &LoweredNativeInput,
-) -> Result<SyntheticAggregateInputProjection, CapabilityReason> {
+) -> Result<SyntheticAggregateInputProjection, LoweringRejection> {
     let frontend_schema = aggregate.input().schema();
     let mut expressions = Vec::new();
     let mut fields = Vec::new();
@@ -38,7 +38,7 @@ pub(super) fn synthetic_aggregate_input_projection(
     for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
         let expressions_for_aggregate = aggregate_expr.expressions();
         let [arg] = expressions_for_aggregate.as_slice() else {
-            return Err(CapabilityReason::UnsupportedExpression);
+            return Err(CapabilityReason::UnsupportedExpression.into());
         };
         // cuDF aggregate lowering consumes columns, so SQL aggregate arguments
         // such as SUM(m00 + m01) are first materialized as synthetic projection columns.
@@ -76,7 +76,7 @@ pub(super) fn synthetic_aggregate_input_projection(
 pub(super) fn synthetic_aggregate_input_projection_if_needed(
     aggregate: &AggregateExec,
     input: &LoweredNativeInput,
-) -> Result<Option<SyntheticAggregateInputProjection>, CapabilityReason> {
+) -> Result<Option<SyntheticAggregateInputProjection>, LoweringRejection> {
     let frontend_schema = aggregate.input().schema();
     let needs_group_projection =
         aggregate.group_expr().expr().iter().any(|(group_expr, _alias)| group_expr.downcast_ref::<Column>().is_none());
@@ -112,7 +112,7 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
         for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
             let expressions_for_aggregate = aggregate_expr.expressions();
             let [arg] = expressions_for_aggregate.as_slice() else {
-                return Err(CapabilityReason::UnsupportedExpression);
+                return Err(CapabilityReason::UnsupportedExpression.into());
             };
             let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &fields);
             expressions.push(alias_if_needed(
@@ -157,7 +157,7 @@ fn append_synthetic_group_expr_projections(
     frontend_schema: &SchemaRef,
     expressions: &mut Vec<NativeExpr>,
     fields: &mut Vec<Field>,
-) -> Result<Vec<String>, CapabilityReason> {
+) -> Result<Vec<String>, LoweringRejection> {
     let mut aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
     for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
         let executable_alias = unique_synthetic_aggregate_group_alias(index, alias, fields);
@@ -178,7 +178,7 @@ fn append_synthetic_filter_projections(
     expressions: &mut Vec<NativeExpr>,
     fields: &mut Vec<Field>,
     filter_aliases: &mut [Option<String>],
-) -> Result<(), CapabilityReason> {
+) -> Result<(), LoweringRejection> {
     let mut filters_by_expression = HashMap::<String, String>::new();
     for (index, filter) in aggregate
         .filter_expr()
@@ -210,7 +210,7 @@ fn append_synthetic_filter_projection(
     fields: &mut Vec<Field>,
     filter_aliases: &mut [Option<String>],
     filters_by_expression: &mut HashMap<String, String>,
-) -> Result<(), CapabilityReason> {
+) -> Result<(), LoweringRejection> {
     let key = filter.to_string();
     let alias = if let Some(alias) = filters_by_expression.get(&key) {
         alias.clone()
@@ -270,7 +270,7 @@ pub(in crate::native::lowering) fn prepare_aggregate_input_with_full_synthetic_p
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     aggregate: &AggregateExec,
-) -> Result<PreparedAggregateInput, CapabilityReason> {
+) -> Result<PreparedAggregateInput, LoweringRejection> {
     let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &input)?;
     let projection_node = builder.add_projection(
         input.node,
@@ -292,7 +292,7 @@ pub(in crate::native::lowering) fn prepare_aggregate_input_with_optional_synthet
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     aggregate: &AggregateExec,
-) -> Result<PreparedAggregateInput, CapabilityReason> {
+) -> Result<PreparedAggregateInput, LoweringRejection> {
     if let Some(synthetic_projection) = synthetic_aggregate_input_projection_if_needed(aggregate, &input)? {
         let synthetic_projection_node = builder.add_projection(
             input.node,

@@ -962,9 +962,6 @@ pub query_planning::expr::Expr::Round
 pub query_planning::expr::Expr::Round::decimal_places: i32
 pub query_planning::expr::Expr::Round::expr: alloc::boxed::Box<query_planning::expr::Expr>
 pub query_planning::expr::Expr::Round::output_type: arrow_schema::datatype::DataType
-pub query_planning::expr::Expr::Sqrt
-pub query_planning::expr::Expr::Sqrt::expr: alloc::boxed::Box<query_planning::expr::Expr>
-pub query_planning::expr::Expr::Sqrt::output_type: arrow_schema::datatype::DataType
 pub query_planning::expr::Expr::StartsWith
 pub query_planning::expr::Expr::StartsWith::expr: alloc::boxed::Box<query_planning::expr::Expr>
 pub query_planning::expr::Expr::StartsWith::prefix: alloc::string::String
@@ -984,6 +981,10 @@ pub query_planning::expr::Expr::Trim::trim_chars: alloc::string::String
 pub query_planning::expr::Expr::TryCast
 pub query_planning::expr::Expr::TryCast::expr: alloc::boxed::Box<query_planning::expr::Expr>
 pub query_planning::expr::Expr::TryCast::target_type: arrow_schema::datatype::DataType
+pub query_planning::expr::Expr::UnaryMath
+pub query_planning::expr::Expr::UnaryMath::expr: alloc::boxed::Box<query_planning::expr::Expr>
+pub query_planning::expr::Expr::UnaryMath::op: query_planning::expr::UnaryMathOp
+pub query_planning::expr::Expr::UnaryMath::output_type: arrow_schema::datatype::DataType
 pub query_planning::expr::Expr::Upper(alloc::boxed::Box<query_planning::expr::Expr>)
 impl query_planning::expr::Expr
 pub fn query_planning::expr::Expr::abs(Self) -> Self
@@ -1017,13 +1018,13 @@ pub fn query_planning::expr::Expr::not_like_escape(Self, impl core::convert::Int
 pub fn query_planning::expr::Expr::regexp_replace(Self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::round(Self, i32, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::rtrim(Self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn query_planning::expr::Expr::sqrt(Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::starts_with(Self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::expr::Expr::string_contains(Self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::expr::Expr::string_length(Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::substring(Self, i32, core::option::Option<i32>) -> Self
 pub fn query_planning::expr::Expr::trim(Self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::expr::Expr::try_cast(Self, arrow_schema::datatype::DataType) -> Self
+pub fn query_planning::expr::Expr::unary_math(query_planning::expr::UnaryMathOp, Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::upper(Self) -> Self
 impl core::fmt::Display for query_planning::expr::Expr
 pub fn query_planning::expr::Expr::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1071,6 +1072,12 @@ impl query_planning::expr::LiteralValue
 pub fn query_planning::expr::LiteralValue::data_type(&self) -> arrow_schema::datatype::DataType
 impl core::fmt::Display for query_planning::expr::LiteralValue
 pub fn query_planning::expr::LiteralValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::expr::UnaryMathOp
+pub query_planning::expr::UnaryMathOp::Exp
+pub query_planning::expr::UnaryMathOp::Ln
+pub query_planning::expr::UnaryMathOp::Sqrt
+impl core::fmt::Display for query_planning::expr::UnaryMathOp
+pub fn query_planning::expr::UnaryMathOp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::expr::AggregateExpr
 pub query_planning::expr::AggregateExpr::alias: alloc::string::String
 pub query_planning::expr::AggregateExpr::distinct: bool

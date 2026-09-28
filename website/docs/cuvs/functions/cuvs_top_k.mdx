@@ -69,7 +69,7 @@ For wide vectors, the projection order defines the feature dimensions. A list ve
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no | Zero-based physical ordinal of the evaluated input row; it disambiguates duplicate input IDs. |
+| `row_ordinal` | `UInt64` | no | Zero-based physical ordinal of the evaluated input row; it disambiguates duplicate input IDs. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
 | `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
 | `rank` | `UInt32` | no | One-based value rank within an input row. Order consumers explicitly by row_ordinal, rank. |
 | `position` | `Int64` | no | Zero-based dimension index of the selected value within the input vector. |

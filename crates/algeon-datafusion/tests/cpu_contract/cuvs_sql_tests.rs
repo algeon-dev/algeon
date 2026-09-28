@@ -1131,6 +1131,11 @@ async fn local_validation_rejects_schema_dimension_option_and_empty_input_contra
         assert_eq!(typed.code(), expected_code, "{sql}");
         if let Some(reason) = expected_reason {
             assert_eq!(typed.facts().get("reason"), Some(reason), "{sql}");
+            if reason == "nullable_feature_field" {
+                let remedy = typed.fact_value("remedy").unwrap_or_else(|| panic!("missing remedy fact for {sql}"));
+                assert!(remedy.contains("COALESCE"), "{sql}: {remedy}");
+                assert!(remedy.contains("IS NOT NULL"), "{sql}: {remedy}");
+            }
         }
     }
 }
@@ -1211,6 +1216,78 @@ async fn bounded_execution_defers_child_execution_until_the_stream_is_polled() {
         .expect("rebind counting children");
     let _stream = rebound.execute(0, Arc::new(TaskContext::default())).expect("create bounded cuVS result stream");
     assert_eq!(execute_count.load(Ordering::SeqCst), 0, "creating the result stream must not consume its inputs");
+}
+
+#[tokio::test]
+async fn ordered_input_relations_keep_their_sort_through_physical_optimization() {
+    for (ctx, planned_input) in [
+        (cuvs_context(), "SortPreservingMergeExec"),
+        (
+            fixtures::cuvs_context_with_native_execution_config(AlgeonNativeExecutionConfig::bounded_default()),
+            "AlgeonNativeGpuProducerExec",
+        ),
+    ] {
+        register_partitioned_vectors(&ctx);
+        let sql = format!(
+            "SELECT * FROM {CUVS_TOP_K_FUNCTION}(\
+                 input => (SELECT item_id AS id, d0, d1 FROM partitioned_vectors ORDER BY id DESC), \
+                 k => 1, select => 'max') ORDER BY row_ordinal"
+        );
+        let logical = logical_plan(&ctx, &sql).await;
+        let physical = ctx.state().create_physical_plan(&logical).await.expect("ordered cuVS physical plan");
+        let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
+        let [Some(_)] = &exec.required_input_ordering()[..] else {
+            panic!("the input ORDER BY must become a required input ordering")
+        };
+        let input = exec.children()[0];
+        assert_eq!(input.name(), planned_input);
+        assert_eq!(input.properties().output_partitioning().partition_count(), 1);
+        let ordering = input.properties().output_ordering().expect("the planned input must keep its ordering");
+        assert_eq!(ordering.to_string(), "id@0 DESC");
+    }
+}
+
+#[tokio::test]
+async fn input_order_keys_must_be_output_columns_of_the_input() {
+    let ctx = cuvs_context();
+    register_partitioned_vectors(&ctx);
+    let top_k =
+        |input: &str| format!("SELECT * FROM {CUVS_TOP_K_FUNCTION}(input => ({input}), k => 1, select => 'max')");
+
+    let positional =
+        logical_plan(&ctx, &top_k("SELECT item_id AS id, d0, d1 FROM partitioned_vectors ORDER BY 1 DESC")).await;
+    let node = find_cuvs_node(&positional).expect("cuVS logical extension");
+    assert!(
+        positional.display_indent().to_string().contains("input_order[input]=[id DESC NULLS FIRST]"),
+        "{}",
+        positional.display_indent()
+    );
+    assert_eq!(node.expressions().len(), 1);
+
+    let error = ctx
+        .state()
+        .create_logical_plan(&top_k("SELECT item_id AS id, d0, d1 FROM partitioned_vectors ORDER BY item_id"))
+        .await
+        .expect_err("an ORDER BY key outside the input's output columns must reject");
+    let typed = error.find_algeon_error().expect("structured input ordering error");
+    assert_eq!(typed.code(), ErrorCode::InvalidRequest);
+    assert_eq!(typed.fact_value("reason"), Some("input_ordering_key_not_projected"));
+    assert_eq!(typed.fact_value("relation_role"), Some("input"));
+
+    let bounded =
+        logical_plan(&ctx, &top_k("SELECT item_id AS id, d0, d1 FROM partitioned_vectors ORDER BY item_id LIMIT 2"))
+            .await;
+    assert!(!bounded.display_indent().to_string().contains("input_order"), "{}", bounded.display_indent());
+}
+
+fn register_partitioned_vectors(ctx: &SessionContext) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("d0", DataType::Float32, false),
+        Field::new("d1", DataType::Float32, false),
+    ]));
+    let partitions = (0..3).map(|_| vec![RecordBatch::new_empty(Arc::clone(&schema))]).collect();
+    ctx.register_table("partitioned_vectors", Arc::new(MemTable::try_new(schema, partitions).unwrap())).unwrap();
 }
 
 #[cfg(not(feature = "cuvs"))]

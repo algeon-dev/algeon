@@ -14,7 +14,7 @@ use super::{
 use crate::{
     backend::AnalysisContext,
     datatypes::is_supported_arrow_cast,
-    expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue},
+    expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue, UnaryMathOp},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
 };
 
@@ -434,7 +434,7 @@ pub fn walk_join_residual_column_sides(
         | Expr::Extract { expr: inner, .. }
         | Expr::DateTrunc { expr: inner, .. }
         | Expr::Abs(inner)
-        | Expr::Sqrt { expr: inner, .. }
+        | Expr::UnaryMath { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
         | Expr::Alias { expr: inner, .. } => {
             walk_join_residual_column_sides(inner, operation, bad_qualifier_message, on_input)
@@ -620,7 +620,7 @@ fn validate_join_residual_expr(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
-        | Expr::Sqrt { .. }
+        | Expr::UnaryMath { .. }
         | Expr::Round { .. }
         | Expr::IsDistinctFrom { .. }
         | Expr::IsNotDistinctFrom { .. }
@@ -774,7 +774,7 @@ fn validate_post_join_residual_expr(
             require_arithmetic_type(&data_type, "post-join residual ABS input")?;
             Ok(data_type)
         },
-        Expr::Sqrt { expr, output_type } => {
+        Expr::UnaryMath { op, expr, output_type } => {
             let data_type = validate_post_join_residual_expr(
                 expr,
                 left_schema,
@@ -783,8 +783,9 @@ fn validate_post_join_residual_expr(
                 right_available,
                 ctx,
             )?;
-            require_arithmetic_type(&data_type, "post-join residual SQRT input")?;
-            require_arithmetic_type(output_type, "post-join residual SQRT output")?;
+            let (input_context, output_context) = post_join_residual_unary_math_type_contexts(*op);
+            require_arithmetic_type(&data_type, input_context)?;
+            require_arithmetic_type(output_type, output_context)?;
             Ok(output_type.clone())
         },
         Expr::Round { expr, output_type, .. } => {
@@ -1045,7 +1046,7 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
+        | Expr::UnaryMath { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. } => residual_expr_requires_post_filter(expr),
         Expr::Concat(exprs) => exprs.iter().any(residual_expr_requires_post_filter),
@@ -1201,6 +1202,14 @@ fn is_supported_join_residual_ast_cast(
     matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
         && (is_numeric_type(source_type) || is_decimal_type(source_type))
         && is_supported_arrow_cast(source_type, target_type, ctx)
+}
+
+fn post_join_residual_unary_math_type_contexts(op: UnaryMathOp) -> (&'static str, &'static str) {
+    match op {
+        UnaryMathOp::Sqrt => ("post-join residual SQRT input", "post-join residual SQRT output"),
+        UnaryMathOp::Ln => ("post-join residual LN input", "post-join residual LN output"),
+        UnaryMathOp::Exp => ("post-join residual EXP input", "post-join residual EXP output"),
+    }
 }
 
 #[cfg(test)]

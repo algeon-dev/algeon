@@ -16,7 +16,7 @@ use crate::{
     datatypes::{arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
     expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LiteralValue,
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, DatePart, Expr, LiteralValue, UnaryMathOp,
         interval_month_day_nano,
     },
     expression_lowering_policy::ExpressionLoweringPolicy,
@@ -92,7 +92,7 @@ pub fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
         },
         Expr::Concat(exprs) => lower_concat(exprs),
         Expr::Abs(expr) => Ok(lower_expr(expr)?.abs()),
-        Expr::Sqrt { expr, output_type } => lower_sqrt(expr, output_type),
+        Expr::UnaryMath { op, expr, output_type } => lower_unary_math(*op, expr, output_type),
         Expr::Round { expr, decimal_places, output_type } => lower_round(expr, *decimal_places, output_type),
         Expr::InList { expr, list, negated } => lower_in_list(expr, list, *negated),
         Expr::IsDistinctFrom { left, right } => {
@@ -335,7 +335,7 @@ fn expr_declared_type(expr: &Expr) -> Option<ArrowDataType> {
         Expr::Substring { .. } => Some(ArrowDataType::Utf8),
         Expr::StringLength { output_type, .. }
         | Expr::RegexpReplace { output_type, .. }
-        | Expr::Sqrt { output_type, .. }
+        | Expr::UnaryMath { output_type, .. }
         | Expr::Round { output_type, .. }
         | Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
         Expr::Extract { .. } => Some(ArrowDataType::Int32),
@@ -593,12 +593,22 @@ fn lower_round(expr: &Expr, decimal_places: i32, output_type: &ArrowDataType) ->
     Ok(lower_expr(expr)?.round(decimal_places).cast(dtype))
 }
 
-fn lower_sqrt(expr: &Expr, output_type: &ArrowDataType) -> Result<CudfExpr> {
+fn lower_unary_math(op: UnaryMathOp, expr: &Expr, output_type: &ArrowDataType) -> Result<CudfExpr> {
     let dtype = cudf_dtype_from_arrow_type(output_type).map_err(|error| {
-        cudf_unsupported_type_error("query_engine.expr.lower_sqrt", "native SQRT output type is not supported", error)
-            .with_fact("output_type", format!("{output_type:?}"))
+        cudf_unsupported_type_error(
+            "query_engine.expr.lower_unary_math",
+            format!("native {op} output type is not supported"),
+            error,
+        )
+        .with_fact("output_type", format!("{output_type:?}"))
     })?;
-    Ok(lower_expr(expr)?.cast(dtype).sqrt().cast(dtype))
+    let input = lower_expr(expr)?.cast(dtype);
+    let evaluated = match op {
+        UnaryMathOp::Sqrt => input.sqrt(),
+        UnaryMathOp::Ln => input.log(),
+        UnaryMathOp::Exp => input.exp(),
+    };
+    Ok(evaluated.cast(dtype))
 }
 
 fn lower_float_round(expr: &Expr, decimal_places: i32) -> Result<CudfExpr> {
