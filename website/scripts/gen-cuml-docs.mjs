@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Render captured cuML catalog descriptors without contacting a server.
 // Refresh specs with website/scripts/capture-gpu-function-specs.sh first.
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +13,7 @@ import {
   densePresentation,
   formatFunctionQuickstartSql,
   loadProviderSpecs,
+  narrativeExampleImport,
   prose,
   renderDenseArguments,
   renderDenseOutputSchema,
@@ -141,7 +143,8 @@ function renderPage(spec) {
       'The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.',
     ].join('\n')),
     output: renderDenseOutputSchema(spec),
-    examples: null,
+    examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
+      ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
     discoveryLink: '../../reference/gpu-function-catalog.mdx',
   });

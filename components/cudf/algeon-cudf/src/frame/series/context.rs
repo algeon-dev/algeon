@@ -561,12 +561,6 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
-        if len == 0 {
-            let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-            let empty = Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
-            return Series::from_column(empty);
-        }
-
         let map = row_range::gather_map_in_domain(start, len, &output_domain, operation)?;
         let map_view = map.view()?;
 
@@ -600,12 +594,6 @@ impl Series {
             operation,
         )?;
         consumer_fence.order_input(idx_cv.execution_domain())?;
-
-        if idx_cv.is_empty()? {
-            let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
-            let empty = Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
-            return Series::from_column(empty);
-        }
 
         let cv = self.column.view().map_err(|e| e.reanchor(operation))?;
         let ttv = TableView::from_borrowed_column_views_in_domain(vec![cv], None, operation)?;

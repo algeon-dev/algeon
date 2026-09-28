@@ -1,8 +1,17 @@
 //! Tests for DataFrame::gather().
 
-use cudf::testing::prelude::*;
+use std::sync::Arc;
 
-use crate::common::{column_from_slice, column_from_strs, dataframe_from_columns, run_named_cases, series};
+use arrow::{
+    array::{ArrayRef, FixedSizeListArray, Float32Array},
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use cudf::{DataFrame, testing::prelude::*};
+
+use crate::common::{
+    column_from_slice, column_from_strs, dataframe_from_columns, run_named_cases, sample_runtime, series,
+};
 
 fn test_gather_sequential_indices() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -82,6 +91,25 @@ fn test_gather_empty_indices() {
 
     assert_eq!(result.num_rows(), 0);
     assert_eq!(result.column_names(), &["x"]);
+
+    let item = Arc::new(Field::new("element", ArrowDataType::Float32, false));
+    let vectors =
+        FixedSizeListArray::new(Arc::clone(&item), 2, Arc::new(Float32Array::from(vec![1.0, 0.0, 0.0, 1.0])), None);
+    let schema = Arc::new(Schema::new(vec![Field::new("vector", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(vectors) as ArrayRef]).unwrap();
+    let nested = DataFrame::from_record_batch(&sample_runtime(), &batch).unwrap();
+    let source_type = nested.to_record_batch().unwrap().column(0).data_type().clone();
+    let vector = nested.series("vector").unwrap();
+    for empty in [
+        nested.gather(&indices).unwrap(),
+        nested.head(0).unwrap(),
+        DataFrame::from_series([("vector", vector.gather(&indices).unwrap())]).unwrap(),
+        DataFrame::from_series([("vector", vector.head(0).unwrap())]).unwrap(),
+    ] {
+        let exported = empty.to_record_batch().unwrap();
+        assert_eq!(exported.num_rows(), 0);
+        assert_eq!(exported.column(0).data_type(), &source_type);
+    }
 }
 
 fn test_gather_multi_type() {

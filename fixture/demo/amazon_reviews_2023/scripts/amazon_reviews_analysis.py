@@ -22,7 +22,7 @@ from sklearn.metrics import (
 )
 import xgboost as xgb
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 REPORT = ROOT / "docs/research/amazon_reviews_2023"
 DATA = ROOT / "target/amazon-reviews-research"
 ISSUES = "battery connection sound comfort durability charging microphone returns".split()

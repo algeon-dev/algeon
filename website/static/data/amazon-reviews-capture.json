@@ -1,0 +1,915 @@
+{
+  "captured": "2026-09-28",
+  "environment": {
+    "git_commit": "70debd55f5041b191bf79a3213cfcba5cae5abc0",
+    "cuvs_commit": "c1414f7b36f21d98968900be2a46411e63e607b4",
+    "server_binary": "target/release/algeon_server",
+    "server_sha256": "bf9a3d1142d99cb238e0b034ac2c99cc23e7fb778dd05722e6f03942b28afc10",
+    "cuvs_library": "target/native/cuvs-tests-build/libcuvs.so",
+    "cuvs_sha256": "790bd2de19f420baca30ae1a8510f1a388943dd392cbb04b7f5dc5c33163af5f",
+    "ld_library_path": "target/native/cuvs-tests-build:target/native/cuvs-tests-build/c",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition, 595.91.07, 97887 MiB",
+    "source_config": "docs/research/amazon_reviews_2023/server.toml",
+    "notes": "Release rebuilt with the cuDF empty nested gather fix on the recorded base commit. Source hashes are in cudf_fix_sources.json. The verified cuVS test library matches the pinned fork.",
+    "local_fix_sources": {
+      "components/cudf/algeon-cudf/src/frame/dataframe/row_ops.rs": "5e08f7b13e86fd6a1d2f5919afccbd2d842d7890b60036036c595824487f79e7",
+      "components/cudf/algeon-cudf/src/frame/series/context.rs": "daa656111b706a8123fa885914f3d2abc76dc9c2bee7c363f913b515aaa58114",
+      "components/cudf/algeon-cudf/tests/frame/dataframe/gather_tests.rs": "a7f893de888e1111e3c134b89d52f78677785e69164d6c8218f0cc8efd4f5746"
+    }
+  },
+  "source": {
+    "dataset": {
+      "category": "Electronics",
+      "source": "McAuley-Lab/Amazon-Reviews-2023 (https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)"
+    },
+    "counts": {
+      "max_timestamp_ms": 1694625981867,
+      "min_timestamp_ms": 848336280000,
+      "products": 1610012,
+      "products_with_price": 526449,
+      "products_without_reviews": 152,
+      "reviews": 43886944,
+      "users": 18286191,
+      "verified_reviews": 40546884
+    },
+    "raw_checksums": {
+      "metadata": {
+        "bytes": 5246144134,
+        "sha256": "5eb4dabd539586c49654297319ef178b62a2fe8e43108376feda125f04455d93"
+      },
+      "reviews": {
+        "bytes": 22616233652,
+        "sha256": "bf11cf9c94c23ead7d3ffb174d18231fad8fcd76e72ad167f538a5599a38de8e"
+      }
+    }
+  },
+  "embedding": {
+    "model": "BAAI/bge-m3",
+    "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+    "dimensions": 1024,
+    "max_sequence_length": 8192,
+    "inference_dtype": "float16",
+    "stored_dtype": "float32",
+    "normalization": "L2 in float32 after encoding",
+    "batch_size": 32,
+    "model_load_s": 2.957023192953784,
+    "text_preparation": "full fields, HTML removed, entities decoded, whitespace collapsed",
+    "packages": {
+      "torch": "2.14.0",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.17.0",
+      "numpy": "2.5.3",
+      "pyarrow": "25.0.1",
+      "duckdb": "1.5.5",
+      "faiss-cpu": "1.15.1"
+    },
+    "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "runs": [
+      {
+        "name": "intents",
+        "rows": 14,
+        "elapsed_s": 0.38415092800278217,
+        "matrix_sha256": "82b537915f3dc07ff493e12492982e6ec5240a11ddd7f5d448af9e2582a9d59d",
+        "matrix_bytes": 57344,
+        "parquet_bytes": 58506,
+        "torch_peak_allocated_bytes": 1176779776
+      },
+      {
+        "name": "products",
+        "rows": 1010000,
+        "elapsed_s": 1797.4371816050261,
+        "matrix_sha256": "bbaf20f08c19274a8e2fee91a44c3a4b9e2f18ea62b6f5c07ee204d9525a9c62",
+        "matrix_bytes": 4136960000,
+        "parquet_bytes": 4146868501,
+        "torch_peak_allocated_bytes": 13788288000
+      },
+      {
+        "name": "reviews",
+        "rows": 1000000,
+        "elapsed_s": 455.4924460509792,
+        "matrix_sha256": "1e7190d5be2064fd6ec1cd1cec4baa22932901d821048df4d9f6107342678b66",
+        "matrix_bytes": 4096000000,
+        "parquet_bytes": 4106518425,
+        "torch_peak_allocated_bytes": 7426816000
+      }
+    ]
+  },
+  "input_verification": {
+    "products": {
+      "rows": 1010000,
+      "dimensions": 1024,
+      "unique_ids": true,
+      "parquet_matches_npy_and_source_order": true,
+      "finite_and_non_null": true,
+      "max_unit_norm_error": 1.7881393432617188e-07,
+      "matrix_sha256": "bbaf20f08c19274a8e2fee91a44c3a4b9e2f18ea62b6f5c07ee204d9525a9c62",
+      "row_groups": 8
+    },
+    "reviews": {
+      "rows": 1000000,
+      "dimensions": 1024,
+      "unique_ids": true,
+      "parquet_matches_npy_and_source_order": true,
+      "finite_and_non_null": true,
+      "max_unit_norm_error": 1.1920928955078125e-07,
+      "matrix_sha256": "1e7190d5be2064fd6ec1cd1cec4baa22932901d821048df4d9f6107342678b66",
+      "row_groups": 8
+    },
+    "intents": {
+      "rows": 14,
+      "dimensions": 1024,
+      "unique_ids": true,
+      "parquet_matches_npy_and_source_order": true,
+      "finite_and_non_null": true,
+      "max_unit_norm_error": 5.960464477539063e-08,
+      "matrix_sha256": "82b537915f3dc07ff493e12492982e6ec5240a11ddd7f5d448af9e2582a9d59d",
+      "row_groups": 1
+    }
+  },
+  "timing_boundary": "Three sequential statements in one release server, existing vectors, reusable OS file cache. Includes planning, index build or fit, and complete Flight transfer; excludes embedding preparation and writing result files.",
+  "verification": {
+    "travel_shortlist": {
+      "eligible_products": 117,
+      "rows": 10,
+      "duckdb_history_and_float64_knn_match": true
+    },
+    "headphone_emerging": {
+      "rows": 10,
+      "duckdb_denominators_match": true,
+      "examples_match_original_rows": true
+    },
+    "headphone_umap2": {
+      "rows": 9967,
+      "cohort_ids_match": true,
+      "finite_coordinates": true,
+      "trustworthiness_1500_at_15": 0.7961367035281728,
+      "repeat_max_coordinate_deltas": [
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "exact_batch_verification": {
+    "recall_at_10_ids": 0.99972,
+    "fraction_within_exact_top10_radius_plus_1e_5": 1.0,
+    "max_reported_distance_error": 0.00022016573353201484,
+    "mean_reported_distance_error": 6.306285734521012e-07,
+    "reported_zero_with_true_distance_gt_1e_5": 3,
+    "true_distance_rank_inversions_gt_1e_5": 0,
+    "corpus_membership_ok": true,
+    "queries_disjoint_from_corpus": true
+  },
+  "queries": {
+    "travel_shortlist": {
+      "runs": 3,
+      "statuses": [
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "median_s": 1.544123484985903,
+      "min_s": 1.441004102001898,
+      "max_s": 2.4794984739855863,
+      "rows": 10,
+      "observations": [
+        {
+          "query_id": "c3c662bc-f3cf-4089-95a1-c7809baef565",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "1885571400",
+          "gpu_resident_input_handoffs": "3",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "1",
+          "device_to_host_materialized_bytes": "2438",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "f43c0830-a794-42c8-bb97-3912dfc795dc",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "1885571400",
+          "gpu_resident_input_handoffs": "3",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "1",
+          "device_to_host_materialized_bytes": "2438",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "304c7133-67c9-4407-a689-8104dd5d0810",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "1885571400",
+          "gpu_resident_input_handoffs": "3",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "1",
+          "device_to_host_materialized_bytes": "2438",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        }
+      ],
+      "sql": "WITH review_history AS (\n  SELECT product_id, COUNT(*) AS reviews_2022,\n         AVG(CASE WHEN rating <= 2 THEN 1.0 ELSE 0.0 END) AS low_rating_share\n  FROM reviews\n  WHERE review_time >= TIMESTAMP '2022-01-01'\n    AND review_time < TIMESTAMP '2023-01-01' AND verified_purchase\n  GROUP BY product_id\n), eligible AS (\n  SELECT v.id, v.vector\n  FROM semantic_products_vectors v\n  JOIN products p ON p.product_id = v.id\n  JOIN review_history h ON h.product_id = v.id\n  WHERE v.sample_rank < 1000000\n    AND p.category_l3 = 'Headphones & Earbuds'\n    AND p.price BETWEEN 20 AND 150\n    AND h.reviews_2022 >= 100 AND h.low_rating_share <= 0.20\n)\nSELECT n.rank, p.product_id, p.title, p.price,\n       h.reviews_2022, h.low_rating_share,\n       1.0 - n.distance / 2.0 AS cosine_similarity\nFROM cuvs_brute_force_knn(\n  dataset => (SELECT id, vector FROM eligible),\n  queries => (SELECT id, vector FROM intent_queries WHERE id = 0),\n  k => 10, metric => 'l2_expanded') n\nJOIN products p ON p.product_id = n.neighbor_id\nJOIN review_history h ON h.product_id = p.product_id\nORDER BY n.rank\n",
+      "sql_sha256": "1a910d84cf7f4e888da69618a84fe6eeb8af990f089c5f11605fc85f802f0c38",
+      "illustrated_run": "c3c662bc-f3cf-4089-95a1-c7809baef565",
+      "illustrated_rows": [
+        {
+          "rank": 1,
+          "product_id": 1444831,
+          "title": "Srhythm NC35 Noise Cancelling Headphones Wireless Bluetooth 5.0, Fast Charge Over-Ear Lightweight Headset with Microphones,Mega Bass 50+ Hours’ Playtime",
+          "price": 69.99,
+          "reviews_2022": 353,
+          "low_rating_share": 0.16147308781869688,
+          "cosine_similarity": 0.6391699910163879
+        },
+        {
+          "rank": 2,
+          "product_id": 1484401,
+          "title": "VELKPRO Wireless Headset with Microphone - Noise Canceling Headphones with Mic - On-Ear Earphones with USB Dongle for Office Work, Video Calling, Call Center - 32H Talk Time, Clear Audio Transmission",
+          "price": 29.99,
+          "reviews_2022": 103,
+          "low_rating_share": 0.05825242718446602,
+          "cosine_similarity": 0.6105114817619324
+        },
+        {
+          "rank": 3,
+          "product_id": 1562005,
+          "title": "HROEENOI Active Noise Cancelling Wireless Bluetooth Over-Ear Headphones, Memory Foam Ear Cups, Quick Charge for 40H Playtime, Ideal for Travel, Home Office, Gym Workouts-Black",
+          "price": 45.99,
+          "reviews_2022": 354,
+          "low_rating_share": 0.1751412429378531,
+          "cosine_similarity": 0.6033956408500671
+        },
+        {
+          "rank": 4,
+          "product_id": 1557567,
+          "title": "Soundcore by Anker Space Q45 Adaptive Active Noise Cancelling Headphones, Reduce Noise by Up to 98%, 50H Playtime, App Control, LDAC Hi-Res Wireless Audio, Comfortable Fit, Clear Calls, Bluetooth 5.3",
+          "price": 149.99,
+          "reviews_2022": 179,
+          "low_rating_share": 0.11731843575418995,
+          "cosine_similarity": 0.5999435186386108
+        },
+        {
+          "rank": 5,
+          "product_id": 1465416,
+          "title": "PurelySound E7 Active Noise Cancelling, Wireless Over Ear Bluetooth Headphones, 20H Playtime, Rich Deep Bass, Comfortable Memory Foam Ear Cups for Travel, Home Office -Matte Black",
+          "price": 39.48,
+          "reviews_2022": 310,
+          "low_rating_share": 0.14193548387096774,
+          "cosine_similarity": 0.5994947552680969
+        },
+        {
+          "rank": 6,
+          "product_id": 1605871,
+          "title": "Wireless Earbuds, Bluetooth Earbuds Environmental Noise Cancellation 4 Mic Call Noise Cancelling Mini Earbuds, Bluetooth 5.2 Light Weight Deep Bass Headphones for Work, Home Office",
+          "price": 35.99,
+          "reviews_2022": 409,
+          "low_rating_share": 0.08312958435207823,
+          "cosine_similarity": 0.5962716341018677
+        },
+        {
+          "rank": 7,
+          "product_id": 1412635,
+          "title": "EarFun Air Pro 2 Wireless Earbuds, [2023 Version] Hybrid Active Noise Cancelling Wireless Earphones, Bluetooth 5.2 Headphones with 6 Mics, in-Ear Detection, App for Custom EQ, Wireless Charging, 34Hrs",
+          "price": 69.99,
+          "reviews_2022": 478,
+          "low_rating_share": 0.1087866108786611,
+          "cosine_similarity": 0.5941441059112549
+        },
+        {
+          "rank": 8,
+          "product_id": 1603005,
+          "title": "Wireless Earbuds, Bluetooth 5.3 Headphones in Ear with Noise Cancelling Mic, Bluetooth Earbuds Stereo Bass, IP7 Waterproof Sports Earphones, 32H Playtime USB C Charging Ear Buds Purple for Android iOS",
+          "price": 21.99,
+          "reviews_2022": 960,
+          "low_rating_share": 0.09166666666666666,
+          "cosine_similarity": 0.5803655982017517
+        },
+        {
+          "rank": 9,
+          "product_id": 1125873,
+          "title": "Soundcore Anker Life Q20 Hybrid Active Noise Cancelling Headphones, Wireless Over Ear Bluetooth Headphones with 40H Playtime, Hi-Res Audio, Deep Bass, Memory Foam Ear Cups and Headband (Renewed)",
+          "price": 44.99,
+          "reviews_2022": 117,
+          "low_rating_share": 0.1623931623931624,
+          "cosine_similarity": 0.5801839828491211
+        },
+        {
+          "rank": 10,
+          "product_id": 1339800,
+          "title": "Soundcore by Anker Life Q30 Hybrid Active Noise Cancelling Headphones with Multiple Modes, Hi-Res Sound, Custom EQ via App, 40H Playtime, Comfortable Fit, Bluetooth Headphones, Multipoint Connection",
+          "price": 79.99,
+          "reviews_2022": 1508,
+          "low_rating_share": 0.14655172413793102,
+          "cosine_similarity": 0.579837441444397
+        }
+      ]
+    },
+    "catalog_batch": {
+      "runs": 3,
+      "statuses": [
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "median_s": 2.5841987360036,
+      "min_s": 2.5529906740412116,
+      "max_s": 2.5986024220474064,
+      "rows": 100000,
+      "observations": [
+        {
+          "query_id": "8850d8ec-b120-45b7-adf3-88377fccbaed",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "8306240624",
+          "gpu_resident_input_handoffs": "4",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "16",
+          "device_to_host_materialized_bytes": "31449135",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "600a3a6d-f1bf-4f4a-be4b-4c9eab0964ad",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "8306240624",
+          "gpu_resident_input_handoffs": "4",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "16",
+          "device_to_host_materialized_bytes": "31449135",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "bcdcacb4-aaca-4771-ba6a-0cedb96ff914",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "8306240624",
+          "gpu_resident_input_handoffs": "4",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "16",
+          "device_to_host_materialized_bytes": "31449135",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        }
+      ],
+      "sql": "SELECT n.query_id, q.title AS source_title, n.rank,\n       n.neighbor_id, p.title AS candidate_title,\n       1.0 - n.distance / 2.0 AS cosine_similarity\nFROM cuvs_brute_force_knn(\n  dataset => (SELECT * FROM product_corpus_1000000),\n  queries => (SELECT * FROM product_queries_10000),\n  k => 10, metric => 'l2_expanded') n\nJOIN semantic_products_text q ON q.id = n.query_id\nJOIN semantic_products_text p ON p.id = n.neighbor_id\nORDER BY n.query_id, n.rank\n",
+      "sql_sha256": "6bd4db00ba705b0bcb2bfa6c8c91e465e1e4546148472df571cef28d7ba9d36c",
+      "illustrated_run": "8850d8ec-b120-45b7-adf3-88377fccbaed",
+      "illustrated_source_product_id": 1248764,
+      "illustrated_rows": [
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 1,
+          "neighbor_id": 1271346,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise Canceling Overhead Headphones - Black (Renewed)",
+          "cosine_similarity": 0.9512642621994019
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 2,
+          "neighbor_id": 1548411,
+          "candidate_title": "Sony WH-1000XM4 Wireless Industry Leading Noise Cancelling Over-Ear Headphones with Mic for Hands Free Calling and Alexa, Black WH-1000XM4/B Bundle w/Case + Deco Gear Portable Charger + Gym Bag",
+          "cosine_similarity": 0.9046233296394348
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 3,
+          "neighbor_id": 1267625,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise Canceling Over-Ear Headphones (Silver) Bundle with 10000 mAh Ultra-Portable LED Display Wireless Quick Charge Battery Bank (Black) (2 Items)",
+          "cosine_similarity": 0.8835749626159668
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 4,
+          "neighbor_id": 1585101,
+          "candidate_title": "Sony WH-1000XM4 Wireless Industry Leading Noise Canceling Overhead Headphones with Mic (Black) Bundle with Find My Bluetooth Locator Keychain (2 Items)",
+          "cosine_similarity": 0.8800780177116394
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 5,
+          "neighbor_id": 1344304,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise Cancelling Over-Ear Headphones with Mic (Silver) in-Ear Wireless Headphones Bundle (2 Items)",
+          "cosine_similarity": 0.8763421773910522
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 6,
+          "neighbor_id": 1593899,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise Canceling Over-Ear Headphones (Silver) Bundle with Headphone Hanger Mount (2 Items)",
+          "cosine_similarity": 0.8736070990562439
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 7,
+          "neighbor_id": 1297898,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise Canceling Overhead Headphones with Mic for Phone-Call, Voice Control, Black, with USB Wall Adapter and Microfiber Cleaning Cloth - Bundle",
+          "cosine_similarity": 0.8707782030105591
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 8,
+          "neighbor_id": 1355803,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise-Canceling Over-Ear Headphones (Black WH1000XM4/B) Bundle + Wall Charger with USB Type-C Cable",
+          "cosine_similarity": 0.8578447699546814
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 9,
+          "neighbor_id": 1367556,
+          "candidate_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones, Blue (Renewed)",
+          "cosine_similarity": 0.8517288565635681
+        },
+        {
+          "query_id": 1248764,
+          "source_title": "Sony WH-1000XM4 Wireless Premium Noise Canceling Overhead Headphones with Mic for Phone-Call and Alexa Voice Control, Midnight Blue WH1000XM4",
+          "rank": 10,
+          "neighbor_id": 1448833,
+          "candidate_title": "Sony WH-1000XM4 Wireless Noise Canceling Over-Ear Headphones (Black) WLA-NS7 Wireless TV Adapter Bundle (2 Items)",
+          "cosine_similarity": 0.8406590819358826
+        }
+      ]
+    },
+    "headphone_emerging": {
+      "runs": 3,
+      "statuses": [
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "median_s": 0.7515872349613346,
+      "min_s": 0.7323827510117553,
+      "max_s": 0.9018790269619785,
+      "rows": 10,
+      "observations": [
+        {
+          "query_id": "f11838e2-3a9a-42c9-b4fd-f9fba8adbd29",
+          "post_native_execution_path": "mixed",
+          "host_datafusion_boundary_count": "20",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "8227210743",
+          "gpu_resident_input_handoffs": "1",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "7",
+          "device_to_host_materialized_bytes": "1990780",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "native_partition_preserving_sort_unsupported"
+          ]
+        },
+        {
+          "query_id": "eeaa3407-814a-4686-9dcf-f38479caacf4",
+          "post_native_execution_path": "mixed",
+          "host_datafusion_boundary_count": "20",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "8227210743",
+          "gpu_resident_input_handoffs": "1",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "7",
+          "device_to_host_materialized_bytes": "1990780",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "native_partition_preserving_sort_unsupported"
+          ]
+        },
+        {
+          "query_id": "dd73b315-c205-4d8e-b1a2-f98d8f483090",
+          "post_native_execution_path": "mixed",
+          "host_datafusion_boundary_count": "20",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "8227210743",
+          "gpu_resident_input_handoffs": "1",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "7",
+          "device_to_host_materialized_bytes": "1990780",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "native_partition_preserving_sort_unsupported"
+          ]
+        }
+      ],
+      "sql": "WITH assignments AS (\n  SELECT id, cluster_id\n  FROM cuvs_kmeans(\n    input => (SELECT v.id, v.vector\n      FROM semantic_reviews_vectors v\n      JOIN semantic_reviews_text r ON r.id = v.id\n      WHERE r.category_l3 = 'Headphones & Earbuds'\n      ORDER BY v.id),\n    n_clusters => 24, n_init => 5, max_iter => 100, tol => 0.0001)\n), issues AS (\n  SELECT r.product_id, a.cluster_id,\n         SUM(CASE WHEN EXTRACT(YEAR FROM r.review_time) = 2021 THEN 1 ELSE 0 END) AS n2021,\n         SUM(CASE WHEN EXTRACT(YEAR FROM r.review_time) = 2022 THEN 1 ELSE 0 END) AS n2022,\n         MIN(CASE WHEN EXTRACT(YEAR FROM r.review_time) = 2022 THEN r.id END) AS example_id\n  FROM assignments a JOIN semantic_reviews_text r ON r.id = a.id\n  GROUP BY r.product_id, a.cluster_id\n), totals AS (\n  SELECT *, SUM(n2021) OVER (PARTITION BY product_id) AS total2021,\n            SUM(n2022) OVER (PARTITION BY product_id) AS total2022\n  FROM issues\n)\nSELECT p.product_id, p.title, t.cluster_id,\n       t.n2021, t.total2021, t.n2022, t.total2022,\n       100.0 * t.n2021 / t.total2021 AS share2021_pct,\n       100.0 * t.n2022 / t.total2022 AS share2022_pct,\n       100.0 * t.n2022 / t.total2022 - 100.0 * t.n2021 / t.total2021 AS change_pp,\n       t.example_id, r.embedding_text AS example_review\nFROM totals t\nJOIN products p ON p.product_id = t.product_id\nJOIN semantic_reviews_text r ON r.id = t.example_id\nWHERE t.total2021 >= 30 AND t.total2022 >= 30 AND t.n2022 >= 10\n  AND 1.0 * t.n2022 / t.total2022 - 1.0 * t.n2021 / t.total2021 > 0.10\nORDER BY change_pp DESC, p.product_id, t.cluster_id\nLIMIT 10\n",
+      "sql_sha256": "3f52ce07e96032f17366425687e3daa6d866b86d8dc321489190a7cbd844f2f4",
+      "illustrated_run": "f11838e2-3a9a-42c9-b4fd-f9fba8adbd29",
+      "illustrated_rows": [
+        {
+          "product_id": 1507685,
+          "title": "Altec Lansing NanoPods - Truly Wireless Earbuds with Charging Case, TWS Waterproof Bluetooth Earbuds with Touch Controls for Travel, Sports, Running, Working (Royal Blue)",
+          "cluster_id": 7,
+          "n2021": 1,
+          "total2021": 42,
+          "n2022": 10,
+          "total2022": 33,
+          "share2021_pct": 2.380952380952381,
+          "share2022_pct": 30.303030303030305,
+          "change_pp": 27.922077922077925,
+          "example_id": 14707192
+        },
+        {
+          "product_id": 1545158,
+          "title": "Jabra Talk 65 Mono - Premium Wireless Single Ear Headset - 2 Built-in Noise Cancelling Microphones, Media Streaming, Up to 100 Meters Bluetooth Range - Black",
+          "cluster_id": 10,
+          "n2021": 4,
+          "total2021": 73,
+          "n2022": 14,
+          "total2022": 58,
+          "share2021_pct": 5.47945205479452,
+          "share2022_pct": 24.137931034482758,
+          "change_pp": 18.658478979688237,
+          "example_id": 14777699
+        },
+        {
+          "product_id": 1564240,
+          "title": "Sony Wireless Headphones WH-CH510: Wireless Bluetooth On-Ear Headset with Mic for phone-call, Blue",
+          "cluster_id": 8,
+          "n2021": 6,
+          "total2021": 67,
+          "n2022": 14,
+          "total2022": 55,
+          "share2021_pct": 8.955223880597014,
+          "share2022_pct": 25.454545454545453,
+          "change_pp": 16.49932157394844,
+          "example_id": 9948566
+        },
+        {
+          "product_id": 1341508,
+          "title": "Bose Sport Open Earbuds — True Wireless Open Ear Headphones - Sweat Resistant for Running, Walking and Workouts, Black",
+          "cluster_id": 19,
+          "n2021": 3,
+          "total2021": 31,
+          "n2022": 13,
+          "total2022": 52,
+          "share2021_pct": 9.67741935483871,
+          "share2022_pct": 25.0,
+          "change_pp": 15.32258064516129,
+          "example_id": 785062
+        },
+        {
+          "product_id": 1435838,
+          "title": "Samsung Galaxy Buds Plus, True Wireless Earbuds (Wireless Charging Case Included), White – US Version",
+          "cluster_id": 9,
+          "n2021": 53,
+          "total2021": 482,
+          "n2022": 27,
+          "total2022": 104,
+          "share2021_pct": 10.995850622406639,
+          "share2022_pct": 25.96153846153846,
+          "change_pp": 14.96568783913182,
+          "example_id": 767918
+        },
+        {
+          "product_id": 1377541,
+          "title": "TREBLAB X3-Pro - Wireless Earbuds with Earhooks - 45H Playtime, aptX, IPX7 Waterproof Earphones for Running & Workout - Sport Bluetooth Headphones with Charging case - Built-in Microphone",
+          "cluster_id": 15,
+          "n2021": 2,
+          "total2021": 32,
+          "n2022": 15,
+          "total2022": 71,
+          "share2021_pct": 6.25,
+          "share2022_pct": 21.12676056338028,
+          "change_pp": 14.87676056338028,
+          "example_id": 1446330
+        },
+        {
+          "product_id": 1569701,
+          "title": "6S Wireless Bluetooth Headphones Over Ear, Hi-Fi Stereo Foldable Wireless Stereo Headsets Earbuds with Built-in Mic, Volume Control, FM for iPhone/Samsung/iPad/PC (White & Gold)",
+          "cluster_id": 6,
+          "n2021": 7,
+          "total2021": 63,
+          "n2022": 34,
+          "total2022": 138,
+          "share2021_pct": 11.11111111111111,
+          "share2022_pct": 24.63768115942029,
+          "change_pp": 13.526570048309178,
+          "example_id": 4552805
+        },
+        {
+          "product_id": 1230203,
+          "title": "Jaybird Vista 2 True Wireless Bluetooth Headphones With Charging Case - Premium Sound, ANC, Sport Fit, 24 Hour Battery, Waterproof Earbuds With Military-Grade Durability - Black",
+          "cluster_id": 9,
+          "n2021": 1,
+          "total2021": 33,
+          "n2022": 17,
+          "total2022": 109,
+          "share2021_pct": 3.0303030303030303,
+          "share2022_pct": 15.596330275229358,
+          "change_pp": 12.566027244926328,
+          "example_id": 14327079
+        },
+        {
+          "product_id": 1569701,
+          "title": "6S Wireless Bluetooth Headphones Over Ear, Hi-Fi Stereo Foldable Wireless Stereo Headsets Earbuds with Built-in Mic, Volume Control, FM for iPhone/Samsung/iPad/PC (White & Gold)",
+          "cluster_id": 13,
+          "n2021": 2,
+          "total2021": 63,
+          "n2022": 21,
+          "total2022": 138,
+          "share2021_pct": 3.1746031746031744,
+          "share2022_pct": 15.217391304347826,
+          "change_pp": 12.042788129744652,
+          "example_id": 4492670
+        },
+        {
+          "product_id": 1587636,
+          "title": "LUDOS Clamor Wired Earbuds in Ear, Noise Isolating Headphones with Microphone, 3.5mm Jack Plug, Mic and Volume Control, Memory Foam, Deep Bass, Tangle-Free Cord - Purple",
+          "cluster_id": 10,
+          "n2021": 9,
+          "total2021": 107,
+          "n2022": 15,
+          "total2022": 76,
+          "share2021_pct": 8.411214953271028,
+          "share2022_pct": 19.736842105263158,
+          "change_pp": 11.32562715199213,
+          "example_id": 3060644
+        }
+      ]
+    },
+    "inline_kmeans_topk": {
+      "runs": 3,
+      "statuses": [
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "median_s": 0.7763096200069413,
+      "min_s": 0.7651936759939417,
+      "max_s": 0.7992983189760707,
+      "rows": 18,
+      "observations": [
+        {
+          "query_id": "512d57e0-fd88-4045-a862-429443a70856",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "773154830",
+          "gpu_resident_input_handoffs": "4",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "2",
+          "device_to_host_materialized_bytes": "10129",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "7feff5cb-492d-4693-9af3-55b932a3bdd9",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "773148890",
+          "gpu_resident_input_handoffs": "4",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "2",
+          "device_to_host_materialized_bytes": "10129",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "b29d6a79-39a9-40e3-bc43-6976794e051a",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "773150186",
+          "gpu_resident_input_handoffs": "4",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "2",
+          "device_to_host_materialized_bytes": "10129",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        }
+      ],
+      "sql": "WITH complaint_features AS (\n    SELECT\n        p.product_id AS id,\n        COUNT(*) AS negative_reviews,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%battery%' THEN 1.0 ELSE 0.0 END) AS REAL) AS battery,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%connect%' OR LOWER(r.text) LIKE '%bluetooth%' THEN 1.0 ELSE 0.0 END) AS REAL) AS connection,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%sound%' OR LOWER(r.text) LIKE '%volume%' THEN 1.0 ELSE 0.0 END) AS REAL) AS sound,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%comfort%' OR LOWER(r.text) LIKE '%fit%' THEN 1.0 ELSE 0.0 END) AS REAL) AS comfort,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%broke%' OR LOWER(r.text) LIKE '%stopped working%' THEN 1.0 ELSE 0.0 END) AS REAL) AS durability,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%charg%' THEN 1.0 ELSE 0.0 END) AS REAL) AS charging,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%microphone%' OR LOWER(r.text) LIKE '%mic %' THEN 1.0 ELSE 0.0 END) AS REAL) AS microphone,\n        CAST(AVG(CASE WHEN LOWER(r.text) LIKE '%return%' OR LOWER(r.text) LIKE '%refund%' THEN 1.0 ELSE 0.0 END) AS REAL) AS returns\n    FROM reviews AS r\n    JOIN products AS p\n        ON r.product_id = p.product_id\n    WHERE p.category_l2 = 'Headphones, Earbuds & Accessories'\n      AND r.review_time >= TIMESTAMP '2022-01-01 00:00:00'\n      AND r.review_time <  TIMESTAMP '2023-01-01 00:00:00'\n      AND r.rating <= 2\n      AND r.text IS NOT NULL\n    GROUP BY p.product_id\n    HAVING COUNT(*) >= 10\n),\n\nclusters AS (\n    SELECT\n        id,\n        cluster_id\n    FROM cuvs_kmeans(\n        input => (\n            SELECT\n                id,\n                COALESCE(battery, CAST(0 AS REAL))    AS battery,\n                COALESCE(connection, CAST(0 AS REAL)) AS connection,\n                COALESCE(sound, CAST(0 AS REAL))      AS sound,\n                COALESCE(comfort, CAST(0 AS REAL))    AS comfort,\n                COALESCE(durability, CAST(0 AS REAL)) AS durability,\n                COALESCE(charging, CAST(0 AS REAL))   AS charging,\n                COALESCE(microphone, CAST(0 AS REAL)) AS microphone,\n                COALESCE(returns, CAST(0 AS REAL))    AS returns\n            FROM complaint_features\n            ORDER BY id\n        ),\n        n_clusters => 6,\n        n_init => 5\n    )\n),\n\nprofiles AS (\n    SELECT\n        CAST(k.cluster_id AS BIGINT) AS id,\n        COALESCE(CAST(AVG(c.battery) AS REAL), CAST(0 AS REAL))    AS battery,\n        COALESCE(CAST(AVG(c.connection) AS REAL), CAST(0 AS REAL)) AS connection,\n        COALESCE(CAST(AVG(c.sound) AS REAL), CAST(0 AS REAL))      AS sound,\n        COALESCE(CAST(AVG(c.comfort) AS REAL), CAST(0 AS REAL))    AS comfort,\n        COALESCE(CAST(AVG(c.durability) AS REAL), CAST(0 AS REAL)) AS durability,\n        COALESCE(CAST(AVG(c.charging) AS REAL), CAST(0 AS REAL))   AS charging,\n        COALESCE(CAST(AVG(c.microphone) AS REAL), CAST(0 AS REAL)) AS microphone,\n        COALESCE(CAST(AVG(c.returns) AS REAL), CAST(0 AS REAL))    AS returns\n    FROM clusters AS k\n    JOIN complaint_features AS c\n        ON k.id = c.id\n    GROUP BY k.cluster_id\n)\n\nSELECT\n    t.id AS cluster_id,\n    t.rank,\n    CASE t.position\n        WHEN 0 THEN 'battery'\n        WHEN 1 THEN 'connection'\n        WHEN 2 THEN 'sound'\n        WHEN 3 THEN 'comfort'\n        WHEN 4 THEN 'durability'\n        WHEN 5 THEN 'charging'\n        WHEN 6 THEN 'microphone'\n        WHEN 7 THEN 'returns'\n    END AS issue,\n    t.value AS mean_product_mention_rate\nFROM cuvs_top_k(\n    input => (\n        SELECT\n            id,\n            battery,\n            connection,\n            sound,\n            comfort,\n            durability,\n            charging,\n            microphone,\n            returns\n        FROM profiles\n    ),\n    k => 3,\n    select => 'max'\n) AS t\nORDER BY\n    t.id,\n    t.rank;\n\n",
+      "sql_sha256": "c062e317073f927f8baaf709397feb6557d87e042b23a9cd14debf49c4f6e779",
+      "illustrated_run": "512d57e0-fd88-4045-a862-429443a70856",
+      "illustrated_rows": [
+        {
+          "cluster_id": 0,
+          "rank": 1,
+          "issue": "durability",
+          "mean_product_mention_rate": 0.35986992716789246
+        },
+        {
+          "cluster_id": 0,
+          "rank": 2,
+          "issue": "sound",
+          "mean_product_mention_rate": 0.18610817193984985
+        },
+        {
+          "cluster_id": 0,
+          "rank": 3,
+          "issue": "returns",
+          "mean_product_mention_rate": 0.1122603714466095
+        },
+        {
+          "cluster_id": 1,
+          "rank": 1,
+          "issue": "sound",
+          "mean_product_mention_rate": 0.4509941637516022
+        },
+        {
+          "cluster_id": 1,
+          "rank": 2,
+          "issue": "charging",
+          "mean_product_mention_rate": 0.24197699129581451
+        },
+        {
+          "cluster_id": 1,
+          "rank": 3,
+          "issue": "connection",
+          "mean_product_mention_rate": 0.24094454944133759
+        },
+        {
+          "cluster_id": 2,
+          "rank": 1,
+          "issue": "charging",
+          "mean_product_mention_rate": 0.39991021156311035
+        },
+        {
+          "cluster_id": 2,
+          "rank": 2,
+          "issue": "sound",
+          "mean_product_mention_rate": 0.2141246348619461
+        },
+        {
+          "cluster_id": 2,
+          "rank": 3,
+          "issue": "connection",
+          "mean_product_mention_rate": 0.1516951024532318
+        },
+        {
+          "cluster_id": 3,
+          "rank": 1,
+          "issue": "sound",
+          "mean_product_mention_rate": 0.48470911383628845
+        },
+        {
+          "cluster_id": 3,
+          "rank": 2,
+          "issue": "comfort",
+          "mean_product_mention_rate": 0.1729457527399063
+        },
+        {
+          "cluster_id": 3,
+          "rank": 3,
+          "issue": "returns",
+          "mean_product_mention_rate": 0.14595681428909302
+        },
+        {
+          "cluster_id": 4,
+          "rank": 1,
+          "issue": "comfort",
+          "mean_product_mention_rate": 0.24262027442455292
+        },
+        {
+          "cluster_id": 4,
+          "rank": 2,
+          "issue": "returns",
+          "mean_product_mention_rate": 0.08225435018539429
+        },
+        {
+          "cluster_id": 4,
+          "rank": 3,
+          "issue": "durability",
+          "mean_product_mention_rate": 0.05911022424697876
+        },
+        {
+          "cluster_id": 5,
+          "rank": 1,
+          "issue": "sound",
+          "mean_product_mention_rate": 0.26485252380371094
+        },
+        {
+          "cluster_id": 5,
+          "rank": 2,
+          "issue": "connection",
+          "mean_product_mention_rate": 0.19398491084575653
+        },
+        {
+          "cluster_id": 5,
+          "rank": 3,
+          "issue": "returns",
+          "mean_product_mention_rate": 0.11981520056724548
+        }
+      ]
+    },
+    "headphone_umap2": {
+      "runs": 3,
+      "statuses": [
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "median_s": 3.8821365920011885,
+      "min_s": 3.634793533012271,
+      "max_s": 4.040503346011974,
+      "rows": 9967,
+      "observations": [
+        {
+          "query_id": "2f1b7c06-878f-4034-bbc4-b9a6605396ed",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "1888152609",
+          "gpu_resident_input_handoffs": "2",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "4",
+          "device_to_host_materialized_bytes": "13745306",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "47b502f1-9e37-4ad9-8b58-e419b2cf4c94",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "1888152609",
+          "gpu_resident_input_handoffs": "2",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "4",
+          "device_to_host_materialized_bytes": "13745306",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        },
+        {
+          "query_id": "95410fdc-cd78-4d05-816a-2a5e0eb44c15",
+          "post_native_execution_path": "native",
+          "host_datafusion_boundary_count": "0",
+          "device_ordinal": "0",
+          "query_grant_bytes": "34359738368",
+          "max_task_observed_peak_bytes": "1888152609",
+          "gpu_resident_input_handoffs": "2",
+          "host_to_device_uploaded_bytes": "0",
+          "device_to_host_materializations": "4",
+          "device_to_host_materialized_bytes": "13745306",
+          "allocator_high_water_bytes": "none",
+          "planning_reason_codes": [
+            "consumer_producer_binding_required"
+          ]
+        }
+      ],
+      "sql": "SELECT u.id, u.dim_0, u.dim_1, r.product_id,\n       p.title AS product_title, EXTRACT(YEAR FROM r.review_time) AS review_year,\n       r.rating, r.title, r.embedding_text\nFROM cuml_umap(\n  input => (SELECT v.id, v.vector\n    FROM semantic_reviews_vectors v\n    JOIN semantic_reviews_text r ON r.id = v.id\n    WHERE r.category_l3 = 'Headphones & Earbuds' AND v.sample_rank < 100000\n    ORDER BY v.id),\n  n_components => 2, n_neighbors => 30, min_dist => 0.1, random_state => 42) u\nJOIN semantic_reviews_text r ON r.id = u.id\nJOIN products p ON p.product_id = r.product_id\nORDER BY u.id\n",
+      "sql_sha256": "9e2f041db29501d216c2c0a08a6ab6c0ef9693461a80046c8d19eb1e9a842a85",
+      "illustrated_run": "2f1b7c06-878f-4034-bbc4-b9a6605396ed",
+      "website_sample": {
+        "path": "website/src/data/amazonReviewMap.json",
+        "query_id": "2f1b7c06-878f-4034-bbc4-b9a6605396ed",
+        "sql": "SELECT u.id, u.dim_0, u.dim_1, r.product_id,\n       p.title AS product_title, EXTRACT(YEAR FROM r.review_time) AS review_year,\n       r.rating, r.title, r.embedding_text\nFROM cuml_umap(\n  input => (SELECT v.id, v.vector\n    FROM semantic_reviews_vectors v\n    JOIN semantic_reviews_text r ON r.id = v.id\n    WHERE r.category_l3 = 'Headphones & Earbuds' AND v.sample_rank < 100000\n    ORDER BY v.id),\n  n_components => 2, n_neighbors => 30, min_dist => 0.1, random_state => 42) u\nJOIN semantic_reviews_text r ON r.id = u.id\nJOIN products p ON p.product_id = r.product_id\nORDER BY u.id\n",
+        "displayed_rows": 1200,
+        "fitted_rows": 9967,
+        "sampling": "evenly spaced positions after ORDER BY id",
+        "sha256": "0c8421b9505b18bc5440d9f42b4844fcbd2ae53aca7be218b2b3b29f3a6404ac"
+      }
+    }
+  }
+}

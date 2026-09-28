@@ -3,6 +3,7 @@
 // reference. The generator is deterministic and never contacts a server.
 //
 //   node website/scripts/gen-cuvs-docs.mjs
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +15,7 @@ import {
   densePresentation as presentation,
   denseQuickstartPrerequisite as quickstartPrerequisite,
   loadProviderSpecs,
+  narrativeExampleImport,
   renderDenseArguments as renderArguments,
   renderDenseOutputSchema as renderOutputSchema,
   prose,
@@ -209,7 +211,8 @@ function renderPage(spec) {
     inputs: renderInputs(spec),
     argumentsAndOptions: renderArguments(spec, renderVectorBindingShapes(spec)),
     output: renderOutputSchema(spec),
-    examples: null,
+    examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
+      ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
     discoveryLink: '../../reference/gpu-function-catalog.mdx',
   });

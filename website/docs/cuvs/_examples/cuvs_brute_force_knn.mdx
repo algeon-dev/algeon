@@ -1,0 +1,116 @@
+This example uses the [Amazon Reviews demo dataset](../demo-dataset.mdx).
+
+### Which travel headphones meet our price and review-history criteria?
+
+A merchandising analyst needs a shortlist for long flights. The request is
+“Wireless noise cancelling over ear headphones for long airplane flights.”
+The candidate must also cost $20–150 in the catalog snapshot, have at least
+100 verified-purchase reviews in 2022, and have at most 20% reviews rated at most two stars in that period.
+
+The query computes those review statistics from the complete reviews table
+and joins them to the product catalog before nearest-neighbor search. The
+117 eligible products become the search dataset. Changing the year or the
+rating threshold changes that dataset within the statement.
+
+```sql
+WITH review_history AS (
+  SELECT product_id, COUNT(*) AS reviews_2022,
+         AVG(CASE WHEN rating <= 2 THEN 1.0 ELSE 0.0 END) AS low_rating_share
+  FROM reviews
+  WHERE review_time >= TIMESTAMP '2022-01-01'
+    AND review_time < TIMESTAMP '2023-01-01' AND verified_purchase
+  GROUP BY product_id
+), eligible AS (
+  SELECT v.id, v.vector
+  FROM semantic_products_vectors v
+  JOIN products p ON p.product_id = v.id
+  JOIN review_history h ON h.product_id = v.id
+  WHERE v.sample_rank < 1000000
+    AND p.category_l3 = 'Headphones & Earbuds'
+    AND p.price BETWEEN 20 AND 150
+    AND h.reviews_2022 >= 100 AND h.low_rating_share <= 0.20
+)
+SELECT n.rank, p.product_id, p.title, p.price,
+       h.reviews_2022, h.low_rating_share,
+       1.0 - n.distance / 2.0 AS cosine_similarity
+FROM cuvs_brute_force_knn(
+  dataset => (SELECT id, vector FROM eligible),
+  queries => (SELECT id, vector FROM intent_queries WHERE id = 0),
+  k => 10, metric => 'l2_expanded') n
+JOIN products p ON p.product_id = n.neighbor_id
+JOIN review_history h ON h.product_id = p.product_id
+ORDER BY n.rank;
+```
+
+The query vector is row `id = 0` in `intent_queries`, prepared with BGE-M3
+from the request above. Stored product and query vectors are normalized;
+`1 - squared_L2 / 2` therefore gives cosine similarity. SQL enriches each
+neighbor with the same review statistics used to admit the candidate.
+
+The first five rows of the 2026-09-28 capture are below. Product names are
+shortened; the [capture metadata and result rows](/data/amazon-reviews-capture.json)
+retain their IDs and complete titles.
+
+| Rank | Product | Snapshot price | Verified reviews, 2022 | Low-rating share | Cosine similarity |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Srhythm NC35 | $69.99 | 353 | 16.15% | 0.6392 |
+| 2 | VELKPRO office headset | $29.99 | 103 | 5.83% | 0.6105 |
+| 3 | HROEENOI over-ear ANC headphones | $45.99 | 354 | 17.51% | 0.6034 |
+| 4 | Soundcore Space Q45 | $149.99 | 179 | 11.73% | 0.5999 |
+| 5 | PurelySound E7 | $39.48 | 310 | 14.19% | 0.5995 |
+
+The office headset in second place meets the SQL conditions, but its title
+describes on-ear office use. A catalog reviewer can reject it on that basis
+while keeping the price and review-history evidence attached to the other
+candidates. The complete statement took a median 1.54 seconds over three
+runs; [capture conditions](../demo-dataset.mdx#captured-run) include index
+construction and Flight result transfer.
+
+The shortlist supports catalog review. A high similarity score does not
+establish wireless connectivity, over-ear fit or effective noise cancellation;
+those requirements still need product-specification checks. Catalog prices
+are historical, and the low-rating share is a fraction of reviews, not a
+failure rate.
+
+### Refresh similar-product candidates for a batch of catalog entries
+
+A batch comparison uses one million catalog vectors and 10,000 disjoint
+query products, each with 1,024 dimensions. This statement returns ten
+neighbors for each query product:
+
+```sql
+SELECT n.query_id, q.title AS source_title, n.rank,
+       n.neighbor_id, p.title AS candidate_title,
+       1.0 - n.distance / 2.0 AS cosine_similarity
+FROM cuvs_brute_force_knn(
+  dataset => (SELECT * FROM product_corpus_1000000),
+  queries => (SELECT * FROM product_queries_10000),
+  k => 10, metric => 'l2_expanded') n
+JOIN semantic_products_text q ON q.id = n.query_id
+JOIN semantic_products_text p ON p.id = n.neighbor_id
+ORDER BY n.query_id, n.rank;
+```
+
+The output can seed a catalog editor's comparison queue. Matching text does
+not establish that two listings describe the same item or interchangeable
+products. The index is built within each statement, including when the
+input is a view.
+
+The capture returned 100,000 rows in a median 2.58 seconds over three runs.
+For source product `1248764`, a midnight-blue Sony WH-1000XM4 listing, the
+first candidates illustrate why the result is useful for human comparison:
+
+| Rank | Candidate product ID | Shortened title | Cosine similarity |
+| ---: | ---: | --- | ---: |
+| 1 | 1271346 | Sony WH-1000XM4, black, renewed | 0.9513 |
+| 2 | 1548411 | Sony WH-1000XM4 bundle with case, charger and gym bag | 0.9046 |
+| 3 | 1267625 | Sony WH-1000XM4, silver, bundle with battery bank | 0.8836 |
+
+The candidates share the headphone model while differing in condition,
+color or included items. An editor can inspect those differences before
+merging listings or presenting alternatives.
+
+Float32 `l2_expanded` can round near-identical vectors to zero distance.
+In the separate 100,000-neighbor verification, three reported zeros had
+positive Float64 distances, at most 0.0002202. A zero distance alone does
+not establish a duplicate listing.
