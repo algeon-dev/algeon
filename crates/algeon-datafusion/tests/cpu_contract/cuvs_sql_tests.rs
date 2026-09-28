@@ -24,8 +24,8 @@ use algeon_datafusion::{
     session::AlgeonSessionStateBuilderExt,
 };
 use arrow::{
-    array::{Array, BooleanArray, StringArray},
-    datatypes::{DataType, Field, Schema},
+    array::{Array, BooleanArray, Int64Array, StringArray, TimestampMillisecondArray},
+    datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use datafusion::{
@@ -52,6 +52,8 @@ use datafusion::{
         },
     },
 };
+#[cfg(feature = "cugraph")]
+use parquet::arrow::ArrowWriter;
 use query_engine::plan::{
     CuvsOutputContract, RELATION_ID_TYPES, RelationIdType, VectorElementType, vector_kmeans_output_schema,
     vector_knn_output_schema, vector_pairwise_distance_output_schema, vector_pca_output_schema,
@@ -1397,6 +1399,108 @@ async fn native_rule_lowers_a_cugraph_relation_input_into_a_composed_gpu_produce
     );
     let [graph] = dataset.children()[..] else { panic!("one GPU-resident input under the composed producer") };
     assert!(graph.downcast_ref::<CugraphAlgoExec>().is_some(), "{}", graph.name());
+}
+
+// A cuGraph edge relation is planned by a nested optimizer run, and the outer
+// run revisits that subtree. DataFusion builds hash-join dynamic filters in
+// `FilterPushdown(Post)` and forbids a later `JoinSelection` input swap, so the
+// nested run must leave dynamic-filter construction to the outer run.
+#[cfg(feature = "cugraph")]
+#[tokio::test]
+async fn cugraph_edge_relation_over_hash_joins_plans_through_the_outer_join_selection() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let items_path = dir.path().join("items.parquet");
+    let events_path = dir.path().join("events.parquet");
+    let item_rows = 3_600_i64;
+    let event_rows = 5_000_i64;
+    let items = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("product_id", DataType::Utf8, true),
+    ]));
+    write_parquet(
+        &items_path,
+        RecordBatch::try_new(
+            Arc::clone(&items),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..item_rows)),
+                Arc::new(StringArray::from_iter(
+                    (0..item_rows).map(|row| (row % 10 != 0).then(|| format!("p{}", row % 700))),
+                )),
+            ],
+        )
+        .expect("items batch"),
+    );
+    let events = Arc::new(Schema::new(vec![
+        Field::new("event_id", DataType::Int64, false),
+        Field::new("event_time", DataType::Timestamp(TimeUnit::Millisecond, None), false),
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("session_id", DataType::Utf8, false),
+        Field::new("event_type", DataType::Utf8, false),
+    ]));
+    write_parquet(
+        &events_path,
+        RecordBatch::try_new(
+            Arc::clone(&events),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..event_rows)),
+                Arc::new(TimestampMillisecondArray::from_iter_values((0..event_rows).map(|row| row * 60_000))),
+                Arc::new(Int64Array::from_iter_values((0..event_rows).map(|row| row % 57))),
+                Arc::new(Int64Array::from_iter_values((0..event_rows).map(|row| (row * 7) % item_rows))),
+                Arc::new(StringArray::from_iter_values((0..event_rows).map(|row| format!("s{}", row / 8)))),
+                Arc::new(StringArray::from_iter_values(
+                    (0..event_rows).map(|row| if row % 3 == 0 { "item_like" } else { "item_view" }),
+                )),
+            ],
+        )
+        .expect("events batch"),
+    );
+    let ctx = fixtures::cuvs_cugraph_native_context();
+    for sql in [
+        format!("CREATE EXTERNAL TABLE steps_items STORED AS PARQUET LOCATION '{}'", items_path.display()),
+        format!("CREATE EXTERNAL TABLE steps_events STORED AS PARQUET LOCATION '{}'", events_path.display()),
+        "CREATE VIEW steps_reach AS \
+         SELECT product_id, COUNT(*) AS viewers FROM ( \
+           SELECT DISTINCT i.product_id, e.user_id \
+           FROM steps_events e JOIN steps_items i ON i.item_id = e.item_id \
+           WHERE e.event_type = 'item_view' AND i.product_id IS NOT NULL) \
+         GROUP BY product_id"
+            .to_string(),
+        "CREATE VIEW steps AS \
+         SELECT e.user_id, e.event_time, i.product_id, \
+                LEAD(i.product_id) OVER ( \
+                  PARTITION BY e.user_id, e.session_id ORDER BY e.event_time, e.event_id) AS next_product_id, \
+                LEAD(e.event_time) OVER ( \
+                  PARTITION BY e.user_id, e.session_id ORDER BY e.event_time, e.event_id) AS next_time \
+         FROM steps_events e JOIN steps_items i ON i.item_id = e.item_id \
+         WHERE e.event_type = 'item_view' AND i.product_id IS NOT NULL"
+            .to_string(),
+        "CREATE VIEW transitions AS \
+         SELECT s.product_id AS src, s.next_product_id AS dst, CAST(COUNT(DISTINCT s.user_id) AS DOUBLE) AS weight \
+         FROM steps s \
+         JOIN steps_reach a ON a.product_id = s.product_id \
+         JOIN steps_reach b ON b.product_id = s.next_product_id \
+         WHERE s.product_id <> s.next_product_id \
+           AND s.next_time > s.event_time AND s.next_time <= s.event_time + INTERVAL '30 minutes' \
+           AND a.viewers >= 10 AND b.viewers >= 10 \
+         GROUP BY s.product_id, s.next_product_id \
+         HAVING COUNT(DISTINCT s.user_id) >= 3"
+            .to_string(),
+    ] {
+        ctx.sql(&sql).await.unwrap_or_else(|error| panic!("{sql}: {error}"));
+    }
+
+    let logical =
+        logical_plan(&ctx, "SELECT * FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM transitions))").await;
+    ctx.state().create_physical_plan(&logical).await.expect("cuGraph over joined views plans");
+}
+
+#[cfg(feature = "cugraph")]
+fn write_parquet(path: &std::path::Path, batch: RecordBatch) {
+    let mut writer =
+        ArrowWriter::try_new(fs::File::create(path).expect("parquet file"), batch.schema(), None).expect("writer");
+    writer.write(&batch).expect("write parquet batch");
+    writer.close().expect("close parquet writer");
 }
 
 #[cfg(feature = "cugraph")]
