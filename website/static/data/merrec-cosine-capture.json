@@ -1,0 +1,175 @@
+{
+  "source": {
+    "dataset": "mercari-us/merrec",
+    "dataset_url": "https://huggingface.co/datasets/mercari-us/merrec",
+    "partition": "20231001",
+    "scope": "One source shard covering October 2023",
+    "counts": {
+      "events": 494357,
+      "items": 358893,
+      "distinct_users": 5660,
+      "buy_comp_events": 238
+    },
+    "schemas": {
+      "events": {
+        "rows": 494357,
+        "columns": [
+          "event_id",
+          "event_time",
+          "user_id",
+          "item_id",
+          "session_id",
+          "sequence_id",
+          "sequence_length",
+          "event_type"
+        ]
+      },
+      "items": {
+        "rows": 358893,
+        "columns": [
+          "item_id",
+          "product_id",
+          "name",
+          "price",
+          "c0_id",
+          "c0_name",
+          "c1_id",
+          "c1_name",
+          "c2_id",
+          "c2_name",
+          "category_path",
+          "brand_id",
+          "brand_name",
+          "item_condition_id",
+          "item_condition_name",
+          "size_id",
+          "size_name",
+          "color",
+          "shipper_id",
+          "shipper_name"
+        ]
+      }
+    },
+    "graph": {
+      "market_vertices": 1711,
+      "directed_transition_edges": 4963,
+      "market_user_edges": 59629,
+      "seed_vertex": 672,
+      "seed_product_id": "15928_1315"
+    },
+    "provenance": {
+      "graph_views": "docs/research/merrec/sql/01_graph_views.sql",
+      "snapshot_registration": "docs/research/merrec/sql/02_graph_snapshots.sql",
+      "graph_registration": "docs/research/merrec/sql/03_register_graph.sql",
+      "validation": "docs/research/merrec/graph_validation.json"
+    }
+  },
+  "capture": {
+    "name": "audience_cosine",
+    "status": "ok",
+    "query_id": "8b013b7e-f25f-43b1-86e6-26f55fb6b7eb",
+    "elapsed_seconds": 0.18270118703367189,
+    "timing_note": "One Flight elapsed observation including planning and complete receipt. Graph preparation occurred before the call. No repeated performance claim follows from this value.",
+    "result_rows": 10,
+    "schema": "product_id: string_view\nbrand_name: string_view\nleaf_category: string_view\nviewers: int64 not null\nshared_viewers: int64 not null\naudience_cosine: double not null\njaccard_rank: uint64 not null",
+    "sql": "WITH seed AS (\n  SELECT id FROM mr_nodes WHERE product_id = '15928_1315'\n), pairs AS (\n  SELECT seed.id AS first, candidate.id AS second\n  FROM seed CROSS JOIN mr_nodes candidate\n  WHERE candidate.id <> seed.id\n), cosine AS (\n  SELECT * FROM cugraph_cosine(\n    edges => (SELECT src, dst FROM mr_audience),\n    vertex_pairs => (SELECT first, second FROM pairs),\n    directed => false)\n), jaccard AS (\n  SELECT second, RANK() OVER (ORDER BY similarity DESC) AS jaccard_rank\n  FROM cugraph_jaccard(\n    edges => (SELECT src, dst FROM mr_audience),\n    vertex_pairs => (SELECT first, second FROM pairs),\n    directed => false)\n), shared AS (\n  SELECT b.src AS second, COUNT(*) AS shared_viewers\n  FROM seed\n  JOIN mr_audience a ON a.src = seed.id\n  JOIN mr_audience b ON b.dst = a.dst AND b.src <> seed.id\n  GROUP BY b.src\n)\nSELECT m.product_id, m.brand_name, m.leaf_category, m.viewers,\n       s.shared_viewers, c.similarity AS audience_cosine, j.jaccard_rank\nFROM cosine c\nJOIN jaccard j ON j.second = c.second\nJOIN shared s ON s.second = c.second\nJOIN mr_nodes m ON m.id = c.second\nORDER BY c.similarity DESC, m.product_id\nLIMIT 10;\n",
+    "rows": [
+      {
+        "product_id": "15928_1314",
+        "brand_name": "Nintendo",
+        "leaf_category": "Consoles",
+        "viewers": 180,
+        "shared_viewers": 101,
+        "audience_cosine": 0.46508726477622986,
+        "jaccard_rank": 1
+      },
+      {
+        "product_id": "15928_1313",
+        "brand_name": "Nintendo",
+        "leaf_category": "Accessories",
+        "viewers": 105,
+        "shared_viewers": 74,
+        "audience_cosine": 0.4461556375026703,
+        "jaccard_rank": 2
+      },
+      {
+        "product_id": "20652_1315",
+        "brand_name": "Sony",
+        "leaf_category": "Games",
+        "viewers": 170,
+        "shared_viewers": 76,
+        "audience_cosine": 0.360112726688385,
+        "jaccard_rank": 3
+      },
+      {
+        "product_id": "0_1315",
+        "brand_name": null,
+        "leaf_category": "Games",
+        "viewers": 108,
+        "shared_viewers": 54,
+        "audience_cosine": 0.32101938128471375,
+        "jaccard_rank": 4
+      },
+      {
+        "product_id": "14034_1315",
+        "brand_name": "Microsoft",
+        "leaf_category": "Games",
+        "viewers": 87,
+        "shared_viewers": 48,
+        "audience_cosine": 0.31792959570884705,
+        "jaccard_rank": 5
+      },
+      {
+        "product_id": "0_1313",
+        "brand_name": null,
+        "leaf_category": "Accessories",
+        "viewers": 97,
+        "shared_viewers": 47,
+        "audience_cosine": 0.2948229908943176,
+        "jaccard_rank": 6
+      },
+      {
+        "product_id": "17360_1315",
+        "brand_name": "PlayStation",
+        "leaf_category": "Games",
+        "viewers": 58,
+        "shared_viewers": 33,
+        "audience_cosine": 0.26770055294036865,
+        "jaccard_rank": 10
+      },
+      {
+        "product_id": "15928_3223",
+        "brand_name": "Nintendo",
+        "leaf_category": "Other Video Game Merchandise",
+        "viewers": 19,
+        "shared_viewers": 18,
+        "audience_cosine": 0.25512030720710754,
+        "jaccard_rank": 32
+      },
+      {
+        "product_id": "20222_1315",
+        "brand_name": "Sega",
+        "leaf_category": "Games",
+        "viewers": 26,
+        "shared_viewers": 21,
+        "audience_cosine": 0.25443798303604126,
+        "jaccard_rank": 22
+      },
+      {
+        "product_id": "17470_3525",
+        "brand_name": "Pokemon",
+        "leaf_category": "Single Cards",
+        "viewers": 135,
+        "shared_viewers": 47,
+        "audience_cosine": 0.24990808963775635,
+        "jaccard_rank": 7
+      }
+    ],
+    "cpu_check": {
+      "scope": "cugraph_cosine for the seed against all 1,710 other market vertices on mr_audience",
+      "formula": "|A intersect B| / sqrt(|A| * |B|) over undirected mr_audience neighborhoods",
+      "pairs": 1710,
+      "max_abs_error": 4.063134723120143e-08
+    }
+  }
+}

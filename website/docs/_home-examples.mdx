@@ -1,0 +1,166 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import ResultBars from '@site/src/components/homepage/ResultBars';
+import styles from '@site/src/css/homepage.module.css';
+
+{/* Each SQL block is the captured statement from its linked example, with line
+    breaks reflowed to fit the card; results are rows from that capture. */}
+
+<div className={styles.examples}>
+
+<Tabs>
+<TabItem value="citations" label="Paper citations" default>
+
+<p className={styles.exampleEyebrow}><span>cuGraph</span>DBLP citation network · 4.9M papers · 45.6M citations</p>
+<p className={styles.exampleQuestion}>How far did AlexNet spread through three generations of citations?</p>
+<p className={styles.exampleHow}>BFS follows citations backward from the 2012 paper; SQL counts the papers reached at each hop.</p>
+
+```sql
+SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
+FROM cugraph_bfs(
+  edges => (SELECT dst AS src, src AS dst FROM citation_edges_by_dst),
+  sources => (SELECT paper_id AS vertex FROM papers
+              WHERE title = 'ImageNet Classification with Deep Convolutional Neural Networks'
+                AND year = 2012),
+  depth_limit => 3, output_mode => 'normalized') b
+JOIN papers p ON p.paper_id = b.vertex
+WHERE b.reachable
+GROUP BY b.distance
+ORDER BY b.distance;
+```
+
+<ResultBars
+  summary="151,243 papers within three citation hops of AlexNet"
+  rows={[
+    {label: '1 hop', value: 12185, display: '12,185', detail: 'mean year 2017.5'},
+    {label: '2 hops', value: 67517, display: '67,517', detail: 'mean year 2017.9'},
+    {label: '3 hops', value: 71541, display: '71,541', detail: 'mean year 2017.8'},
+  ]}
+/>
+
+<div className={styles.exampleFooter}>
+<span>Hop 0 is AlexNet itself, and each paper counts once, at its shortest hop. The corpus is an April 2020 snapshot.</span>
+<span>[Full example](./cugraph/functions/traversal/cugraph_bfs.mdx#examples) · [Dataset setup](./guides/datasets/citation-network.mdx)</span>
+</div>
+
+</TabItem>
+<TabItem value="products" label="Product catalog">
+
+<p className={styles.exampleEyebrow}><span>cuVS</span>Amazon Reviews 2023 · 1M products · 1,024-dimension text embeddings</p>
+<p className={styles.exampleQuestion}>Which of 1M catalog products are closest to each of 10,000 others?</p>
+<p className={styles.exampleHow}>One call runs 10,000 exact nearest-neighbor searches over text embeddings computed before the query.</p>
+
+```sql
+SELECT n.query_id, q.title AS source_title, n.rank,
+       n.neighbor_id, p.title AS candidate_title,
+       1.0 - n.distance / 2.0 AS cosine_similarity
+FROM cuvs_brute_force_knn(
+  dataset => (SELECT * FROM product_corpus_1000000),
+  queries => (SELECT * FROM product_queries_10000),
+  k => 10, metric => 'l2_expanded') n
+JOIN semantic_products_text q ON q.id = n.query_id
+JOIN semantic_products_text p ON p.id = n.neighbor_id
+ORDER BY n.query_id, n.rank;
+```
+
+<ResultBars
+  summary="100,000 rows in 2.58 s, the median of three runs"
+  context="Nearest listings to a midnight-blue Sony WH-1000XM4, by cosine similarity:"
+  rows={[
+    {label: 'Sony WH-1000XM4, black, renewed', value: 0.9513, display: '0.951'},
+    {label: 'Sony WH-1000XM4, black, bundle with case, charger and gym bag', value: 0.9046, display: '0.905'},
+    {label: 'Sony WH-1000XM4, silver, bundle with battery bank', value: 0.8836, display: '0.884'},
+  ]}
+/>
+
+<div className={styles.exampleFooter}>
+<span>Timed on one RTX PRO 6000 Blackwell, including index construction and Flight result transfer. Close matches still need an editor to confirm they are the same item.</span>
+<span>[Full example](./cuvs/functions/cuvs_brute_force_knn.mdx#examples) · [Dataset setup](./guides/datasets/amazon-reviews.mdx)</span>
+</div>
+
+</TabItem>
+<TabItem value="malware" label="Malware files">
+
+<p className={styles.exampleEyebrow}><span>cuML</span>EMBER2024 challenge split · 6,315 malicious files</p>
+<p className={styles.exampleQuestion}>Which files does a pretrained malware model score highest, and why?</p>
+<p className={styles.exampleHow}>LightGBM scores every file on the GPU; Top-K ranks SHAP attributions computed on the CPU beforehand.</p>
+
+```sql
+SELECT p.id, m.sha256, m.file_type, m.week_id, p.prediction,
+       t.rank, g.group_name, t.value AS positive_log_odds_contribution
+FROM cuml_forest_predict(
+  input => (SELECT id, vector FROM ember_research_vectors_challenge ORDER BY id),
+  model => 'EMBER2024_all.model', model_format => 'lightgbm') p
+JOIN cuvs_top_k(
+  input => (SELECT id, vector FROM ember_attributions ORDER BY id),
+  k => 3, select => 'max') t ON t.id = p.id
+JOIN ember_feature_groups g ON g.group_index = t.position
+JOIN ember_metadata_challenge m ON m.id = p.id
+WHERE p.prediction >= 0.99 AND t.value > 0
+ORDER BY p.prediction DESC, p.id, t.rank
+LIMIT 30;
+```
+
+<ResultBars
+  summary="1,616 files score at least 0.99; the query returns the ten highest"
+  context="Top file 8f392dc01595…, score 0.99985. Its largest positive contributions, in log-odds:"
+  rows={[
+    {label: 'histogram', value: 2.504, display: '+2.50'},
+    {label: 'strings', value: 2.249, display: '+2.25'},
+    {label: 'header', value: 1.235, display: '+1.24'},
+  ]}
+/>
+
+<div className={styles.exampleFooter}>
+<span>GPU scores match CPU LightGBM within 3.0e-8 on all 6,315 files. With only malicious files in the challenge split, this queue cannot measure false positives.</span>
+<span>[Full example](./cuml/functions/cuml_forest_predict.mdx#examples) · [Dataset setup](./guides/datasets/ember2024.mdx)</span>
+</div>
+
+</TabItem>
+<TabItem value="marketplace" label="Shopper browsing">
+
+<p className={styles.exampleEyebrow}><span>cuGraph</span>MerRec · Mercari US browsing graph, October 2023</p>
+<p className={styles.exampleQuestion}>Which collectibles share an audience with Nintendo games?</p>
+<p className={styles.exampleHow}>Personalized PageRank picks 100 groups near the Nintendo seed; Jaccard scores their shared viewers.</p>
+
+```sql
+SELECT m.product_id, m.brand_name, m.category, m.leaf_category,
+       m.viewers, r.similarity AS audience_jaccard
+FROM cugraph_jaccard(
+  edges => (SELECT src, dst FROM mr_audience),
+  vertex_pairs => (
+    SELECT CAST(672 AS INT) AS first, candidates.vertex AS second
+    FROM (
+      SELECT vertex, value
+      FROM cugraph_personalized_pagerank(
+        edges => (SELECT src, dst, weight FROM mr_edges),
+        personalization => (SELECT id AS vertex, CAST(1.0 AS DOUBLE) AS value
+                            FROM mr_nodes WHERE product_id = '15928_1315'))
+      WHERE vertex <> 672
+      ORDER BY value DESC, vertex LIMIT 100) candidates),
+  directed => false) r
+JOIN mr_nodes m ON m.id = r.second
+WHERE m.category = 'Toys & Collectibles' AND m.viewers >= 30
+ORDER BY r.similarity DESC, m.product_id
+LIMIT 10;
+```
+
+<ResultBars
+  summary="First four of ten collectible groups, by audience Jaccard"
+  rows={[
+    {label: 'Pokemon · Single Cards', value: 0.1343, display: '0.134', detail: '135 viewers'},
+    {label: 'Brand not listed · Action Figures', value: 0.1289, display: '0.129', detail: '395 viewers'},
+    {label: 'Funko · Bobbleheads', value: 0.1161, display: '0.116', detail: '315 viewers'},
+    {label: 'LEGO · LEGO Toys', value: 0.1026, display: '0.103', detail: '211 viewers'},
+  ]}
+/>
+
+<div className={styles.exampleFooter}>
+<span>Seed `15928_1315` is the Nintendo games group, vertex 672. Scores count shared viewers in one October 2023 shard and say nothing about purchases.</span>
+<span>[Full example](./cugraph/functions/centrality/cugraph_personalized_pagerank.mdx#examples) · [Dataset setup](./guides/datasets/merrec.mdx)</span>
+</div>
+
+</TabItem>
+</Tabs>
+
+</div>

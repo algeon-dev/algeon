@@ -2,6 +2,7 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import prismDark from './src/utils/prismDark';
 import prismLight from './src/utils/prismLight';
+import highlightGpuCalls from './src/remark/highlightGpuCalls';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -45,6 +46,7 @@ const config: Config = {
           // Serve content at the site root so the homepage is the Introduction.
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
+          remarkPlugins: [highlightGpuCalls],
         },
         blog: {
           routeBasePath: 'blog',

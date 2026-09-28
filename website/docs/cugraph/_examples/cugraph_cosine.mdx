@@ -1,4 +1,11 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import MerRecAudienceCosine from './merrec_audience_cosine.mdx';
+
 {/* Hand-owned examples for cugraph_cosine. NOT generated; safe to edit. */}
+
+<Tabs>
+<TabItem value="citation-network" label="Citation network" default>
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
 
@@ -58,6 +65,26 @@ ORDER BY r.similarity DESC, p.paper_id
 LIMIT 5;
 ```
 
+| year | title | n_references | cosine |
+|---|---|---|---|
+| 2019 | MASS: Masked Sequence to Sequence Pre-training for Language Generation | 53 | 0.352 |
+| 2019 | How to Fine-Tune BERT for Text Classification?. | 38 | 0.241 |
+| 2019 | BoolQ: Exploring the Surprising Difficulty of Natural Yes/No Questions. | 35 | 0.228 |
+| 2018 | Learning Cross-Lingual Sentence Representations via a Multi-task Dual-Encoder Model | 37 | 0.222 |
+| 2019 | Surf at MEDIQA 2019: Improving Performance of Natural Language Inference in the Clinical Domain by Adopting Pre-trained Language Model. | 25 | 0.189 |
+
+*MASS* and BERT share 19 references. BERT has 55 references in the graph and
+MASS has 53, so the score is `19 / sqrt(55 × 53) = 0.352`.
+
 The result ranks bibliography similarity; topic meaning is outside the score. For
 intersection divided by the union of references, see the
 [Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx).
+
+</TabItem>
+
+<TabItem value="merrec-marketplace" label="MerRec marketplace">
+
+<MerRecAudienceCosine />
+
+</TabItem>
+</Tabs>
