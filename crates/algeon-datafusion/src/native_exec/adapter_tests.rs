@@ -253,7 +253,7 @@ async fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordin
     let normal_plan = {
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::LocalParquet(source.clone()));
-        builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema))
+        builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema)).unwrap()
     };
     let fixture = backend_fixture();
     let normal_config = bound_execution_config(&fixture);
@@ -265,14 +265,14 @@ async fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordin
     let producer_plan = {
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::LocalParquet(source));
-        builder.finish_gpu_resident(root)
+        builder.finish_gpu_resident(root).unwrap()
     };
     let consumer_plan = {
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::GpuResident(
             GpuResidentSource::new("fragment_input", Arc::clone(&internal_schema)).with_row_count_upper_bound(3),
         ));
-        builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema))
+        builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema)).unwrap()
     };
     let composed_config = bound_execution_config(&fixture);
     let producer = Arc::new(AlgeonNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());

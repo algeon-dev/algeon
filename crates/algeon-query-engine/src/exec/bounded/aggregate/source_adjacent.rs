@@ -1730,7 +1730,7 @@ mod tests {
 
         fn batchable_chunk(index: usize, bytes: u64) -> SourceChunk {
             SourceChunk {
-                source_node_id: NodeId::from_index_for_internal_use(1),
+                source_node_id: NodeId::from_index_for_test(1),
                 chunk_index: index,
                 file_index: 0,
                 location: ParquetSourceLocation::LocalPath(std::path::PathBuf::from("part-0.parquet")),
@@ -1776,12 +1776,12 @@ mod tests {
             schema: &'a SchemaRef,
         ) -> BoundedPlan<'a> {
             BoundedPlan {
-                source_id: NodeId::from_index_for_internal_use(1),
+                source_id: NodeId::from_index_for_test(1),
                 source,
                 pre_filter_projections: Vec::new(),
                 filter: Some(filter),
                 post_filter_projections: Vec::new(),
-                aggregate_id: NodeId::from_index_for_internal_use(3),
+                aggregate_id: NodeId::from_index_for_test(3),
                 aggregate_input_schema: schema,
                 aggregate: (aggregate, schema),
                 post_aggregate_stages: Vec::new(),
@@ -1796,18 +1796,14 @@ mod tests {
             Arc::clone(&schema),
             vec!["k".to_string()],
         );
-        let filter = FilterNode {
-            input: NodeId::from_index_for_internal_use(1),
-            predicate: Expr::Literal(LiteralValue::Boolean(true)),
-        };
+        let filter =
+            FilterNode { input: NodeId::from_index_for_test(1), predicate: Expr::Literal(LiteralValue::Boolean(true)) };
         let grouped = AggregateNode {
-            input: NodeId::from_index_for_internal_use(2),
+            input: NodeId::from_index_for_test(2),
             spec: AggregateSpec::new(vec![Expr::Literal(LiteralValue::Utf8("k".to_string()))], Vec::new()),
         };
-        let ungrouped = AggregateNode {
-            input: NodeId::from_index_for_internal_use(2),
-            spec: AggregateSpec::new(Vec::new(), Vec::new()),
-        };
+        let ungrouped =
+            AggregateNode { input: NodeId::from_index_for_test(2), spec: AggregateSpec::new(Vec::new(), Vec::new()) };
         let policy = MemoryControlPolicy {
             device_budget_bytes: 94 * 1024 * 1024 * 1024,
             max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,

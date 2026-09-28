@@ -2,12 +2,11 @@
 fn semijoin_reduction_pushes_left_semi_into_left_inner_join_child() {
     let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Left);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
-    assert!(result.plan.unreachable_node_ids().is_empty());
     let candidate = &result.diagnostics.semijoin_reduction.candidates[0];
     assert!(candidate.applied);
     assert_eq!(candidate.crossed_join_node_ids.len(), 1);
@@ -30,12 +29,11 @@ fn semijoin_reduction_pushes_left_semi_into_left_inner_join_child() {
 fn semijoin_reduction_pushes_left_semi_into_right_inner_join_child() {
     let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Right);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
-    assert!(result.plan.unreachable_node_ids().is_empty());
 
     let PlanNode::Join(root_join) = &result.plan.root_node().kind else {
         panic!("optimized root should remain the crossed inner join");
@@ -49,13 +47,12 @@ fn semijoin_reduction_pushes_left_semi_into_right_inner_join_child() {
 fn semijoin_reduction_pushes_to_deepest_safe_inner_join_subtree() {
     let plan = root_semijoin_over_nested_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
-    assert!(result.plan.unreachable_node_ids().is_empty());
 
     let PlanNode::Join(root_join) = &result.plan.root_node().kind else {
         panic!("optimized root should be the outer crossed inner join");
@@ -75,25 +72,23 @@ fn semijoin_reduction_pushes_to_deepest_safe_inner_join_subtree() {
 fn semijoin_reduction_pushes_across_projections_and_filters_between_joins() {
     let plan = root_semijoin_over_projection_filter_nested_inner_join_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
-    assert!(result.plan.unreachable_node_ids().is_empty());
 }
 
 #[test]
 fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filtering() {
     let plan = root_semijoin_over_fact_date_dimension_plan();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
-    assert!(result.plan.unreachable_node_ids().is_empty());
 
     let candidate = &result.diagnostics.semijoin_reduction.candidates[0];
     assert!(candidate.applied);
@@ -126,12 +121,11 @@ fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filt
 fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive_fact_filtering() {
     let plan = root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 2);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
-    assert!(result.plan.unreachable_node_ids().is_empty());
 
     let date_candidate = result
         .diagnostics
@@ -173,7 +167,7 @@ fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive
 fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
     let plan = root_semijoin_over_inner_join_plan_with_raw_keyset(SemijoinTarget::Right);
 
-    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
@@ -320,7 +314,7 @@ fn root_semijoin_over_inner_join_plan_with_options(
         ])
         .with_null_equality(crossed_join_null_equality),
         Arc::clone(&xy_schema),
-    );
+    ).unwrap();
     let semi = builder.add_join(
         xy,
         keyset,
@@ -331,8 +325,8 @@ fn root_semijoin_over_inner_join_plan_with_options(
         .with_output_projection(left_projection(&["x_key", "x_payload", "y_key", "y_payload"]))
         .with_null_equality(semijoin_null_equality),
         xy_schema,
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn root_semijoin_over_duplicate_output_name_plan() -> QueryPlan {
@@ -353,7 +347,7 @@ fn root_semijoin_over_duplicate_output_name_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "dup"),
         ]),
         Arc::clone(&duplicate_schema),
-    );
+    ).unwrap();
     let semi = builder.add_join(
         xy,
         keyset,
@@ -363,8 +357,8 @@ fn root_semijoin_over_duplicate_output_name_plan() -> QueryPlan {
         )
         .with_output_projection(left_projection(&["dup", "dup"])),
         duplicate_schema,
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn root_semijoin_over_expression_key_projection_plan() -> QueryPlan {
@@ -381,14 +375,14 @@ fn root_semijoin_over_expression_key_projection_plan() -> QueryPlan {
         )
         .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "y_key")]),
         schema(&["y_key"]),
-    );
+    ).unwrap();
     let projected = builder.add_projection(
         xy,
         vec![ProjectionOutput::new(
             Expr::binary(Expr::column("y_key"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
             Field::new("y_key", DataType::Int32, false),
         )],
-    );
+    ).unwrap();
     let semi = builder.add_join(
         projected,
         keyset,
@@ -398,8 +392,8 @@ fn root_semijoin_over_expression_key_projection_plan() -> QueryPlan {
         )
         .with_output_projection(left_projection(&["y_key"])),
         schema(&["y_key"]),
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn root_semijoin_over_dropped_key_projection_plan() -> QueryPlan {
@@ -417,7 +411,7 @@ fn root_semijoin_over_dropped_key_projection_plan() -> QueryPlan {
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "x_key", "x_key"), "x_key")]),
         Arc::clone(&xy_schema),
-    );
+    ).unwrap();
     let semi = builder.add_join(
         xy,
         keyset,
@@ -427,8 +421,8 @@ fn root_semijoin_over_dropped_key_projection_plan() -> QueryPlan {
         )
         .with_output_projection(left_projection(&["x_key", "y_key"])),
         xy_schema,
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn root_semijoin_over_nested_inner_join_plan() -> QueryPlan {
@@ -453,7 +447,7 @@ fn root_semijoin_over_nested_inner_join_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
         ]),
         ab_schema,
-    );
+    ).unwrap();
 
     let abc_schema = schema(&["a_key", "a_payload", "b_key", "b_payload", "c_key", "c_payload"]);
     let abc = builder.add_join(
@@ -472,7 +466,7 @@ fn root_semijoin_over_nested_inner_join_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "c_payload", "c_payload"), "c_payload"),
         ]),
         Arc::clone(&abc_schema),
-    );
+    ).unwrap();
     let semi = builder.add_join(
         abc,
         keyset,
@@ -489,8 +483,8 @@ fn root_semijoin_over_nested_inner_join_plan() -> QueryPlan {
             "c_payload",
         ])),
         abc_schema,
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> QueryPlan {
@@ -515,13 +509,11 @@ fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
         ]),
         ab_schema,
-    );
+    ).unwrap();
 
     let ab_filter = builder.add_filter(
         ab,
-        Expr::binary(Expr::column("a_key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        schema(&["a_key", "a_payload", "b_key", "b_payload"]),
-    );
+        Expr::binary(Expr::column("a_key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let ab_proj = builder.add_projection(
         ab_filter,
         vec![
@@ -530,7 +522,7 @@ fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> QueryPlan {
             ProjectionOutput::new(Expr::column("b_key"), Field::new("b_key", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("b_payload"), Field::new("b_payload", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
 
     let abc_schema = schema(&["a_key", "a_payload", "b_key", "b_payload", "c_key", "c_payload"]);
     let abc = builder.add_join(
@@ -549,13 +541,11 @@ fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> QueryPlan {
             JoinOutputColumn::right(ColumnRef::input(1, "c_payload", "c_payload"), "c_payload"),
         ]),
         Arc::clone(&abc_schema),
-    );
+    ).unwrap();
 
     let abc_filter = builder.add_filter(
         abc,
-        Expr::binary(Expr::column("c_key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&abc_schema),
-    );
+        Expr::binary(Expr::column("c_key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)))).unwrap();
     let abc_proj = builder.add_projection(
         abc_filter,
         vec![
@@ -566,7 +556,7 @@ fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> QueryPlan {
             ProjectionOutput::new(Expr::column("c_key"), Field::new("c_key", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("c_payload"), Field::new("c_payload", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
 
     let semi = builder.add_join(
         abc_proj,
@@ -584,8 +574,8 @@ fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> QueryPlan {
             "c_payload",
         ])),
         abc_schema,
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn root_semijoin_over_fact_date_dimension_plan() -> QueryPlan {
@@ -634,7 +624,7 @@ fn root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
             JoinOutputColumn::right(ColumnRef::input(1, "d_date", "d_date"), "d_date"),
         ]),
         Arc::clone(&sales_with_date_schema),
-    );
+    ).unwrap();
 
     let week_dates = week_keyset(&mut builder, date_dim);
     let semi = builder.add_join(
@@ -651,8 +641,8 @@ fn root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
             "d_date",
         ])),
         sales_with_date_schema,
-    );
-    builder.finish_gpu_resident(semi)
+    ).unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn week_dates_from_filtered_date_dimension(
@@ -665,16 +655,14 @@ fn week_dates_from_filtered_date_dimension(
             ProjectionOutput::new(Expr::column("d_date"), Field::new("d_date", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let filtered_date = builder.add_filter(
         date_dim,
-        Expr::binary(Expr::column("d_date"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10_959))),
-        schema(&["d_date_sk", "d_date", "d_week_seq"]),
-    );
+        Expr::binary(Expr::column("d_date"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10_959)))).unwrap();
     let filtered_week = builder.add_projection(
         filtered_date,
         vec![ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false))],
-    );
+    ).unwrap();
     builder.add_join(
         all_dates,
         filtered_week,
@@ -687,7 +675,7 @@ fn week_dates_from_filtered_date_dimension(
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "d_date", "d_date"), "d_date")]),
         schema(&["d_date"]),
-    )
+    ).unwrap()
 }
 
 fn week_dates_from_filtered_date_dimension_left_semi(
@@ -700,16 +688,14 @@ fn week_dates_from_filtered_date_dimension_left_semi(
             ProjectionOutput::new(Expr::column("d_date"), Field::new("d_date", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let filtered_date = builder.add_filter(
         date_dim,
-        Expr::binary(Expr::column("d_date"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10_959))),
-        schema(&["d_date_sk", "d_date", "d_week_seq"]),
-    );
+        Expr::binary(Expr::column("d_date"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10_959)))).unwrap();
     let filtered_week = builder.add_projection(
         filtered_date,
         vec![ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false))],
-    );
+    ).unwrap();
     builder.add_join(
         all_dates,
         filtered_week,
@@ -722,7 +708,7 @@ fn week_dates_from_filtered_date_dimension_left_semi(
         )
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "d_date", "d_date"), "d_date")]),
         schema(&["d_date"]),
-    )
+    ).unwrap()
 }
 
 fn assert_left_semi_input(
@@ -745,7 +731,7 @@ fn assert_left_semi_input(
 }
 
 fn assert_semijoin_rejection(plan: QueryPlan, reason: SemijoinReductionRejectedReason) {
-    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &semijoin_reduction_only_options(SemijoinReductionOptions::default()), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 0);

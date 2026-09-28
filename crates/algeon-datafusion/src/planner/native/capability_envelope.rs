@@ -206,14 +206,16 @@ mod tests {
         let right =
             builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
         let key = |input| ColumnRef::input(input, "k", "k");
-        let join = builder.add_join(
-            left,
-            right,
-            JoinSpec::new(JoinType::Inner, vec![JoinKey::new(key(0), key(1))])
-                .with_output_projection(vec![JoinOutputColumn::left(key(0), "k")]),
-            Arc::clone(&schema),
-        );
-        let plan = builder.finish_with_host_sink(join);
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(JoinType::Inner, vec![JoinKey::new(key(0), key(1))])
+                    .with_output_projection(vec![JoinOutputColumn::left(key(0), "k")]),
+                Arc::clone(&schema),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
         let execution_config =
             AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"))
                 .with_keyed_hash_join_strategy_options(
@@ -239,14 +241,16 @@ mod tests {
         let key = |input| ColumnRef::input(input, "k", "k");
         // The left key names the right input: the IR is malformed, so no
         // DataFusion fallback can be correct for it.
-        let join = builder.add_join(
-            left,
-            right,
-            JoinSpec::new(JoinType::Inner, vec![JoinKey::new(key(1), key(1))])
-                .with_output_projection(vec![JoinOutputColumn::left(key(0), "k")]),
-            Arc::clone(&schema),
-        );
-        let plan = builder.finish_with_host_sink(join);
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(JoinType::Inner, vec![JoinKey::new(key(1), key(1))])
+                    .with_output_projection(vec![JoinOutputColumn::left(key(0), "k")]),
+                Arc::clone(&schema),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
         let execution_config =
             AlgeonNativeExecutionConfig::new(SourceChunking::try_new(512, 1, 3, 1).expect("valid source chunking"));
 

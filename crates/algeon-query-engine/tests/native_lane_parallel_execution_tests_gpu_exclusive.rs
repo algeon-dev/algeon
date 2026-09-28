@@ -221,18 +221,22 @@ fn literal_union_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let left = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
+    let left = builder
+        .add_projection(
+            left,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
     let right =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let right = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    builder.finish_with_host_sink(union)
+    let right = builder
+        .add_projection(
+            right,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    builder.finish_with_host_sink(union).unwrap()
 }
 
 fn parquet_union_plan(left_path: &Path, right_path: &Path, schema: &Arc<Schema>) -> QueryPlan {
@@ -242,28 +246,32 @@ fn parquet_union_plan(left_path: &Path, right_path: &Path, schema: &Arc<Schema>)
         Arc::clone(schema),
         vec!["k".into(), "v".into()],
     )));
-    let left = builder.add_projection(
-        left,
-        vec![
-            ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
-        ],
-    );
+    let left = builder
+        .add_projection(
+            left,
+            vec![
+                ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
+            ],
+        )
+        .unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         right_path,
         Arc::clone(schema),
         vec!["k".into(), "v".into()],
     )));
-    let right = builder.add_projection(
-        right,
-        vec![
-            ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
-        ],
-    );
-    let union = builder.add_union(vec![left, right], Arc::clone(schema));
-    let limit = builder.add_limit(union, LimitSpec::fetch(10), Arc::clone(schema));
-    builder.finish_with_host_sink(limit)
+    let right = builder
+        .add_projection(
+            right,
+            vec![
+                ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
+            ],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left, right], Arc::clone(schema)).unwrap();
+    let limit = builder.add_limit(union, LimitSpec::fetch(10)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn admitted_pipeline(plan: &QueryPlan) -> CompiledPipeline {
@@ -646,15 +654,17 @@ fn source_read_from_an_attempt_work_lease_runs_inline_instead_of_leasing_a_neste
         Arc::clone(&schema),
         vec!["k".into(), "v".into()],
     )));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            vec![Expr::column("k")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
-        ),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("k")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+            ),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let test_context = backend.admit_as(&plan, "lane-inline-source-read").expect("grouped aggregate admits");
     let route =
@@ -862,16 +872,18 @@ fn literal_union_count_plan() -> QueryPlan {
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
     let right =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let aggregate = builder.add_aggregate(
-        union,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_key"), "rows")],
-        ),
-        count_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            union,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_key"), "rows")],
+            ),
+            count_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 /// A union feeding a streaming aggregate declares frame-stream output and preserves its count.
@@ -940,12 +952,17 @@ fn row_grouped_count_plan(path: &Path, schema: &Arc<Schema>) -> QueryPlan {
         Arc::clone(schema),
         vec!["k".into(), "v".into()],
     )));
-    let aggregate = builder.add_aggregate(
-        scan,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "rows")]),
-        count_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    let aggregate = builder
+        .add_aggregate(
+            scan,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "rows")],
+            ),
+            count_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 /// A streaming union feeds wide branch frames into a narrow aggregate without a concat output.
@@ -991,13 +1008,18 @@ fn wide_union_branches_stream_into_narrow_aggregate_without_concat() {
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![branch(vec![1, 2])])));
     let right = builder
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![branch(vec![3, 4])])));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let aggregate = builder.add_aggregate(
-        union,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "rows")]),
-        count_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            union,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "rows")],
+            ),
+            count_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let pipeline = admitted_pipeline(&plan);
 
     assert_eq!(

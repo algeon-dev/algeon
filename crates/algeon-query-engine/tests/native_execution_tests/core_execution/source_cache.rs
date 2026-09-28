@@ -20,8 +20,8 @@ fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -85,7 +85,7 @@ fn native_local_parquet_source_materializes_missing_nullable_carry_columns() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -141,7 +141,7 @@ fn bounded_native_local_parquet_source_materializes_missing_nullable_boolean_lis
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_committed, 1);
@@ -183,7 +183,7 @@ fn native_zero_read_column_source_materializes_missing_integer_lists_for_nonzero
         .with_scan_limit(scan_limit);
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let plan = builder.finish_with_host_sink(source);
+        let plan = builder.finish_with_host_sink(source).unwrap();
 
         let result = execute_query_plan(&context, &plan).unwrap();
         let QueryOutput::HostArrow(batch) = result.output() else {
@@ -226,11 +226,11 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, Arc::clone(&projected_schema)));
-    let sort = builder.add_sort(projection, sort, Arc::clone(&projected_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(4), projected_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, Arc::clone(&projected_schema))).unwrap();
+    let sort = builder.add_sort(projection, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(4)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -279,7 +279,7 @@ fn bounded_generic_local_parquet_source_batches_adjacent_files() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -340,7 +340,7 @@ fn bounded_generic_local_parquet_source_scan_limit_batches_whole_row_groups_ahea
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -390,7 +390,7 @@ fn bounded_generic_local_parquet_source_scan_limit_trims_to_required_row_group_p
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

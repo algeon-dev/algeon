@@ -5,6 +5,8 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use arrow::datatypes::SchemaRef;
+
 use super::{
     BoundedExecutionAttempt, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame,
     GpuResidentInputMap, GpuResidentSource, LocalParquetSource, NodeId, ProjectionNode, QueryError, QueryErrorCode,
@@ -28,6 +30,39 @@ use crate::{
     rapids_backend::rapids_analysis_context,
     source::LiteralBatchSource,
 };
+
+/// A union branch named like the union's declared output.
+///
+/// Union inputs match the declared schema by position; their own column names
+/// may differ. The rename is schema-only, so the branch keeps its columns and
+/// their resident owners.
+pub(in crate::exec::bounded) fn union_branch_with_output_names(
+    node_id: NodeId,
+    branch: ResidentGpuFrame,
+    output_schema: &SchemaRef,
+) -> Result<ResidentGpuFrame> {
+    let names = branch.frame.frame().column_names();
+    let output_names = output_schema.fields().iter().map(|field| field.name().as_str());
+    if names.iter().copied().eq(output_names.clone()) {
+        return Ok(branch);
+    }
+    if names.len() != output_schema.fields().len() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "query_engine.bounded.union",
+            "union branch column count differs from the union output schema",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("branch_columns", names.len())
+        .with_fact("output_fields", output_schema.fields().len()));
+    }
+    let renamed = branch.frame.frame().rename_columns(names.iter().copied().zip(output_names)).map_err(|error| {
+        cudf_query_error("query_engine.bounded.union.rename", "failed to name a union branch like its output", error)
+            .with_fact("node_id", node_id)
+    })?;
+    let frame = GpuDataFrame::try_new_with_source_residency(renamed, &branch.frame)?;
+    Ok(ResidentGpuFrame::with_device_bytes(frame, branch.device_bytes()))
+}
 
 pub(in crate::exec::bounded) fn execute_bounded_edge_normalize_from_input(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -95,14 +130,14 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     node_id: NodeId,
     graph: &GraphAlgorithmNode,
     input: ResidentGpuFrame,
-    side_input_frames: BTreeMap<NodeId, ResidentGpuFrame>,
+    side_input_frames: BTreeMap<usize, ResidentGpuFrame>,
 ) -> Result<ResidentGpuFrame> {
     let ResidentGpuFrame { frame: mut input_frame, .. } = input;
     let _retained_normalization_source = input_frame.take_retained_normalization_source();
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
     let input_graph_residency = input_frame.graph_residency().cloned();
-    let prior_null_edge_rows_dropped = execution.metrics().null_edge_rows_dropped(graph.input);
+    let prior_null_edge_rows_dropped = execution.metrics().null_edge_rows_dropped(graph.edge_input());
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: graph.spec.algorithm.consumes_weight(),
         edge_id: graph.spec.edge_columns.edge_id.is_some(),

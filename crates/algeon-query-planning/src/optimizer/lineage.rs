@@ -489,14 +489,18 @@ mod tests {
             schema,
             vec!["id".to_string(), "x".to_string()],
         )));
-        let params =
-            VectorPcaParams::new(VectorRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x"]), 1);
-        let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::Pca,
-            VectorAlgorithmParams::Pca(params),
-            vector_pca_output_schema(DataType::Int64, 1),
-        ));
-        let plan = builder.finish_gpu_resident(vector);
+        let params = VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]), 1);
+        let vector = builder
+            .add_vector_algorithm(
+                vec![source],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::Pca,
+                    VectorAlgorithmParams::Pca(params),
+                    vector_pca_output_schema(DataType::Int64, 1),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_gpu_resident(vector).unwrap();
         let parents = parent_counts(&plan);
 
         assert_eq!(simple_lineages_for_column(&plan, &parents, source, "x").len(), 1);

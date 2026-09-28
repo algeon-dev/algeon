@@ -37,24 +37,28 @@ fn serial_compiled_executes_parquet_union_branches_on_production_path() {
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&left_path, &schema)));
-    let left = builder.add_projection(
-        left,
-        vec![
-            ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
-        ],
-    );
+    let left = builder
+        .add_projection(
+            left,
+            vec![
+                ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
+            ],
+        )
+        .unwrap();
     let right = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&right_path, &schema)));
-    let right = builder.add_projection(
-        right,
-        vec![
-            ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
-        ],
-    );
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let limit = builder.add_limit(union, LimitSpec::fetch(10), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let right = builder
+        .add_projection(
+            right,
+            vec![
+                ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("v"), Field::new("v", DataType::Int64, true)),
+            ],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let limit = builder.add_limit(union, LimitSpec::fetch(10)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let decision = admit(
         &plan,
@@ -143,31 +147,33 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     );
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let filter = builder.add_filter(
-        scan,
-        Expr::binary(Expr::column("v"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0))),
-        Arc::clone(&input_schema),
-    );
-    let projection = builder.add_projection(
-        filter,
-        vec![
-            ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("v"), Field::new("measure", DataType::Int64, false)),
-        ],
-    );
-    let aggregate = builder.add_aggregate(
-        projection,
-        AggregateSpec::new(
-            Vec::new(),
+    let filter = builder
+        .add_filter(scan, Expr::binary(Expr::column("v"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0))))
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            filter,
             vec![
-                AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "rows"),
-                AggregateExpr::new(AggregateFunction::Min, Expr::column("measure"), "minimum"),
-                AggregateExpr::new(AggregateFunction::Max, Expr::column("measure"), "maximum"),
+                ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("v"), Field::new("measure", DataType::Int64, false)),
             ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let host_plan = builder.finish_with_host_sink(aggregate);
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            projection,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "rows"),
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("measure"), "minimum"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("measure"), "maximum"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let host_plan = builder.finish_with_host_sink(aggregate).unwrap();
     let plan = host_plan.clone_with_gpu_resident_sink();
     let decision = admit(
         &plan,
@@ -281,31 +287,33 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     ]));
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(
-        scan,
-        Expr::binary(Expr::column("v"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0))),
-        Arc::clone(&input_schema),
-    );
-    let projection = builder.add_projection(
-        filter,
-        vec![
-            ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
-            ProjectionOutput::new(Expr::column("v"), Field::new("measure", DataType::Int64, false)),
-        ],
-    );
-    let grouped = builder.add_aggregate(
-        projection,
-        AggregateSpec::new(
-            vec![Expr::column("k")],
+    let filter = builder
+        .add_filter(scan, Expr::binary(Expr::column("v"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0))))
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            filter,
             vec![
-                AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "rows"),
-                AggregateExpr::new(AggregateFunction::Min, Expr::column("measure"), "minimum"),
-                AggregateExpr::new(AggregateFunction::Max, Expr::column("measure"), "maximum"),
+                ProjectionOutput::new(Expr::column("k"), Field::new("k", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("v"), Field::new("measure", DataType::Int64, false)),
             ],
-        ),
-        grouped_schema,
-    );
-    let grouped_plan = builder.finish_gpu_resident(grouped);
+        )
+        .unwrap();
+    let grouped = builder
+        .add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column("k")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "rows"),
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("measure"), "minimum"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("measure"), "maximum"),
+                ],
+            ),
+            grouped_schema,
+        )
+        .unwrap();
+    let grouped_plan = builder.finish_gpu_resident(grouped).unwrap();
     let grouped_decision = admit(
         &grouped_plan,
         StatisticalAggregateExecutionMode::default(),
@@ -353,12 +361,17 @@ fn lane_dispatch_scan_filter_aggregate_widths_preserve_rows_and_overlap_partials
     let single_schema = Arc::new(Schema::new(vec![Field::new("rows", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(single_source));
-    let aggregate = builder.add_aggregate(
-        scan,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "rows")]),
-        single_schema,
-    );
-    let single_plan = builder.finish_gpu_resident(aggregate);
+    let aggregate = builder
+        .add_aggregate(
+            scan,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "rows")],
+            ),
+            single_schema,
+        )
+        .unwrap();
+    let single_plan = builder.finish_gpu_resident(aggregate).unwrap();
     let single_context = runtime.acquire_context_for_plan(&single_plan).expect("single chunk acquires context");
     let single_result =
         execute_query_plan(&single_context, &single_plan).expect("single chunk aggregate should execute");
@@ -409,12 +422,17 @@ fn lane_aggregate_sum_overflow_matches_the_single_lane_contract() {
     );
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(
-        scan,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")]),
-        output_schema,
-    );
-    let plan = builder.finish_gpu_resident(aggregate);
+    let aggregate = builder
+        .add_aggregate(
+            scan,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+            ),
+            output_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(aggregate).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -518,15 +536,20 @@ fn compiled_join_probe_batches_scale_without_rebuilding() {
                 probe,
             ),
         };
-        let join = builder.add_join(
-            left,
-            right,
-            JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    join_type,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
                 .with_output_projection(projection)
                 .with_build_side(build_side),
-            output_schema,
-        );
-        let plan = builder.finish_with_host_sink(join);
+                output_schema,
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
         let runtime = lane_shared_runtime(cudf::Runtime::new().expect("join scaling runtime"));
         let context = runtime.acquire_context_for_plan(&plan).expect("join scaling context");
         let result = execute_query_plan(&context, &plan).expect("join scaling executes");
@@ -664,20 +687,22 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
         Arc::clone(&probe_schema),
         vec!["k".to_string(), "v".to_string()],
     )));
-    let join1 = builder.add_join(
-        p1,
-        b1,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join1 = builder
+        .add_join(
+            p1,
+            b1,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&kv_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&kv_schema),
-    );
+        .unwrap();
     let b2 = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
         Arc::clone(&key_schema),
         vec![
@@ -685,21 +710,23 @@ fn chained_semi_feeds_hash_probe_chunks_in_parallel() {
                 .expect("hash build batch"),
         ],
     )));
-    let join2 = builder.add_join(
-        join1,
-        b2,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join2 = builder
+        .add_join(
+            join1,
+            b2,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&kv_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&kv_schema),
-    );
-    let plan = builder.finish_with_host_sink(join2);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join2).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -820,20 +847,22 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         Arc::clone(&probe_schema),
         vec!["k".to_string(), "v".to_string()],
     )));
-    let join1 = builder.add_join(
-        p1,
-        b1,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join1 = builder
+        .add_join(
+            p1,
+            b1,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&kv_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&kv_schema),
-    );
+        .unwrap();
     let mut build_file = enrich_fixture_local_parquet_file(LocalParquetFile::new(&build_path));
     build_file.row_group_rows = Some(vec![100_000_000]);
     let b2 = builder.add_source(SourceNode::LocalParquet(NativeLocalParquetSource::from_files(
@@ -841,22 +870,24 @@ fn chained_semi_feeds_partitioned_probe_chunks_in_parallel() {
         Arc::clone(&build_schema),
         vec!["k".to_string(), "w".to_string()],
     )));
-    let join2 = builder.add_join(
-        join1,
-        b2,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join2 = builder
+        .add_join(
+            join1,
+            b2,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                JoinOutputColumn::right(ColumnRef::input(1, "w", "w"), "w"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&kvw_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            JoinOutputColumn::right(ColumnRef::input(1, "w", "w"), "w"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&kvw_schema),
-    );
-    let plan = builder.finish_with_host_sink(join2);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join2).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -1041,8 +1072,8 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
                 Expr::input_column(1, "w", "w"),
             ));
         }
-        let join = builder.add_join(left, right, spec, output_schema);
-        let plan = builder.finish_with_host_sink(join);
+        let join = builder.add_join(left, right, spec, output_schema).unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
         let _pipeline = admitted_pipeline(label, &plan);
         let (serial, resident) = execute_pair(&plan);
 
@@ -1110,20 +1141,22 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&left_schema), vec![left_batch])));
     let right = builder
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
-    let mark = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftMark,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let mark = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftMark,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right)
+            .with_mark_column_name("mark"),
+            Arc::clone(&mark_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right)
-        .with_mark_column_name("mark"),
-        Arc::clone(&mark_schema),
-    );
-    let plan = builder.finish_with_host_sink(mark);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(mark).unwrap();
     let _pipeline = admitted_pipeline("mark", &plan);
     let (serial, resident) = execute_pair(&plan);
     let oracle = vec![(None, Some(false)), (Some(1), Some(false)), (Some(2), Some(true)), (Some(2), Some(true))];
@@ -1162,27 +1195,30 @@ fn serial_compiled_join_preserves_dynamic_filter_pruning() {
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&build_schema), vec![build_batch])));
     let output_schema =
         Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int64, false)]));
-    let join = builder.add_join(
-        probe,
-        build,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join = builder
+        .add_join(
+            probe,
+            build,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let raw = builder.finish_with_host_sink(join);
+        .unwrap();
+    let raw = builder.finish_with_host_sink(join).unwrap();
     let optimized = optimize_query_plan(
         raw,
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert!(
         !optimized.plan.dynamic_filter_routes().is_empty(),
         "optimizer discovers a build-to-probe dynamic-filter route"
@@ -1256,23 +1292,30 @@ fn resident_sink_join_with_aggregate_routes_through_resident_lanes() {
     let build =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![build_batch])));
     let probe = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&probe_path, &probe_schema)));
-    let join = builder.add_join(
-        build,
-        probe,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join = builder
+        .add_join(
+            build,
+            probe,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
+            .with_build_side(JoinSide::Left),
+            Arc::clone(&schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
-        .with_build_side(JoinSide::Left),
-        Arc::clone(&schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("k"), "rows")]),
-        Arc::clone(&count_schema),
-    );
-    let plan = builder.finish_gpu_resident(aggregate);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("k"), "rows")],
+            ),
+            Arc::clone(&count_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(aggregate).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -1323,12 +1366,17 @@ fn resident_aggregate_without_lanes_skips_root_adoption_copy() {
     writer.close().expect("resident aggregate parquet close");
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(fixture_local_parquet_source(&path, &input_schema)));
-    let aggregate = builder.add_aggregate(
-        scan,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")]),
-        Arc::new(Schema::new(vec![Field::new("total", DataType::Int64, true)])),
-    );
-    let plan = builder.finish_gpu_resident(aggregate);
+    let aggregate = builder
+        .add_aggregate(
+            scan,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+            ),
+            Arc::new(Schema::new(vec![Field::new("total", DataType::Int64, true)])),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(aggregate).unwrap();
 
     let runtime = lane_shared_runtime(runtime);
     let test_context = runtime.acquire_context_for_plan(&plan).expect("resident aggregate acquires a context");
@@ -1388,11 +1436,10 @@ fn lane_dispatch_sort_topk_candidates_overlap_lanes_and_match_serial() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left));
     let right = builder.add_source(SourceNode::LocalParquet(right));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let sort =
-        builder.add_sort(union, SortSpec::new(vec![SortExpr::new(Expr::column("k"), true, true)]), Arc::clone(&schema));
-    let limit = builder.add_limit(sort, LimitSpec::new(0, 6), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let sort = builder.add_sort(union, SortSpec::new(vec![SortExpr::new(Expr::column("k"), true, true)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::new(0, 6)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let decision = admit(
         &plan,
@@ -1499,20 +1546,19 @@ fn lane_dispatch_sort_topk_preserves_offset_mixed_directions_and_nulls() {
         vec![Some(3), Some(1), Some(2), None, Some(2), Some(3), Some(1), None, Some(0), Some(2)];
     let values: Vec<Option<i64>> = keys.iter().map(|key| key.map(|key| i64::from(key) * 10)).collect();
     let source = sort_lane_nullable_source(&dir.join("input.parquet"), &keys, &values);
-    let schema =
-        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true), Field::new("v", DataType::Int64, true)]));
     let mut builder = QueryPlanBuilder::new();
     let scan = builder.add_source(SourceNode::LocalParquet(source));
-    let sort = builder.add_sort(
-        scan,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("k"), false, false),
-            SortExpr::new(Expr::column("v"), true, false),
-        ]),
-        Arc::clone(&schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::new(2, 5), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let sort = builder
+        .add_sort(
+            scan,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("k"), false, false),
+                SortExpr::new(Expr::column("v"), true, false),
+            ]),
+        )
+        .unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::new(2, 5)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let decision = admit(
         &plan,

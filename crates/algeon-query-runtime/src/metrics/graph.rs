@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn graph_claim_measurement_correlates_by_typed_node_and_algorithm() {
-        let node = NodeId::from_index_for_internal_use(7);
+        let node = NodeId::from_index_for_test(7);
         let mut metrics = QueryMetrics::new("query-a");
         metrics.graph_claim_calibration_rows.push(GraphMeasuredPeakRow::pending(
             Some(QueryId::new("query-a")),
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn graph_claim_execution_state_records_only_the_first_exact_boundary() {
-        let node = NodeId::from_index_for_internal_use(7);
+        let node = NodeId::from_index_for_test(7);
         let mut metrics = QueryMetrics::new("query-a");
         metrics.graph_claim_calibration_rows.push(GraphMeasuredPeakRow::pending(
             Some(QueryId::new("query-a")),

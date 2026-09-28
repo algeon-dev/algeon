@@ -96,7 +96,8 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
 
     assert!(
         unsupported_facts(
@@ -171,27 +172,25 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
             )
         };
     let left_join_input = match variant {
-        AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput => builder.add_sort(
-            left_join_input,
-            SortSpec::new(vec![SortExpr::new(Expr::column("ps_partkey"), false, false)]),
-            Arc::clone(&left_join_schema),
-        ),
+        AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput => builder
+            .add_sort(left_join_input, SortSpec::new(vec![SortExpr::new(Expr::column("ps_partkey"), false, false)]))
+            .unwrap(),
         AggregateOverJoinSubplanInputsVariant::LimitBelowAggregateInput => {
-            let sort = builder.add_sort(
-                left_join_input,
-                SortSpec::new(vec![SortExpr::new(Expr::column("ps_partkey"), false, false)]),
-                Arc::clone(&left_join_schema),
-            );
-            builder.add_limit(sort, LimitSpec::fetch(10), Arc::clone(&left_join_schema))
+            let sort = builder
+                .add_sort(left_join_input, SortSpec::new(vec![SortExpr::new(Expr::column("ps_partkey"), false, false)]))
+                .unwrap();
+            builder.add_limit(sort, LimitSpec::fetch(10)).unwrap()
         },
-        AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut => builder.add_aggregate(
-            left_join_input,
-            AggregateSpec::new(
-                vec![Expr::column("ps_partkey")],
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ps_supplycost"), "value")],
-            ),
-            Arc::clone(&left_aggregate_schema),
-        ),
+        AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut => builder
+            .add_aggregate(
+                left_join_input,
+                AggregateSpec::new(
+                    vec![Expr::column("ps_partkey")],
+                    vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ps_supplycost"), "value")],
+                ),
+                Arc::clone(&left_aggregate_schema),
+            )
+            .unwrap(),
         AggregateOverJoinSubplanInputsVariant::Admitted
         | AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf
         | AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum
@@ -215,24 +214,32 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
             } else {
                 "ps_supplycost"
             };
-        let left_aggregate = builder.add_aggregate(
-            left_join_input,
-            AggregateSpec::new(
-                vec![Expr::column("ps_partkey")],
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(left_aggregate_input_column), "value")],
-            ),
-            Arc::clone(&left_aggregate_schema),
-        );
+        let left_aggregate = builder
+            .add_aggregate(
+                left_join_input,
+                AggregateSpec::new(
+                    vec![Expr::column("ps_partkey")],
+                    vec![AggregateExpr::new(
+                        AggregateFunction::Sum,
+                        Expr::column(left_aggregate_input_column),
+                        "value",
+                    )],
+                ),
+                Arc::clone(&left_aggregate_schema),
+            )
+            .unwrap();
         if matches!(variant, AggregateOverJoinSubplanInputsVariant::BareGroupedAggregateInput) {
             left_aggregate
         } else {
-            builder.add_projection(
-                left_aggregate,
-                projection_outputs(
-                    vec![Expr::column("ps_partkey"), Expr::column("value")],
-                    Arc::clone(&left_aggregate_schema),
-                ),
-            )
+            builder
+                .add_projection(
+                    left_aggregate,
+                    projection_outputs(
+                        vec![Expr::column("ps_partkey"), Expr::column("value")],
+                        Arc::clone(&left_aggregate_schema),
+                    ),
+                )
+                .unwrap()
         }
     };
 
@@ -246,18 +253,22 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         } else {
             build_aggregate_over_join_subplan_bounded_join_subtree(&mut builder, "right", false, None)
         };
-    let right_aggregate = builder.add_aggregate(
-        right_join_input,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ps_supplycost"), "threshold")],
-        ),
-        Arc::clone(&right_aggregate_schema),
-    );
-    let right_input = builder.add_projection(
-        right_aggregate,
-        projection_outputs(vec![Expr::column("threshold")], Arc::clone(&right_aggregate_schema)),
-    );
+    let right_aggregate = builder
+        .add_aggregate(
+            right_join_input,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("ps_supplycost"), "threshold")],
+            ),
+            Arc::clone(&right_aggregate_schema),
+        )
+        .unwrap();
+    let right_input = builder
+        .add_projection(
+            right_aggregate,
+            projection_outputs(vec![Expr::column("threshold")], Arc::clone(&right_aggregate_schema)),
+        )
+        .unwrap();
 
     let left_value_column =
         if matches!(variant, AggregateOverJoinSubplanInputsVariant::BareJoinInput) { "ps_supplycost" } else { "value" };
@@ -278,76 +289,74 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     } else {
         Arc::clone(&root_output_schema)
     };
-    let root = builder.add_join(
-        left_input,
-        right_input,
-        JoinSpec::new(JoinType::Inner, Vec::new())
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, left_value_column, left_value_column),
-                BinaryOp::Gt,
-                Expr::input_column(1, "threshold", "threshold"),
-            ))
-            .with_output_projection(root_projection)
-            .with_build_side(JoinSide::Left),
-        root_schema,
-    );
+    let root = builder
+        .add_join(
+            left_input,
+            right_input,
+            JoinSpec::new(JoinType::Inner, Vec::new())
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, left_value_column, left_value_column),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "threshold", "threshold"),
+                ))
+                .with_output_projection(root_projection)
+                .with_build_side(JoinSide::Left),
+            root_schema,
+        )
+        .unwrap();
     let output = match variant {
         AggregateOverJoinSubplanInputsVariant::PostRootReversedStages => {
-            let sort = builder.add_sort(
-                root,
-                SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
-                Arc::clone(&root_output_schema),
-            );
-            builder.add_projection(
-                sort,
-                projection_outputs(
-                    vec![Expr::column("ps_partkey"), Expr::column("value")],
-                    Arc::clone(&root_output_schema),
-                ),
-            )
+            let sort =
+                builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)])).unwrap();
+            builder
+                .add_projection(
+                    sort,
+                    projection_outputs(
+                        vec![Expr::column("ps_partkey"), Expr::column("value")],
+                        Arc::clone(&root_output_schema),
+                    ),
+                )
+                .unwrap()
         },
         AggregateOverJoinSubplanInputsVariant::PostRootRepeatedProjection => {
-            let projection = builder.add_projection(
-                root,
-                projection_outputs(
-                    vec![Expr::column("ps_partkey"), Expr::column("value")],
-                    Arc::clone(&root_output_schema),
-                ),
-            );
-            builder.add_projection(
-                projection,
-                projection_outputs(
-                    vec![Expr::column("ps_partkey"), Expr::column("value")],
-                    Arc::clone(&root_output_schema),
-                ),
-            )
+            let projection = builder
+                .add_projection(
+                    root,
+                    projection_outputs(
+                        vec![Expr::column("ps_partkey"), Expr::column("value")],
+                        Arc::clone(&root_output_schema),
+                    ),
+                )
+                .unwrap();
+            builder
+                .add_projection(
+                    projection,
+                    projection_outputs(
+                        vec![Expr::column("ps_partkey"), Expr::column("value")],
+                        Arc::clone(&root_output_schema),
+                    ),
+                )
+                .unwrap()
         },
         AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort => {
-            let sort = builder.add_sort(
-                root,
-                SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
-                Arc::clone(&root_output_schema),
-            );
-            builder.add_sort(
-                sort,
-                SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
-                Arc::clone(&root_output_schema),
-            )
+            let sort =
+                builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)])).unwrap();
+            builder.add_sort(sort, SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)])).unwrap()
         },
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot => {
-            let projection = builder.add_projection(
-                root,
-                projection_outputs(
-                    vec![Expr::column("ps_partkey"), Expr::column("value")],
-                    Arc::clone(&root_output_schema),
-                ),
-            );
-            let sort = builder.add_sort(
-                projection,
-                SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
-                Arc::clone(&root_output_schema),
-            );
-            builder.add_limit(sort, LimitSpec::fetch(100), root_output_schema)
+            let projection = builder
+                .add_projection(
+                    root,
+                    projection_outputs(
+                        vec![Expr::column("ps_partkey"), Expr::column("value")],
+                        Arc::clone(&root_output_schema),
+                    ),
+                )
+                .unwrap();
+            let sort = builder
+                .add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]))
+                .unwrap();
+            builder.add_limit(sort, LimitSpec::fetch(100)).unwrap()
         },
         AggregateOverJoinSubplanInputsVariant::Admitted
         | AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf
@@ -361,21 +370,21 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         | AggregateOverJoinSubplanInputsVariant::AggregateOverAggregateShortcut
         | AggregateOverJoinSubplanInputsVariant::NestedUnsupportedJoinInput
         | AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight => {
-            let projection = builder.add_projection(
-                root,
-                projection_outputs(
-                    vec![Expr::column("ps_partkey"), Expr::column("value")],
-                    Arc::clone(&root_output_schema),
-                ),
-            );
-            builder.add_sort(
-                projection,
-                SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
-                Arc::clone(&root_output_schema),
-            )
+            let projection = builder
+                .add_projection(
+                    root,
+                    projection_outputs(
+                        vec![Expr::column("ps_partkey"), Expr::column("value")],
+                        Arc::clone(&root_output_schema),
+                    ),
+                )
+                .unwrap();
+            builder
+                .add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]))
+                .unwrap()
         },
     };
-    builder.finish_with_host_sink(output)
+    builder.finish_with_host_sink(output).unwrap()
 }
 
 fn build_aggregate_over_join_subplan_bounded_join_subtree(
@@ -423,14 +432,16 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
         vec!["n_nationkey".into()],
     )));
     let nation = if let Some(function) = preaggregate_leaf_function {
-        builder.add_aggregate(
-            nation,
-            AggregateSpec::new(
-                vec![Expr::column("n_nationkey")],
-                vec![AggregateExpr::new(function, Expr::column("n_nationkey"), "n_sum")],
-            ),
-            nation_preaggregate_schema,
-        )
+        builder
+            .add_aggregate(
+                nation,
+                AggregateSpec::new(
+                    vec![Expr::column("n_nationkey")],
+                    vec![AggregateExpr::new(function, Expr::column("n_nationkey"), "n_sum")],
+                ),
+                nation_preaggregate_schema,
+            )
+            .unwrap()
     } else {
         nation
     };
@@ -446,37 +457,41 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
             )],
         )
     };
-    let first_join = builder.add_join(
-        partsupp,
-        supplier,
-        first_join_spec
+    let first_join = builder
+        .add_join(
+            partsupp,
+            supplier,
+            first_join_spec
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "ps_availqty", "ps_availqty"), "ps_availqty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "s_nationkey", "s_nationkey"), "s_nationkey"),
+                ])
+                .with_build_side(JoinSide::Right),
+            first_join_schema,
+        )
+        .unwrap();
+    builder
+        .add_join(
+            first_join,
+            nation,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "s_nationkey", "s_nationkey"),
+                    ColumnRef::input(1, "n_nationkey", "n_nationkey"),
+                )],
+            )
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
                 JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
                 JoinOutputColumn::left(ColumnRef::input(0, "ps_availqty", "ps_availqty"), "ps_availqty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "s_nationkey", "s_nationkey"), "s_nationkey"),
             ])
             .with_build_side(JoinSide::Right),
-        first_join_schema,
-    );
-    builder.add_join(
-        first_join,
-        nation,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "s_nationkey", "s_nationkey"),
-                ColumnRef::input(1, "n_nationkey", "n_nationkey"),
-            )],
+            final_join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_availqty", "ps_availqty"), "ps_availqty"),
-        ])
-        .with_build_side(JoinSide::Right),
-        final_join_schema,
-    )
+        .unwrap()
 }
 
 fn aggregate_over_join_subplan_join_subtree_schema() -> Arc<Schema> {

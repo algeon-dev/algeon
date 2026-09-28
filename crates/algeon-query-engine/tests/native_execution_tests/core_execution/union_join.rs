@@ -21,8 +21,8 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -57,6 +57,71 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
 }
 
 #[test]
+fn native_union_names_its_output_like_the_declared_schema() {
+    // The branches name their columns differently from each other and from
+    // the union; the projection above reads the declared names, so every
+    // branch frame must carry them.
+    let context = backend_context();
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_key", DataType::Int32, false),
+        Field::new("left_payload", DataType::Int64, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_key", DataType::Int32, false),
+        Field::new("right_payload", DataType::Int64, false),
+    ]));
+    let union_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&left_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(Int64Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![Arc::new(Int32Array::from(vec![3])), Arc::new(Int64Array::from(vec![30]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&left_schema))));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&right_schema))));
+    let union = builder.add_union(vec![left, right], Arc::clone(&union_schema)).unwrap();
+    let projection = builder
+        .add_projection(
+            union,
+            vec![ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int64, false))],
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    for (name, schema, batch) in [("left", &left_schema, &left_batch), ("right", &right_schema, &right_batch)] {
+        gpu_inputs.insert(
+            name.to_string(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, batch).unwrap()),
+                Arc::clone(schema),
+            )
+            .unwrap(),
+        );
+    }
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema().field(0).name(), "payload");
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[10, 20, 30]);
+    admitted.finish();
+}
+
+#[test]
 fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
     let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
@@ -77,8 +142,8 @@ fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -156,13 +221,11 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("id"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        SortSpec::new(vec![SortExpr::new(Expr::column("id"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -227,7 +290,7 @@ fn native_union_and_scalar_key_hash_join_carry_basic_list_payloads_from_gpu_inpu
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("list_right", Arc::clone(&payload_schema))));
     let dimension = builder
         .add_source(SourceNode::GpuResident(GpuResidentSource::new("list_dimension", Arc::clone(&dimension_schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema));
+    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema)).unwrap();
     let join = builder.add_join(
         union,
         dimension,
@@ -246,13 +309,11 @@ fn native_union_and_scalar_key_hash_join_carry_basic_list_payloads_from_gpu_inpu
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -317,7 +378,7 @@ fn native_union_and_scalar_key_hash_join_carry_fixed_size_list_payloads_from_gpu
         "fixed_list_dimension",
         Arc::clone(&dimension_schema),
     )));
-    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema));
+    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema)).unwrap();
     let join = builder.add_join(
         union,
         dimension,
@@ -333,13 +394,11 @@ fn native_union_and_scalar_key_hash_join_carry_fixed_size_list_payloads_from_gpu
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -426,7 +485,7 @@ fn native_union_and_scalar_key_hash_join_carry_narrow_decimal_payloads_from_gpu_
         "narrow_decimal_dimension",
         Arc::clone(&dimension_schema),
     )));
-    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema));
+    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema)).unwrap();
     let join = builder.add_join(
         union,
         dimension,
@@ -443,13 +502,11 @@ fn native_union_and_scalar_key_hash_join_carry_narrow_decimal_payloads_from_gpu_
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();

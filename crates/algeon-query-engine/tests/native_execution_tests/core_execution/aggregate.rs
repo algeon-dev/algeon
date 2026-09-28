@@ -17,9 +17,9 @@ fn native_query_executes_group_only_aggregate_as_distinct_keys() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -50,9 +50,9 @@ fn bounded_native_query_executes_group_only_aggregate_with_budgeted_distinct() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -105,9 +105,9 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
@@ -196,7 +196,7 @@ fn native_group_only_distinct_preserves_schema_over_empty_join_output() {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -204,9 +204,9 @@ fn native_group_only_distinct_preserves_schema_over_empty_join_output() {
             vec![],
         ),
         Arc::clone(&join_schema),
-    );
-    let limit = builder.add_limit(aggregate, LimitSpec::fetch(100), Arc::clone(&join_schema));
-    let plan = builder.finish_with_host_sink(limit);
+    ).unwrap();
+    let limit = builder.add_limit(aggregate, LimitSpec::fetch(100)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

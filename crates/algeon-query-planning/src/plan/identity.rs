@@ -289,7 +289,7 @@ impl QueryPlan {
 
     /// Digest with the listed GPU-resident source facts hashed as absent.
     fn execution_fingerprint_masking(&self, masked: &[DeferredGraphSourceFactSlots]) -> PlanFingerprint {
-        let Self { nodes, root: _, sink, annotations: Annotations { dynamic_filter_routes, advisory: _ } } = self;
+        let Self { nodes, sink, annotations: Annotations { dynamic_filter_routes, advisory: _ } } = self;
         let mut hasher = PlanHasher::new();
         nodes.len().stable_hash(&mut hasher);
         for (index, node) in nodes.iter().enumerate() {
@@ -398,7 +398,7 @@ mod tests {
         }
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::GpuResident(source));
-        builder.finish_gpu_resident(root)
+        builder.finish_gpu_resident(root).unwrap()
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
         let schema = Arc::new(Schema::new_with_metadata(vec![field], metadata));
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", schema)));
-        builder.finish_gpu_resident(root)
+        builder.finish_gpu_resident(root).unwrap()
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values))]).unwrap();
         let mut builder = QueryPlanBuilder::new();
         let root = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-        builder.finish_gpu_resident(root)
+        builder.finish_gpu_resident(root).unwrap()
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use crate::{
+    error::Result,
     plan::{
-        NodeId, PlanFacts, PlanFingerprint, PlanNode, QueryPlan, RewrittenNodes, SchemaBehavior,
+        NodeId, PlanFacts, PlanFingerprint, PlanNode, QueryPlan, RewrittenNodes,
         row_bounds::query_plan_hard_row_upper_bound,
     },
     source::{GpuResidentSource, SourceNode},
@@ -110,23 +111,23 @@ pub struct SharedResidentPlan {
 }
 
 /// Runs the shared-resident extraction stage for a composed native plan.
-pub fn optimize_shared_resident_extraction(plan: QueryPlan) -> SharedResidentPlan {
+pub fn optimize_shared_resident_extraction(plan: QueryPlan) -> Result<SharedResidentPlan> {
     if !plan.nodes().iter().any(|node| {
         matches!(
             &node.kind,
             PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_))
         )
     }) {
-        return SharedResidentPlan {
+        return Ok(SharedResidentPlan {
             consumer: plan,
             producers: Vec::new(),
             diagnostics: SharedResidentExtractionDiagnostics::default(),
-        };
+        });
     }
     extract_shared_resident_subplans(plan)
 }
 
-fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
+fn extract_shared_resident_subplans(plan: QueryPlan) -> Result<SharedResidentPlan> {
     let parents = parents_by_node(&plan);
     let mut selected = Vec::new();
     let mut diagnostics = SharedResidentExtractionDiagnostics {
@@ -136,7 +137,7 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         candidates: Vec::with_capacity(plan.node_count()),
     };
     for node in plan.nodes().iter().rev() {
-        let producer = plan.resident_subplan(node.id);
+        let producer = plan.resident_subplan(node.id)?;
         let reason = if parents[node.id.index()].len() < 2 {
             SharedResidentExtractionReason::NotRepeated
         } else if !plan.dynamic_filter_routes().is_empty() {
@@ -188,7 +189,7 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         .collect::<BTreeSet<_>>();
     let mut input_index = 0;
     for root in selected {
-        let producer = plan.resident_subplan(root);
+        let producer = plan.resident_subplan(root)?;
         let input_name = loop {
             let candidate = format!("__algeon_shared_resident_{input_index}");
             input_index += 1;
@@ -202,7 +203,7 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
             .expect("selected shared-resident producers have a hard row bound");
         source = source.with_row_count_upper_bound(row_count_upper_bound);
         nodes[root.index()].kind = PlanNode::Source(Box::new(SourceNode::GpuResident(source)));
-        nodes[root.index()].facts = PlanFacts::device(schema, SchemaBehavior::SourceOutput);
+        nodes[root.index()].facts = PlanFacts::new(schema);
         producers.push(SharedResidentProducerPlan { input_name, plan: producer });
         let decision = diagnostics
             .candidates
@@ -213,9 +214,9 @@ fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         diagnostics.extracted_count += 1;
     }
 
-    let consumer = plan.rewrite(RewrittenNodes::in_place(nodes, plan.root_id()));
+    let consumer = plan.rewrite(RewrittenNodes::in_place(nodes, plan.root_id()))?;
     diagnostics.candidates.sort_by_key(|candidate| candidate.node_id);
-    SharedResidentPlan { consumer, producers, diagnostics }
+    Ok(SharedResidentPlan { consumer, producers, diagnostics })
 }
 
 fn parents_by_node(plan: &QueryPlan) -> Vec<Vec<NodeId>> {
@@ -265,10 +266,6 @@ mod tests {
 
     use super::*;
     use crate::{
-        dynamic_filter::{
-            DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
-            DynamicFilterProducer, DynamicFilterRoute,
-        },
         expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
         plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
         source::{LocalParquetFile, LocalParquetSource},
@@ -283,43 +280,46 @@ mod tests {
             Arc::clone(&schema),
             vec!["id".to_string()],
         )));
-        let filtered = builder.add_filter(
-            source,
-            Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::Literal(LiteralValue::Int64(1))),
-            Arc::clone(&schema),
-        );
-        let repeated = builder.add_join(
-            filtered,
-            filtered,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+        let filtered = builder
+            .add_filter(source, Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::Literal(LiteralValue::Int64(1))))
+            .unwrap();
+        let repeated = builder
+            .add_join(
+                filtered,
+                filtered,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+                )
+                .with_output_projection(vec![JoinOutputColumn::new(
+                    JoinSide::Left,
+                    ColumnRef::unqualified("id"),
+                    "id",
+                )]),
+                Arc::clone(&schema),
             )
-            .with_output_projection(vec![JoinOutputColumn::new(
-                JoinSide::Left,
-                ColumnRef::unqualified("id"),
-                "id",
-            )]),
-            Arc::clone(&schema),
-        );
+            .unwrap();
         let resident = builder.add_source(SourceNode::GpuResident(
             GpuResidentSource::new("existing-resident", Arc::clone(&schema)).with_row_count_upper_bound(1),
         ));
-        let root = builder.add_join(
-            repeated,
-            resident,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+        let root = builder
+            .add_join(
+                repeated,
+                resident,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+                )
+                .with_output_projection(vec![JoinOutputColumn::new(
+                    JoinSide::Left,
+                    ColumnRef::unqualified("id"),
+                    "id",
+                )]),
+                Arc::clone(&schema),
             )
-            .with_output_projection(vec![JoinOutputColumn::new(
-                JoinSide::Left,
-                ColumnRef::unqualified("id"),
-                "id",
-            )]),
-            Arc::clone(&schema),
-        );
-        let split = optimize_shared_resident_extraction(builder.finish_with_host_sink_schema(root, schema));
+            .unwrap();
+        let split =
+            optimize_shared_resident_extraction(builder.finish_with_host_sink_schema(root, schema).unwrap()).unwrap();
 
         assert!(split.producers.is_empty());
         assert_eq!(split.diagnostics.rejected_count, 1);
@@ -331,64 +331,5 @@ mod tests {
             .expect("the repeated closed candidate must retain its rejection");
         assert_eq!(rejected.decision, SharedResidentExtractionDecision::Rejected);
         assert_eq!(rejected.reason, SharedResidentExtractionReason::ResidentRowBoundUnavailable);
-    }
-
-    #[test]
-    fn shared_resident_extraction_remaps_dynamic_filter_routes() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let mut builder = QueryPlanBuilder::new();
-        let _unreachable =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", Arc::clone(&schema))));
-        let a = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("a", Arc::clone(&schema))));
-        let b = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("b", Arc::clone(&schema))));
-        let join_keys = || vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))];
-        let join_output = || vec![JoinOutputColumn::new(JoinSide::Left, ColumnRef::unqualified("id"), "id")];
-        let first_join = builder.add_join(
-            a,
-            b,
-            JoinSpec::new(JoinType::Inner, join_keys()).with_output_projection(join_output()),
-            Arc::clone(&schema),
-        );
-        let c = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("c", Arc::clone(&schema))));
-        let second_join = builder.add_join(
-            first_join,
-            c,
-            JoinSpec::new(JoinType::Inner, join_keys()).with_output_projection(join_output()),
-            Arc::clone(&schema),
-        );
-        let route = DynamicFilterRoute::new(
-            DynamicFilterId::new(0),
-            DynamicFilterProducer::HashJoinBuild {
-                join_node_id: first_join,
-                build_side: JoinSide::Right,
-                build_input: b,
-            },
-            DynamicFilterConsumer::HashJoinProbe { join_node_id: second_join, probe_side: JoinSide::Left },
-            vec!["id".to_string()],
-            vec!["id".to_string()],
-            vec![DynamicFilterKind::Range],
-            DynamicFilterConsumerLowering::PostDecodeOnly,
-        );
-        let plan = builder
-            .finish_with_host_sink_schema(second_join, Arc::clone(&schema))
-            .with_dynamic_filter_routes(vec![route]);
-        assert!(plan.unreachable_node_ids().len() == 1);
-
-        let split = optimize_shared_resident_extraction(plan);
-
-        // One unreachable node before every endpoint shifts each survivor down
-        // by one index; the route follows its joins instead of the old ids.
-        let shifted = |id: NodeId| NodeId::from_index_for_internal_use(id.index() - 1);
-        let routes = split.consumer.dynamic_filter_routes();
-        assert_eq!(routes.len(), 1, "pure renumbering must keep the route");
-        let DynamicFilterProducer::HashJoinBuild { join_node_id, build_input, .. } = &routes[0].producer else {
-            panic!("producer kind must survive the remap");
-        };
-        assert_eq!(*join_node_id, shifted(first_join));
-        assert_eq!(*build_input, shifted(b));
-        let DynamicFilterConsumer::HashJoinProbe { join_node_id, .. } = &routes[0].consumer else {
-            panic!("consumer kind must survive the remap");
-        };
-        assert_eq!(*join_node_id, shifted(second_join));
     }
 }

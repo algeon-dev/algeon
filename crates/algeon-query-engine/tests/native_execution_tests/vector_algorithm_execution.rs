@@ -55,41 +55,50 @@ fn exact_knn_executes_gpu_resident_with_deterministic_ids_and_observed_stages() 
     let mut builder = QueryPlanBuilder::new();
     let dataset =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&dataset_schema))));
-    let dataset = builder.add_projection(
-        dataset,
-        dataset_schema
-            .fields()
-            .iter()
-            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-            .collect(),
-    );
+    let dataset = builder
+        .add_projection(
+            dataset,
+            dataset_schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        )
+        .unwrap();
     let queries =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&query_schema))));
     let params = VectorBruteForceKnnParams::new(
-        VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
-        VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x"]),
+        VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+        VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x"]),
         1,
         VectorDistanceMetric::L2Expanded,
     );
-    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::BruteForceKnn,
-        VectorAlgorithmParams::BruteForceKnn(params),
-        output_schema,
-    ));
+    let vector = builder
+        .add_vector_algorithm(
+            vec![dataset, queries],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::BruteForceKnn,
+                VectorAlgorithmParams::BruteForceKnn(params),
+                output_schema,
+            ),
+        )
+        .unwrap();
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("query_id", DataType::Int64, false),
         Field::new("neighbor_id", DataType::Int64, false),
         Field::new("rank", DataType::UInt32, false),
     ]));
-    let output = builder.add_projection(
-        vector,
-        vec![
-            ProjectionOutput::new(Expr::column("query_id"), output_schema.field(0).clone()),
-            ProjectionOutput::new(Expr::column("neighbor_id"), output_schema.field(1).clone()),
-            ProjectionOutput::new(Expr::column("rank"), output_schema.field(2).clone()),
-        ],
-    );
-    let plan = builder.finish_with_host_sink(output);
+    let output = builder
+        .add_projection(
+            vector,
+            vec![
+                ProjectionOutput::new(Expr::column("query_id"), output_schema.field(0).clone()),
+                ProjectionOutput::new(Expr::column("neighbor_id"), output_schema.field(1).clone()),
+                ProjectionOutput::new(Expr::column("rank"), output_schema.field(2).clone()),
+            ],
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(output).unwrap();
 
     let dataset_batch = RecordBatch::try_new(
         Arc::clone(&dataset_schema),
@@ -236,19 +245,24 @@ fn ivf_flat_executes_with_contiguous_ranks_and_structured_cardinality_errors() {
         let queries =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&query_schema))));
         let mut params = VectorIvfFlatParams::new(
-            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
-            VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x"]),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x"]),
             k,
             VectorDistanceMetric::L2Expanded,
             n_lists,
         );
         params.n_probes = n_probes;
-        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::IvfFlat,
-            VectorAlgorithmParams::IvfFlat(params),
-            vector_knn_output_schema(DataType::Int64, DataType::Int64),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_vector_algorithm(
+                vec![dataset, queries],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::IvfFlat,
+                    VectorAlgorithmParams::IvfFlat(params),
+                    vector_knn_output_schema(DataType::Int64, DataType::Int64),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let context = backend_context();
         let admitted = context.admit_plan(&plan).expect("IVF-Flat plan admission");
         let runtime = Arc::new(admitted.runtime().unwrap());
@@ -347,19 +361,24 @@ fn ivf_flat_cancellation_after_index_build_releases_query_allocations() {
     let queries =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&query_schema))));
     let mut params = VectorIvfFlatParams::new(
-        VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
-        VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x"]),
+        VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+        VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x"]),
         1,
         VectorDistanceMetric::L2Expanded,
         2,
     );
     params.n_probes = 1;
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::IvfFlat,
-        VectorAlgorithmParams::IvfFlat(params),
-        vector_knn_output_schema(DataType::Int64, DataType::Int64),
-    ));
-    let plan = builder.finish_with_host_sink(root);
+    let root = builder
+        .add_vector_algorithm(
+            vec![dataset, queries],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::IvfFlat,
+                VectorAlgorithmParams::IvfFlat(params),
+                vector_knn_output_schema(DataType::Int64, DataType::Int64),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
     let context = backend_context();
     let admitted = context.admit_plan(&plan).expect("IVF-Flat plan admission");
     let runtime = Arc::new(admitted.runtime().unwrap());
@@ -502,16 +521,21 @@ fn compiled_pairwise_output_allocation_failure_records_task_and_releases_attempt
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", Arc::clone(&schema))));
     let y = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("y", Arc::clone(&schema))));
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::PairwiseDistance,
-        VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
-            x: VectorRelationBinding::new(x, VectorRowIdBinding::column("id"), ["x"]),
-            y: VectorRelationBinding::new(y, VectorRowIdBinding::column("id"), ["x"]),
-            metric: VectorDistanceMetric::L2Expanded,
-        }),
-        vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64, DataType::Float32),
-    ));
-    let plan = builder.finish_with_host_sink(root);
+    let root = builder
+        .add_vector_algorithm(
+            vec![x, y],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::PairwiseDistance,
+                VectorAlgorithmParams::PairwiseDistance(VectorPairwiseDistanceParams {
+                    x: VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+                    y: VectorRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x"]),
+                    metric: VectorDistanceMetric::L2Expanded,
+                }),
+                vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64, DataType::Float32),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
     let ids = (0..256_i64).collect::<Vec<_>>();
     let features = (0..256).map(|index| index as f32).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(
@@ -564,19 +588,24 @@ fn compiled_cagra_build_allocation_failure_records_task_and_releases_attempt() {
     let dataset = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&schema))));
     let queries = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&schema))));
     let mut params = VectorCagraParams::new(
-        VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
-        VectorRelationBinding::new(queries, VectorRowIdBinding::column("id"), ["x"]),
+        VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+        VectorRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x"]),
         1,
         VectorDistanceMetric::L2Expanded,
     );
     params.graph_degree = 16;
     params.intermediate_graph_degree = 32;
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Cagra,
-        VectorAlgorithmParams::Cagra(params),
-        vector_knn_output_schema(DataType::Int64, DataType::Int64),
-    ));
-    let plan = builder.finish_with_host_sink(root);
+    let root = builder
+        .add_vector_algorithm(
+            vec![dataset, queries],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Cagra,
+                VectorAlgorithmParams::Cagra(params),
+                vector_knn_output_schema(DataType::Int64, DataType::Int64),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
@@ -640,33 +669,31 @@ fn bounded_vector_rejection_reports_the_contract_it_misses() {
         vec!["id".into(), "x".into(), "y".into()],
     )));
     let pca_schema = vector_pca_output_schema(DataType::Int64, 1);
-    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(VectorPcaParams::new(
-            VectorRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x", "y"]),
-            1,
-        )),
-        Arc::clone(&pca_schema),
-    ));
-    let window_schema = Arc::new(Schema::new(
-        pca_schema
-            .fields()
-            .iter()
-            .map(|field| field.as_ref().clone())
-            .chain([Field::new("row_number", DataType::Int64, false)])
-            .collect::<Vec<_>>(),
-    ));
+    let vector = builder
+        .add_vector_algorithm(
+            vec![source],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(VectorPcaParams::new(
+                    VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
+                    1,
+                )),
+                Arc::clone(&pca_schema),
+            ),
+        )
+        .unwrap();
     let key = pca_schema.field(0).name().clone();
-    let window = builder.add_window(
-        vector,
-        WindowSpec::new(
-            Vec::new(),
-            vec![SortExpr::new(Expr::column(key), false, false)],
-            vec![WindowFunction::row_number_i64("row_number")],
-        ),
-        window_schema,
-    );
-    let plan = builder.finish_with_host_sink(window);
+    let window = builder
+        .add_window(
+            vector,
+            WindowSpec::new(
+                Vec::new(),
+                vec![SortExpr::new(Expr::column(key), false, false)],
+                vec![WindowFunction::row_number_i64("row_number")],
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(window).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),
@@ -695,15 +722,20 @@ fn cuvs_disabled_rejects_before_local_source_staging() {
         Arc::clone(&schema),
         vec!["id".into(), "x".into(), "y".into()],
     )));
-    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(VectorPcaParams::new(
-            VectorRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x", "y"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    let plan = builder.finish_with_host_sink(vector);
+    let vector = builder
+        .add_vector_algorithm(
+            vec![source],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(VectorPcaParams::new(
+                    VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
+                    1,
+                )),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(vector).unwrap();
     let context = backend_context();
     let admitted = context.admit_plan(&plan).expect("vector plan is structurally admitted without cuVS");
 
@@ -775,20 +807,25 @@ fn kmeans_executes_fixed_size_list_input_and_centroid_relations_with_permutation
     let centroids =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("initial_centroids", Arc::clone(&schema))));
     let params = VectorKMeansParams::new(
-        VectorRelationBinding::new_vector_column(input, VectorRowIdBinding::column("id"), "embedding"),
+        VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
         2,
     )
     .with_initial_centroids(VectorRelationBinding::new_vector_column(
-        centroids,
+        1,
         VectorRowIdBinding::column("id"),
         "embedding",
     ));
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::KMeans,
-        VectorAlgorithmParams::KMeans(params),
-        vector_kmeans_output_schema(DataType::Int64),
-    ));
-    assert_vector_capability_admitted(&builder.finish_gpu_resident(root));
+    let root = builder
+        .add_vector_algorithm(
+            vec![input, centroids],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::KMeans,
+                VectorAlgorithmParams::KMeans(params),
+                vector_kmeans_output_schema(DataType::Int64),
+            ),
+        )
+        .unwrap();
+    assert_vector_capability_admitted(&builder.finish_gpu_resident(root).unwrap());
 }
 
 #[test]
@@ -797,15 +834,20 @@ fn pca_executes_uniform_list_input_with_sign_aware_component_oracle() {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     let params = VectorPcaParams::new(
-        VectorRelationBinding::new_vector_column(input, VectorRowIdBinding::column("id"), "embedding"),
+        VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
         1,
     );
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::Pca,
-        VectorAlgorithmParams::Pca(params),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    assert_vector_capability_admitted(&builder.finish_gpu_resident(root));
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    assert_vector_capability_admitted(&builder.finish_gpu_resident(root).unwrap());
 }
 
 fn assert_vector_capability_admitted(plan: &QueryPlan) {
@@ -819,21 +861,26 @@ fn knn_plan(dataset_schema: SchemaRef, query_schema: SchemaRef, shape: VectorFix
     let queries = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", query_schema)));
     let (dataset_binding, query_binding) = match shape {
         VectorFixtureShape::Columns => (
-            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
-            VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x"]),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x"]),
         ),
         VectorFixtureShape::FixedSizeList | VectorFixtureShape::UniformList => (
-            VectorRelationBinding::new_vector_column(dataset, VectorRowIdBinding::column("id"), "embedding"),
-            VectorRelationBinding::new_vector_column(queries, VectorRowIdBinding::column("query_id"), "embedding"),
+            VectorRelationBinding::new_vector_column(0, VectorRowIdBinding::column("id"), "embedding"),
+            VectorRelationBinding::new_vector_column(1, VectorRowIdBinding::column("query_id"), "embedding"),
         ),
     };
     let params = VectorBruteForceKnnParams::new(dataset_binding, query_binding, k, VectorDistanceMetric::L2Expanded);
-    let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-        VectorAlgorithm::BruteForceKnn,
-        VectorAlgorithmParams::BruteForceKnn(params),
-        vector_knn_output_schema(DataType::Int64, DataType::Int64),
-    ));
-    builder.finish_gpu_resident(root)
+    let root = builder
+        .add_vector_algorithm(
+            vec![dataset, queries],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::BruteForceKnn,
+                VectorAlgorithmParams::BruteForceKnn(params),
+                vector_knn_output_schema(DataType::Int64, DataType::Int64),
+            ),
+        )
+        .unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn vector_schema(id: &str, shape: VectorFixtureShape) -> SchemaRef {

@@ -7,7 +7,7 @@ fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_r
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -48,7 +48,7 @@ fn native_optimizer_rejects_large_keyset_route_to_dimension_sized_local_parquet_
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -91,20 +91,20 @@ fn native_optimizer_keeps_large_keyset_source_reader_route_when_downstream_work_
         )])
         .with_build_side(JoinSide::Right),
         schema(&["store_key"]),
-    );
+    ).unwrap();
     let grouped = builder.add_aggregate(
         joined,
         AggregateSpec::new(vec![Expr::column("store_key")], Vec::new()),
         schema(&["store_key"]),
-    );
+    ).unwrap();
     let left = builder.add_projection(
         grouped,
         vec![ProjectionOutput::new(Expr::column("store_key"), Field::new("left_store_key", DataType::Int32, false))],
-    );
+    ).unwrap();
     let right = builder.add_projection(
         grouped,
         vec![ProjectionOutput::new(Expr::column("store_key"), Field::new("right_store_key", DataType::Int32, false))],
-    );
+    ).unwrap();
     let root = builder.add_join(
         left,
         right,
@@ -121,8 +121,8 @@ fn native_optimizer_keeps_large_keyset_source_reader_route_when_downstream_work_
         )])
         .with_build_side(JoinSide::Right),
         schema(&["left_store_key"]),
-    );
-    let plan = builder.finish_gpu_resident(root);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(root).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
@@ -133,7 +133,7 @@ fn native_optimizer_keeps_large_keyset_source_reader_route_when_downstream_work_
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     let candidate = result
         .diagnostics
@@ -165,7 +165,7 @@ fn native_optimizer_rejects_dynamic_filter_route_when_producer_keyset_exceeds_ru
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -193,7 +193,7 @@ fn native_optimizer_uses_custom_dynamic_filter_runtime_limit_for_route_discovery
         &options,
         rapids_analysis_context(policy),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -232,8 +232,8 @@ fn native_optimizer_keeps_filtered_producer_when_unfiltered_row_estimate_exceeds
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
@@ -244,7 +244,7 @@ fn native_optimizer_keeps_filtered_producer_when_unfiltered_row_estimate_exceeds
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -284,8 +284,8 @@ fn native_optimizer_rejects_large_keyset_dimension_route_when_producer_is_larger
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
@@ -296,7 +296,7 @@ fn native_optimizer_rejects_large_keyset_dimension_route_when_producer_is_larger
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
@@ -338,8 +338,8 @@ fn native_optimizer_keeps_large_keyset_dimension_route_when_many_row_groups_cons
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
@@ -350,7 +350,7 @@ fn native_optimizer_keeps_large_keyset_dimension_route_when_many_row_groups_cons
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -374,7 +374,7 @@ fn native_optimizer_keeps_dimension_sized_consumer_route_when_producer_keyset_is
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -399,7 +399,7 @@ fn native_optimizer_discovers_dynamic_filter_route_for_inner_keyed_residual_join
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);

@@ -2,7 +2,7 @@
 fn native_optimizer_flips_inner_equi_join_to_build_smaller_estimated_left_side() {
     let plan = estimated_inner_equi_join_plan(16 * 1024 * 1024, 256 * 1024 * 1024);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let PlanNode::Join(join) = &result.plan.root_node().kind else {
@@ -17,7 +17,7 @@ fn native_optimizer_flips_inner_keyed_residual_join_to_build_smaller_estimated_l
     let plan =
         estimated_inner_residual_join_plan(JoinSide::Right, 16 * 1024 * 1024, 100_000, 256 * 1024 * 1024, 10_000_000);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let PlanNode::Join(join) = &result.plan.root_node().kind else {
@@ -39,7 +39,7 @@ fn native_optimizer_flips_left_semi_keyed_residual_join_to_small_left_build_side
         10_000_000,
     );
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_build_side_selection.considered_count, 1);
@@ -69,7 +69,7 @@ fn native_optimizer_flips_left_anti_keyed_residual_join_to_small_left_build_side
         10_000_000,
     );
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.join_build_side_selection.considered_count, 1);
@@ -100,7 +100,7 @@ fn join_build_side_selection_keeps_residual_semi_anti_join_when_sizes_do_not_imp
             10_000_000,
         );
 
-        let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
         assert_eq!(result.change, NativeOptimizerChange::Unchanged, "{join_type}");
         let candidate = result
@@ -132,7 +132,7 @@ fn disabled_native_optimizer_keeps_residual_semi_anti_join_build_side_selection_
             10_000_000,
         );
 
-        let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
         assert_eq!(result.plan, plan, "{join_type}");
         assert_eq!(result.change, NativeOptimizerChange::Unchanged, "{join_type}");
@@ -144,7 +144,7 @@ fn disabled_native_optimizer_keeps_residual_semi_anti_join_build_side_selection_
 fn native_optimizer_disabled_keeps_default_inner_equi_join_build_side() {
     let plan = estimated_inner_equi_join_plan(16 * 1024 * 1024, 256 * 1024 * 1024);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     let PlanNode::Join(join) = &result.plan.root_node().kind else {
@@ -157,7 +157,7 @@ fn native_optimizer_disabled_keeps_default_inner_equi_join_build_side() {
 fn join_build_side_selection_switches_inner_equi_join_to_small_left_input() {
     let plan = estimated_inner_join_plan(JoinSide::Right, 1_024, 100, 9 * 1024 * 1024 * 1024, 100_000_000);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert!(result.diagnostics.semijoin_reduction.is_empty());
@@ -185,14 +185,14 @@ fn join_build_side_selection_prefers_grouped_aggregate_keyset_side_when_size_is_
         raw_keyset,
         AggregateSpec::new(vec![Expr::column("raw_customer_sk")], Vec::new()),
         schema(&["raw_customer_sk"]),
-    );
+    ).unwrap();
     let projected = builder.add_projection(
         aggregate,
         vec![ProjectionOutput::new(
             Expr::column("raw_customer_sk"),
             Field::new("ctr_customer_sk", DataType::Int32, false),
         )],
-    );
+    ).unwrap();
     let customer =
         builder.add_source(estimated_local_source("customer", "c_customer_sk", 256 * 1024 * 1024, 2_000_000));
     let join = builder.add_join(
@@ -211,10 +211,10 @@ fn join_build_side_selection_prefers_grouped_aggregate_keyset_side_when_size_is_
         )])
         .with_build_side(JoinSide::Right),
         schema(&["ctr_customer_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = result
         .diagnostics
@@ -236,7 +236,7 @@ fn join_build_side_selection_uses_advisory_join_output_rows_when_conservative_si
     let advised = advisory_rows(2_000);
     let plan = advised_join_over_fact_plan(Some(advised), 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
     assert!(candidate.applied);
@@ -253,7 +253,7 @@ fn join_build_side_selection_uses_advisory_join_output_rows_when_conservative_si
 
     let plan = advised_join_over_fact_plan(None, 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
     assert!(!candidate.applied);
@@ -269,7 +269,7 @@ fn join_build_side_selection_keeps_current_build_side_when_advisory_output_is_la
     let plan =
         advised_join_over_fact_plan(Some(advisory_rows(500_000_000)), 5 * 1024 * 1024 * 1024, 100_000_000, JoinSide::Right);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
     assert!(!candidate.applied);
@@ -286,7 +286,7 @@ fn join_build_side_selection_prefers_conservative_evidence_over_advisory_estimat
     // side advertises a tinier advisory output.
     let plan = advised_join_over_fact_plan(Some(advisory_rows(10)), 32 * 1024 * 1024, 500_000, JoinSide::Right);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = join_fed_build_side_candidate(&result.diagnostics.join_build_side_selection);
     assert!(!candidate.applied);
@@ -314,7 +314,7 @@ fn join_build_side_selection_prefers_conservative_evidence_over_advisory_estimat
             bytes: AdvisoryStatistic::Inexact(1_024),
         }),
         schema(&["s_key"]),
-    );
+    ).unwrap();
     let fact = builder.add_source(estimated_local_source_with_fields(
         "fact",
         &["f_key", "f_val"],
@@ -334,10 +334,10 @@ fn join_build_side_selection_prefers_conservative_evidence_over_advisory_estimat
         ])
         .with_build_side(JoinSide::Left),
         schema(&["s_key", "f_val"]),
-    );
-    let plan = builder.finish_gpu_resident(outer);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(outer).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = result
         .diagnostics
@@ -367,7 +367,7 @@ fn join_build_side_selection_keeps_small_current_build_side_over_grouped_aggrega
         fact,
         AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
         schema(&["date_sk"]),
-    );
+    ).unwrap();
     let date = builder.add_source(estimated_local_source("small_date_dim", "d_date_sk", 1024 * 1024, 365));
     let join = builder.add_join(
         grouped_fact,
@@ -382,14 +382,14 @@ fn join_build_side_selection_keeps_small_current_build_side_over_grouped_aggrega
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Right),
         schema(&["date_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     let candidate = result
@@ -426,7 +426,7 @@ fn join_build_side_selection_prefers_small_other_side_over_grouped_aggregate_key
         fact,
         AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
         schema(&["date_sk"]),
-    );
+    ).unwrap();
     let week_keyset = builder.add_source(estimated_local_source("tiny_week_keyset", "d_date_sk", 1024, 7));
     let join = builder.add_join(
         grouped_fact,
@@ -441,14 +441,14 @@ fn join_build_side_selection_prefers_small_other_side_over_grouped_aggregate_key
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         schema(&["date_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let candidate = result
@@ -485,7 +485,7 @@ fn join_build_side_selection_prefers_bounded_left_semi_other_side_over_grouped_a
         fact,
         AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
         schema(&["date_sk"]),
-    );
+    ).unwrap();
     let dates = builder.add_source(estimated_local_source_with_fields(
         "date_dim_for_week_keyset",
         &["d_date_sk", "d_week_seq"],
@@ -509,7 +509,7 @@ fn join_build_side_selection_prefers_bounded_left_semi_other_side_over_grouped_a
         )])
         .with_build_side(JoinSide::Right),
         schema(&["d_date_sk"]),
-    );
+    ).unwrap();
     let join = builder.add_join(
         grouped_fact,
         week_dates,
@@ -523,14 +523,14 @@ fn join_build_side_selection_prefers_bounded_left_semi_other_side_over_grouped_a
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         schema(&["date_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let candidate = result
@@ -567,7 +567,7 @@ fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_a
         fact,
         AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
         schema(&["date_sk"]),
-    );
+    ).unwrap();
     let dates = builder.add_source(estimated_local_source_with_fields(
         "date_dim_for_anti_week_keyset",
         &["d_date_sk", "d_week_seq"],
@@ -591,7 +591,7 @@ fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_a
         )])
         .with_build_side(JoinSide::Right),
         schema(&["d_date_sk"]),
-    );
+    ).unwrap();
     let join = builder.add_join(
         grouped_fact,
         remaining_dates,
@@ -605,14 +605,14 @@ fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_a
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
         .with_build_side(JoinSide::Left),
         schema(&["date_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let candidate = result
@@ -667,7 +667,7 @@ fn native_optimizer_revisits_build_side_after_aggregate_join_pushdown_creates_gr
         ])
         .with_build_side(JoinSide::Right),
         schema(&["i_class", "sales_price"]),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -675,10 +675,10 @@ fn native_optimizer_revisits_build_side_after_aggregate_join_pushdown_creates_gr
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales_price"), "class_sales")],
         ),
         schema(&["i_class", "class_sales"]),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.aggregate_join_pushdown.applied_count, 1);
     assert!(
@@ -769,10 +769,10 @@ fn native_optimizer_revisits_build_side_after_dimension_pruning_changes_source_s
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&fact_schema),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 1);
     let first_build_side_candidate = result
@@ -824,7 +824,7 @@ fn join_build_side_selection_does_not_prefer_grouped_aggregate_side_when_join_ke
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
         ),
         schema(&["county", "store_sales"]),
-    );
+    ).unwrap();
     let customer =
         builder.add_source(estimated_local_source("customer", "c_customer_sk", 256 * 1024 * 1024, 2_000_000));
     let join = builder.add_join(
@@ -843,10 +843,10 @@ fn join_build_side_selection_does_not_prefer_grouped_aggregate_side_when_join_ke
         )])
         .with_build_side(JoinSide::Right),
         schema(&["c_customer_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let candidate = result
         .diagnostics
@@ -867,7 +867,7 @@ fn join_build_side_selection_does_not_prefer_grouped_aggregate_side_when_join_ke
 fn disabled_native_optimizer_keeps_join_build_side_selection_off() {
     let plan = estimated_inner_join_plan(JoinSide::Right, 1_024, 100, 9 * 1024 * 1024 * 1024, 100_000_000);
 
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -907,11 +907,11 @@ fn advised_join_over_fact_plan(
     if let Some(advisory) = advisory {
         inner_spec = inner_spec.with_advisory_output_statistics(advisory);
     }
-    let inner = builder.add_join(dim, mid, inner_spec, schema(&["m_id"]));
+    let inner = builder.add_join(dim, mid, inner_spec, schema(&["m_id"])).unwrap();
     let projected = builder.add_projection(
         inner,
         vec![ProjectionOutput::new(Expr::column("m_id"), Field::new("m_id", DataType::Int32, false))],
-    );
+    ).unwrap();
     let fact = builder.add_source(estimated_local_source_with_fields("fact", &["f_mid", "f_val"], fact_bytes, fact_rows));
     let outer = builder.add_join(
         projected,
@@ -926,8 +926,8 @@ fn advised_join_over_fact_plan(
         ])
         .with_build_side(build_side),
         schema(&["m_id", "f_val"]),
-    );
-    builder.finish_gpu_resident(outer)
+    ).unwrap();
+    builder.finish_gpu_resident(outer).unwrap()
 }
 
 /// Finds the candidate for the outer join fed by another join. Node ids are
@@ -980,8 +980,8 @@ fn estimated_inner_join_plan(
         ])
         .with_build_side(build_side),
         output_schema,
-    );
-    builder.finish_gpu_resident(join)
+    ).unwrap();
+    builder.finish_gpu_resident(join).unwrap()
 }
 
 fn estimated_inner_residual_join_plan(
@@ -1026,8 +1026,8 @@ fn estimated_inner_residual_join_plan(
         ])
         .with_build_side(build_side),
         output_schema,
-    );
-    builder.finish_gpu_resident(join)
+    ).unwrap();
+    builder.finish_gpu_resident(join).unwrap()
 }
 
 fn estimated_semi_anti_residual_join_plan(
@@ -1072,6 +1072,6 @@ fn estimated_semi_anti_residual_join_plan(
         ])
         .with_build_side(build_side),
         schema(&["left_key", "left_payload"]),
-    );
-    builder.finish_gpu_resident(join)
+    ).unwrap();
+    builder.finish_gpu_resident(join).unwrap()
 }

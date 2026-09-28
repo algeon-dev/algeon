@@ -162,8 +162,6 @@ pub query_planning::capability::Reason::AggregateSharedProducerMissingAggregate
 pub query_planning::capability::Reason::AggregateSharedProducerMissingNode
 pub query_planning::capability::Reason::AggregateSharedProducerRequiresDataflowIdentity
 pub query_planning::capability::Reason::AggregateSharedProducerRequiresInputLineage
-pub query_planning::capability::Reason::AggregateSharedProducerRequiresResidentFrame
-pub query_planning::capability::Reason::BuildBeforeProbeCycle
 pub query_planning::capability::Reason::CompiledPipelineBarrierDominanceInvalid
 pub query_planning::capability::Reason::CompiledPipelineBarrierIdentityInvalid
 pub query_planning::capability::Reason::CompiledPipelineDependencyCycle
@@ -197,7 +195,6 @@ pub query_planning::capability::Reason::LargeKeyedHashJoinStrategyUnsupported
 pub query_planning::capability::Reason::LeftAntiBuildRequiresDedupAggregate
 pub query_planning::capability::Reason::LeftAntiProbeRequiresDedupProvenInput
 pub query_planning::capability::Reason::MissingEdgeProducer
-pub query_planning::capability::Reason::MissingEdgeRequiredProperty
 pub query_planning::capability::Reason::OutputLineageAggregateFieldIndexOutOfRange
 pub query_planning::capability::Reason::OutputLineageFieldIndexOutOfRange
 pub query_planning::capability::Reason::OutputLineageJoinOutputColumnResolution
@@ -211,25 +208,14 @@ pub query_planning::capability::Reason::PostJoinResidualFilterRequiresOneShotEqu
 pub query_planning::capability::Reason::ProjectionTransparentResidencyConsumerNotProjection
 pub query_planning::capability::Reason::ProjectionTransparentResidencyMissingProducer
 pub query_planning::capability::Reason::ProjectionTransparentResidencyMissingProjection
-pub query_planning::capability::Reason::ProjectionTransparentResidencyRequiresResidentFrames
-pub query_planning::capability::Reason::ReachableSubgraphCycle
-pub query_planning::capability::Reason::ReachableSubgraphMissingNode
 pub query_planning::capability::Reason::ResidentLifetimeEdgeRejected
-pub query_planning::capability::Reason::ResidentLifetimeMissingNode
-pub query_planning::capability::Reason::ResidentLifetimeRequiresResidentFrame
 pub query_planning::capability::Reason::ResidentUnaryChainMissingNode
 pub query_planning::capability::Reason::ResidentUnaryChainMissingProducer
 pub query_planning::capability::Reason::ResidentUnaryChainRequiresConnectedNodes
 pub query_planning::capability::Reason::ResidentUnaryChainRequiresFilterProjectionNodes
-pub query_planning::capability::Reason::ResidentUnaryChainRequiresResidentNodes
-pub query_planning::capability::Reason::ResidentUnaryChainRequiresResidentProducer
 pub query_planning::capability::Reason::ResidualDoesNotReferenceBothInputs
 pub query_planning::capability::Reason::SharedResidentSubplanEdgeRejected
 pub query_planning::capability::Reason::SharedResidentSubplanMissingEdge
-pub query_planning::capability::Reason::SharedResidentSubplanMissingNode
-pub query_planning::capability::Reason::SharedResidentSubplanRequiresResidentFrame
-pub query_planning::capability::Reason::TopologicalScheduleCycle
-pub query_planning::capability::Reason::TopologicalScheduleMissingNode
 pub query_planning::capability::Reason::UnsupportedAggregateExpressionCapability
 pub query_planning::capability::Reason::UnsupportedAggregateGroupExpressionCapability
 pub query_planning::capability::Reason::UnsupportedAggregateGroupingSetsCapability
@@ -249,7 +235,6 @@ pub query_planning::capability::Reason::UnsupportedProjectionExpressionCapabilit
 pub query_planning::capability::Reason::UnsupportedProjectionNodeCapability
 pub query_planning::capability::Reason::UnsupportedSortExpressionCapability
 pub query_planning::capability::Reason::UnsupportedSortNodeCapability
-pub query_planning::capability::Reason::UnsupportedUnionNodeCapability
 pub query_planning::capability::Reason::UnsupportedVectorAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
 pub query_planning::capability::Reason::UnsupportedWindowAggregateExpressionCapability
 pub query_planning::capability::Reason::UnsupportedWindowLagLeadExpressionCapability
@@ -941,7 +926,9 @@ pub fn query_planning::expr::Expr::binary(Self, query_planning::expr::BinaryOp, 
 pub fn query_planning::expr::Expr::binary_with_output_type(Self, query_planning::expr::BinaryOp, Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::case(alloc::vec::Vec<query_planning::expr::CaseWhen>, Self) -> Self
 pub fn query_planning::expr::Expr::cast(Self, arrow_schema::datatype::DataType) -> Self
+pub fn query_planning::expr::Expr::children(&self) -> impl core::iter::traits::iterator::Iterator<Item = &query_planning::expr::Expr>
 pub fn query_planning::expr::Expr::column(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::expr::Expr::columns(&self) -> impl core::iter::traits::iterator::Iterator<Item = &query_planning::expr::ColumnRef>
 pub fn query_planning::expr::Expr::concat(alloc::vec::Vec<Self>) -> Self
 pub fn query_planning::expr::Expr::contains_regexp_replace(&self) -> bool
 pub fn query_planning::expr::Expr::date_trunc(query_planning::expr::DatePart, Self, arrow_schema::datatype::DataType) -> Self
@@ -1265,7 +1252,6 @@ pub query_planning::optimizer::SemijoinReductionRejectedReason::UnsupportedCross
 pub query_planning::optimizer::SemijoinReductionRejectedReason::UnsupportedLeftShape
 pub query_planning::optimizer::SemijoinReductionRejectedReason::UnsupportedNullEquality
 pub enum query_planning::optimizer::SharedSubplanMaterializationRejectedReason
-pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::NotReachableFromSink
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable
 pub query_planning::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape
@@ -1626,14 +1612,14 @@ pub fn query_planning::optimizer::LocalParquetPruningResolver::dimension_key_fil
 pub fn query_planning::optimizer::LocalParquetPruningResolver::dimension_scan_admitted(&self, &query_planning::source::LocalParquetSource, u64) -> bool
 pub fn query_planning::optimizer::LocalParquetPruningResolver::filtered_i64_expr_range(&self, &query_planning::source::LocalParquetSource, &query_planning::expr::Expr, core::option::Option<&query_planning::expr::Expr>, &[usize]) -> core::option::Option<core::option::Option<query_planning::optimizer::KeyRange>>
 pub fn query_planning::optimizer::LocalParquetPruningResolver::target_row_group_key_ranges(&self, &query_planning::source::LocalParquetSource, usize) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<core::option::Option<query_planning::optimizer::KeyRange>>>>
-pub fn query_planning::optimizer::apply_dimension_derived_pruning_with_stats(query_planning::plan::QueryPlan, query_planning::plan::NodeId, &[alloc::vec::Vec<core::option::Option<query_planning::optimizer::KeyRange>>], &query_planning::optimizer::DimensionKeyFilter) -> query_planning::optimizer::DimensionDerivedApplyResult
+pub fn query_planning::optimizer::apply_dimension_derived_pruning_with_stats(query_planning::plan::QueryPlan, query_planning::plan::NodeId, &[alloc::vec::Vec<core::option::Option<query_planning::optimizer::KeyRange>>], &query_planning::optimizer::DimensionKeyFilter) -> query_planning::error::Result<query_planning::optimizer::DimensionDerivedApplyResult>
 pub fn query_planning::optimizer::dimension_key_filter_from_batch(&arrow_array::record_batch::RecordBatch, &str, &query_planning::expr::Expr) -> core::option::Option<core::option::Option<query_planning::optimizer::DimensionKeyFilter>>
 pub fn query_planning::optimizer::discover_dimension_derived_pruning_requests(&query_planning::plan::QueryPlan) -> alloc::vec::Vec<query_planning::optimizer::DimensionDerivedPruningRequest>
 pub fn query_planning::optimizer::local_parquet_source(&query_planning::plan::QueryPlan, query_planning::plan::NodeId) -> core::option::Option<&query_planning::source::LocalParquetSource>
-pub async fn query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(query_planning::plan::QueryPlan, query_planning::optimizer::LakehouseFooterPruningOptions, &mut R, query_planning::backend::AnalysisContext<'_>) -> query_planning::optimizer::LakehouseFooterPruningResult where R: query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
-pub fn query_planning::optimizer::optimize_query_plan(query_planning::plan::QueryPlan, &query_planning::optimizer::NativeOptimizerOptions, query_planning::backend::AnalysisContext<'_>, &dyn query_planning::optimizer::LocalParquetPruningResolver) -> query_planning::optimizer::NativeOptimizerResult
-pub fn query_planning::optimizer::optimize_semijoin_reduction(query_planning::plan::QueryPlan, &query_planning::optimizer::SemijoinReductionOptions) -> query_planning::optimizer::SemijoinReductionResult
-pub fn query_planning::optimizer::seed_dimension_derived_reader_predicates(query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> query_planning::plan::QueryPlan
+pub async fn query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(query_planning::plan::QueryPlan, query_planning::optimizer::LakehouseFooterPruningOptions, &mut R, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::optimizer::LakehouseFooterPruningResult> where R: query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
+pub fn query_planning::optimizer::optimize_query_plan(query_planning::plan::QueryPlan, &query_planning::optimizer::NativeOptimizerOptions, query_planning::backend::AnalysisContext<'_>, &dyn query_planning::optimizer::LocalParquetPruningResolver) -> query_planning::error::Result<query_planning::optimizer::NativeOptimizerResult>
+pub fn query_planning::optimizer::optimize_semijoin_reduction(query_planning::plan::QueryPlan, &query_planning::optimizer::SemijoinReductionOptions) -> query_planning::error::Result<query_planning::optimizer::SemijoinReductionResult>
+pub fn query_planning::optimizer::seed_dimension_derived_reader_predicates(query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::plan::QueryPlan>
 pub mod query_planning::parquet_stats
 pub enum query_planning::parquet_stats::ColumnByteKind
 pub query_planning::parquet_stats::ColumnByteKind::Compressed
@@ -1912,11 +1898,6 @@ pub query_planning::plan::CuvsRelationRole::Y
 impl query_planning::plan::CuvsRelationRole
 pub const fn query_planning::plan::CuvsRelationRole::as_str(self) -> &'static str
 pub const fn query_planning::plan::CuvsRelationRole::description(self) -> &'static str
-pub enum query_planning::plan::DataPlacement
-pub query_planning::plan::DataPlacement::Device
-pub query_planning::plan::DataPlacement::Host
-impl core::fmt::Display for query_planning::plan::DataPlacement
-pub fn query_planning::plan::DataPlacement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::DenseVectorBinding
 pub query_planning::plan::DenseVectorBinding::Columns(alloc::vec::Vec<alloc::string::String>)
 pub query_planning::plan::DenseVectorBinding::VectorColumn(alloc::string::String)
@@ -2038,7 +2019,7 @@ pub query_planning::plan::GraphAlgorithmParams::StronglyConnectedComponents(quer
 pub query_planning::plan::GraphAlgorithmParams::TriangleCountAll(query_planning::plan::GraphTriangleCountAllParams)
 pub query_planning::plan::GraphAlgorithmParams::WeaklyConnectedComponents(query_planning::plan::GraphWccParams)
 impl query_planning::plan::GraphAlgorithmParams
-pub fn query_planning::plan::GraphAlgorithmParams::side_input_node_ids(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = query_planning::plan::NodeId> + '_)>
+pub fn query_planning::plan::GraphAlgorithmParams::side_input_ordinals(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = usize> + '_)>
 pub const fn query_planning::plan::GraphAlgorithmParams::supports_algorithm(&self, query_planning::plan::GraphAlgorithm) -> bool
 pub enum query_planning::plan::GraphBetweennessSeeds
 pub query_planning::plan::GraphBetweennessSeeds::I64(alloc::vec::Vec<i64>)
@@ -2273,19 +2254,6 @@ impl query_planning::plan::ResultSink
 pub fn query_planning::plan::ResultSink::caller_visible_host_schema(&self) -> core::option::Option<&arrow_schema::schema::SchemaRef>
 pub fn query_planning::plan::ResultSink::input(&self) -> query_planning::plan::NodeId
 pub fn query_planning::plan::ResultSink::materializes_host_boundary(&self) -> bool
-pub enum query_planning::plan::SchemaBehavior
-pub query_planning::plan::SchemaBehavior::Aggregate
-pub query_planning::plan::SchemaBehavior::EdgeNormalize
-pub query_planning::plan::SchemaBehavior::GraphAlgorithm
-pub query_planning::plan::SchemaBehavior::Join
-pub query_planning::plan::SchemaBehavior::MlAlgorithm
-pub query_planning::plan::SchemaBehavior::PreservesInput
-pub query_planning::plan::SchemaBehavior::Projection
-pub query_planning::plan::SchemaBehavior::SourceOutput
-pub query_planning::plan::SchemaBehavior::Union
-pub query_planning::plan::SchemaBehavior::VectorAlgorithm
-impl core::fmt::Display for query_planning::plan::SchemaBehavior
-pub fn query_planning::plan::SchemaBehavior::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::plan::ShiftDirection
 pub query_planning::plan::ShiftDirection::Lag
 pub query_planning::plan::ShiftDirection::Lead
@@ -2366,26 +2334,27 @@ pub query_planning::plan::WindowFrame::RowsUnboundedPrecedingToCurrent
 pub query_planning::plan::WindowFrame::WholePartition
 pub enum query_planning::plan::WindowFunction
 pub query_planning::plan::WindowFunction::Aggregate
-pub query_planning::plan::WindowFunction::Aggregate::alias: alloc::string::String
 pub query_planning::plan::WindowFunction::Aggregate::expr: query_planning::expr::Expr
 pub query_planning::plan::WindowFunction::Aggregate::frame: query_planning::plan::WindowFrame
 pub query_planning::plan::WindowFunction::Aggregate::function: query_planning::expr::AggregateFunction
+pub query_planning::plan::WindowFunction::Aggregate::output: arrow_schema::field::Field
 pub query_planning::plan::WindowFunction::LagLead
-pub query_planning::plan::WindowFunction::LagLead::alias: alloc::string::String
 pub query_planning::plan::WindowFunction::LagLead::default: core::option::Option<query_planning::expr::LiteralValue>
 pub query_planning::plan::WindowFunction::LagLead::direction: query_planning::plan::ShiftDirection
 pub query_planning::plan::WindowFunction::LagLead::expr: query_planning::expr::Expr
 pub query_planning::plan::WindowFunction::LagLead::offset: u32
+pub query_planning::plan::WindowFunction::LagLead::output: arrow_schema::field::Field
 pub query_planning::plan::WindowFunction::Rank
-pub query_planning::plan::WindowFunction::Rank::alias: alloc::string::String
+pub query_planning::plan::WindowFunction::Rank::output: arrow_schema::field::Field
 pub query_planning::plan::WindowFunction::RowNumber
-pub query_planning::plan::WindowFunction::RowNumber::alias: alloc::string::String
-pub query_planning::plan::WindowFunction::RowNumber::output_type: arrow_schema::datatype::DataType
+pub query_planning::plan::WindowFunction::RowNumber::output: arrow_schema::field::Field
 impl query_planning::plan::WindowFunction
-pub fn query_planning::plan::WindowFunction::aggregate(query_planning::expr::AggregateFunction, query_planning::expr::Expr, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn query_planning::plan::WindowFunction::cumulative_aggregate(query_planning::expr::AggregateFunction, query_planning::expr::Expr, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn query_planning::plan::WindowFunction::lag(query_planning::expr::Expr, u32, core::option::Option<query_planning::expr::LiteralValue>, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn query_planning::plan::WindowFunction::lead(query_planning::expr::Expr, u32, core::option::Option<query_planning::expr::LiteralValue>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::WindowFunction::aggregate(query_planning::expr::AggregateFunction, query_planning::expr::Expr, arrow_schema::field::Field) -> Self
+pub fn query_planning::plan::WindowFunction::alias(&self) -> &str
+pub fn query_planning::plan::WindowFunction::cumulative_aggregate(query_planning::expr::AggregateFunction, query_planning::expr::Expr, arrow_schema::field::Field) -> Self
+pub fn query_planning::plan::WindowFunction::lag(query_planning::expr::Expr, u32, core::option::Option<query_planning::expr::LiteralValue>, arrow_schema::field::Field) -> Self
+pub fn query_planning::plan::WindowFunction::lead(query_planning::expr::Expr, u32, core::option::Option<query_planning::expr::LiteralValue>, arrow_schema::field::Field) -> Self
+pub fn query_planning::plan::WindowFunction::output(&self) -> &arrow_schema::field::Field
 pub fn query_planning::plan::WindowFunction::rank(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::plan::WindowFunction::row_number(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn query_planning::plan::WindowFunction::row_number_i64(impl core::convert::Into<alloc::string::String>) -> Self
@@ -2473,10 +2442,10 @@ pub query_planning::plan::GpuOutputFieldDefinition::name: &'static str
 pub query_planning::plan::GpuOutputFieldDefinition::nullable: bool
 pub query_planning::plan::GpuOutputFieldDefinition::repeats: core::option::Option<&'static str>
 pub struct query_planning::plan::GraphAlgorithmNode
-pub query_planning::plan::GraphAlgorithmNode::input: query_planning::plan::NodeId
 pub query_planning::plan::GraphAlgorithmNode::inputs: alloc::vec::Vec<query_planning::plan::NodeId>
 pub query_planning::plan::GraphAlgorithmNode::spec: query_planning::plan::GraphAlgorithmSpec
 impl query_planning::plan::GraphAlgorithmNode
+pub fn query_planning::plan::GraphAlgorithmNode::edge_input(&self) -> query_planning::plan::NodeId
 pub fn query_planning::plan::GraphAlgorithmNode::output_schema(&self) -> &arrow_schema::schema::SchemaRef
 pub struct query_planning::plan::GraphAlgorithmSpec
 pub query_planning::plan::GraphAlgorithmSpec::algorithm: query_planning::plan::GraphAlgorithm
@@ -2556,22 +2525,22 @@ pub fn query_planning::plan::GraphEdgeColumnBindings::with_edge_id(self, impl co
 pub struct query_planning::plan::GraphEdgePredicateInput
 pub query_planning::plan::GraphEdgePredicateInput::destination: alloc::string::String
 pub query_planning::plan::GraphEdgePredicateInput::edge_id: core::option::Option<alloc::string::String>
-pub query_planning::plan::GraphEdgePredicateInput::input: query_planning::plan::NodeId
+pub query_planning::plan::GraphEdgePredicateInput::input: usize
 pub query_planning::plan::GraphEdgePredicateInput::source: alloc::string::String
 impl query_planning::plan::GraphEdgePredicateInput
-pub fn query_planning::plan::GraphEdgePredicateInput::new(query_planning::plan::NodeId, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn query_planning::plan::GraphEdgePredicateInput::new(usize, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> Self
 pub struct query_planning::plan::GraphEigenvectorCentralityParams
 pub query_planning::plan::GraphEigenvectorCentralityParams::epsilon: f64
 pub query_planning::plan::GraphEigenvectorCentralityParams::max_iterations: u32
 impl core::default::Default for query_planning::plan::GraphEigenvectorCentralityParams
 pub fn query_planning::plan::GraphEigenvectorCentralityParams::default() -> Self
 pub struct query_planning::plan::GraphForceAtlas2InitialPositionsInput
-pub query_planning::plan::GraphForceAtlas2InitialPositionsInput::input: query_planning::plan::NodeId
+pub query_planning::plan::GraphForceAtlas2InitialPositionsInput::input: usize
 pub query_planning::plan::GraphForceAtlas2InitialPositionsInput::vertex: alloc::string::String
 pub query_planning::plan::GraphForceAtlas2InitialPositionsInput::x: alloc::string::String
 pub query_planning::plan::GraphForceAtlas2InitialPositionsInput::y: alloc::string::String
 impl query_planning::plan::GraphForceAtlas2InitialPositionsInput
-pub fn query_planning::plan::GraphForceAtlas2InitialPositionsInput::new(query_planning::plan::NodeId, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::GraphForceAtlas2InitialPositionsInput::new(usize, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::GraphForceAtlas2Params
 pub query_planning::plan::GraphForceAtlas2Params::barnes_hut_optimize: bool
 pub query_planning::plan::GraphForceAtlas2Params::barnes_hut_theta: f64
@@ -2592,13 +2561,13 @@ pub query_planning::plan::GraphForceAtlas2Params::vertex_attributes: core::optio
 impl core::default::Default for query_planning::plan::GraphForceAtlas2Params
 pub fn query_planning::plan::GraphForceAtlas2Params::default() -> Self
 pub struct query_planning::plan::GraphForceAtlas2VertexAttributesInput
-pub query_planning::plan::GraphForceAtlas2VertexAttributesInput::input: query_planning::plan::NodeId
+pub query_planning::plan::GraphForceAtlas2VertexAttributesInput::input: usize
 pub query_planning::plan::GraphForceAtlas2VertexAttributesInput::mass: core::option::Option<alloc::string::String>
 pub query_planning::plan::GraphForceAtlas2VertexAttributesInput::mobility: core::option::Option<alloc::string::String>
 pub query_planning::plan::GraphForceAtlas2VertexAttributesInput::radius: core::option::Option<alloc::string::String>
 pub query_planning::plan::GraphForceAtlas2VertexAttributesInput::vertex: alloc::string::String
 impl query_planning::plan::GraphForceAtlas2VertexAttributesInput
-pub fn query_planning::plan::GraphForceAtlas2VertexAttributesInput::new(query_planning::plan::NodeId, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>, core::option::Option<impl core::convert::Into<alloc::string::String>>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn query_planning::plan::GraphForceAtlas2VertexAttributesInput::new(usize, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>, core::option::Option<impl core::convert::Into<alloc::string::String>>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> Self
 pub struct query_planning::plan::GraphHitsParams
 pub query_planning::plan::GraphHitsParams::epsilon: f64
 pub query_planning::plan::GraphHitsParams::max_iterations: u32
@@ -2656,11 +2625,11 @@ pub query_planning::plan::GraphPageRankParams::max_iterations: u32
 impl core::default::Default for query_planning::plan::GraphPageRankParams
 pub fn query_planning::plan::GraphPageRankParams::default() -> Self
 pub struct query_planning::plan::GraphPageRankPersonalizationInput
-pub query_planning::plan::GraphPageRankPersonalizationInput::input: query_planning::plan::NodeId
+pub query_planning::plan::GraphPageRankPersonalizationInput::input: usize
 pub query_planning::plan::GraphPageRankPersonalizationInput::value: alloc::string::String
 pub query_planning::plan::GraphPageRankPersonalizationInput::vertex: alloc::string::String
 impl query_planning::plan::GraphPageRankPersonalizationInput
-pub fn query_planning::plan::GraphPageRankPersonalizationInput::new(query_planning::plan::NodeId, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::GraphPageRankPersonalizationInput::new(usize, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::GraphPersonalizedPageRankParams
 pub query_planning::plan::GraphPersonalizedPageRankParams::pagerank: query_planning::plan::GraphPageRankParams
 pub query_planning::plan::GraphPersonalizedPageRankParams::personalization: query_planning::plan::GraphPageRankPersonalizationInput
@@ -2668,9 +2637,9 @@ impl core::default::Default for query_planning::plan::GraphPersonalizedPageRankP
 pub fn query_planning::plan::GraphPersonalizedPageRankParams::default() -> Self
 pub struct query_planning::plan::GraphPredicateInput
 pub query_planning::plan::GraphPredicateInput::column: alloc::string::String
-pub query_planning::plan::GraphPredicateInput::input: query_planning::plan::NodeId
+pub query_planning::plan::GraphPredicateInput::input: usize
 impl query_planning::plan::GraphPredicateInput
-pub fn query_planning::plan::GraphPredicateInput::new(query_planning::plan::NodeId, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::GraphPredicateInput::new(usize, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::GraphResidencyDescriptor
 pub query_planning::plan::GraphResidencyDescriptor::edge_id_data_type: core::option::Option<arrow_schema::datatype::DataType>
 pub query_planning::plan::GraphResidencyDescriptor::source_fingerprint: query_planning::plan::GraphSourceFingerprint
@@ -2709,10 +2678,10 @@ pub query_planning::plan::GraphSsspParams::source_vertex: query_planning::plan::
 pub struct query_planning::plan::GraphTriangleCountAllParams
 pub struct query_planning::plan::GraphVertexPairInput
 pub query_planning::plan::GraphVertexPairInput::first_column: alloc::string::String
-pub query_planning::plan::GraphVertexPairInput::input: query_planning::plan::NodeId
+pub query_planning::plan::GraphVertexPairInput::input: usize
 pub query_planning::plan::GraphVertexPairInput::second_column: alloc::string::String
 impl query_planning::plan::GraphVertexPairInput
-pub fn query_planning::plan::GraphVertexPairInput::new(query_planning::plan::NodeId, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::GraphVertexPairInput::new(usize, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::GraphWccParams
 pub struct query_planning::plan::HashJoinBuildArtifactId(_)
 impl core::fmt::Display for query_planning::plan::HashJoinBuildArtifactId
@@ -2853,12 +2822,12 @@ impl query_planning::plan::MlRandomForestParams
 pub fn query_planning::plan::MlRandomForestParams::new(query_planning::plan::MlRelationBinding, query_planning::plan::MlRelationBinding) -> Self
 pub struct query_planning::plan::MlRelationBinding
 pub query_planning::plan::MlRelationBinding::features: query_planning::plan::DenseVectorBinding
-pub query_planning::plan::MlRelationBinding::input: query_planning::plan::NodeId
+pub query_planning::plan::MlRelationBinding::input: usize
 pub query_planning::plan::MlRelationBinding::label: core::option::Option<alloc::string::String>
 pub query_planning::plan::MlRelationBinding::row_id: query_planning::plan::VectorRowIdBinding
 impl query_planning::plan::MlRelationBinding
-pub fn query_planning::plan::MlRelationBinding::new(query_planning::plan::NodeId, query_planning::plan::VectorRowIdBinding, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
-pub fn query_planning::plan::MlRelationBinding::new_vector_column(query_planning::plan::NodeId, query_planning::plan::VectorRowIdBinding, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::MlRelationBinding::new(usize, query_planning::plan::VectorRowIdBinding, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn query_planning::plan::MlRelationBinding::new_vector_column(usize, query_planning::plan::VectorRowIdBinding, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::MlTsvdParams
 pub query_planning::plan::MlTsvdParams::input: query_planning::plan::MlRelationBinding
 pub query_planning::plan::MlTsvdParams::n_components: usize
@@ -2920,8 +2889,6 @@ pub fn query_planning::plan::NodeId::fmt(&self, &mut core::fmt::Formatter<'_>) -
 pub struct query_planning::plan::PlanFacts
 pub query_planning::plan::PlanFacts::output_ordering: alloc::vec::Vec<query_planning::expr::SortExpr>
 pub query_planning::plan::PlanFacts::output_schema: arrow_schema::schema::SchemaRef
-pub query_planning::plan::PlanFacts::placement: query_planning::plan::DataPlacement
-pub query_planning::plan::PlanFacts::schema_behavior: query_planning::plan::SchemaBehavior
 pub struct query_planning::plan::PlanFingerprint(_)
 impl core::fmt::Debug for query_planning::plan::PlanFingerprint
 pub fn query_planning::plan::PlanFingerprint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -2964,9 +2931,8 @@ pub fn query_planning::plan::QueryPlan::output_schema(&self) -> &arrow_schema::s
 pub fn query_planning::plan::QueryPlan::root_id(&self) -> query_planning::plan::NodeId
 pub fn query_planning::plan::QueryPlan::root_node(&self) -> &query_planning::plan::QueryNode
 pub fn query_planning::plan::QueryPlan::sink(&self) -> &query_planning::plan::ResultSink
-pub fn query_planning::plan::QueryPlan::unreachable_node_ids(&self) -> alloc::vec::Vec<query_planning::plan::NodeId>
 pub fn query_planning::plan::QueryPlan::with_appended_sort(self, query_planning::expr::SortSpec) -> Self
-pub fn query_planning::plan::QueryPlan::with_host_sink_schema(self, arrow_schema::schema::SchemaRef) -> Self
+pub fn query_planning::plan::QueryPlan::with_host_sink_schema(self, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<Self>
 impl query_planning::plan::QueryPlan
 pub fn query_planning::plan::QueryPlan::capability_analysis(&self, query_planning::backend::AnalysisContext<'_>) -> query_planning::capability::CapabilityAnalysis
 impl query_planning::plan::QueryPlan
@@ -2975,28 +2941,26 @@ impl core::fmt::Display for query_planning::plan::QueryPlan
 pub fn query_planning::plan::QueryPlan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct query_planning::plan::QueryPlanBuilder
 impl query_planning::plan::QueryPlanBuilder
-pub fn query_planning::plan::QueryPlanBuilder::add_aggregate(&mut self, query_planning::plan::NodeId, query_planning::expr::AggregateSpec, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_edge_normalize(&mut self, query_planning::plan::NodeId, query_planning::plan::EdgeNormalizeSpec, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_filter(&mut self, query_planning::plan::NodeId, query_planning::expr::Expr, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_graph_algorithm(&mut self, query_planning::plan::NodeId, query_planning::plan::GraphAlgorithmSpec) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_join(&mut self, query_planning::plan::NodeId, query_planning::plan::NodeId, query_planning::plan::JoinSpec, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_limit(&mut self, query_planning::plan::NodeId, query_planning::expr::LimitSpec, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_ml_algorithm(&mut self, query_planning::plan::MlAlgorithmSpec) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_projection(&mut self, query_planning::plan::NodeId, alloc::vec::Vec<query_planning::plan::ProjectionOutput>) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_sort(&mut self, query_planning::plan::NodeId, query_planning::expr::SortSpec, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
+pub fn query_planning::plan::QueryPlanBuilder::add_aggregate(&mut self, query_planning::plan::NodeId, query_planning::expr::AggregateSpec, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_edge_normalize(&mut self, query_planning::plan::NodeId, query_planning::plan::EdgeNormalizeSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_filter(&mut self, query_planning::plan::NodeId, query_planning::expr::Expr) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_graph_algorithm(&mut self, query_planning::plan::NodeId, alloc::vec::Vec<query_planning::plan::NodeId>, query_planning::plan::GraphAlgorithmSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_join(&mut self, query_planning::plan::NodeId, query_planning::plan::NodeId, query_planning::plan::JoinSpec, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_limit(&mut self, query_planning::plan::NodeId, query_planning::expr::LimitSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_ml_algorithm(&mut self, alloc::vec::Vec<query_planning::plan::NodeId>, query_planning::plan::MlAlgorithmSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_projection(&mut self, query_planning::plan::NodeId, alloc::vec::Vec<query_planning::plan::ProjectionOutput>) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_sort(&mut self, query_planning::plan::NodeId, query_planning::expr::SortSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
 pub fn query_planning::plan::QueryPlanBuilder::add_source(&mut self, query_planning::source::SourceNode) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_union(&mut self, alloc::vec::Vec<query_planning::plan::NodeId>, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_vector_algorithm(&mut self, query_planning::plan::VectorAlgorithmSpec) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::add_window(&mut self, query_planning::plan::NodeId, query_planning::plan::WindowSpec, arrow_schema::schema::SchemaRef) -> query_planning::plan::NodeId
-pub fn query_planning::plan::QueryPlanBuilder::finish_gpu_resident(self, query_planning::plan::NodeId) -> query_planning::plan::QueryPlan
-pub fn query_planning::plan::QueryPlanBuilder::finish_with_host_sink(self, query_planning::plan::NodeId) -> query_planning::plan::QueryPlan
-pub fn query_planning::plan::QueryPlanBuilder::finish_with_host_sink_schema(self, query_planning::plan::NodeId, arrow_schema::schema::SchemaRef) -> query_planning::plan::QueryPlan
+pub fn query_planning::plan::QueryPlanBuilder::add_union(&mut self, alloc::vec::Vec<query_planning::plan::NodeId>, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_vector_algorithm(&mut self, alloc::vec::Vec<query_planning::plan::NodeId>, query_planning::plan::VectorAlgorithmSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::add_window(&mut self, query_planning::plan::NodeId, query_planning::plan::WindowSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::finish_gpu_resident(self, query_planning::plan::NodeId) -> query_planning::error::Result<query_planning::plan::QueryPlan>
+pub fn query_planning::plan::QueryPlanBuilder::finish_with_host_sink(self, query_planning::plan::NodeId) -> query_planning::error::Result<query_planning::plan::QueryPlan>
+pub fn query_planning::plan::QueryPlanBuilder::finish_with_host_sink_schema(self, query_planning::plan::NodeId, arrow_schema::schema::SchemaRef) -> query_planning::error::Result<query_planning::plan::QueryPlan>
 pub fn query_planning::plan::QueryPlanBuilder::new() -> Self
+pub fn query_planning::plan::QueryPlanBuilder::node_output_schema(&self, query_planning::plan::NodeId) -> core::option::Option<&arrow_schema::schema::SchemaRef>
 pub fn query_planning::plan::QueryPlanBuilder::output_is_unique_on(&self, query_planning::plan::NodeId, &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> bool
-pub fn query_planning::plan::QueryPlanBuilder::set_advisory_output(&mut self, query_planning::plan::AdvisoryOutputBinding)
-pub fn query_planning::plan::QueryPlanBuilder::try_add_graph_algorithm(&mut self, query_planning::plan::NodeId, query_planning::plan::GraphAlgorithmSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
-pub fn query_planning::plan::QueryPlanBuilder::try_add_ml_algorithm(&mut self, query_planning::plan::MlAlgorithmSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
-pub fn query_planning::plan::QueryPlanBuilder::try_add_vector_algorithm(&mut self, query_planning::plan::VectorAlgorithmSpec) -> query_planning::error::Result<query_planning::plan::NodeId>
+pub fn query_planning::plan::QueryPlanBuilder::set_advisory_output(&mut self, query_planning::plan::AdvisoryOutputBinding) -> query_planning::error::Result<()>
 pub struct query_planning::plan::ResidentGraphKey
 pub query_planning::plan::ResidentGraphKey::orientation: query_planning::plan::GraphResidencyOrientation
 pub query_planning::plan::ResidentGraphKey::weight_column: core::option::Option<alloc::string::String>
@@ -3096,12 +3060,12 @@ pub query_planning::plan::VectorPcaParams::whiten: bool
 impl query_planning::plan::VectorPcaParams
 pub fn query_planning::plan::VectorPcaParams::new(query_planning::plan::VectorRelationBinding, usize) -> Self
 pub struct query_planning::plan::VectorRelationBinding
-pub query_planning::plan::VectorRelationBinding::input: query_planning::plan::NodeId
+pub query_planning::plan::VectorRelationBinding::input: usize
 pub query_planning::plan::VectorRelationBinding::row_id: query_planning::plan::VectorRowIdBinding
 pub query_planning::plan::VectorRelationBinding::vector: query_planning::plan::DenseVectorBinding
 impl query_planning::plan::VectorRelationBinding
-pub fn query_planning::plan::VectorRelationBinding::new(query_planning::plan::NodeId, query_planning::plan::VectorRowIdBinding, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
-pub fn query_planning::plan::VectorRelationBinding::new_vector_column(query_planning::plan::NodeId, query_planning::plan::VectorRowIdBinding, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::plan::VectorRelationBinding::new(usize, query_planning::plan::VectorRowIdBinding, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
+pub fn query_planning::plan::VectorRelationBinding::new_vector_column(usize, query_planning::plan::VectorRowIdBinding, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct query_planning::plan::VectorTopKParams
 pub query_planning::plan::VectorTopKParams::input: query_planning::plan::VectorRelationBinding
 pub query_planning::plan::VectorTopKParams::k: usize

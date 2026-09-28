@@ -1,8 +1,6 @@
 //! Graph layout requirements and algorithm parameter contracts.
 use std::fmt;
 
-use super::NodeId;
-
 /// Required cuGraph graph-layout state for an algorithm.
 ///
 /// Mirrors the `Graph<Forward>` / `Graph<Transposed>` type-state in the local `cugraph` crate.
@@ -87,22 +85,12 @@ pub struct GraphForceAtlas2Params {
 }
 
 impl GraphForceAtlas2Params {
-    /// Visits every side-input node id in stable role order.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    /// Visits every side-input ordinal in stable role order.
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
         self.vertex_attributes
             .iter()
             .map(|input| input.input)
             .chain(self.initial_positions.iter().map(|input| input.input))
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        if let Some(input) = &mut self.vertex_attributes {
-            input.input = remap(input.input);
-        }
-        if let Some(input) = &mut self.initial_positions {
-            input.input = remap(input.input);
-        }
     }
 }
 
@@ -110,7 +98,7 @@ impl GraphForceAtlas2Params {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphForceAtlas2VertexAttributesInput {
     /// Plan node producing the attribute relation.
-    pub input: NodeId,
+    pub input: usize,
     /// Vertex identifier column.
     pub vertex: String,
     /// Optional non-null Float32 radius column.
@@ -124,7 +112,7 @@ pub struct GraphForceAtlas2VertexAttributesInput {
 impl GraphForceAtlas2VertexAttributesInput {
     /// Creates a vertex-attribute binding.
     pub fn new(
-        input: NodeId,
+        input: usize,
         vertex: impl Into<String>,
         radius: Option<impl Into<String>>,
         mobility: Option<impl Into<String>>,
@@ -144,7 +132,7 @@ impl GraphForceAtlas2VertexAttributesInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphForceAtlas2InitialPositionsInput {
     /// Plan node producing the position relation.
-    pub input: NodeId,
+    pub input: usize,
     /// Vertex identifier column.
     pub vertex: String,
     /// Non-null Float32 X-coordinate column.
@@ -155,7 +143,7 @@ pub struct GraphForceAtlas2InitialPositionsInput {
 
 impl GraphForceAtlas2InitialPositionsInput {
     /// Creates an initial-position binding.
-    pub fn new(input: NodeId, vertex: impl Into<String>, x: impl Into<String>, y: impl Into<String>) -> Self {
+    pub fn new(input: usize, vertex: impl Into<String>, x: impl Into<String>, y: impl Into<String>) -> Self {
         Self { input, vertex: vertex.into(), x: x.into(), y: y.into() }
     }
 }

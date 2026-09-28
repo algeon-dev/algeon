@@ -137,14 +137,10 @@ fn selected_local_parquet_source_bytes(source: &LocalParquetSource) -> Option<u6
 #[doc(hidden)]
 #[cfg(test)]
 pub fn estimated_reachable_local_parquet_source_bytes(plan: &QueryPlan) -> Option<u64> {
-    let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut source_count = 0_usize;
     let mut total_bytes = 0_u64;
 
     for node in plan.nodes() {
-        if unreachable.contains(&node.id) {
-            continue;
-        }
         let PlanNode::Source(source) = &node.kind else {
             continue;
         };
@@ -232,7 +228,7 @@ mod tests {
         let input = builder.add_source(SourceNode::GpuResident(
             GpuResidentSource::new("input", schema).with_row_count_upper_bound(42),
         ));
-        let plan = builder.finish_with_host_sink(input);
+        let plan = builder.finish_with_host_sink(input).unwrap();
 
         assert_eq!(estimated_output_rows(&plan, input), Some(42));
     }
@@ -242,7 +238,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-        let plan = builder.finish_with_host_sink(input);
+        let plan = builder.finish_with_host_sink(input).unwrap();
 
         assert_eq!(estimated_output_rows(&plan, input), None);
     }
@@ -261,7 +257,7 @@ mod tests {
         );
         let mut selected_builder = QueryPlanBuilder::new();
         let selected = selected_builder.add_source(SourceNode::LocalParquet(selected_source));
-        let selected_plan = selected_builder.finish_with_host_sink(selected);
+        let selected_plan = selected_builder.finish_with_host_sink(selected).unwrap();
         assert_eq!(estimated_output_rows(&selected_plan, selected), Some(60));
 
         let invalid_source = LocalParquetSource::from_files(
@@ -275,7 +271,7 @@ mod tests {
         );
         let mut invalid_builder = QueryPlanBuilder::new();
         let invalid = invalid_builder.add_source(SourceNode::LocalParquet(invalid_source));
-        let invalid_plan = invalid_builder.finish_with_host_sink(invalid);
+        let invalid_plan = invalid_builder.finish_with_host_sink(invalid).unwrap();
         assert_eq!(estimated_output_rows(&invalid_plan, invalid), None);
     }
 
@@ -299,18 +295,20 @@ mod tests {
             Arc::clone(&schema),
             vec!["key".to_owned()],
         )));
-        let join = builder.add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::LeftSemi,
-                vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::LeftSemi,
+                    vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+                )
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")])
+                .with_build_side(JoinSide::Right),
+                schema,
             )
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")])
-            .with_build_side(JoinSide::Right),
-            schema,
-        );
-        let plan = builder.finish_with_host_sink(join);
+            .unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
 
         assert_eq!(estimated_output_bytes(&plan, join), Some(64));
     }
@@ -339,21 +337,23 @@ mod tests {
             input_schema,
             vec!["key".to_owned()],
         )));
-        let join = builder.add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::LeftSemi,
-                vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        let join = builder
+            .add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::LeftSemi,
+                    vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "key", "key_alias"), "key_alias"),
+                ])
+                .with_build_side(JoinSide::Right),
+                output_schema,
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
-                JoinOutputColumn::left(ColumnRef::input(0, "key", "key_alias"), "key_alias"),
-            ])
-            .with_build_side(JoinSide::Right),
-            output_schema,
-        );
-        let plan = builder.finish_with_host_sink(join);
+            .unwrap();
+        let plan = builder.finish_with_host_sink(join).unwrap();
 
         assert_eq!(estimated_output_bytes(&plan, join), None);
     }
@@ -382,17 +382,19 @@ mod tests {
             Arc::clone(&schema),
             vec!["key".to_owned()],
         )));
-        let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+        let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
         let aggregate_schema = Arc::new(Schema::new(vec![Field::new("count", DataType::UInt64, false)]));
-        let aggregate = builder.add_aggregate(
-            union,
-            AggregateSpec::new(
-                Vec::new(),
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count")],
-            ),
-            aggregate_schema,
-        );
-        let plan = builder.finish_with_host_sink(aggregate);
+        let aggregate = builder
+            .add_aggregate(
+                union,
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count")],
+                ),
+                aggregate_schema,
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
         assert_eq!(estimated_output_bytes(&plan, aggregate), None);
         assert_eq!(estimated_reachable_local_parquet_source_bytes(&plan), Some(80));
@@ -408,7 +410,7 @@ mod tests {
         ]);
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let plan = builder.finish_with_host_sink(source);
+        let plan = builder.finish_with_host_sink(source).unwrap();
 
         assert_eq!(estimated_output_bytes(&plan, source), Some(0));
         assert_eq!(estimated_reachable_local_parquet_source_bytes(&plan), Some(0));
@@ -423,7 +425,7 @@ mod tests {
             Arc::clone(&schema),
             vec!["key".to_owned()],
         )));
-        let unknown_plan = unknown_builder.finish_with_host_sink(unknown);
+        let unknown_plan = unknown_builder.finish_with_host_sink(unknown).unwrap();
         assert_eq!(estimated_reachable_local_parquet_source_bytes(&unknown_plan), None);
 
         let mut mixed_builder = QueryPlanBuilder::new();
@@ -438,8 +440,9 @@ mod tests {
         )));
         let resident = mixed_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("resident", schema)));
         let union = mixed_builder
-            .add_union(vec![known, resident], Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)])));
-        let mixed_plan = mixed_builder.finish_with_host_sink(union);
+            .add_union(vec![known, resident], Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)])))
+            .unwrap();
+        let mixed_plan = mixed_builder.finish_with_host_sink(union).unwrap();
         assert_eq!(estimated_reachable_local_parquet_source_bytes(&mixed_plan), None);
     }
 }

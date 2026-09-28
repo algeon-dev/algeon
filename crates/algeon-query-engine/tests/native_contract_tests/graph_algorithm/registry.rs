@@ -14,7 +14,7 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
         panic!("expected graph algorithm root");
     };
 
-    assert_eq!(graph.input.index(), 1);
+    assert_eq!(graph.edge_input().index(), 1);
     assert_eq!(graph.spec.algorithm, GraphAlgorithm::PageRank);
     assert_eq!(graph.spec.edge_columns.source, "src");
     assert_eq!(graph.spec.edge_columns.destination, "dst");
@@ -25,7 +25,7 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(graph.spec.edge_normalize_inserted);
     assert_eq!(graph.output_schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::PageRank).as_ref());
 
-    let normalize_node = plan.node(graph.input).expect("graph input must exist");
+    let normalize_node = plan.node(graph.edge_input()).expect("graph input must exist");
     let PlanNode::EdgeNormalize(edge_normalize) = &normalize_node.kind else {
         panic!("expected edge normalize input");
     };
@@ -79,7 +79,8 @@ fn graph_algorithm_builder_rejects_missing_edge_normalize_columns() {
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
 
-    let error = builder.try_add_graph_algorithm(input, spec).expect_err("missing weight column should not panic");
+    let error =
+        builder.add_graph_algorithm(input, Vec::new(), spec).expect_err("missing weight column should not panic");
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "query_engine.plan.graph_algorithm.edge_normalize_schema");
@@ -101,13 +102,13 @@ fn undirected_weighted_python_graph_construction_uses_min_weight_normalization()
         GraphConstructionOptions { directed: false, ..Default::default() },
         GraphAlgorithmParams::Louvain(Default::default()),
     );
-    let graph = builder.add_graph_algorithm(input, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(input, Vec::new(), spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
         panic!("expected graph algorithm root");
     };
-    let normalize_node = plan.node(graph.input).expect("graph input must exist");
+    let normalize_node = plan.node(graph.edge_input()).expect("graph input must exist");
     let PlanNode::EdgeNormalize(edge_normalize) = &normalize_node.kind else {
         panic!("expected edge normalize input");
     };
@@ -129,15 +130,15 @@ fn raw_graph_construction_policy_does_not_insert_edge_normalize() {
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
-    let graph = builder.add_graph_algorithm(input, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(input, Vec::new(), spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     assert!(!plan.contains_edge_normalize());
     assert_eq!(plan.node_count(), 2);
     let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
         panic!("expected graph algorithm root");
     };
-    assert_eq!(graph.input.index(), 0);
+    assert_eq!(graph.edge_input().index(), 0);
     assert_eq!(graph.spec.graph_options.policy, GraphConstructionPolicy::RawLibcugraph);
     assert!(!graph.spec.edge_normalize_inserted);
     assert!(!plan.to_string().contains("EdgeNormalize"));
@@ -159,7 +160,7 @@ fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
         source_vertices: None,
         depth_limit: Some(4),
         predicates: GraphBfsPredicateInputs {
-            target_vertices: Some(GraphPredicateInput::new(targets, "vertex_id")),
+            target_vertices: Some(GraphPredicateInput::new(1, "vertex_id")),
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
@@ -172,18 +173,18 @@ fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(edges, vec![targets], spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
         panic!("expected graph algorithm root");
     };
-    assert_eq!(graph.inputs, vec![graph.input, targets]);
-    assert_eq!(plan.root_node().input_ids(), &[graph.input, targets]);
+    assert_eq!(graph.inputs, vec![graph.edge_input(), targets]);
+    assert_eq!(plan.root_node().input_ids(), &[graph.edge_input(), targets]);
 
     let display = plan.to_string();
     assert!(display.contains("side_inputs=n1"));
-    assert!(display.contains("predicates=target_vertices:n1:vertex_id"));
+    assert!(display.contains("predicates=target_vertices:1:vertex_id"));
 }
 
 #[test]
@@ -202,27 +203,27 @@ fn bfs_source_vertex_side_input_precedes_predicate_side_inputs() {
         Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int32, false)])),
     )));
     let mut params = GraphBfsParams::new(0, None);
-    params.source_vertices = Some(GraphPredicateInput::new(source, "source_vertex"));
-    params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
+    params.source_vertices = Some(GraphPredicateInput::new(1, "source_vertex"));
+    params.predicates.target_vertices = Some(GraphPredicateInput::new(2, "vertex_id"));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(edges, vec![source, targets], spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
         panic!("expected graph algorithm root");
     };
-    assert_eq!(graph.inputs, vec![graph.input, source, targets]);
-    assert_eq!(plan.root_node().input_ids(), &[graph.input, source, targets]);
+    assert_eq!(graph.inputs, vec![graph.edge_input(), source, targets]);
+    assert_eq!(plan.root_node().input_ids(), &[graph.edge_input(), source, targets]);
 
     let display = plan.to_string();
     assert!(display.contains("side_inputs=n1,n2"));
-    assert!(display.contains("params=source_vertex=0:source_vertices=n1:source_vertex:depth_limit=none"));
-    assert!(display.contains("predicates=target_vertices:n2:vertex_id"));
+    assert!(display.contains("params=source_vertex=0:source_vertices=1:source_vertex:depth_limit=none"));
+    assert!(display.contains("predicates=target_vertices:2:vertex_id"));
 }
 
 #[test]
@@ -242,13 +243,15 @@ fn similarity_ir_records_explicit_pair_side_input_and_fixed_schema() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Jaccard,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions { directed: false, policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
-        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
-            pairs, "first", "second",
-        ))),
+        GraphConstructionOptions {
+            directed: false,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+            ..Default::default()
+        },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(1, "first", "second"))),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(edges, vec![pairs], spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
         panic!("expected graph algorithm root");
@@ -265,17 +268,14 @@ fn similarity_ir_records_explicit_pair_side_input_and_fixed_schema() {
     );
     let display = plan.to_string();
     assert!(display.contains("side_inputs=n1"));
-    assert!(display.contains("params=vertex_pairs_node=n1:first_column=first:second_column=second"));
+    assert!(display.contains("params=vertex_pairs_input=1:first_column=first:second_column=second"));
 }
 
 #[test]
 fn similarity_registry_contract_is_shared_across_metrics() {
-    for algorithm in [
-        GraphAlgorithm::Jaccard,
-        GraphAlgorithm::Sorensen,
-        GraphAlgorithm::Overlap,
-        GraphAlgorithm::Cosine,
-    ] {
+    for algorithm in
+        [GraphAlgorithm::Jaccard, GraphAlgorithm::Sorensen, GraphAlgorithm::Overlap, GraphAlgorithm::Cosine]
+    {
         let definition = algorithm.definition();
         assert!(algorithm.is_similarity());
         assert_eq!(definition.required_graph_directedness(), Some(false));
@@ -285,7 +285,11 @@ fn similarity_registry_contract_is_shared_across_metrics() {
         assert_eq!(definition.empty_input_policy.side_inputs.as_str(), "require_vertex_pairs");
         assert!(definition.default_params().supports_algorithm(algorithm));
         assert_eq!(
-            stable_graph_result_schema(algorithm).fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+            stable_graph_result_schema(algorithm)
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
             vec!["first", "second", "similarity"],
         );
     }
@@ -307,7 +311,7 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
         source_vertices: None,
         depth_limit: None,
         predicates: GraphBfsPredicateInputs {
-            include_edge_ids: Some(GraphPredicateInput::new(allowed, "edge_id")),
+            include_edge_ids: Some(GraphPredicateInput::new(1, "edge_id")),
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
@@ -320,10 +324,15 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(edges, vec![allowed], spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
-    let capability = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default())).nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
+    let capability = plan
+        .capability_analysis(rapids_analysis_context(PlanningPolicy::default()))
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == plan.root_id())
+        .unwrap();
     let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
         panic!("expected graph capability rejection");
     };
@@ -390,14 +399,14 @@ fn edge_id_binding_is_preserved_through_python_edge_normalize() {
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
-    let graph = builder.add_graph_algorithm(input, spec);
-    let plan = builder.finish_with_host_sink(graph);
+    let graph = builder.add_graph_algorithm(input, Vec::new(), spec).unwrap();
+    let plan = builder.finish_with_host_sink(graph).unwrap();
 
     let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
         panic!("expected graph algorithm root");
     };
     assert_eq!(graph.spec.edge_columns.edge_id.as_deref(), Some("edge_id"));
-    let normalize_node = plan.node(graph.input).expect("graph input must exist");
+    let normalize_node = plan.node(graph.edge_input()).expect("graph input must exist");
     let PlanNode::EdgeNormalize(edge_normalize) = &normalize_node.kind else {
         panic!("expected edge normalize input");
     };

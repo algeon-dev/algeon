@@ -75,7 +75,7 @@ async fn sql_exec_with_native_gpu_input_has_native_final_plan_disposition() {
         schema,
         vec!["id".into(), "d0".into(), "d1".into()],
     )));
-    let child_plan = builder.finish_gpu_resident(source);
+    let child_plan = builder.finish_gpu_resident(source).unwrap();
     let child_evidence = AttemptCapabilityEvidence::for_query_plan(&child_plan);
     let [child_scope] = child_evidence.execution_scopes() else {
         panic!("a query plan's evidence has one execution scope")

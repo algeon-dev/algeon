@@ -18,6 +18,7 @@ use crate::{
         vector_kmeans_output_schema, vector_knn_output_schema, vector_pairwise_distance_output_schema,
         vector_pca_output_schema, vector_top_k_output_schema,
     },
+    validation::algorithm_input,
 };
 
 pub(crate) fn vector_ingress_columns_by_input(plan: &QueryPlan) -> BTreeMap<NodeId, BTreeSet<String>> {
@@ -28,13 +29,13 @@ pub(crate) fn vector_ingress_columns_by_input(plan: &QueryPlan) -> BTreeMap<Node
                 .spec
                 .params
                 .relation_bindings()
-                .map(|binding| (binding.input, &binding.vector, &binding.row_id))
+                .map(|binding| (vector.inputs[binding.input], &binding.vector, &binding.row_id))
                 .collect::<Vec<_>>(),
             PlanNode::MlAlgorithm(ml) => ml
                 .spec
                 .params
                 .relation_bindings()
-                .map(|binding| (binding.input, &binding.features, &binding.row_id))
+                .map(|binding| (ml.inputs[binding.input], &binding.features, &binding.row_id))
                 .collect::<Vec<_>>(),
             _ => continue,
         };
@@ -174,14 +175,6 @@ pub(crate) fn validate_vector_algorithm_node(
             .with_fact("node_id", node_id)
             .with_fact("algorithm", vector.spec.algorithm.as_str())
             .with_fact("reason", "algorithm_parameter_mismatch"));
-    }
-    let expected_inputs = vector.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>();
-    if vector.inputs != expected_inputs {
-        return Err(vector_algorithm_error("vector algorithm input list must match its relation bindings")
-            .with_fact("node_id", node_id)
-            .with_fact("algorithm", vector.spec.algorithm.as_str())
-            .with_fact("actual_inputs", comma_separated_node_ids(&vector.inputs))
-            .with_fact("expected_inputs", comma_separated_node_ids(&expected_inputs)));
     }
 
     let expected_output_schema = match &vector.spec.params {
@@ -689,7 +682,7 @@ fn validate_vector_relation_binding(
 ) -> Result<DenseRelationValidation> {
     validate_dense_relation_binding(
         (&binding.vector, &binding.row_id),
-        binding.input,
+        algorithm_input(plan, node_id, binding.input),
         node_id,
         role,
         plan,
@@ -923,10 +916,6 @@ fn schema_column_names(schema: &SchemaRef) -> BTreeSet<String> {
     schema.fields().iter().map(|field| field.name().clone()).collect()
 }
 
-fn comma_separated_node_ids(ids: &[NodeId]) -> String {
-    ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
-}
-
 fn vector_algorithm_error(message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidPlan, "query_engine.vector_algorithm.validate", message)
 }
@@ -962,17 +951,22 @@ mod tests {
         let queries =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", Arc::clone(&float64_schema))));
         let params = VectorBruteForceKnnParams::new(
-            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x"]),
-            VectorRelationBinding::new_vector_column(queries, VectorRowIdBinding::column("id"), "embedding"),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new_vector_column(1, VectorRowIdBinding::column("id"), "embedding"),
             1,
             VectorDistanceMetric::L2Expanded,
         );
-        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::BruteForceKnn,
-            VectorAlgorithmParams::BruteForceKnn(params),
-            vector_knn_output_schema(DataType::Int64, DataType::Int64),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_vector_algorithm(
+                vec![dataset, queries],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::BruteForceKnn,
+                    VectorAlgorithmParams::BruteForceKnn(params),
+                    vector_knn_output_schema(DataType::Int64, DataType::Int64),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
@@ -995,16 +989,21 @@ mod tests {
         let x = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("x", float32_schema)));
         let y = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("y", float64_schema)));
         let params = VectorPairwiseDistanceParams {
-            x: VectorRelationBinding::new(x, VectorRowIdBinding::column("id"), ["x"]),
-            y: VectorRelationBinding::new(y, VectorRowIdBinding::column("id"), ["x"]),
+            x: VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+            y: VectorRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x"]),
             metric: VectorDistanceMetric::L2Expanded,
         };
-        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::PairwiseDistance,
-            VectorAlgorithmParams::PairwiseDistance(params),
-            vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64, DataType::Float32),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_vector_algorithm(
+                vec![x, y],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::PairwiseDistance,
+                    VectorAlgorithmParams::PairwiseDistance(params),
+                    vector_pairwise_distance_output_schema(DataType::Int64, DataType::Int64, DataType::Float32),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
@@ -1024,18 +1023,23 @@ mod tests {
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("dataset", Arc::clone(&schema))));
         let queries = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("queries", schema)));
         let params = VectorIvfPqParams::new(
-            VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x", "y"]),
-            VectorRelationBinding::new(queries, VectorRowIdBinding::column("id"), ["x", "y"]),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x", "y"]),
+            VectorRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x", "y"]),
             1,
             VectorDistanceMetric::CosineExpanded,
             20,
         );
-        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::IvfPq,
-            VectorAlgorithmParams::IvfPq(params),
-            vector_knn_output_schema(DataType::Int64, DataType::Int64),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_vector_algorithm(
+                vec![dataset, queries],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::IvfPq,
+                    VectorAlgorithmParams::IvfPq(params),
+                    vector_knn_output_schema(DataType::Int64, DataType::Int64),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
@@ -1055,16 +1059,21 @@ mod tests {
             let input =
                 builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
             let params = VectorTopKParams {
-                input: VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]),
+                input: VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
                 k,
                 select_min: true,
             };
-            let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-                VectorAlgorithm::TopK,
-                VectorAlgorithmParams::TopK(params),
-                vector_top_k_output_schema(DataType::Int64),
-            ));
-            let plan = builder.finish_with_host_sink(root);
+            let root = builder
+                .add_vector_algorithm(
+                    vec![input],
+                    VectorAlgorithmSpec::new(
+                        VectorAlgorithm::TopK,
+                        VectorAlgorithmParams::TopK(params),
+                        vector_top_k_output_schema(DataType::Int64),
+                    ),
+                )
+                .unwrap();
+            let plan = builder.finish_with_host_sink(root).unwrap();
             let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
                 panic!("vector root")
             };
@@ -1081,14 +1090,18 @@ mod tests {
         ]));
         let mut builder = QueryPlanBuilder::new();
         let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-        let params =
-            VectorPcaParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]), 1);
-        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::Pca,
-            VectorAlgorithmParams::Pca(params),
-            vector_pca_output_schema(DataType::Int64, 1),
-        ));
-        let plan = builder.finish_with_host_sink(root);
+        let params = VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]), 1);
+        let root = builder
+            .add_vector_algorithm(
+                vec![input],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::Pca,
+                    VectorAlgorithmParams::Pca(params),
+                    vector_pca_output_schema(DataType::Int64, 1),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let mut available_columns_by_node = plan
             .nodes()
             .iter()

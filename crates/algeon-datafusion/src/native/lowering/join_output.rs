@@ -13,7 +13,7 @@ use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringRejection,
+        LoweringFailure,
         normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
     },
 };
@@ -50,7 +50,7 @@ impl JoinOutputRequests {
         left: &LoweredNativeInput,
         right: &LoweredNativeInput,
         canonical: CanonicalJoin,
-    ) -> Result<JoinOutputColumns, LoweringRejection> {
+    ) -> Result<JoinOutputColumns, LoweringFailure> {
         if self.outputs.is_empty() {
             return hidden_row_count_preserving_output(left, right, canonical);
         }
@@ -85,7 +85,7 @@ impl JoinOutputRequests {
                 );
                 Ok(NativeJoinOutputColumn::new(side, column, output_binding.native_name.clone()))
             })
-            .collect::<Result<Vec<_>, LoweringRejection>>()?;
+            .collect::<Result<Vec<_>, LoweringFailure>>()?;
         Ok(JoinOutputColumns {
             projection,
             schema: self.schema,
@@ -99,7 +99,7 @@ fn hidden_row_count_preserving_output(
     left: &LoweredNativeInput,
     right: &LoweredNativeInput,
     canonical: CanonicalJoin,
-) -> Result<JoinOutputColumns, LoweringRejection> {
+) -> Result<JoinOutputColumns, LoweringFailure> {
     const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__algeon_native_join_row_presence";
     let (datafusion_side, input, input_binding) =
         hidden_row_count_input(left, right, canonical).ok_or(CapabilityReason::UnsupportedExpression)?;
@@ -161,7 +161,7 @@ pub(super) struct JoinOutputRequest {
 pub(super) fn hash_join_output_requests(
     join: &NormalizedNativeHashJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<JoinOutputRequests, LoweringRejection> {
+) -> Result<JoinOutputRequests, LoweringFailure> {
     join_output_requests(
         required_output_fields,
         &join.join.left().schema(),
@@ -175,7 +175,7 @@ pub(super) fn hash_join_output_requests(
 pub(super) fn nested_loop_join_output_requests(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<JoinOutputRequests, LoweringRejection> {
+) -> Result<JoinOutputRequests, LoweringFailure> {
     join_output_requests(
         required_output_fields,
         &join.join.left().schema(),
@@ -189,7 +189,7 @@ pub(super) fn nested_loop_join_output_requests(
 pub(super) fn cross_join_output_requests(
     join: &NormalizedNativeCrossJoin<'_>,
     required_output_fields: &RequiredFields,
-) -> Result<JoinOutputRequests, LoweringRejection> {
+) -> Result<JoinOutputRequests, LoweringFailure> {
     join_output_requests(
         required_output_fields,
         &join.join.left().schema(),
@@ -207,7 +207,7 @@ fn join_output_requests(
     output_schema: &SchemaRef,
     projection_indices: Option<&[usize]>,
     datafusion_join_type: &DataFusionJoinType,
-) -> Result<JoinOutputRequests, LoweringRejection> {
+) -> Result<JoinOutputRequests, LoweringFailure> {
     // DataFusion owns output ordering, projection, aliases, and semi/anti
     // output-side rules. Convert each requested DataFusion output field into a
     // native side/column reference after canonicalization.
@@ -252,7 +252,7 @@ pub(super) fn datafusion_join_output_side(
     join_schema_index: usize,
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
-) -> Result<(DataFusionJoinSide, usize), LoweringRejection> {
+) -> Result<(DataFusionJoinSide, usize), LoweringFailure> {
     match join_type {
         DataFusionJoinType::RightSemi | DataFusionJoinType::RightAnti => {
             Ok((DataFusionJoinSide::Right, join_schema_index))

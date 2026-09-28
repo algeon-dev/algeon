@@ -40,23 +40,18 @@ fn native_plan_can_represent_proven_benchmark_shape() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     assert_eq!(plan.node_count(), 6);
     assert_eq!(plan.output_schema().fields().len(), 2);
     assert_eq!(plan.root_id(), limit);
     assert!(matches!(plan.sink(), ResultSink::HostArrow { input, .. } if *input == limit));
     assert!(plan.sink().materializes_host_boundary());
-    assert!(plan.nodes().iter().all(|node| node.facts.placement == DataPlacement::Device));
-    assert_eq!(plan.node(source).unwrap().facts.schema_behavior, SchemaBehavior::SourceOutput);
-    assert_eq!(plan.node(filter).unwrap().facts.schema_behavior, SchemaBehavior::PreservesInput);
-    assert_eq!(plan.node(projection).unwrap().facts.schema_behavior, SchemaBehavior::Projection);
-    assert_eq!(plan.node(aggregate).unwrap().facts.schema_behavior, SchemaBehavior::Aggregate);
     assert_eq!(plan.node(sort).unwrap().facts.output_ordering.len(), 2);
     assert_eq!(plan.node(limit).unwrap().facts.output_ordering.len(), 2);
     assert!(matches!(plan.root_node().kind, PlanNode::Limit(_)));
@@ -258,8 +253,8 @@ fn aggregate_node_capability_rejects_mixed_median_and_floating_statistical_funct
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
-    let aggregate_id = builder.add_aggregate(source, aggregate, output_schema);
-    let plan = builder.finish_gpu_resident(aggregate_id);
+    let aggregate_id = builder.add_aggregate(source, aggregate, output_schema).unwrap();
+    let plan = builder.finish_gpu_resident(aggregate_id).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
@@ -282,8 +277,8 @@ fn aggregate_node_capability_rejects_decimal_median_input_type() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
-    let aggregate_id = builder.add_aggregate(source, aggregate, output_schema);
-    let plan = builder.finish_gpu_resident(aggregate_id);
+    let aggregate_id = builder.add_aggregate(source, aggregate, output_schema).unwrap();
+    let plan = builder.finish_gpu_resident(aggregate_id).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
@@ -368,8 +363,8 @@ fn native_plan_can_represent_offset_only_limit() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-    let limit = builder.add_limit(source, LimitSpec::offset(2), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let limit = builder.add_limit(source, LimitSpec::offset(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     assert!(
         matches!(&plan.root_node().kind, PlanNode::Limit(node) if node.spec.skip == 2 && node.spec.fetch.is_none())
@@ -392,7 +387,7 @@ fn native_plan_can_represent_literal_batch_source() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     assert_eq!(plan.output_schema().as_ref(), schema.as_ref());
     assert!(matches!(
@@ -416,11 +411,13 @@ fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-    let projection = builder.add_projection(
-        source,
-        vec![ProjectionOutput::new(Expr::column("payload").alias("payload_copy"), output_field.clone())],
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("payload").alias("payload_copy"), output_field.clone())],
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
     let node = plan.node(projection).unwrap();
     let PlanNode::Projection(projection_node) = &node.kind else {
         panic!("expected projection node");
@@ -442,24 +439,24 @@ fn native_plan_can_represent_ordered_union() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
 
     assert_eq!(plan.node_count(), 3);
     assert_eq!(plan.output_schema().as_ref(), schema.as_ref());
     assert_eq!(plan.root_id(), union);
-    assert_eq!(plan.node(union).unwrap().facts.schema_behavior, SchemaBehavior::Union);
     assert!(matches!(plan.root_node().kind, PlanNode::Union(_)));
     assert!(plan.to_string().contains("Union inputs=n0,n1 input_count=2"));
 }
 
 #[test]
-#[should_panic(expected = "query plan union node must have at least one input")]
 fn native_plan_builder_rejects_empty_union() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
 
     let mut builder = QueryPlanBuilder::new();
-    builder.add_union(Vec::new(), schema);
+    let error = builder.add_union(Vec::new(), schema).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "query_engine.plan.graph");
 }
 
 #[test]
@@ -475,13 +472,12 @@ fn native_plan_can_represent_gpu_resident_fragment_input() {
         "partial_aggregate_input",
         Arc::clone(&input_schema),
     )));
-    let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("sum_x00")], output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![Expr::column("sum_x00")], output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     assert_eq!(plan.node_count(), 2);
     assert_eq!(plan.output_schema().fields().len(), 1);
-    assert_eq!(plan.node(source).unwrap().facts.placement, DataPlacement::Device);
-    assert_eq!(plan.node(source).unwrap().facts.schema_behavior, SchemaBehavior::SourceOutput);
     assert!(matches!(plan.node(source).unwrap().kind, PlanNode::Source(_)));
     assert!(plan.to_string().contains("GpuResidentSource input_name=partial_aggregate_input"));
     assert!(plan.to_string().contains("Sink id=sink input=n1 mode=host_arrow materialization=device_to_host"));
@@ -501,22 +497,24 @@ fn native_plan_graph_represents_binary_join_with_same_named_inputs() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
-            JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let PlanNode::Join(join_node) = &plan.root_node().kind else {
         panic!("root node should be a native join contract");
@@ -526,7 +524,6 @@ fn native_plan_graph_represents_binary_join_with_same_named_inputs() {
     assert_eq!(join_node.spec.keys[0].left.display_name(), "left_id");
     assert_eq!(join_node.spec.keys[0].right.name(), "id");
     assert_eq!(join_node.spec.keys[0].right.display_name(), "right_id");
-    assert_eq!(plan.root_node().facts.schema_behavior, SchemaBehavior::Join);
     assert!(plan.to_string().contains("Join left=n0 right=n1 type=inner key_count=1"));
 }
 
@@ -550,12 +547,12 @@ fn with_host_sink_schema_attaches_metadata_above_frontend_named_sink() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink_schema(source, Arc::clone(&frontend_schema));
+    let plan = builder.finish_with_host_sink_schema(source, Arc::clone(&frontend_schema)).unwrap();
 
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("owner".to_string(), "frontend".to_string());
     let annotated_schema = Arc::new(Schema::new_with_metadata(frontend_schema.fields().clone(), metadata.clone()));
-    let plan = plan.with_host_sink_schema(Arc::clone(&annotated_schema));
+    let plan = plan.with_host_sink_schema(Arc::clone(&annotated_schema)).unwrap();
 
     let ResultSink::HostArrow { schema, .. } = plan.sink() else {
         panic!("host sink schema replacement requires a host Arrow sink");
@@ -576,8 +573,8 @@ fn with_host_sink_schema_rejects_field_shape_changes() {
         Arc::clone(&schema),
         vec!["id".into()],
     )));
-    let plan = builder.finish_with_host_sink(source);
-    let _ = plan.with_host_sink_schema(renamed);
+    let plan = builder.finish_with_host_sink(source).unwrap();
+    let _ = plan.with_host_sink_schema(renamed).unwrap();
 }
 
 #[test]
@@ -594,7 +591,7 @@ fn native_query_validation_rejects_unreachable_dag_nodes() {
         Arc::clone(&schema),
         vec!["id".into()],
     )));
-    let plan = builder.finish_with_host_sink(root);
-    let unreachable = plan.unreachable_node_ids().iter().map(ToString::to_string).collect::<Vec<_>>();
-    assert_eq!(unreachable, vec!["n1"]);
+    let error = builder.finish_with_host_sink(root).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("node"), Some("n1"));
 }

@@ -15,10 +15,7 @@ use crate::{
     pipeline::{PipelineTask, ResidentResourceId},
 };
 #[cfg(feature = "cugraph")]
-use crate::{
-    exec::bounded::ResidentGpuFrame,
-    plan::{NodeId, PlanNode},
-};
+use crate::{exec::bounded::ResidentGpuFrame, plan::PlanNode};
 
 impl CompiledGpuTaskExecutor<'_> {
     #[cfg(feature = "cugraph")]
@@ -49,7 +46,7 @@ impl CompiledGpuTaskExecutor<'_> {
         }
 
         let mut inputs = BTreeMap::new();
-        for (input_id, resource) in graph.inputs.iter().copied().zip(task.input_resources().iter().copied()) {
+        for (ordinal, resource) in task.input_resources().iter().copied().enumerate() {
             let frame = if state.can_consume_task_input_resource(task, resource) {
                 let payload = state.consume_task_input_resource(task, resource)?;
                 let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = payload.payload else {
@@ -71,14 +68,14 @@ impl CompiledGpuTaskExecutor<'_> {
                 };
                 ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() }
             };
-            inputs.insert(input_id, frame);
+            inputs.insert(ordinal, frame);
         }
-        let Some(edge) = inputs.remove(&graph.input) else {
+        let Some(edge) = inputs.remove(&0) else {
             self.release_graph_task_inputs(inputs);
             return Err(invalid("compiled graph task is missing its edge input")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
-                .with_fact("edge_input", graph.input));
+                .with_fact("edge_input", graph.edge_input()));
         };
         let frame = execute_bounded_graph_algorithm_from_inputs(&mut self.execution, node_id, graph, edge, inputs)
             .map_err(|error| attach_task_facts(error, task, node_id))?;
@@ -97,5 +94,5 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 
     #[cfg(feature = "cugraph")]
-    fn release_graph_task_inputs(&mut self, _inputs: BTreeMap<NodeId, ResidentGpuFrame>) {}
+    fn release_graph_task_inputs(&mut self, _inputs: BTreeMap<usize, ResidentGpuFrame>) {}
 }

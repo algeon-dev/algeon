@@ -34,8 +34,7 @@ pub(super) fn nullable_global_aggregate_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate_input =
-        if let Some(filter) = filter { builder.add_filter(source, filter, input_schema) } else { source };
-    let aggregate = builder.add_aggregate(aggregate_input, aggregate, aggregated_schema);
-    builder.finish_with_host_sink(aggregate)
+    let aggregate_input = if let Some(filter) = filter { builder.add_filter(source, filter).unwrap() } else { source };
+    let aggregate = builder.add_aggregate(aggregate_input, aggregate, aggregated_schema).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }

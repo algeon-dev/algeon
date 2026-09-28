@@ -1,6 +1,6 @@
 //! Centrality algorithm parameter contracts.
 
-use super::{GraphPredicateInput, NodeId};
+use super::GraphPredicateInput;
 
 /// PageRank parameters.
 ///
@@ -34,14 +34,9 @@ pub struct GraphPersonalizedPageRankParams {
 }
 
 impl GraphPersonalizedPageRankParams {
-    /// Visits every side-input node id in stable role order.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    /// Visits every side-input ordinal in stable role order.
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
         std::iter::once(self.personalization.input)
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        self.personalization.input = remap(self.personalization.input);
     }
 }
 
@@ -49,11 +44,7 @@ impl Default for GraphPersonalizedPageRankParams {
     fn default() -> Self {
         Self {
             pagerank: GraphPageRankParams::default(),
-            personalization: GraphPageRankPersonalizationInput::new(
-                NodeId::from_index_for_internal_use(0),
-                "vertex",
-                "value",
-            ),
+            personalization: GraphPageRankPersonalizationInput::new(1, "vertex", "value"),
         }
     }
 }
@@ -61,8 +52,8 @@ impl Default for GraphPersonalizedPageRankParams {
 /// Personalized PageRank side-input column binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphPageRankPersonalizationInput {
-    /// Native plan node producing the personalization relation.
-    pub input: NodeId,
+    /// Position of the relation among the algorithm node inputs.
+    pub input: usize,
     /// Vertex id column in the personalization relation.
     pub vertex: String,
     /// Personalization value column in the personalization relation.
@@ -71,7 +62,7 @@ pub struct GraphPageRankPersonalizationInput {
 
 impl GraphPageRankPersonalizationInput {
     /// Creates a personalization input binding.
-    pub fn new(input: NodeId, vertex: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(input: usize, vertex: impl Into<String>, value: impl Into<String>) -> Self {
         Self { input, vertex: vertex.into(), value: value.into() }
     }
 }
@@ -192,19 +183,12 @@ impl GraphBetweennessSeeds {
 
 impl GraphBetweennessSeeds {
     /// Visits the encoded seed side-input node, when present.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
         match self {
             Self::I64(_) => None,
             Self::Input { input, .. } => Some(input.input),
         }
         .into_iter()
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        if let Self::Input { input, .. } = self {
-            input.input = remap(input.input);
-        }
     }
 }
 
@@ -229,15 +213,8 @@ pub struct GraphBetweennessCentralityParams {
 
 impl GraphBetweennessCentralityParams {
     /// Visits explicit seed side-input nodes in stable role order.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        if let Some(seeds) = &mut self.seeds {
-            seeds.remap_side_inputs(remap);
-        }
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
+        self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_ordinals)
     }
 }
 
@@ -272,15 +249,8 @@ pub struct GraphEdgeBetweennessCentralityParams {
 
 impl GraphEdgeBetweennessCentralityParams {
     /// Visits explicit seed side-input nodes in stable role order.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        if let Some(seeds) = &mut self.seeds {
-            seeds.remap_side_inputs(remap);
-        }
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
+        self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_ordinals)
     }
 }
 

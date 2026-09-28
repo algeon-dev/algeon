@@ -8,7 +8,7 @@ fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
     let scan = parquet_scan_with_pushed_down_predicate(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -36,7 +36,7 @@ fn reader_pushdown_covered_filter_keeps_frontend_projection_order_after_reordere
             .unwrap();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -81,7 +81,7 @@ fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native
     let filter_predicate = binary(pushed, Operator::And, retained, &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, filter_predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -113,7 +113,7 @@ fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
     .unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -136,7 +136,7 @@ fn pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges
     let scan = parquet_scan_with_pushed_down_label_prefix_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -164,7 +164,7 @@ fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
     let scan = parquet_scan_with_pushed_down_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -187,7 +187,7 @@ fn pushed_down_parquet_predicate_with_source_limit_lowers_limit_after_reader_pre
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_source_limit(parquet_scan_with_pushed_down_predicate(&path), 3);
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -219,7 +219,7 @@ fn pushed_down_post_scan_predicate_with_source_limit_lowers_filter_then_limit() 
     write_household_demographics_like_parquet_file(&path);
     let scan = parquet_scan_with_source_limit(parquet_scan_with_pushed_down_case_decimal_divide_predicate(&path), 3);
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -259,7 +259,7 @@ fn empty_local_parquet_scan_lowers_to_empty_literal_source() {
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_without_files(parquet_scan_with_projection_indices(&path, vec![0, 2]));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -285,7 +285,7 @@ fn empty_s3_parquet_scan_lowers_to_empty_literal_source() {
         "table/input.parquet",
     ));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -311,7 +311,7 @@ fn empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_lit
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(FilterExecBuilder::new(predicate, scan).apply_projection(Some(vec![0, 2])).unwrap().build().unwrap());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -334,7 +334,7 @@ fn empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source() {
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_without_files(parquet_scan_with_source_limit(parquet_scan(&path), 3));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -356,7 +356,7 @@ fn empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_emp
     let scan =
         parquet_scan_without_files(parquet_scan_with_source_limit(parquet_scan_with_pushed_down_predicate(&path), 3));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -378,7 +378,7 @@ fn empty_local_parquet_aggregate_lowers_through_literal_source() {
     write_numeric_parquet_file(&path);
     let plan = count_only_sort_limit_plan(parquet_scan_without_files(parquet_scan(&path)));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -400,7 +400,7 @@ fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
     let scan = parquet_scan_with_pushed_down_decimal_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -428,7 +428,7 @@ fn pushed_down_decimal_equality_predicate_uses_reader_pushdown() {
             .unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -452,7 +452,7 @@ fn pushed_down_decimal_in_list_predicate_uses_reader_pushdown() {
     let scan = parquet_scan_with_pushed_down_decimal_in_list_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -476,7 +476,7 @@ fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
     let scan = parquet_scan_with_pushed_down_case_decimal_divide_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -501,7 +501,7 @@ fn pushed_down_integer_divide_predicate_is_rejected_during_native_planning() {
     let scan = parquet_scan_with_pushed_down_integer_divide_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -521,7 +521,7 @@ fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_fil
     let scan = parquet_scan_with_pushed_down_predicate_value(&path, 20);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -545,7 +545,7 @@ fn full_file_byte_range_coalesces_to_native_source() {
     let scan = parquet_scan_with_byte_range(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -581,7 +581,7 @@ fn partial_byte_range_maps_to_row_group_selection() {
     let scan = parquet_scan_with_explicit_byte_ranges(&path, vec![(row_group_offsets[0], row_group_offsets[1])]);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -612,7 +612,7 @@ fn partial_byte_range_owns_row_groups_by_start_offset_boundaries() {
     let scan = parquet_scan_with_explicit_byte_ranges(&path, vec![(row_group_offsets[1], row_group_offsets[3])]);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -650,7 +650,7 @@ fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -691,7 +691,7 @@ fn partial_byte_range_ignores_row_level_selection_outside_range() {
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -719,7 +719,7 @@ fn partial_byte_range_rejects_access_plan_length_mismatch() {
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -749,7 +749,7 @@ fn mixed_partial_byte_range_and_full_file_reports_selected_row_group_total() {
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -778,7 +778,7 @@ fn partial_byte_range_with_access_plan_and_extra_extension_is_rejected() {
     let scan = parquet_scan_with_partial_byte_range_access_plan_and_extra_extension(&path, access_plan);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -801,7 +801,7 @@ fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
     let scan = parquet_scan_with_split_full_byte_ranges(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -828,7 +828,7 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
     let scan = parquet_scan_with_overlapping_byte_ranges(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -870,7 +870,7 @@ fn s3_parquet_object_store_scan_lowers_to_remote_native_source() {
     );
     let expected_uri = "s3://bucket/table/input.parquet";
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -894,7 +894,7 @@ fn s3_multi_file_parquet_object_store_scan_rejects_unverified_footer_schema() {
     write_numeric_parquet_file(&second_path);
     let scan = parquet_scan_with_object_store_url(&dir, ObjectStoreUrl::parse("s3://bucket").unwrap());
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -919,7 +919,7 @@ fn s3_parquet_object_store_aggregate_root_preserves_remote_source_diagnostics() 
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
     let expected_uri = "s3://bucket/table/input.parquet";
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -941,7 +941,7 @@ fn non_s3_parquet_object_store_is_rejected_with_source_reason() {
     let scan = parquet_scan_with_object_store_url(&path, ObjectStoreUrl::parse("test:///").unwrap());
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -983,7 +983,7 @@ fn custom_parquet_file_reader_factory_is_rejected_with_source_reason() {
     let scan = parquet_scan_with_custom_reader_factory(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -1014,7 +1014,7 @@ fn reader_factory_named_like_the_datafusion_default_is_rejected_with_source_reas
     let scan = parquet_scan_with_default_lookalike_reader_factory(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert!(matches!(
@@ -1036,7 +1036,7 @@ fn parquet_partition_columns_are_represented_in_native_source_contract() {
     let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(Some(7)));
     let plan = partition_column_group_by_plan(scan);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1061,7 +1061,7 @@ fn parquet_partition_typed_null_values_are_represented_in_native_source_contract
     let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(None));
     let plan = partition_column_group_by_plan(scan);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1084,7 +1084,7 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
     let scan = parquet_scan_with_partition_columns(&path);
     let plan = partition_column_group_by_plan(scan);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -1110,7 +1110,7 @@ fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1135,7 +1135,7 @@ fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_co
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1161,7 +1161,7 @@ fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1187,7 +1187,7 @@ fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_sour
     );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1208,7 +1208,7 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
     write_binary_schema_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1237,7 +1237,7 @@ fn list_utf8_projection_lowers_as_native_carry_column() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1269,7 +1269,7 @@ fn numeric_fixed_size_list_projection_lowers_as_native_carry_column() {
     let DataType::FixedSizeList(expected_child, expected_dimension) = expected_features.data_type() else {
         panic!("Parquet fixture must retain FixedSizeList schema");
     };
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1299,7 +1299,7 @@ fn list_utf8_sort_key_is_rejected_locally_during_native_planning() {
             .unwrap();
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, scan));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
@@ -1324,7 +1324,7 @@ fn unprojected_struct_and_map_schema_fields_do_not_block_native_lowering() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1351,7 +1351,7 @@ fn projected_struct_schema_field_is_rejected_with_unsupported_type() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
@@ -1373,7 +1373,7 @@ fn projected_map_schema_field_is_rejected_with_unsupported_type() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
@@ -1409,7 +1409,7 @@ fn parquet_missing_nullable_columns_are_represented_as_native_typed_nulls() {
     let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
     let plan = Arc::new(LocalLimitExec::new(sort, 1));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1447,7 +1447,7 @@ fn projection_over_repartitioned_fetch_limited_coalesce_lowers_with_its_limit() 
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let native = result.plans[0].to_string();

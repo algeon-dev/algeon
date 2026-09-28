@@ -186,14 +186,10 @@ fn topk_join_plan_with_residual(
     if residual {
         join_spec = join_spec.with_residual_predicate(Expr::literal(LiteralValue::Boolean(true)));
     }
-    let join = builder.add_join(left, right, join_spec, Arc::clone(&output_schema));
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), output_schema);
-    builder.finish_with_host_sink(limit)
+    let join = builder.add_join(left, right, join_spec, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn topk_join_without_row_group_metadata() -> QueryPlan {
@@ -215,28 +211,26 @@ fn topk_join_without_row_group_metadata() -> QueryPlan {
         Arc::clone(&right_schema),
         vec!["k".to_string(), "label".to_string()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            JoinOutputColumn::right(ColumnRef::input(1, "label", "label"), "label"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), output_schema);
-    builder.finish_with_host_sink(limit)
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn grouped_aggregate_plan(row_groups: usize) -> QueryPlan {
@@ -254,22 +248,24 @@ fn grouped_aggregate_plan(row_groups: usize) -> QueryPlan {
         10_000,
         1024 * 1024,
     )));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec {
-            group_exprs: vec![Expr::column("k")],
-            aggr_exprs: vec![AggregateExpr {
-                function: AggregateFunction::Sum,
-                expr: Expr::column("v"),
-                alias: "sum_v".to_string(),
-                distinct: false,
-                filter: None,
-            }],
-            grouping_sets: None,
-        },
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec {
+                group_exprs: vec![Expr::column("k")],
+                aggr_exprs: vec![AggregateExpr {
+                    function: AggregateFunction::Sum,
+                    expr: Expr::column("v"),
+                    alias: "sum_v".to_string(),
+                    distinct: false,
+                    filter: None,
+                }],
+                grouping_sets: None,
+            },
+            aggregate_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 fn full_sort_join_aggregate_plan(
@@ -302,34 +298,35 @@ fn full_sort_join_aggregate_plan(
         rows_per_source,
         bytes_per_source,
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "left_k"), ColumnRef::input(1, "k", "right_k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("k")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "sum_v")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("sum_v"), true, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("k")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "sum_v")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("sum_v"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 fn parquet_source(

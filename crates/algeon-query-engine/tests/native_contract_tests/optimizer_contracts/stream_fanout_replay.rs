@@ -2,7 +2,7 @@
 fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
     let plan = shared_projected_probe_fanout_plan();
     let original_node_count = plan.node_count();
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.stream_fanout_replay.considered_count, 1);
@@ -17,7 +17,7 @@ fn native_optimizer_replays_shared_projected_probe_input_for_join_fanout() {
 #[test]
 fn disabled_native_optimizer_keeps_stream_fanout_replay_off() {
     let plan = shared_projected_probe_fanout_plan();
-    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -41,14 +41,14 @@ fn shared_projected_probe_fanout_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         schema(&["key", "qty"]),
-    );
+    ).unwrap();
     let projected = builder.add_projection(
         prefix,
         vec![
             ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("qty"), Field::new("qty", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let first_dim = builder.add_source(gpu_source("first_dim", &["key"]));
     let second_dim = builder.add_source(gpu_source("second_dim", &["key"]));
     let first = builder.add_join(
@@ -61,7 +61,7 @@ fn shared_projected_probe_fanout_plan() -> QueryPlan {
         .with_output_projection(left_projection(&["key", "qty"]))
         .with_build_side(JoinSide::Right),
         schema(&["key", "qty"]),
-    );
+    ).unwrap();
     let second = builder.add_join(
         projected,
         second_dim,
@@ -72,7 +72,7 @@ fn shared_projected_probe_fanout_plan() -> QueryPlan {
         .with_output_projection(left_projection(&["key", "qty"]))
         .with_build_side(JoinSide::Right),
         schema(&["key", "qty"]),
-    );
-    let union = builder.add_union(vec![first, second], schema(&["key", "qty"]));
-    builder.finish_gpu_resident(union)
+    ).unwrap();
+    let union = builder.add_union(vec![first, second], schema(&["key", "qty"])).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
 }

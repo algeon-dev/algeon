@@ -32,7 +32,7 @@ fn source_alias_residency_does_not_preserve_graph_residency_descriptor() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(local_source));
-    let descriptor_plan = builder.finish_with_host_sink(source);
+    let descriptor_plan = builder.finish_with_host_sink(source).unwrap();
     let GraphResidencyPlanAnalysis::Keyable(descriptor) =
         graph_residency_descriptor_for_edge_plan(&descriptor_plan, &spec)
     else {

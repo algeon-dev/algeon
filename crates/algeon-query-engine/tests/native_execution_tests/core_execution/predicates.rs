@@ -18,8 +18,8 @@ fn native_query_executes_gpu_resident_source_with_offset_only_limit() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let limit = builder.add_limit(source, LimitSpec::offset(1), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let limit = builder.add_limit(source, LimitSpec::offset(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
@@ -59,7 +59,7 @@ fn native_gpu_resident_source_preserves_input_order() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let combined_batch =
         RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11, 20, 21, 22]))]).unwrap();
@@ -116,7 +116,7 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -168,7 +168,7 @@ fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

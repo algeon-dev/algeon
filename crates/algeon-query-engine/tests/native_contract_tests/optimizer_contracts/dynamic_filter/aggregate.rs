@@ -7,7 +7,7 @@ fn native_optimizer_discovers_hash_join_dynamic_filter_route_through_aggregate_g
         dim,
         AggregateSpec::new(vec![Expr::column("raw_dim_key").alias("dim_key")], Vec::new()),
         schema(&["dim_key"]),
-    );
+    ).unwrap();
     let join = builder.add_join(
         fact,
         keyset,
@@ -18,10 +18,10 @@ fn native_optimizer_discovers_hash_join_dynamic_filter_route_through_aggregate_g
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -68,12 +68,12 @@ fn native_optimizer_keeps_join_backed_aggregate_keyset_route_without_large_keyse
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
-    );
+    ).unwrap();
     let keyset = builder.add_aggregate(
         date_join,
         AggregateSpec::new(vec![Expr::column("fact_key")], Vec::new()),
         schema(&["fact_key"]),
-    );
+    ).unwrap();
     let item = builder.add_source(estimated_local_source("item", "item_key", 16 * 1024 * 1024, 100_000));
     let join = builder.add_join(
         keyset,
@@ -88,14 +88,14 @@ fn native_optimizer_keeps_join_backed_aggregate_keyset_route_without_large_keyse
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Left),
         schema(&["fact_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 2);
@@ -124,7 +124,7 @@ fn native_optimizer_discovers_dynamic_filter_consumer_below_aggregate_group_key(
         fact,
         AggregateSpec::new(vec![Expr::column("raw_fact_key").alias("fact_key")], Vec::new()),
         schema(&["fact_key"]),
-    );
+    ).unwrap();
     let join = builder.add_join(
         dim,
         grouped_fact,
@@ -135,14 +135,14 @@ fn native_optimizer_discovers_dynamic_filter_consumer_below_aggregate_group_key(
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "dim_key", "dim_key"), "dim_key")])
         .with_build_side(JoinSide::Left),
         schema(&["dim_key"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     let options = NativeOptimizerOptions {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -178,7 +178,7 @@ fn native_optimizer_keeps_small_dimension_build_for_source_filter_below_aggregat
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales_price"), "sales_total")],
         ),
         schema(&["date_sk", "sales_total"]),
-    );
+    ).unwrap();
     let date =
         builder.add_source(estimated_local_source("small_date_dim_for_grouped_fact", "d_date_sk", 1024 * 1024, 365));
     let join = builder.add_join(
@@ -197,10 +197,10 @@ fn native_optimizer_keeps_small_dimension_build_for_source_filter_below_aggregat
         ])
         .with_build_side(JoinSide::Right),
         schema(&["date_sk", "sales_total"]),
-    );
-    let plan = builder.finish_gpu_resident(join);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let PlanNode::Join(join) = &result.plan.root_node().kind else {
         panic!("optimized root should remain the date join");

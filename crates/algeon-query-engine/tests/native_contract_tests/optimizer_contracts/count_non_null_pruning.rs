@@ -9,7 +9,7 @@ fn count_non_null_pruning_rewrites_footer_proven_count_column_to_retained_carrie
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.considered_count, 1);
@@ -61,7 +61,7 @@ fn count_non_null_pruning_prunes_physical_read_columns_when_source_uses_logical_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 1);
@@ -103,7 +103,7 @@ fn count_non_null_pruning_remaps_retained_synthetic_source_refs_and_partition_va
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 1);
@@ -143,7 +143,7 @@ fn count_non_null_pruning_does_not_mutate_sources_when_no_count_rewrite_applies(
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -159,7 +159,7 @@ fn count_non_null_pruning_keeps_count_column_when_footer_proof_is_missing() {
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -181,7 +181,7 @@ fn count_non_null_pruning_keeps_grouped_count_column_when_no_retained_non_null_c
     };
 
     let result =
-        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+        optimize_query_plan(plan.clone(), &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -232,16 +232,14 @@ fn count_non_null_pruning_source_adjacent_plan(
     ));
     let filtered = builder.add_filter(
         source,
-        Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))),
-        Arc::clone(&source_schema),
-    );
+        Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1)))).unwrap();
     let projected = builder.add_projection(
         filtered,
         projection_outputs(
             vec![Expr::column("o_custkey"), Expr::column("o_orderkey").alias("order_count_input")],
             projection_schema,
         ),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projected,
         AggregateSpec::new(
@@ -249,8 +247,8 @@ fn count_non_null_pruning_source_adjacent_plan(
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_count_input"), "c_count")],
         ),
         aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 fn count_non_null_pruning_synthetic_source_plan() -> QueryPlan {
@@ -311,7 +309,7 @@ fn count_non_null_pruning_synthetic_source_plan() -> QueryPlan {
             vec![Expr::column("p1"), Expr::column("m1"), Expr::column("k"), Expr::column("cnt").alias("count_input")],
             projection_schema,
         ),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projected,
         AggregateSpec::new(
@@ -319,8 +317,8 @@ fn count_non_null_pruning_synthetic_source_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("count_input"), "c_count")],
         ),
         aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 fn non_count_projection_pruning_plan() -> QueryPlan {
@@ -348,7 +346,7 @@ fn non_count_projection_pruning_plan() -> QueryPlan {
     let projected = builder.add_projection(
         source,
         projection_outputs(vec![Expr::column("k"), Expr::column("payload")], projection_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projected,
         AggregateSpec::new(
@@ -356,8 +354,8 @@ fn non_count_projection_pruning_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "sum_payload")],
         ),
         aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 fn count_non_null_pruning_overridden_source_plan() -> QueryPlan {
@@ -400,16 +398,14 @@ fn count_non_null_pruning_overridden_source_plan() -> QueryPlan {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filtered = builder.add_filter(
         source,
-        Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))),
-        Arc::clone(&source_output_schema),
-    );
+        Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1)))).unwrap();
     let projected = builder.add_projection(
         filtered,
         projection_outputs(
             vec![Expr::column("o_custkey"), Expr::column("o_orderkey").alias("order_count_input")],
             projection_schema,
         ),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projected,
         AggregateSpec::new(
@@ -417,6 +413,6 @@ fn count_non_null_pruning_overridden_source_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_count_input"), "c_count")],
         ),
         aggregate_schema,
-    );
-    builder.finish_with_host_sink(aggregate)
+    ).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }

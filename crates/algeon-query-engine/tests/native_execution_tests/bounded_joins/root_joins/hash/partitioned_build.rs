@@ -145,8 +145,8 @@ fn bounded_native_query_partitions_streamed_leaf_build_without_whole_leaf_concat
             .with_output_projection(partitioned_build_join_projection())
             .with_build_side(JoinSide::Left),
         partitioned_build_join_output_schema(),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     // The 16 MiB build side streams in eight 2 MiB chunks. Materializing the
     // whole leaf first needs the raw chunks, their concat, and a partitioned
     // copy at once, which this cap cannot hold; partition-wise consumption
@@ -229,8 +229,8 @@ fn bounded_native_query_commits_to_build_partitions_once_observed_rows_outgrow_a
             .with_output_projection(partitioned_build_join_projection())
             .with_build_side(JoinSide::Left),
         partitioned_build_join_output_schema(),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
     let output = result.unwrap();
@@ -309,7 +309,7 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&inner_schema),
-    );
+    ).unwrap();
     let second_dim = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &second_dim_path,
         &second_dim_schema,
@@ -322,11 +322,11 @@ fn bounded_native_query_partitions_upstream_join_output_stream_into_next_build()
             .with_output_projection(partitioned_build_join_projection())
             .with_build_side(JoinSide::Left),
         partitioned_build_join_output_schema(),
-    );
+    ).unwrap();
     // The inner join output has no plan estimate; the lazy inner stream
     // carries its probe leaf's encoded size, which settles the outer build
     // as large before its first chunk arrives.
-    let plan = builder.finish_with_host_sink(outer);
+    let plan = builder.finish_with_host_sink(outer).unwrap();
 
     let (result, metrics, peak_bytes) = execute_admitted_with_peak(&context, &plan);
     let output = result.unwrap();
@@ -399,8 +399,8 @@ fn bounded_native_query_reports_typed_failure_when_a_skewed_build_partition_cann
             .with_output_projection(partitioned_build_join_projection())
             .with_build_side(JoinSide::Left),
         partitioned_build_join_output_schema(),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     // The eight 2 MiB chunks accumulate into one 16 MiB partition; the cap
     // holds the accumulation but not the partition concat on top of it.
     let context = backend_context_with_grant(26 * 1024 * 1024);
@@ -471,8 +471,8 @@ fn bounded_native_query_releases_build_partitions_when_cancelled_during_build_re
             .with_output_projection(partitioned_build_join_projection())
             .with_build_side(JoinSide::Left),
         partitioned_build_join_output_schema(),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     // Warm the reader and kernels so the deadline below elapses inside the
     // build chunk recovery tree rather than during first-use initialization.
     let warm =

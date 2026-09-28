@@ -174,7 +174,7 @@ mod tests {
         .with_content_identity(format!("size=1024,row_count=10,file={index}"))
         .with_lakehouse_cache_config("/tmp/lakehouse-cache", None);
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(1),
+            source_node_id: NodeId::from_index_for_test(1),
             chunk_index: index,
             file_index: index,
             location: ParquetSourceLocation::object_store_uri(format!("s3://bucket/file-{index}.parquet")).unwrap(),

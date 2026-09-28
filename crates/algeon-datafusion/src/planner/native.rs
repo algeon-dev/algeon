@@ -751,7 +751,7 @@ mod tests {
             schema,
             vec!["value".to_string()],
         )));
-        builder.finish_with_host_sink(source)
+        builder.finish_with_host_sink(source).unwrap()
     }
 
     fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
@@ -897,8 +897,8 @@ mod tests {
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
         let right_source =
             builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-        let union = builder.add_union(vec![left_source, right_source], Arc::clone(&schema));
-        let consumer_plan = builder.finish_with_host_sink_schema(union, schema);
+        let union = builder.add_union(vec![left_source, right_source], Arc::clone(&schema)).unwrap();
+        let consumer_plan = builder.finish_with_host_sink_schema(union, schema).unwrap();
 
         let expected =
             composed_admission_capability_evidence(&consumer_plan, &[Arc::new(left.clone()), Arc::new(right.clone())])

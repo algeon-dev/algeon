@@ -30,8 +30,8 @@ fn execute_gpu_resident_filter_ids(
 ) -> Vec<i32> {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let filter = builder.add_filter(source, predicate, Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(filter);
+    let filter = builder.add_filter(source, predicate).unwrap();
+    let plan = builder.finish_with_host_sink(filter).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();

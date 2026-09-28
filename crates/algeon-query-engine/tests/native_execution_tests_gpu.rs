@@ -519,21 +519,20 @@ fn backend_session_executes_grouped_aggregate_from_gpu_resident_input() {
     ]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            vec![Expr::column("key")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "total")],
-        ),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-        output_schema,
-    );
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "total")],
+            ),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
 
-    let plan = builder.finish_with_host_sink(sort);
+    let plan = builder.finish_with_host_sink(sort).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut inputs = GpuResidentInputMap::new();

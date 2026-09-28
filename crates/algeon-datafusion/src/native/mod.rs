@@ -56,6 +56,41 @@ impl From<ExpressionRejection> for LoweringRejection {
     }
 }
 
+/// Why lowering a normalized candidate produced no native plan.
+#[derive(Debug, Clone)]
+pub(crate) enum LoweringFailure {
+    /// The candidate misses a native contract; DataFusion keeps it.
+    Rejected(LoweringRejection),
+    /// Lowering built a native plan that breaks the IR construction
+    /// invariants. That is an adapter defect, reported as an error rather
+    /// than a fallback.
+    Invalid(QueryError),
+}
+
+impl From<LoweringRejection> for LoweringFailure {
+    fn from(rejection: LoweringRejection) -> Self {
+        Self::Rejected(rejection)
+    }
+}
+
+impl From<CapabilityReason> for LoweringFailure {
+    fn from(reason: CapabilityReason) -> Self {
+        Self::Rejected(reason.into())
+    }
+}
+
+impl From<ExpressionRejection> for LoweringFailure {
+    fn from(rejection: ExpressionRejection) -> Self {
+        Self::Rejected(rejection.into())
+    }
+}
+
+impl From<QueryError> for LoweringFailure {
+    fn from(error: QueryError) -> Self {
+        Self::Invalid(error)
+    }
+}
+
 impl ExpressionRejection {
     /// Public classification of this rejection, for callers that report no
     /// candidate diagnostics.
@@ -82,6 +117,7 @@ use normalize::{
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 use query_engine::{
     datatypes::{diagnostic_arrow_type, is_supported_arrow_type},
+    error::QueryError,
     expr::{Expr as NativeExpr, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec},
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
@@ -99,6 +135,7 @@ use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 
 use crate::{
     capability::CapabilityReason,
+    error::{Error, Result},
     report::{GpuCandidate, NotSupportedDetail, PlanningReport, UnsupportedColumnDetail},
 };
 
@@ -128,11 +165,14 @@ impl NativeLoweringResult {
 }
 
 /// Lowers a physical plan using the final native rewrite rules.
-pub(crate) fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
+///
+/// A candidate the native IR cannot express is reported as not supported. A
+/// lowered plan that breaks the IR construction invariants is an error.
+pub(crate) fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> Result<NativeLoweringResult> {
     lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final)
 }
 
-pub(crate) fn lower_count_only_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
+pub(crate) fn lower_count_only_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> Result<NativeLoweringResult> {
     lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::CountOnly)
 }
 
@@ -145,7 +185,7 @@ enum NativeLoweringMode {
 fn lower_physical_plan_to_native_with_mode(
     plan: Arc<dyn ExecutionPlan>,
     mode: NativeLoweringMode,
-) -> NativeLoweringResult {
+) -> Result<NativeLoweringResult> {
     let _footers = FooterScope::enter();
     let normalized = normalize_native_plan(plan.as_ref()).map(|mut normalized| {
         if mode == NativeLoweringMode::Final {
@@ -174,14 +214,19 @@ fn lower_physical_plan_to_native_with_mode(
         {
             let mut report = PlanningReport::new();
             report.push_not_supported(normalized.candidate.clone(), CapabilityReason::UnsupportedOperator);
-            NativeLoweringResult {
+            Ok(NativeLoweringResult {
                 plans: Vec::new(),
                 report,
                 source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
-            }
+            })
         },
-        Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
-            |rejection| {
+        Ok(normalized) => match lower_normalized_plan(&normalized) {
+            Err(LoweringFailure::Invalid(error)) => Err(Error::from_native(
+                "algeon_datafusion.native.lower",
+                "native lowering built a malformed native plan",
+                error,
+            )),
+            Err(LoweringFailure::Rejected(rejection)) => {
                 let reason = rejection.reason();
                 let column = (reason == CapabilityReason::UnsupportedType)
                     .then(|| unsupported_column_for_normalized_plan(&normalized, plan.schema()))
@@ -189,26 +234,32 @@ fn lower_physical_plan_to_native_with_mode(
                 let detail = NotSupportedDetail { column, expression: rejection.into_expression(), admission: None };
                 let mut report = PlanningReport::new();
                 report.push_not_supported_with_detail(normalized.candidate.clone(), reason, detail);
-                NativeLoweringResult {
+                Ok(NativeLoweringResult {
                     plans: Vec::new(),
                     report,
                     source_diagnostics: source_diagnostics_for_normalized_plan(&normalized),
-                }
+                })
             },
-            |mut native_plan| {
+            Ok(mut native_plan) => {
                 // The Arrow schema at the DataFusion boundary can carry
                 // schema-level metadata. Preserve that contract at the host
                 // sink while keeping the native IR itself DataFusion-free.
-                native_plan = native_plan.with_host_sink_schema(Arc::clone(&plan.schema()));
+                native_plan = native_plan.with_host_sink_schema(Arc::clone(&plan.schema())).map_err(|error| {
+                    Error::from_native(
+                        "algeon_datafusion.native.lower",
+                        "native lowering built a host sink that differs from the DataFusion schema",
+                        error,
+                    )
+                })?;
                 let mut candidate = normalized.candidate.clone();
                 if !native_plan_order_sensitive_inputs_are_reproduced(&native_plan) {
                     let mut report = PlanningReport::new();
                     report.push_not_supported(candidate, CapabilityReason::NativeOrderedOutputUnsupported);
-                    return NativeLoweringResult {
+                    return Ok(NativeLoweringResult {
                         plans: Vec::new(),
                         report,
                         source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                    };
+                    });
                 }
                 let mut appended_declared_output_sort = false;
                 if let Some(ordering) = plan.properties().output_ordering()
@@ -220,11 +271,11 @@ fn lower_physical_plan_to_native_with_mode(
                             candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
                             CapabilityReason::NativeOrderedOutputUnsupported,
                         );
-                        return NativeLoweringResult {
+                        return Ok(NativeLoweringResult {
                             plans: Vec::new(),
                             report,
                             source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                        };
+                        });
                     }
                     let sort_spec = match declared_output_ordering_sort_spec(ordering, native_plan.root_node()) {
                         Ok(sort_spec) => sort_spec,
@@ -234,11 +285,11 @@ fn lower_physical_plan_to_native_with_mode(
                                 candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR),
                                 reason,
                             );
-                            return NativeLoweringResult {
+                            return Ok(NativeLoweringResult {
                                 plans: Vec::new(),
                                 report,
                                 source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                            };
+                            });
                         },
                     };
                     native_plan = native_plan.with_appended_sort(sort_spec);
@@ -252,11 +303,11 @@ fn lower_physical_plan_to_native_with_mode(
                         candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
                     }
                     report.push_not_supported(candidate, CapabilityReason::NativeOrderedOutputUnsupported);
-                    return NativeLoweringResult {
+                    return Ok(NativeLoweringResult {
                         plans: Vec::new(),
                         report,
                         source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
-                    };
+                    });
                 }
                 let source_diagnostics = source_diagnostics_for_native_plan(&native_plan);
                 let mut report = PlanningReport::new();
@@ -264,9 +315,9 @@ fn lower_physical_plan_to_native_with_mode(
                     candidate = candidate.with_outer_operator(DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
                 }
                 report.push_selected(candidate);
-                NativeLoweringResult { plans: vec![native_plan], report, source_diagnostics }
+                Ok(NativeLoweringResult { plans: vec![native_plan], report, source_diagnostics })
             },
-        ),
+        },
         Err(rejection) => {
             let column = (rejection.reason == CapabilityReason::UnsupportedType)
                 .then(|| unsupported_column_for_schema(&plan.schema(), "projected"))
@@ -277,7 +328,7 @@ fn lower_physical_plan_to_native_with_mode(
                 rejection.reason,
                 NotSupportedDetail { column, expression: None, admission: None },
             );
-            NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
+            Ok(NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() })
         },
     }
 }
@@ -375,7 +426,7 @@ fn unsupported_column_detail(field: &ArrowFieldRef, role: &'static str) -> Unsup
 pub(crate) fn reestablish_declared_output_ordering_if_needed(
     native_plan: NativeQueryPlan,
     ordering: Option<&LexOrdering>,
-) -> Result<(NativeQueryPlan, bool), CapabilityReason> {
+) -> std::result::Result<(NativeQueryPlan, bool), CapabilityReason> {
     let Some(ordering) = ordering else {
         return Ok((native_plan, false));
     };
@@ -399,7 +450,7 @@ pub(crate) fn wrap_candidate_with_declared_output_ordering_sort(candidate: GpuCa
 fn declared_output_ordering_sort_spec(
     ordering: &LexOrdering,
     output_node: &QueryNode,
-) -> Result<NativeSortSpec, CapabilityReason> {
+) -> std::result::Result<NativeSortSpec, CapabilityReason> {
     if ordering.is_empty() {
         return Err(CapabilityReason::NativeOrderedOutputUnsupported);
     }
@@ -408,14 +459,14 @@ fn declared_output_ordering_sort_spec(
     let expressions = ordering
         .iter()
         .map(|sort_expr| declared_output_ordering_sort_expr(sort_expr, output_schema))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(NativeSortSpec::new(expressions))
 }
 
 fn declared_output_ordering_sort_expr(
     sort_expr: &PhysicalSortExpr,
     output_schema: &ArrowSchemaRef,
-) -> Result<NativeSortExpr, CapabilityReason> {
+) -> std::result::Result<NativeSortExpr, CapabilityReason> {
     let column = sort_expr.expr.downcast_ref::<Column>().ok_or(CapabilityReason::NativeOrderedOutputUnsupported)?;
     let field = output_schema.fields().get(column.index()).ok_or(CapabilityReason::NativeOrderedOutputUnsupported)?;
     Ok(NativeSortExpr::new(
@@ -591,12 +642,14 @@ mod tests {
     fn order_reproduction_audit_accepts_local_parquet_filter_projection() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), key_schema());
-        let projection = builder.add_projection(
-            filter,
-            vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::UInt32, false))],
-        );
-        let plan = builder.finish_with_host_sink(projection);
+        let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true))).unwrap();
+        let projection = builder
+            .add_projection(
+                filter,
+                vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::UInt32, false))],
+            )
+            .unwrap();
+        let plan = builder.finish_with_host_sink(projection).unwrap();
 
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
     }
@@ -609,16 +662,18 @@ mod tests {
         ]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                vec![Expr::column("key")],
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
-            ),
-            Arc::clone(&aggregate_schema),
-        );
-        let limit = builder.add_limit(aggregate, LimitSpec::fetch(1), aggregate_schema);
-        let plan = builder.finish_with_host_sink(limit);
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    vec![Expr::column("key")],
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
+                ),
+                Arc::clone(&aggregate_schema),
+            )
+            .unwrap();
+        let limit = builder.add_limit(aggregate, LimitSpec::fetch(1)).unwrap();
+        let plan = builder.finish_with_host_sink(limit).unwrap();
 
         assert!(!native_plan_reproduces_declared_output_ordering(&plan));
     }
@@ -627,12 +682,9 @@ mod tests {
     fn order_reproduction_audit_accepts_native_sort() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", key_schema())));
-        let sort = builder.add_sort(
-            source,
-            SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-            key_schema(),
-        );
-        let plan = builder.finish_with_host_sink(sort);
+        let sort =
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+        let plan = builder.finish_with_host_sink(sort).unwrap();
 
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
     }
@@ -659,7 +711,7 @@ mod tests {
         let batch = RecordBatch::new_empty(Arc::clone(&schema));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-        let plan = builder.finish_with_host_sink(source);
+        let plan = builder.finish_with_host_sink(source).unwrap();
 
         assert!(native_plan_reproduces_declared_output_ordering(&plan));
     }
@@ -679,7 +731,7 @@ mod tests {
         let batch = RecordBatch::new_empty(Arc::clone(&schema));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-        let plan = builder.finish_with_host_sink(source);
+        let plan = builder.finish_with_host_sink(source).unwrap();
 
         let reason = declared_output_ordering_sort_spec(&ordering, plan.root_node())
             .expect_err("timestamp-with-timezone keys must stay rejected for appended declared-output ordering sorts");
@@ -691,7 +743,7 @@ mod tests {
     fn order_reproduction_audit_rejects_gpu_resident_source() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", key_schema())));
-        let plan = builder.finish_with_host_sink(source);
+        let plan = builder.finish_with_host_sink(source).unwrap();
 
         assert!(!native_plan_reproduces_declared_output_ordering(&plan));
     }
@@ -724,89 +776,83 @@ mod tests {
         ]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                vec![Expr::column("key")],
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
-            ),
-            aggregate_schema,
-        );
-        builder.finish_with_host_sink(aggregate)
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    vec![Expr::column("key")],
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
+                ),
+                aggregate_schema,
+            )
+            .unwrap();
+        builder.finish_with_host_sink(aggregate).unwrap()
     }
 
     fn window_plan() -> QueryPlan {
-        let window_schema = Arc::new(Schema::new(vec![
-            Field::new("key", DataType::UInt32, false),
-            Field::new("rank", DataType::UInt64, false),
-        ]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let window = builder.add_window(
-            source,
-            WindowSpec::new(
-                Vec::new(),
-                vec![SortExpr::new(Expr::column("key"), false, false)],
-                vec![WindowFunction::Rank { alias: "rank".to_string() }],
-            ),
-            window_schema,
-        );
-        builder.finish_with_host_sink(window)
+        let window = builder
+            .add_window(
+                source,
+                WindowSpec::new(
+                    Vec::new(),
+                    vec![SortExpr::new(Expr::column("key"), false, false)],
+                    vec![WindowFunction::rank("rank")],
+                ),
+            )
+            .unwrap();
+        builder.finish_with_host_sink(window).unwrap()
     }
 
     fn window_limit_plan() -> QueryPlan {
-        let window_schema = Arc::new(Schema::new(vec![
-            Field::new("key", DataType::UInt32, false),
-            Field::new("rank", DataType::UInt64, false),
-        ]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let sort = builder.add_sort(
-            source,
-            SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
-            key_schema(),
-        );
-        let window = builder.add_window(
-            sort,
-            WindowSpec::new(
-                Vec::new(),
-                vec![SortExpr::new(Expr::column("key"), false, false)],
-                vec![WindowFunction::Rank { alias: "rank".to_string() }],
-            ),
-            Arc::clone(&window_schema),
-        );
-        let limit = builder.add_limit(window, LimitSpec::fetch(3), window_schema);
-        builder.finish_with_host_sink(limit)
+        let sort =
+            builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)])).unwrap();
+        let window = builder
+            .add_window(
+                sort,
+                WindowSpec::new(
+                    Vec::new(),
+                    vec![SortExpr::new(Expr::column("key"), false, false)],
+                    vec![WindowFunction::rank("rank")],
+                ),
+            )
+            .unwrap();
+        let limit = builder.add_limit(window, LimitSpec::fetch(3)).unwrap();
+        builder.finish_with_host_sink(limit).unwrap()
     }
 
     fn join_plan() -> QueryPlan {
         let mut builder = QueryPlanBuilder::new();
         let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
         let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let join = builder.add_join(left, right, JoinSpec::new(JoinType::Cross, Vec::new()), key_schema());
-        builder.finish_with_host_sink(join)
+        let join = builder.add_join(left, right, JoinSpec::new(JoinType::Cross, Vec::new()), key_schema()).unwrap();
+        builder.finish_with_host_sink(join).unwrap()
     }
 
     fn union_plan() -> QueryPlan {
         let mut builder = QueryPlanBuilder::new();
         let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
         let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-        let union = builder.add_union(vec![left, right], key_schema());
-        builder.finish_with_host_sink(union)
+        let union = builder.add_union(vec![left, right], key_schema()).unwrap();
+        builder.finish_with_host_sink(union).unwrap()
     }
 
     fn edge_normalize_plan() -> QueryPlan {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(edge_local_parquet_source()));
-        let normalize = builder.add_edge_normalize(
-            source,
-            EdgeNormalizeSpec::python_cugraph(
-                GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
-                &GraphConstructionOptions::default(),
-            ),
-            edge_schema(),
-        );
-        builder.finish_with_host_sink(normalize)
+        let normalize = builder
+            .add_edge_normalize(
+                source,
+                EdgeNormalizeSpec::python_cugraph(
+                    GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
+                    &GraphConstructionOptions::default(),
+                ),
+            )
+            .unwrap();
+        builder.finish_with_host_sink(normalize).unwrap()
     }
 
     fn graph_algorithm_plan() -> QueryPlan {
@@ -814,17 +860,20 @@ mod tests {
         let source = builder.add_source(SourceNode::LocalParquet(edge_local_parquet_source()));
         let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
         let output_schema = graph_result_schema_for_params(GraphAlgorithm::PageRank, &params);
-        let graph = builder.add_graph_algorithm(
-            source,
-            GraphAlgorithmSpec::new(
-                GraphAlgorithm::PageRank,
-                GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
-                GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
-                params,
-                output_schema,
-            ),
-        );
-        builder.finish_with_host_sink(graph)
+        let graph = builder
+            .add_graph_algorithm(
+                source,
+                Vec::new(),
+                GraphAlgorithmSpec::new(
+                    GraphAlgorithm::PageRank,
+                    GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
+                    GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
+                    params,
+                    output_schema,
+                ),
+            )
+            .unwrap();
+        builder.finish_with_host_sink(graph).unwrap()
     }
 
     fn local_parquet_source() -> LocalParquetSource {

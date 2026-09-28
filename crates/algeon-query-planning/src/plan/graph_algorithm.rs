@@ -120,31 +120,17 @@ impl GraphAlgorithmParams {
         }
     }
 
-    /// Visits every relation-backed side-input node in stable execution order.
-    pub fn side_input_node_ids(&self) -> Box<dyn Iterator<Item = NodeId> + '_> {
+    /// Visits every relation-backed side-input ordinal in stable execution order.
+    pub fn side_input_ordinals(&self) -> Box<dyn Iterator<Item = usize> + '_> {
         match self {
-            Self::Bfs(params) => Box::new(params.side_input_node_ids()),
-            Self::PersonalizedPageRank(params) => Box::new(params.side_input_node_ids()),
-            Self::Similarity(params) => Box::new(params.side_input_node_ids()),
-            Self::Sssp(params) => Box::new(params.side_input_node_ids()),
-            Self::BetweennessCentrality(params) => Box::new(params.side_input_node_ids()),
-            Self::EdgeBetweennessCentrality(params) => Box::new(params.side_input_node_ids()),
-            Self::ForceAtlas2(params) => Box::new(params.side_input_node_ids()),
+            Self::Bfs(params) => Box::new(params.side_input_ordinals()),
+            Self::PersonalizedPageRank(params) => Box::new(params.side_input_ordinals()),
+            Self::Similarity(params) => Box::new(params.side_input_ordinals()),
+            Self::Sssp(params) => Box::new(params.side_input_ordinals()),
+            Self::BetweennessCentrality(params) => Box::new(params.side_input_ordinals()),
+            Self::EdgeBetweennessCentrality(params) => Box::new(params.side_input_ordinals()),
+            Self::ForceAtlas2(params) => Box::new(params.side_input_ordinals()),
             _ => Box::new(std::iter::empty()),
-        }
-    }
-
-    /// Rewrites every node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
-        match self {
-            Self::Bfs(params) => params.remap_side_inputs(&mut remap),
-            Self::PersonalizedPageRank(params) => params.remap_side_inputs(&mut remap),
-            Self::Similarity(params) => params.remap_side_inputs(&mut remap),
-            Self::Sssp(params) => params.remap_side_inputs(&mut remap),
-            Self::BetweennessCentrality(params) => params.remap_side_inputs(&mut remap),
-            Self::EdgeBetweennessCentrality(params) => params.remap_side_inputs(&mut remap),
-            Self::ForceAtlas2(params) => params.remap_side_inputs(&mut remap),
-            _ => {},
         }
     }
 }
@@ -238,16 +224,19 @@ pub fn planned_resident_graph_key(
 /// Native graph algorithm operation over one edge-list input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithmNode {
-    /// Edge-list input node.
-    pub input: NodeId,
-    /// All semantic inputs in execution order: edge-list input first, followed
-    /// by BFS source/predicate side-input nodes in stable role order.
+    /// The edge-list input first, then the side inputs; parameter side-input
+    /// bindings name their relation by its position here.
     pub inputs: Vec<NodeId>,
     /// Graph algorithm specification.
     pub spec: GraphAlgorithmSpec,
 }
 
 impl GraphAlgorithmNode {
+    /// The edge-list input node.
+    pub fn edge_input(&self) -> NodeId {
+        self.inputs[0]
+    }
+
     /// Output schema declared by the graph algorithm spec.
     pub fn output_schema(&self) -> &SchemaRef {
         &self.spec.output_schema

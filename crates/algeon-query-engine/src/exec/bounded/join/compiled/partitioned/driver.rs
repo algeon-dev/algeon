@@ -908,7 +908,7 @@ mod tests {
 
     fn retry_join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {
-            inputs: [NodeId::from_index_for_internal_use(1), NodeId::from_index_for_internal_use(2)],
+            inputs: [NodeId::from_index_for_test(1), NodeId::from_index_for_test(2)],
             spec: JoinSpec::new(join_type, Vec::new()).with_build_side(build_side),
         }
     }

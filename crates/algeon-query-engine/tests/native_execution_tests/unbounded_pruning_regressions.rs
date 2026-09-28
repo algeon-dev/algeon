@@ -18,35 +18,38 @@ fn unbounded_single_stage_grouped_median_preserves_pruning_regression() {
         Arc::clone(&schema),
         vec!["key".to_string(), "payload".to_string(), "m00".to_string()],
     );
-    let filtered_schema = Arc::clone(&schema);
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("median_m00", DataType::Float64, true),
     ]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filtered = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(10))),
-        filtered_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        filtered,
-        AggregateSpec::new(
-            vec![Expr::column("key")],
-            vec![AggregateExpr::new(AggregateFunction::Median, Expr::column("m00"), "median_m00")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sorted = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("median_m00"), true, false),
-            SortExpr::new(Expr::column("key"), false, false),
-        ]),
-        aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(sorted);
+    let filtered = builder
+        .add_filter(
+            source,
+            Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(10))),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Median, Expr::column("m00"), "median_m00")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sorted = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("median_m00"), true, false),
+                SortExpr::new(Expr::column("key"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sorted).unwrap();
 
     let context = admitted_execution_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -75,15 +78,17 @@ fn unbounded_physically_empty_parquet_count_and_count_star_return_zero() {
         let count_schema = Arc::new(Schema::new(vec![Field::new("count_key", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                Vec::new(),
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
-            ),
-            count_schema,
-        );
-        let result = execute_query_plan(&context, &builder.finish_with_host_sink(aggregate)).unwrap();
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
+                ),
+                count_schema,
+            )
+            .unwrap();
+        let result = execute_query_plan(&context, &builder.finish_with_host_sink(aggregate).unwrap()).unwrap();
         let QueryOutput::HostArrow(batch) = result.output() else { panic!("COUNT must materialize to Arrow") };
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(int64_array(batch, 0).value(0), 0);
@@ -93,15 +98,21 @@ fn unbounded_physically_empty_parquet_count_and_count_star_return_zero() {
         let count_star_schema = Arc::new(Schema::new(vec![Field::new("count_rows", DataType::Int64, true)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(probe));
-        let aggregate = builder.add_aggregate(
-            source,
-            AggregateSpec::new(
-                Vec::new(),
-                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(ZERO_COLUMN_COUNT_COLUMN), "count_rows")],
-            ),
-            count_star_schema,
-        );
-        let result = execute_query_plan(&context, &builder.finish_with_host_sink(aggregate)).unwrap();
+        let aggregate = builder
+            .add_aggregate(
+                source,
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![AggregateExpr::new(
+                        AggregateFunction::Sum,
+                        Expr::column(ZERO_COLUMN_COUNT_COLUMN),
+                        "count_rows",
+                    )],
+                ),
+                count_star_schema,
+            )
+            .unwrap();
+        let result = execute_query_plan(&context, &builder.finish_with_host_sink(aggregate).unwrap()).unwrap();
         let QueryOutput::HostArrow(batch) = result.output() else { panic!("COUNT(*) must materialize to Arrow") };
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(int64_array(batch, 0).value(0), 0);
@@ -174,81 +185,90 @@ fn unbounded_tpch_q3_multi_join_aggregate_topk_preserves_pruning_regression() {
         &customer_schema,
         &["c_custkey", "c_mktsegment"],
     )));
-    let customer = builder.add_filter(
-        customer,
-        Expr::binary(
-            Expr::column("c_mktsegment"),
-            BinaryOp::Eq,
-            Expr::literal(LiteralValue::Utf8("BUILDING".to_string())),
-        ),
-        customer_schema,
-    );
+    let customer = builder
+        .add_filter(
+            customer,
+            Expr::binary(
+                Expr::column("c_mktsegment"),
+                BinaryOp::Eq,
+                Expr::literal(LiteralValue::Utf8("BUILDING".to_string())),
+            ),
+        )
+        .unwrap();
     let orders = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &orders_path,
         &orders_schema,
         &["o_orderkey", "o_custkey", "o_orderdate", "o_shippriority"],
     )));
-    let customer_orders = builder.add_join(
-        customer,
-        orders,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "c_custkey", "c_custkey"),
-                ColumnRef::input(1, "o_custkey", "o_custkey"),
-            )],
+    let customer_orders = builder
+        .add_join(
+            customer,
+            orders,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "c_custkey", "c_custkey"),
+                    ColumnRef::input(1, "o_custkey", "o_custkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+                JoinOutputColumn::right(ColumnRef::input(1, "o_orderdate", "o_orderdate"), "o_orderdate"),
+                JoinOutputColumn::right(ColumnRef::input(1, "o_shippriority", "o_shippriority"), "o_shippriority"),
+            ])
+            .with_build_side(JoinSide::Left),
+            customer_orders_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
-            JoinOutputColumn::right(ColumnRef::input(1, "o_orderdate", "o_orderdate"), "o_orderdate"),
-            JoinOutputColumn::right(ColumnRef::input(1, "o_shippriority", "o_shippriority"), "o_shippriority"),
-        ])
-        .with_build_side(JoinSide::Left),
-        customer_orders_schema,
-    );
+        .unwrap();
     let lineitem = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &lineitem_path,
         &lineitem_schema,
         &["l_orderkey", "l_extendedprice"],
     )));
-    let joined = builder.add_join(
-        customer_orders,
-        lineitem,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "o_orderkey", "o_orderkey"),
-                ColumnRef::input(1, "l_orderkey", "l_orderkey"),
-            )],
+    let joined = builder
+        .add_join(
+            customer_orders,
+            lineitem,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "o_orderkey", "o_orderkey"),
+                    ColumnRef::input(1, "l_orderkey", "l_orderkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "o_orderkey", "o_orderkey"), "o_orderkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "o_orderdate", "o_orderdate"), "o_orderdate"),
+                JoinOutputColumn::left(ColumnRef::input(0, "o_shippriority", "o_shippriority"), "o_shippriority"),
+                JoinOutputColumn::right(ColumnRef::input(1, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
+            ])
+            .with_build_side(JoinSide::Left),
+            joined_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "o_orderkey", "o_orderkey"), "o_orderkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "o_orderdate", "o_orderdate"), "o_orderdate"),
-            JoinOutputColumn::left(ColumnRef::input(0, "o_shippriority", "o_shippriority"), "o_shippriority"),
-            JoinOutputColumn::right(ColumnRef::input(1, "l_extendedprice", "l_extendedprice"), "l_extendedprice"),
-        ])
-        .with_build_side(JoinSide::Left),
-        joined_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        joined,
-        AggregateSpec::new(
-            vec![Expr::column("o_orderkey"), Expr::column("o_orderdate"), Expr::column("o_shippriority")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("l_extendedprice"), "revenue")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sorted = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("revenue"), true, false),
-            SortExpr::new(Expr::column("o_orderdate"), false, false),
-        ]),
-        Arc::clone(&aggregate_schema),
-    );
-    let limited = builder.add_limit(sorted, LimitSpec::fetch(10), aggregate_schema);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            joined,
+            AggregateSpec::new(
+                vec![Expr::column("o_orderkey"), Expr::column("o_orderdate"), Expr::column("o_shippriority")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("l_extendedprice"), "revenue")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sorted = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("revenue"), true, false),
+                SortExpr::new(Expr::column("o_orderdate"), false, false),
+            ]),
+        )
+        .unwrap();
+    let limited = builder.add_limit(sorted, LimitSpec::fetch(10)).unwrap();
 
-    let result = execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(limited)).unwrap();
+    let result =
+        execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(limited).unwrap()).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q3 must materialize to Arrow") };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(int32_array(batch, 0).value(0), 10);
@@ -313,34 +333,39 @@ fn unbounded_tpch_q19_join_residual_in_list_preserves_pruning_regression() {
         &part_schema,
         &["p_partkey", "p_brand", "p_container", "p_size"],
     )));
-    let joined = builder.add_join(
-        lineitem,
-        part,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "l_partkey", "l_partkey"),
-                ColumnRef::input(1, "p_partkey", "p_partkey"),
-            )],
+    let joined = builder
+        .add_join(
+            lineitem,
+            part,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "l_partkey", "l_partkey"),
+                    ColumnRef::input(1, "p_partkey", "p_partkey"),
+                )],
+            )
+            .with_residual_predicate(q19_residual_predicate())
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "l_extendedprice", "l_extendedprice"),
+                "l_extendedprice",
+            )])
+            .with_build_side(JoinSide::Right),
+            joined_schema,
         )
-        .with_residual_predicate(q19_residual_predicate())
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "l_extendedprice", "l_extendedprice"),
-            "l_extendedprice",
-        )])
-        .with_build_side(JoinSide::Right),
-        joined_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        joined,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("l_extendedprice"), "revenue")],
-        ),
-        aggregate_schema,
-    );
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            joined,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("l_extendedprice"), "revenue")],
+            ),
+            aggregate_schema,
+        )
+        .unwrap();
 
-    let result = execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(aggregate)).unwrap();
+    let result =
+        execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(aggregate).unwrap()).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q19 must materialize to Arrow") };
     assert_eq!(int64_array(batch, 0).value(0), 300);
     fs::remove_dir_all(dir).unwrap();
@@ -393,90 +418,102 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
         &lineitem_schema,
         &["l_suppkey", "l_extendedprice"],
     )));
-    let projected = builder.add_projection(
-        lineitem,
-        projection_outputs(
-            vec![Expr::column("l_suppkey").alias("supplier_no"), Expr::column("l_extendedprice").alias("revenue")],
-            revenue_projection_schema,
-        ),
-    );
-    let revenue = builder.add_aggregate(
-        projected,
-        AggregateSpec::new(
-            vec![Expr::column("supplier_no")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("revenue"), "total_revenue")],
-        ),
-        Arc::clone(&revenue_schema),
-    );
+    let projected = builder
+        .add_projection(
+            lineitem,
+            projection_outputs(
+                vec![Expr::column("l_suppkey").alias("supplier_no"), Expr::column("l_extendedprice").alias("revenue")],
+                revenue_projection_schema,
+            ),
+        )
+        .unwrap();
+    let revenue = builder
+        .add_aggregate(
+            projected,
+            AggregateSpec::new(
+                vec![Expr::column("supplier_no")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("revenue"), "total_revenue")],
+            ),
+            Arc::clone(&revenue_schema),
+        )
+        .unwrap();
     let supplier = builder.add_source(SourceNode::LocalParquet(join_left_source(
         &supplier_path,
         &supplier_schema,
         &["s_suppkey", "s_name"],
     )));
-    let revenue_for_supplier = builder.add_projection(
-        revenue,
-        projection_outputs(
-            vec![Expr::column("supplier_no"), Expr::column("total_revenue")],
-            Arc::clone(&revenue_schema),
-        ),
-    );
-    let supplier_revenue = builder.add_join(
-        supplier,
-        revenue_for_supplier,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                ColumnRef::input(1, "supplier_no", "supplier_no"),
-            )],
+    let revenue_for_supplier = builder
+        .add_projection(
+            revenue,
+            projection_outputs(
+                vec![Expr::column("supplier_no"), Expr::column("total_revenue")],
+                Arc::clone(&revenue_schema),
+            ),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-            JoinOutputColumn::right(ColumnRef::input(1, "total_revenue", "total_revenue"), "total_revenue"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&supplier_revenue_schema),
-    );
-    let revenue_for_max = builder.add_projection(
-        revenue,
-        projection_outputs(
-            vec![Expr::column("total_revenue")],
-            Arc::new(Schema::new(vec![Field::new("total_revenue", DataType::Int64, true)])),
-        ),
-    );
-    let max_revenue = builder.add_aggregate(
-        revenue_for_max,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("total_revenue"), "max_revenue")],
-        ),
-        max_revenue_schema,
-    );
-    let maximum_suppliers = builder.add_join(
-        supplier_revenue,
-        max_revenue,
-        JoinSpec::new(JoinType::Inner, Vec::new())
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "total_revenue", "total_revenue"),
-                BinaryOp::Eq,
-                Expr::input_column(1, "max_revenue", "max_revenue"),
-            ))
+        .unwrap();
+    let supplier_revenue = builder
+        .add_join(
+            supplier,
+            revenue_for_supplier,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                    ColumnRef::input(1, "supplier_no", "supplier_no"),
+                )],
+            )
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
                 JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-                JoinOutputColumn::left(ColumnRef::input(0, "total_revenue", "total_revenue"), "total_revenue"),
+                JoinOutputColumn::right(ColumnRef::input(1, "total_revenue", "total_revenue"), "total_revenue"),
             ])
             .with_build_side(JoinSide::Right),
-        Arc::clone(&supplier_revenue_schema),
-    );
-    let sorted = builder.add_sort(
-        maximum_suppliers,
-        SortSpec::new(vec![SortExpr::new(Expr::column("s_suppkey"), false, false)]),
-        supplier_revenue_schema,
-    );
+            Arc::clone(&supplier_revenue_schema),
+        )
+        .unwrap();
+    let revenue_for_max = builder
+        .add_projection(
+            revenue,
+            projection_outputs(
+                vec![Expr::column("total_revenue")],
+                Arc::new(Schema::new(vec![Field::new("total_revenue", DataType::Int64, true)])),
+            ),
+        )
+        .unwrap();
+    let max_revenue = builder
+        .add_aggregate(
+            revenue_for_max,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("total_revenue"), "max_revenue")],
+            ),
+            max_revenue_schema,
+        )
+        .unwrap();
+    let maximum_suppliers = builder
+        .add_join(
+            supplier_revenue,
+            max_revenue,
+            JoinSpec::new(JoinType::Inner, Vec::new())
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "total_revenue", "total_revenue"),
+                    BinaryOp::Eq,
+                    Expr::input_column(1, "max_revenue", "max_revenue"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "total_revenue", "total_revenue"), "total_revenue"),
+                ])
+                .with_build_side(JoinSide::Right),
+            Arc::clone(&supplier_revenue_schema),
+        )
+        .unwrap();
+    let sorted = builder
+        .add_sort(maximum_suppliers, SortSpec::new(vec![SortExpr::new(Expr::column("s_suppkey"), false, false)]))
+        .unwrap();
 
-    let plan = builder.finish_with_host_sink(sorted);
+    let plan = builder.finish_with_host_sink(sorted).unwrap();
     assert_bounded_pipeline_admitted(&plan);
     let result = execute_query_plan(&admitted_execution_context(), &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q15 must materialize to Arrow") };
@@ -524,65 +561,73 @@ fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
         &complaints_schema,
         &["s_suppkey"],
     )));
-    let allowed = builder.add_join(
-        partsupp,
-        complaints,
-        JoinSpec::new(
-            JoinType::LeftAnti,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
-                ColumnRef::input(1, "s_suppkey", "s_suppkey"),
-            )],
+    let allowed = builder
+        .add_join(
+            partsupp,
+            complaints,
+            JoinSpec::new(
+                JoinType::LeftAnti,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                    ColumnRef::input(1, "s_suppkey", "s_suppkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            ])
+            .with_build_side(JoinSide::Right),
+            anti_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_partkey", "ps_partkey"), "ps_partkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-        ])
-        .with_build_side(JoinSide::Right),
-        anti_schema,
-    );
+        .unwrap();
     let part = builder.add_source(SourceNode::LocalParquet(join_right_source(
         &part_path,
         &part_schema,
         &["p_partkey", "p_brand", "p_type", "p_size"],
     )));
-    let joined = builder.add_join(
-        allowed,
-        part,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                ColumnRef::input(1, "p_partkey", "p_partkey"),
-            )],
+    let joined = builder
+        .add_join(
+            allowed,
+            part,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    ColumnRef::input(1, "p_partkey", "p_partkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
+                JoinOutputColumn::right(ColumnRef::input(1, "p_type", "p_type"), "p_type"),
+                JoinOutputColumn::right(ColumnRef::input(1, "p_size", "p_size"), "p_size"),
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            ])
+            .with_build_side(JoinSide::Right),
+            joined_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::right(ColumnRef::input(1, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::right(ColumnRef::input(1, "p_size", "p_size"), "p_size"),
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-        ])
-        .with_build_side(JoinSide::Right),
-        joined_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        joined,
-        AggregateSpec::new(
-            vec![Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
-            vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("ps_suppkey"), "supplier_cnt")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sorted = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("supplier_cnt"), true, false),
-            SortExpr::new(Expr::column("p_brand"), false, false),
-        ]),
-        aggregate_schema,
-    );
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            joined,
+            AggregateSpec::new(
+                vec![Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
+                vec![AggregateExpr::new(AggregateFunction::NUnique, Expr::column("ps_suppkey"), "supplier_cnt")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sorted = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("supplier_cnt"), true, false),
+                SortExpr::new(Expr::column("p_brand"), false, false),
+            ]),
+        )
+        .unwrap();
 
-    let result = execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(sorted)).unwrap();
+    let result =
+        execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(sorted).unwrap()).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q16 must materialize to Arrow") };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(string_array(batch, 0).value(0), "Brand#11");

@@ -37,7 +37,7 @@ pub(super) fn projection_root_over_full_sort_join_aggregate_plan() -> QueryPlan 
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -45,17 +45,15 @@ pub(super) fn projection_root_over_full_sort_join_aggregate_plan() -> QueryPlan 
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
-        Arc::clone(&aggregate_schema),
-    );
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)])).unwrap();
     let projection = builder.add_projection(
         sort,
         projection_outputs(vec![Expr::column("left_id"), Expr::column("amount_sum")], aggregate_schema),
-    );
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 pub(super) fn root_full_sort_single_keyed_join_grouped_aggregate_plan() -> QueryPlan {
@@ -98,7 +96,7 @@ pub(super) fn root_full_sort_single_keyed_join_grouped_aggregate_plan() -> Query
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -106,13 +104,11 @@ pub(super) fn root_full_sort_single_keyed_join_grouped_aggregate_plan() -> Query
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_plan() -> QueryPlan {
@@ -146,13 +142,6 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
         Field::new("class_id", DataType::Int32, false),
         Field::new("category_id", DataType::Int32, false),
         Field::new("amount_sum", DataType::Int64, true),
-    ]));
-    let window_schema = Arc::new(Schema::new(vec![
-        Field::new("item_sk", DataType::Int32, false),
-        Field::new("class_id", DataType::Int32, false),
-        Field::new("category_id", DataType::Int32, false),
-        Field::new("amount_sum", DataType::Int64, true),
-        Field::new("class_amount_sum", DataType::Int64, true),
     ]));
     let projection_schema = Arc::new(Schema::new(vec![
         Field::new("item_sk", DataType::Int32, false),
@@ -194,7 +183,7 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
         ])
         .with_build_side(JoinSide::Right),
         first_join_schema,
-    );
+    ).unwrap();
     let pre_aggregate = builder.add_aggregate(
         first_join,
         AggregateSpec::new(
@@ -202,7 +191,7 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "pre_amount_sum")],
         ),
         Arc::clone(&pre_aggregate_schema),
-    );
+    ).unwrap();
     let second_join = builder.add_join(
         pre_aggregate,
         item,
@@ -218,7 +207,7 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
         ])
         .with_build_side(JoinSide::Right),
         second_join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         second_join,
         AggregateSpec::new(
@@ -226,21 +215,17 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("pre_amount_sum"), "amount_sum")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let window_input_sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("class_id"), false, false)]),
-        Arc::clone(&aggregate_schema),
-    );
+        SortSpec::new(vec![SortExpr::new(Expr::column("class_id"), false, false)])).unwrap();
     let window = builder.add_window(
         window_input_sort,
         WindowSpec::new(
             vec![Expr::column("class_id")],
             Vec::new(),
-            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("amount_sum"), "class_amount_sum")],
-        ),
-        Arc::clone(&window_schema),
-    );
+            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("amount_sum"), Field::new("class_amount_sum", DataType::Int64, true))],
+        )).unwrap();
     let projection = builder.add_projection(
         window,
         projection_outputs(
@@ -253,7 +238,7 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
             ],
             Arc::clone(&projection_schema),
         ),
-    );
+    ).unwrap();
     let final_sort = builder.add_sort(
         projection,
         SortSpec::new(vec![
@@ -261,10 +246,8 @@ pub(super) fn root_full_sort_keyed_join_grouped_aggregate_with_orderless_window_
             SortExpr::new(Expr::column("class_id"), false, true),
             SortExpr::new(Expr::column("item_sk"), false, true),
             SortExpr::new(Expr::column("class_amount_sum"), false, true),
-        ]),
-        projection_schema,
-    );
-    builder.finish_with_host_sink(final_sort)
+        ])).unwrap();
+    builder.finish_with_host_sink(final_sort).unwrap()
 }
 
 pub(super) fn root_full_sort_keyless_join_grouped_aggregate_plan() -> QueryPlan {
@@ -320,7 +303,7 @@ pub(super) fn root_full_sort_keyless_join_grouped_aggregate_plan() -> QueryPlan 
         ])
         .with_build_side(JoinSide::Right),
         first_join_schema,
-    );
+    ).unwrap();
     let second_join = builder.add_join(
         first_join,
         dim_two,
@@ -331,7 +314,7 @@ pub(super) fn root_full_sort_keyless_join_grouped_aggregate_plan() -> QueryPlan 
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&second_join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         second_join,
         AggregateSpec::new(
@@ -339,13 +322,11 @@ pub(super) fn root_full_sort_keyless_join_grouped_aggregate_plan() -> QueryPlan 
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn root_full_sort_keyless_join_statistical_grouped_aggregate_plan() -> QueryPlan {
@@ -401,7 +382,7 @@ pub(super) fn root_full_sort_keyless_join_statistical_grouped_aggregate_plan() -
         ])
         .with_build_side(JoinSide::Right),
         first_join_schema,
-    );
+    ).unwrap();
     let second_join = builder.add_join(
         first_join,
         dim_two,
@@ -412,7 +393,7 @@ pub(super) fn root_full_sort_keyless_join_statistical_grouped_aggregate_plan() -
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&second_join_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         second_join,
         AggregateSpec::new(
@@ -420,13 +401,11 @@ pub(super) fn root_full_sort_keyless_join_statistical_grouped_aggregate_plan() -
             vec![AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("amount"), "amount_stddev")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_stddev"), true, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_stddev"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn root_full_sort_repeated_projection_fanout_grouped_aggregate_plan() -> QueryPlan {
@@ -477,7 +456,7 @@ pub(super) fn root_full_sort_repeated_projection_fanout_grouped_aggregate_plan()
                 Field::new("tag", DataType::Int32, false),
             ])),
         ),
-    );
+    ).unwrap();
     let first_join = builder.add_join(
         fact,
         shared_dim,
@@ -493,7 +472,7 @@ pub(super) fn root_full_sort_repeated_projection_fanout_grouped_aggregate_plan()
         ])
         .with_build_side(JoinSide::Right),
         first_join_schema,
-    );
+    ).unwrap();
     let second_join = builder.add_join(
         first_join,
         shared_dim,
@@ -509,7 +488,7 @@ pub(super) fn root_full_sort_repeated_projection_fanout_grouped_aggregate_plan()
         ])
         .with_build_side(JoinSide::Right),
         second_join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         second_join,
         AggregateSpec::new(
@@ -517,13 +496,11 @@ pub(super) fn root_full_sort_repeated_projection_fanout_grouped_aggregate_plan()
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPlan {
@@ -570,7 +547,7 @@ pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPla
                 Field::new("bucket", DataType::Int32, false),
             ])),
         ),
-    );
+    ).unwrap();
     let grouped_join = builder.add_join(
         fact,
         shared_dim,
@@ -584,7 +561,7 @@ pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPla
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let grouped = builder.add_aggregate(
         grouped_join,
         AggregateSpec::new(
@@ -592,11 +569,11 @@ pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPla
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         Arc::clone(&grouped_schema),
-    );
+    ).unwrap();
     let grouped_projection = builder.add_projection(
         grouped,
         projection_outputs(vec![Expr::column("k"), Expr::column("amount_sum")], grouped_schema),
-    );
+    ).unwrap();
     let scalar_join = builder.add_join(
         fact,
         shared_dim,
@@ -607,7 +584,7 @@ pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPla
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount")])
         .with_build_side(JoinSide::Right),
         Arc::new(Schema::new(vec![Field::new("amount", DataType::Int64, false)])),
-    );
+    ).unwrap();
     let scalar = builder.add_aggregate(
         scalar_join,
         AggregateSpec::new(
@@ -615,9 +592,9 @@ pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPla
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("amount"), "amount_avg")],
         ),
         Arc::clone(&scalar_schema),
-    );
+    ).unwrap();
     let scalar_projection =
-        builder.add_projection(scalar, projection_outputs(vec![Expr::column("amount_avg")], scalar_schema));
+        builder.add_projection(scalar, projection_outputs(vec![Expr::column("amount_avg")], scalar_schema)).unwrap();
     let root_join = builder.add_join(
         grouped_projection,
         scalar_projection,
@@ -633,13 +610,11 @@ pub(super) fn root_full_sort_keyless_scalar_projection_fanout_plan() -> QueryPla
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&root_join_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         root_join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)]),
-        root_join_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn root_full_sort_shared_aggregate_fanout_plan() -> QueryPlan {
@@ -687,7 +662,7 @@ pub(super) fn root_full_sort_shared_aggregate_fanout_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         join_schema,
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -695,7 +670,7 @@ pub(super) fn root_full_sort_shared_aggregate_fanout_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let self_join = builder.add_join(
         aggregate,
         aggregate,
@@ -710,11 +685,9 @@ pub(super) fn root_full_sort_shared_aggregate_fanout_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&self_join_schema),
-    );
+    ).unwrap();
     let sort = builder.add_sort(
         self_join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("left_amount_sum"), true, false)]),
-        self_join_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        SortSpec::new(vec![SortExpr::new(Expr::column("left_amount_sum"), true, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }

@@ -8,7 +8,7 @@ fn outer_join_null_rejection_converts_left_join_when_inner_join_key_rejects_righ
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -38,7 +38,7 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -64,7 +64,7 @@ fn outer_join_null_rejection_preserves_left_join_build_side_after_build_side_sel
 fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side() {
     let plan = inner_join_over_projected_left_join_left_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -75,7 +75,7 @@ fn outer_join_null_rejection_keeps_left_join_when_key_comes_from_preserved_side(
 fn outer_join_null_rejection_rejects_shared_outer_join_output() {
     let plan = shared_left_join_output_with_one_null_rejecting_consumer_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -91,7 +91,7 @@ fn outer_join_null_rejection_rejects_shared_outer_join_output() {
 fn outer_join_null_rejection_keeps_left_join_below_limit() {
     let plan = inner_join_over_limited_projected_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -102,7 +102,7 @@ fn outer_join_null_rejection_keeps_left_join_below_limit() {
 fn outer_join_null_rejection_keeps_large_null_introducing_input() {
     let plan = inner_join_over_large_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -121,7 +121,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
     options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
     options.outer_join_null_rejection = OuterJoinNullRejectionOptions::default();
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.aggregate_join_pushdown.considered_count, 1);
@@ -153,7 +153,7 @@ fn outer_join_null_rejection_revisits_large_input_after_aggregate_pushdown() {
 fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
     let plan = union_aggregate_over_left_join_right_key_plan();
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -177,7 +177,7 @@ fn outer_join_null_rejection_traces_rejected_key_through_union_and_group_key() {
 fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::Eligible);
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.outer_join_null_rejection.considered_count, 1);
@@ -199,7 +199,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_to_left_anti() {
 fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_nullable() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullableMarker);
 
-    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let PlanNode::Projection(projection) = &result.plan.root_node().kind else {
@@ -215,7 +215,7 @@ fn outer_join_null_rejection_converts_marker_null_filter_when_key_schema_is_null
 fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::NullsMatch);
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -226,7 +226,7 @@ fn outer_join_null_rejection_keeps_marker_null_filter_with_nulls_match_join() {
 fn outer_join_null_rejection_keeps_marker_null_filter_when_marker_escapes_projection() {
     let plan = marker_null_filter_left_join_plan(MarkerNullFilterPlanVariant::MarkerEscapes);
 
-    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan.clone(), &outer_join_null_rejection_only_options(), rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -298,7 +298,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
             JoinOutputColumn::right(ColumnRef::input(1, "r_reason", "r_reason"), "r_reason"),
         ]),
         Arc::clone(&left_join_schema),
-    );
+    ).unwrap();
     let projected = builder.add_projection(
         left_join,
         vec![
@@ -307,7 +307,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
             ProjectionOutput::new(Expr::column("r_key"), Field::new("r_key", DataType::Int32, true)),
             ProjectionOutput::new(Expr::column("r_reason"), Field::new("r_reason", DataType::Int32, true)),
         ],
-    );
+    ).unwrap();
     let root_schema = Arc::new(Schema::new(vec![
         Field::new("l_key", DataType::Int32, false),
         Field::new("payload", DataType::Int32, false),
@@ -315,7 +315,7 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
         Field::new("r_reason", DataType::Int32, true),
     ]));
     let root_input = limit_fetch
-        .map_or(projected, |fetch| builder.add_limit(projected, LimitSpec::fetch(fetch), Arc::clone(&root_schema)));
+        .map_or(projected, |fetch| builder.add_limit(projected, LimitSpec::fetch(fetch)).unwrap());
     let root = builder.add_join(
         root_input,
         dim,
@@ -328,8 +328,8 @@ fn inner_join_over_projected_left_join_key_plan_with_sources(
         )
         .with_output_projection(left_projection(&["l_key", "payload", "r_key", "r_reason"])),
         root_schema,
-    );
-    builder.finish_gpu_resident(root)
+    ).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> QueryPlan {
@@ -350,7 +350,7 @@ fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> QueryPlan 
             JoinOutputColumn::right(ColumnRef::input(1, "r_key", "r_key"), "r_key"),
         ]),
         Arc::clone(&left_join_schema),
-    );
+    ).unwrap();
     let rejecting = builder.add_join(
         left_join,
         dim,
@@ -360,7 +360,7 @@ fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> QueryPlan 
         )
         .with_output_projection(left_projection(&["l_key", "r_key"])),
         Arc::clone(&left_join_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         left_join,
         rejecting,
@@ -370,8 +370,8 @@ fn shared_left_join_output_with_one_null_rejecting_consumer_plan() -> QueryPlan 
         )
         .with_output_projection(left_projection(&["l_key", "r_key"])),
         left_join_schema,
-    );
-    builder.finish_gpu_resident(root)
+    ).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn inner_join_over_large_left_join_right_key_plan() -> QueryPlan {
@@ -442,7 +442,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         left_join_schema,
-    );
+    ).unwrap();
     let reason_join = builder.add_join(
         left_join,
         reason,
@@ -464,7 +464,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         reason_join_schema,
-    );
+    ).unwrap();
     let act_sales = Expr::case(
         vec![CaseWhen::new(
             Expr::is_not_null(Expr::column("sr_return_quantity")),
@@ -478,7 +478,7 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> QueryPlan {
             ProjectionOutput::new(Expr::column("ss_customer_sk"), Field::new("ss_customer_sk", DataType::Int32, false)),
             ProjectionOutput::new(act_sales, Field::new("act_sales", DataType::Int32, true)),
         ],
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         projected,
         AggregateSpec::new(
@@ -486,24 +486,22 @@ fn aggregate_over_reason_join_over_large_left_join_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("act_sales"), "sum_act_sales")],
         ),
         aggregate_schema,
-    );
+    ).unwrap();
     let final_projection = builder.add_projection(
         aggregate,
         projection_outputs(
             vec![Expr::column("ss_customer_sk"), Expr::column("sum_act_sales").alias("sumsales")],
             projection_schema,
         ),
-    );
+    ).unwrap();
     let sorted = builder.add_sort(
         final_projection,
         SortSpec::new(vec![
             SortExpr::new(Expr::column("sumsales"), false, true),
             SortExpr::new(Expr::column("ss_customer_sk"), false, true),
-        ]),
-        schema(&["ss_customer_sk", "sumsales"]),
-    );
-    let limited = builder.add_limit(sorted, LimitSpec::fetch(100), schema(&["ss_customer_sk", "sumsales"]));
-    builder.finish_with_host_sink(limited)
+        ])).unwrap();
+    let limited = builder.add_limit(sorted, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limited).unwrap()
 }
 
 fn union_aggregate_over_left_join_right_key_plan() -> QueryPlan {
@@ -539,26 +537,26 @@ fn union_aggregate_over_left_join_right_key_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&left_join_schema),
-    );
+    ).unwrap();
     let left_join_projected = builder.add_projection(
         left_join,
         vec![
             ProjectionOutput::new(Expr::column("site_sk"), Field::new("site_sk", DataType::Int32, true)),
             ProjectionOutput::new(Expr::column("returns_value"), Field::new("returns_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let direct_projected = builder.add_projection(
         direct,
         vec![
             ProjectionOutput::new(Expr::column("site_sk"), Field::new("site_sk", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("returns_value"), Field::new("returns_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let union_schema = Arc::new(Schema::new(vec![
         Field::new("site_sk", DataType::Int32, true),
         Field::new("returns_value", DataType::Int32, false),
     ]));
-    let union = builder.add_union(vec![left_join_projected, direct_projected], Arc::clone(&union_schema));
+    let union = builder.add_union(vec![left_join_projected, direct_projected], Arc::clone(&union_schema)).unwrap();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("site_sk", DataType::Int32, true),
         Field::new("sum_returns", DataType::Int32, true),
@@ -570,7 +568,7 @@ fn union_aggregate_over_left_join_right_key_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("returns_value"), "sum_returns")],
         ),
         Arc::clone(&aggregate_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         aggregate,
         site_dim,
@@ -580,8 +578,8 @@ fn union_aggregate_over_left_join_right_key_plan() -> QueryPlan {
         )
         .with_output_projection(left_projection(&["site_sk", "sum_returns"])),
         aggregate_schema,
-    );
-    builder.finish_gpu_resident(root)
+    ).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -618,8 +616,8 @@ fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> Qu
     if matches!(variant, MarkerNullFilterPlanVariant::NullsMatch) {
         spec = spec.with_null_equality(JoinNullEquality::NullsMatch);
     }
-    let left_join = builder.add_join(left, right, spec, Arc::clone(&marker_schema));
-    let filtered = builder.add_filter(left_join, Expr::is_null(Expr::column("r_key")), marker_schema);
+    let left_join = builder.add_join(left, right, spec, Arc::clone(&marker_schema)).unwrap();
+    let filtered = builder.add_filter(left_join, Expr::is_null(Expr::column("r_key"))).unwrap();
     let projected = if matches!(variant, MarkerNullFilterPlanVariant::MarkerEscapes) {
         builder.add_projection(
             filtered,
@@ -628,7 +626,7 @@ fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> Qu
                 ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
                 ProjectionOutput::new(Expr::column("r_key"), Field::new("r_key", DataType::Int32, true)),
             ],
-        )
+        ).unwrap()
     } else {
         builder.add_projection(
             filtered,
@@ -636,9 +634,9 @@ fn marker_null_filter_left_join_plan(variant: MarkerNullFilterPlanVariant) -> Qu
                 ProjectionOutput::new(Expr::column("l_key"), Field::new("l_key", DataType::Int32, false)),
                 ProjectionOutput::new(Expr::column("payload"), Field::new("payload", DataType::Int32, false)),
             ],
-        )
+        ).unwrap()
     };
-    builder.finish_gpu_resident(projected)
+    builder.finish_gpu_resident(projected).unwrap()
 }
 
 fn outer_join_null_rejection_only_options() -> NativeOptimizerOptions {

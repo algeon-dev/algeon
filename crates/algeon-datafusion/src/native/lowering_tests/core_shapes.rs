@@ -10,7 +10,7 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     write_float_measure_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -91,7 +91,7 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
     write_numeric_parquet_file(&second);
     let plan = aggregate_sort_limit_plan(parquet_scan(&dir), Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -131,7 +131,7 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
     ]);
     let plan = aggregate_sort_limit_plan(parquet_scan_with_access_plan(&path, access_plan), Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -166,7 +166,7 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
     let access_plan = ParquetAccessPlan::new(vec![RowGroupAccess::Selection(selection)]);
     let plan = aggregate_sort_limit_plan(parquet_scan_with_access_plan(&path, access_plan), Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -191,7 +191,7 @@ fn integer_modulo_projection_expression_is_rejected_during_native_planning() {
     write_numeric_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -210,7 +210,7 @@ fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
     write_float_measure_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -230,7 +230,7 @@ fn tpch_like_source_types_do_not_reject_native_planning() {
     let scan = parquet_scan(&path);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -251,7 +251,7 @@ fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
     let scan = parquet_scan(&path).with_fetch(Some(1)).unwrap();
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -273,7 +273,7 @@ fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
     let scan = parquet_scan_with_order_sensitive_limit(&path, 1);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -296,7 +296,7 @@ fn parquet_sorting_columns_scan_limit_lowers_to_native_source() {
     let scan = parquet_scan(&path).with_fetch(Some(1)).unwrap();
     assert!(scan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -319,7 +319,7 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
     let scan = parquet_scan_with_order_sensitive_limit_one_file_per_group(&dir, 1);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -342,7 +342,7 @@ fn preserve_order_multi_file_group_without_scan_limit_remains_rejected() {
     let scan = parquet_scan_with_preserve_order_one_file_per_group(&dir);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -366,7 +366,7 @@ fn declared_output_ordering_single_file_group_scan_lowers_to_native_source() {
     assert!(scan.properties().output_ordering().is_some());
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -387,7 +387,7 @@ fn parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source() {
     let scan = parquet_scan(&path);
     assert!(scan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native(scan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -408,7 +408,7 @@ fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_s
     let scan = parquet_scan_with_declared_output_ordering(&dir);
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -430,7 +430,7 @@ fn declared_output_ordering_multi_file_group_scan_with_overlapping_keys_is_rejec
     assert!(scan.properties().output_ordering().is_some());
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -453,7 +453,7 @@ fn declared_output_ordering_claim_through_aggregate_is_reestablished_with_native
     let plan = grouped_sum_aggregate_plan(scan);
     assert!(plan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -483,7 +483,7 @@ fn declared_output_ordering_limit_above_aggregate_is_rejected_instead_of_sorted_
     let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(aggregate, 0, Some(5)));
     assert!(plan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::NativeOrderedOutputUnsupported);
 
@@ -515,7 +515,7 @@ fn ordered_window_over_order_breaking_aggregate_is_rejected_before_root_sort_rep
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(BoundedWindowAggExec::try_new(vec![window_expr], aggregate, InputOrderMode::Sorted, true).unwrap());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::NativeOrderedOutputUnsupported);
 
@@ -537,7 +537,7 @@ fn declared_output_ordering_multi_partition_memory_source_is_rejected() {
     let plan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
     assert!(plan.properties().output_ordering().is_some());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -564,7 +564,7 @@ fn sort_preserving_merge_over_partition_preserving_memory_sort_lowers() {
         Arc::new(SortExec::new(ordering.clone(), scan).with_preserve_partitioning(true));
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, sorted));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -590,7 +590,7 @@ fn sort_preserving_merge_over_ordered_memory_source_lowers_without_child_sort() 
     let scan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, scan));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -627,7 +627,7 @@ fn projection_over_sort_preserving_merge_and_ordered_union_lowers() {
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(ProjectionExec::try_new([(col("key", &merge.schema()).unwrap(), "key".to_string())], merge).unwrap());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -654,7 +654,7 @@ fn partition_preserving_sort_with_single_input_partition_lowers() {
     assert_eq!(scan.properties().output_partitioning().partition_count(), 1);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(ordering, scan).with_preserve_partitioning(true));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -679,7 +679,7 @@ fn partition_preserving_sort_with_multiple_input_partitions_is_rejected() {
     assert_eq!(scan.properties().output_partitioning().partition_count(), 2);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(ordering, scan).with_preserve_partitioning(true));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -699,7 +699,7 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
     write_numeric_parquet_file(&path);
     let plan = aggregate_topk_plan(parquet_scan(&path), Operator::Plus, 2);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -721,7 +721,7 @@ fn input_tree_sort_fetch_lowers_to_native_sort_plus_limit() {
     write_numeric_parquet_file(&path);
     let plan = count_over_topk_sort_fetch_input_plan(parquet_scan(&path), 2);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -763,7 +763,7 @@ fn sort_without_fetch_over_aggregate_lowers_without_native_limit() {
     write_numeric_parquet_file(&path);
     let plan = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -785,7 +785,7 @@ fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
     let aggregate = Arc::clone(sort.input());
     let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(aggregate, 0, Some(2)));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -805,7 +805,7 @@ fn nested_limit_offsets_push_enough_rows_to_source() {
     let inner: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(scan, 50, Some(100)));
     let outer: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(inner, 100, Some(10)));
 
-    let result = lower_physical_plan_to_native(outer);
+    let result = lower_physical_plan_to_native(outer).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
@@ -825,7 +825,7 @@ fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
     write_numeric_parquet_file(&path);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(parquet_scan(&path), 100, Some(0)));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
@@ -844,7 +844,7 @@ fn sort_preserving_merge_without_fetch_lowers_to_native_sort() {
     let merge: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), Arc::clone(&sort_plan)));
 
-    let result = lower_physical_plan_to_native(merge);
+    let result = lower_physical_plan_to_native(merge).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -872,7 +872,7 @@ fn sort_preserving_merge_fetch_with_matching_child_sort_lowers_to_native_sort_pl
     let merge: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), Arc::clone(&sort_plan)).with_fetch(Some(2)));
 
-    let result = lower_physical_plan_to_native(merge);
+    let result = lower_physical_plan_to_native(merge).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -896,7 +896,7 @@ fn sort_preserving_merge_fetch_without_child_ordering_is_rejected() {
     let merge: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), Arc::clone(sort.input())).with_fetch(Some(2)));
 
-    let result = lower_physical_plan_to_native(merge);
+    let result = lower_physical_plan_to_native(merge).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -928,7 +928,7 @@ fn sort_preserving_merge_fetch_with_mismatched_child_sort_is_rejected() {
     let merge: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), child_sort).with_fetch(Some(2)));
 
-    let result = lower_physical_plan_to_native(merge);
+    let result = lower_physical_plan_to_native(merge).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -955,7 +955,7 @@ fn sort_preserving_merge_with_same_name_different_index_ordering_is_rejected() {
             .expect("SPM ordering should be non-empty");
     let merge: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(merge_ordering, sort_plan));
 
-    let result = lower_physical_plan_to_native(merge);
+    let result = lower_physical_plan_to_native(merge).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -982,7 +982,7 @@ fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() 
     let merge: Arc<dyn ExecutionPlan> =
         Arc::new(SortPreservingMergeExec::new(sort.expr().clone(), child_sort).with_fetch(Some(2)));
 
-    let result = lower_physical_plan_to_native(merge);
+    let result = lower_physical_plan_to_native(merge).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -1004,7 +1004,7 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
     write_numeric_parquet_file(&path);
     let plan = grouped_late_column_multi_sum_sort_limit_plan(parquet_scan(&path));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1103,7 +1103,7 @@ fn sort_projection_sort_nested_shape_preserves_both_sort_orderings_and_fetches()
     .unwrap();
     let outer_sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(outer_sort_exprs, projection).with_fetch(Some(2)));
 
-    let result = lower_physical_plan_to_native(outer_sort);
+    let result = lower_physical_plan_to_native(outer_sort).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -1194,7 +1194,7 @@ fn projection_sort_projection_aggregate_nested_shape_preserves_both_projections(
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(outer_projection);
+    let result = lower_physical_plan_to_native(outer_projection).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

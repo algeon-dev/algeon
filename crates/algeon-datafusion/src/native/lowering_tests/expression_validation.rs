@@ -15,7 +15,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
     let x00 = binary(cast_payload, Operator::Plus, col("m00", &filter_schema).unwrap(), &filter_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_projected_x00(scan, predicate, x00);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -51,7 +51,7 @@ fn scan_only_partial_reader_predicate_keeps_native_residual_filter() {
     let scan = parquet_scan_with_pushed_down_partial_reader_predicate(&path);
     let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -90,7 +90,7 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(ProjectionExec::try_new([ProjectionExpr { expr: ratio, alias: "ratio".to_string() }], scan).unwrap());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -121,7 +121,7 @@ async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
     write_parquet_file_with_tpch_like_columns(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_ROUND_DECIMAL_INTEGRAL_CAST_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -152,7 +152,7 @@ async fn sql_nullif_lowers_to_case_with_null_aware_comparison() {
         sql_plan(&path, direct_friendly_sql_session_config(), "SELECT NULLIF(payload, 10) AS maybe_payload FROM bench")
             .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -203,7 +203,7 @@ async fn sql_ilike_ascii_pattern_remains_rejected() {
         sql_plan(&path, direct_friendly_sql_session_config(), "SELECT label ILIKE 'A%' AS label_match FROM bench")
             .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -224,7 +224,7 @@ async fn sql_ilike_non_ascii_pattern_remains_rejected() {
         sql_plan(&path, direct_friendly_sql_session_config(), "SELECT label ILIKE 'Å%' AS label_match FROM bench")
             .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -248,7 +248,7 @@ async fn sql_trim_family_lowers_to_native_string_trim_expressions() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -324,7 +324,7 @@ fn string_predicates_lower_to_native_string_predicate_expressions() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -372,7 +372,7 @@ fn date_trunc_plural_and_nanosecond_grains_reject_during_native_planning() {
                 .unwrap(),
         );
 
-        let result = lower_physical_plan_to_native(plan);
+        let result = lower_physical_plan_to_native(plan).unwrap();
 
         assert_eq!(result.selected_count(), 0, "{grain} outcomes={:?}", result.report.outcomes());
         assert_eq!(result.not_selected_count(), 1, "{grain} outcomes={:?}", result.report.outcomes());
@@ -404,7 +404,7 @@ fn date_trunc_output_unit_mismatch_rejects_during_native_planning() {
         ProjectionExec::try_new([ProjectionExpr { expr: date_trunc, alias: "trunc_day".to_string() }], scan).unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -430,7 +430,7 @@ fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     let predicate = binary(try_cast, Operator::GtEq, lit(ScalarValue::Int64(Some(10))), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -458,7 +458,7 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
     .unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1);
@@ -491,7 +491,7 @@ fn list_utf8_is_null_filter_is_rejected_during_native_planning() {
         .unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -509,7 +509,7 @@ async fn list_utf8_count_window_is_rejected_during_native_planning() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -527,7 +527,7 @@ async fn list_utf8_lag_window_is_rejected_during_native_planning() {
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
@@ -547,7 +547,7 @@ fn dynamic_filter_expression_lowers_as_current_inner_expression() {
     let predicate = binary(dynamic_filter, Operator::And, payload_filter, &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -576,7 +576,7 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
     ));
     let plan = grouped_count_projection_plan(scan, bad_substring, "bad_substring");
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -599,7 +599,7 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
     let predicate = binary(cast, Operator::Eq, lit(ScalarValue::Utf8(Some("10".to_string()))), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty(), "string cast should not lower");
     assert_eq!(result.not_selected_count(), 1, "string cast outcomes={:?}", result.report.outcomes());
@@ -631,7 +631,7 @@ fn integer_to_timestamp_cast_lowers_during_native_planning() {
         binary(cast, Operator::Eq, lit(ScalarValue::TimestampNanosecond(Some(10), None)), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let native = result.plans.first().expect("timestamp cast should lower to a native plan").to_string();
@@ -651,7 +651,7 @@ fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
     let predicate = binary(cast, Operator::Eq, lit(ScalarValue::Decimal128(Some(10), 10, 0)), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
@@ -672,7 +672,7 @@ fn decimal_to_float32_cast_lowers_through_float64() {
     let predicate = binary(cast, Operator::GtEq, lit(ScalarValue::Float32(Some(10.0))), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
@@ -692,7 +692,7 @@ fn lossy_numeric_cast_is_rejected_during_native_planning() {
     let predicate = binary(cast, Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema).unwrap();
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -711,7 +711,7 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NO_FILTER_BENCHMARK_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -746,7 +746,7 @@ fn integer_division_is_rejected_during_native_planning() {
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(ProjectionExec::try_new([ProjectionExpr { expr: ratio, alias: "ratio".to_string() }], scan).unwrap());
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -773,7 +773,7 @@ fn integer_modulo_is_rejected_during_native_planning() {
         ProjectionExec::try_new([ProjectionExpr { expr: remainder, alias: "remainder".to_string() }], scan).unwrap(),
     );
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native(plan).unwrap();
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -791,7 +791,7 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let rejected_results =
-        [lower_physical_plan_to_native(aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo))];
+        [lower_physical_plan_to_native(aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo)).unwrap()];
 
     for result in rejected_results {
         assert_eq!(result.not_selected_count(), 1);

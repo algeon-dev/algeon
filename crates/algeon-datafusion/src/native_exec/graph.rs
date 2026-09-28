@@ -1320,7 +1320,7 @@ mod tests {
             let mut builder = QueryPlanBuilder::new();
             let source =
                 builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-            let plan = builder.finish_gpu_resident(source);
+            let plan = builder.finish_gpu_resident(source).unwrap();
             let attempt = backend
                 .backend()
                 .session_capability()

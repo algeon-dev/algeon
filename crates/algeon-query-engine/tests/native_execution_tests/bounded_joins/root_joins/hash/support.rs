@@ -31,8 +31,8 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -94,8 +94,8 @@ fn bounded_native_query_uses_single_pass_reusable_probe_for_unique_inner_build()
             .with_build_side(JoinSide::Right)
             .with_build_artifact_id("orders_by_order_id"),
         Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();

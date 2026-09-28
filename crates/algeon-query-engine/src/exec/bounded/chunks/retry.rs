@@ -189,7 +189,7 @@ mod tests {
 
     fn retry_parent_chunk() -> SourceChunk {
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(1),
+            source_node_id: NodeId::from_index_for_test(1),
             chunk_index: 0,
             file_index: 0,
             location: ParquetSourceLocation::LocalPath(PathBuf::from("part-0.parquet")),

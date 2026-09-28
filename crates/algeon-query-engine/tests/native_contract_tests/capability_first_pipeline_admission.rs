@@ -111,18 +111,22 @@ fn capability_admission_accepts_independent_source_unary_branches_behind_union()
     let mut builder = QueryPlanBuilder::new();
     let left =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let left = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
+    let left = builder
+        .add_projection(
+            left,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
     let right =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let right = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
+    let right = builder
+        .add_projection(
+            right,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
 
     let decision = admit(
         &plan,
@@ -153,11 +157,13 @@ fn capability_admission_accepts_source_unary_without_requiring_a_union() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-    let projection = builder.add_projection(
-        source,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let decision = admit(
         &plan,
@@ -201,26 +207,27 @@ fn capability_admission_accepts_non_join_scan_filter_grouped_aggregate_topk() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), batches)));
-    let filtered = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("measure"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&input_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        filtered,
-        AggregateSpec::new(
-            vec![Expr::column("group_key")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "row_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("group_key"), false, false)]),
-        Arc::clone(&aggregate_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(10), Arc::clone(&aggregate_schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let filtered = builder
+        .add_filter(
+            source,
+            Expr::binary(Expr::column("measure"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                vec![Expr::column("group_key")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("measure"), "row_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("group_key"), false, false)]))
+        .unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(10)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let decision = admit(
         &plan,
@@ -255,18 +262,20 @@ fn capability_admission_accepts_non_join_distinct_aggregate_with_source_stream_c
         Arc::clone(&input_schema),
         vec!["value".to_string()],
     )));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![
-                AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values")
-                    .with_distinct(true),
-            ],
-        ),
-        Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int64, false)])),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "distinct_values")
+                        .with_distinct(true),
+                ],
+            ),
+            Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int64, false)])),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let decision = admit(
         &plan,
@@ -311,15 +320,10 @@ fn literal_row_number_plan(order_by: bool) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![batch])));
     let order_by = if order_by { vec![SortExpr::new(Expr::column("value"), false, false)] } else { Vec::new() };
-    let window = builder.add_window(
-        source,
-        WindowSpec::new(Vec::new(), order_by, vec![WindowFunction::row_number("row_number")]),
-        Arc::new(Schema::new(vec![
-            Field::new("value", DataType::Int32, false),
-            Field::new("row_number", DataType::UInt64, false),
-        ])),
-    );
-    builder.finish_with_host_sink(window)
+    let window = builder
+        .add_window(source, WindowSpec::new(Vec::new(), order_by, vec![WindowFunction::row_number("row_number")]))
+        .unwrap();
+    builder.finish_with_host_sink(window).unwrap()
 }
 
 #[test]
@@ -371,20 +375,17 @@ fn partitioned_row_number_plan(input_sort: Option<Vec<SortExpr>>, order_by: bool
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![batch])));
     let input = match input_sort {
-        Some(keys) => builder.add_sort(source, SortSpec::new(keys), Arc::clone(&input_schema)),
+        Some(keys) => builder.add_sort(source, SortSpec::new(keys)).unwrap(),
         None => source,
     };
     let order_by = if order_by { vec![SortExpr::new(Expr::column("o"), false, false)] } else { Vec::new() };
-    let window = builder.add_window(
-        input,
-        WindowSpec::new(vec![Expr::column("p")], order_by, vec![WindowFunction::row_number("row_number")]),
-        Arc::new(Schema::new(vec![
-            Field::new("p", DataType::Int32, false),
-            Field::new("o", DataType::Int32, false),
-            Field::new("row_number", DataType::UInt64, false),
-        ])),
-    );
-    builder.finish_with_host_sink(window)
+    let window = builder
+        .add_window(
+            input,
+            WindowSpec::new(vec![Expr::column("p")], order_by, vec![WindowFunction::row_number("row_number")]),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(window).unwrap()
 }
 
 fn admit_default(plan: &QueryPlan) -> QueryEngineResult<AdmissionDecision> {
@@ -436,14 +437,17 @@ fn capability_admission_refuses_a_plan_reading_a_column_its_input_does_not_produ
     .expect("literal batch");
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![batch])));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")]),
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)])),
-    );
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")]),
+            Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)])),
+        )
+        .unwrap();
     let projection_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let projection = builder.add_projection(aggregate, projection_outputs(vec![Expr::column("k")], projection_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection =
+        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("k")], projection_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = admit_default(&plan).expect_err("a plan reading a missing column has no admission decision");
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
@@ -466,15 +470,17 @@ fn capability_admission_rejects_a_type_the_backend_does_not_support_with_its_val
         Arc::clone(&input_schema),
         vec!["ts".to_string(), "v".to_string()],
     )));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            vec![Expr::column("ts")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
-        ),
-        Arc::new(Schema::new(vec![Field::new("ts", timestamp, false), Field::new("total", DataType::Int64, true)])),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("ts")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+            ),
+            Arc::new(Schema::new(vec![Field::new("ts", timestamp, false), Field::new("total", DataType::Int64, true)])),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let decision = admit_default(&plan).expect("an unsupported group key type is a decision");
     let projection = decision.rejection().expect("an unsupported group key type is rejected");
@@ -484,6 +490,43 @@ fn capability_admission_rejects_a_type_the_backend_does_not_support_with_its_val
     let error = rejection.execution_error(&plan);
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(Some(error.operation()), projection.facts.get("validation_operation").map(String::as_str));
+}
+
+#[test]
+fn capability_admission_reports_a_malformed_node_behind_an_unsupported_one() {
+    // The aggregate keys on a timezone-aware timestamp the backend cannot run;
+    // the projection above it reads a column the aggregate does not produce.
+    // The plan is malformed, so it has no admission decision even though the
+    // unsupported node comes first.
+    let timestamp = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("ts", timestamp.clone(), false),
+        Field::new("v", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/capability-first-malformed-behind-unsupported.parquet",
+        Arc::clone(&input_schema),
+        vec!["ts".to_string(), "v".to_string()],
+    )));
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("ts")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
+            ),
+            Arc::new(Schema::new(vec![Field::new("ts", timestamp, false), Field::new("total", DataType::Int64, true)])),
+        )
+        .unwrap();
+    let projection_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+    let projection =
+        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("v")], projection_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+
+    let error = admit_default(&plan).expect_err("a malformed plan has no admission decision");
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("column"), Some("v"));
 }
 
 #[test]
@@ -537,7 +580,6 @@ fn rollup_rank_over_materialized_partition_key_plan() -> QueryPlan {
     let keyed_schema = Arc::new(Schema::new(keyed_fields.clone()));
     let mut ranked_fields = keyed_fields;
     ranked_fields.push(Field::new("rk", DataType::UInt64, false));
-    let ranked_schema = Arc::new(Schema::new(ranked_fields));
     let partition_key = || {
         Expr::case(
             vec![CaseWhen::new(
@@ -554,105 +596,118 @@ fn rollup_rank_over_materialized_partition_key_plan() -> QueryPlan {
         fact_schema,
         vec!["id".to_string(), "category".to_string(), "amount".to_string()],
     )));
-    let detail = builder.add_aggregate(
-        fact,
-        AggregateSpec::new(
-            vec![Expr::column("id"), Expr::column("category")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "detail_sales")],
-        ),
-        detail_schema,
-    );
+    let detail = builder
+        .add_aggregate(
+            fact,
+            AggregateSpec::new(
+                vec![Expr::column("id"), Expr::column("category")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "detail_sales")],
+            ),
+            detail_schema,
+        )
+        .unwrap();
     let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         "/tmp/rollup-rank-materialized-key-dim.parquet",
         dim_schema,
         vec!["id".to_string()],
     )));
-    let join = builder.add_join(
-        detail,
-        dim,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+    let join = builder
+        .add_join(
+            detail,
+            dim,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "detail_sales", "detail_sales"), "detail_sales"),
+            ])
+            .with_build_side(JoinSide::Right),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "detail_sales", "detail_sales"), "detail_sales"),
-        ])
-        .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let rollup = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("category")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("detail_sales"), "sumsales")],
+        .unwrap();
+    let rollup = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("category")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("detail_sales"), "sumsales")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
+            Arc::clone(&aggregate_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort_keyed = builder.add_projection(
-        rollup,
-        projection_outputs(
-            vec![
-                Expr::column("category"),
-                Expr::column("__grouping_id"),
-                Expr::column("sumsales"),
-                partition_key().alias("__algeon_native_sort_key_0"),
-            ],
-            Arc::clone(&sort_keyed_schema),
-        ),
-    );
-    let rank_input_sort = builder.add_sort(
-        sort_keyed,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("__algeon_native_sort_key_0"), false, false),
-            SortExpr::new(Expr::column("sumsales"), true, true),
-        ]),
-        sort_keyed_schema,
-    );
-    let sorted = builder.add_projection(
-        rank_input_sort,
-        projection_outputs(
-            vec![Expr::column("category"), Expr::column("__grouping_id"), Expr::column("sumsales")],
-            aggregate_schema,
-        ),
-    );
-    let keyed = builder.add_projection(
-        sorted,
-        projection_outputs(
-            vec![
-                Expr::column("category"),
-                Expr::column("__grouping_id"),
-                Expr::column("sumsales"),
-                partition_key().alias("__algeon_native_window_key_0"),
-            ],
-            keyed_schema,
-        ),
-    );
-    let window = builder.add_window(
-        keyed,
-        WindowSpec::new(
-            vec![Expr::column("__algeon_native_window_key_0")],
-            vec![SortExpr::new(Expr::column("sumsales"), true, true)],
-            vec![WindowFunction::rank("rk")],
-        ),
-        Arc::clone(&ranked_schema),
-    );
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))),
-        Arc::clone(&ranked_schema),
-    );
-    let final_sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("category"), false, true),
-            SortExpr::new(Expr::column("sumsales"), true, false),
-        ]),
-        Arc::clone(&ranked_schema),
-    );
-    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
-    builder.finish_with_host_sink(limit)
+        .unwrap();
+    let sort_keyed = builder
+        .add_projection(
+            rollup,
+            projection_outputs(
+                vec![
+                    Expr::column("category"),
+                    Expr::column("__grouping_id"),
+                    Expr::column("sumsales"),
+                    partition_key().alias("__algeon_native_sort_key_0"),
+                ],
+                Arc::clone(&sort_keyed_schema),
+            ),
+        )
+        .unwrap();
+    let rank_input_sort = builder
+        .add_sort(
+            sort_keyed,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("__algeon_native_sort_key_0"), false, false),
+                SortExpr::new(Expr::column("sumsales"), true, true),
+            ]),
+        )
+        .unwrap();
+    let sorted = builder
+        .add_projection(
+            rank_input_sort,
+            projection_outputs(
+                vec![Expr::column("category"), Expr::column("__grouping_id"), Expr::column("sumsales")],
+                aggregate_schema,
+            ),
+        )
+        .unwrap();
+    let keyed = builder
+        .add_projection(
+            sorted,
+            projection_outputs(
+                vec![
+                    Expr::column("category"),
+                    Expr::column("__grouping_id"),
+                    Expr::column("sumsales"),
+                    partition_key().alias("__algeon_native_window_key_0"),
+                ],
+                keyed_schema,
+            ),
+        )
+        .unwrap();
+    let window = builder
+        .add_window(
+            keyed,
+            WindowSpec::new(
+                vec![Expr::column("__algeon_native_window_key_0")],
+                vec![SortExpr::new(Expr::column("sumsales"), true, true)],
+                vec![WindowFunction::rank("rk")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))))
+        .unwrap();
+    let final_sort = builder
+        .add_sort(
+            filter,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("category"), false, true),
+                SortExpr::new(Expr::column("sumsales"), true, false),
+            ]),
+        )
+        .unwrap();
+    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 #[test]
@@ -721,12 +776,13 @@ fn file_scan_plan(file: LocalParquetFile, threshold: i32) -> QueryPlan {
         Arc::clone(&schema),
         vec!["value".to_string()],
     )));
-    let filter = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(threshold))),
-        schema,
-    );
-    builder.finish_with_host_sink(filter)
+    let filter = builder
+        .add_filter(
+            source,
+            Expr::binary(Expr::column("value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(threshold))),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(filter).unwrap()
 }
 
 fn root_full_sort_left_semi_grouped_aggregate_plan() -> QueryPlan {
@@ -751,44 +807,48 @@ fn root_full_sort_left_semi_grouped_aggregate_plan() -> QueryPlan {
         Arc::clone(&right_schema),
         vec!["order_key".to_string()],
     )));
-    let semi = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_key", "order_key"),
-                ColumnRef::input(1, "order_key", "order_key"),
-            )],
+    let semi = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_key", "order_key"),
+                    ColumnRef::input(1, "order_key", "order_key"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "order_key", "order_key"), "order_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "priority", "priority"), "priority"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&left_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "order_key", "order_key"), "order_key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "priority", "priority"), "priority"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&left_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        semi,
-        AggregateSpec::new(
-            vec![Expr::column("priority")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_key"), "order_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let projection = builder.add_projection(
-        aggregate,
-        vec![
-            ProjectionOutput::new(Expr::column("priority"), Field::new("priority", DataType::Utf8, false)),
-            ProjectionOutput::new(Expr::column("order_count"), Field::new("order_count", DataType::UInt64, false)),
-        ],
-    );
-    let sort = builder.add_sort(
-        projection,
-        SortSpec::new(vec![SortExpr::new(Expr::column("priority"), false, false)]),
-        aggregate_schema,
-    );
-    builder.finish_with_host_sink(sort)
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            semi,
+            AggregateSpec::new(
+                vec![Expr::column("priority")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_key"), "order_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            vec![
+                ProjectionOutput::new(Expr::column("priority"), Field::new("priority", DataType::Utf8, false)),
+                ProjectionOutput::new(Expr::column("order_count"), Field::new("order_count", DataType::UInt64, false)),
+            ],
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("priority"), false, false)]))
+        .unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 fn dynamic_filter_control_cycle_plan() -> QueryPlan {
@@ -805,41 +865,45 @@ fn dynamic_filter_control_cycle_plan() -> QueryPlan {
         Arc::clone(&build_schema),
         vec!["build_key".to_string()],
     )));
-    let build_subtree = builder.add_join(
-        build_seed,
-        shared_probe,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
+    let build_subtree = builder
+        .add_join(
+            build_seed,
+            shared_probe,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "build_key", "build_key"),
+                    ColumnRef::input(1, "shared_key", "shared_key"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
                 ColumnRef::input(0, "build_key", "build_key"),
-                ColumnRef::input(1, "shared_key", "shared_key"),
-            )],
+                "build_key",
+            )])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&build_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "build_key", "build_key"),
-            "build_key",
-        )])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&build_schema),
-    );
-    let root = builder.add_join(
-        shared_probe,
-        build_subtree,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
+        .unwrap();
+    let root = builder
+        .add_join(
+            shared_probe,
+            build_subtree,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "shared_key", "shared_key"),
+                    ColumnRef::input(1, "build_key", "build_key"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
                 ColumnRef::input(0, "shared_key", "shared_key"),
-                ColumnRef::input(1, "build_key", "build_key"),
-            )],
+                "shared_key",
+            )])
+            .with_build_side(JoinSide::Right),
+            source_schema,
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "shared_key", "shared_key"),
-            "shared_key",
-        )])
-        .with_build_side(JoinSide::Right),
-        source_schema,
-    );
-    let plan = builder.finish_with_host_sink(root);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
     plan.with_dynamic_filter_routes(vec![DynamicFilterRoute::new(
         DynamicFilterId::new(0),
         DynamicFilterProducer::HashJoinBuild {

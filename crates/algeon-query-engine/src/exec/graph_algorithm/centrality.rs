@@ -6,7 +6,7 @@ use cugraph::{
 };
 
 use super::{
-    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
+    DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult,
     QueryError, QueryErrorCode, Result, betweenness_centrality_params, cudf_query_error,
     edge_betweenness_centrality_params, eigenvector_centrality_params, hits_params, katz_centrality_params,
     map_cugraph_error, normalize_graph_result_schema, pagerank_params, personalized_pagerank_params, project_edge_list,
@@ -88,7 +88,7 @@ pub(super) fn execute_personalized_pagerank(
             "query_engine.graph_algorithm.personalized_pagerank",
             "PersonalizedPageRank graph algorithm node is missing its personalization side input",
         )
-        .with_fact("side_input_node", params.personalization.input)
+        .with_fact("side_input_ordinal", params.personalization.input)
     })?;
 
     let input = input.into_frame();
@@ -405,7 +405,7 @@ pub(super) fn execute_edge_betweenness_centrality(
 
 fn betweenness_i32_seeds(
     seeds: &GraphBetweennessSeeds,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<Vec<i32>> {
     match seeds {
         GraphBetweennessSeeds::I64(values) => values
@@ -435,7 +435,7 @@ fn betweenness_i32_seeds(
 
 fn betweenness_i64_seeds(
     seeds: &GraphBetweennessSeeds,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<Vec<i64>> {
     match seeds {
         GraphBetweennessSeeds::I64(values) => Ok(values.clone()),
@@ -453,7 +453,7 @@ fn betweenness_i64_seeds(
 
 fn betweenness_seed_count(
     seeds: &GraphBetweennessSeeds,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
 ) -> Result<u64> {
     match seeds {
         GraphBetweennessSeeds::I64(values) => Ok(values.len() as u64),
@@ -464,7 +464,7 @@ fn betweenness_seed_count(
                     "query_engine.graph_algorithm.betweenness_seeds",
                     "betweenness seed side input was not executed",
                 )
-                .with_fact("side_input_node", input.input)
+                .with_fact("side_input_ordinal", input.input)
                 .with_fact("column", &input.column)
             })?;
             if rows > *row_count_upper_bound {
@@ -483,7 +483,7 @@ fn betweenness_seed_count(
 
 fn betweenness_input_series(
     input: &GraphPredicateInput,
-    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    side_inputs: &std::collections::BTreeMap<usize, GpuDataFrame>,
     vertex_type: cudf::TypeId,
 ) -> Result<cudf::Series> {
     let frame = side_inputs.get(&input.input).ok_or_else(|| {
@@ -492,7 +492,7 @@ fn betweenness_input_series(
             "query_engine.graph_algorithm.betweenness_seeds",
             "betweenness seed side input was not executed",
         )
-        .with_fact("side_input_node", input.input)
+        .with_fact("side_input_ordinal", input.input)
         .with_fact("column", &input.column)
     })?;
     let series = frame.frame().series(&input.column).map_err(|error| {

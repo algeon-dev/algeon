@@ -29,28 +29,32 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
         builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&right_path, &right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("order_id")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregate_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(10), aggregate_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            join_schema,
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("order_id")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(10)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -100,35 +104,40 @@ fn bounded_native_query_fuses_compiled_sort_limit_with_topk() {
         builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&right_path, &right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("order_id")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("line_count"), true, false),
-            SortExpr::new(Expr::column("order_id"), false, false),
-        ]),
-        Arc::clone(&aggregate_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), aggregate_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            join_schema,
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("order_id")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("line_count"), true, false),
+                SortExpr::new(Expr::column("order_id"), false, false),
+            ]),
+        )
+        .unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -186,54 +195,64 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         &orders_schema,
         &["o_orderkey", "o_custkey"],
     )));
-    let join = builder.add_join(
-        customers,
-        orders,
-        JoinSpec::new(
-            JoinType::Left,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "c_custkey", "c_custkey"),
-                ColumnRef::input(1, "o_custkey", "o_custkey"),
-            )],
+    let join = builder
+        .add_join(
+            customers,
+            orders,
+            JoinSpec::new(
+                JoinType::Left,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "c_custkey", "c_custkey"),
+                    ColumnRef::input(1, "o_custkey", "o_custkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+                JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
-            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let projection = builder.add_projection(
-        join,
-        projection_outputs(vec![Expr::column("c_custkey"), Expr::column("o_orderkey")], Arc::clone(&join_schema)),
-    );
-    let customer_counts = builder.add_aggregate(
-        projection,
-        AggregateSpec::new(
-            vec![Expr::column("c_custkey")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
-        ),
-        customer_count_schema,
-    );
-    let count_projection =
-        builder.add_projection(customer_counts, projection_outputs(vec![Expr::column("c_count")], c_count_schema));
-    let distribution = builder.add_aggregate(
-        count_projection,
-        AggregateSpec::new(
-            vec![Expr::column("c_count")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("c_count"), "custdist")],
-        ),
-        Arc::clone(&final_schema),
-    );
-    let sort = builder.add_sort(
-        distribution,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("custdist"), true, false),
-            SortExpr::new(Expr::column("c_count"), true, false),
-        ]),
-        final_schema,
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            join,
+            projection_outputs(vec![Expr::column("c_custkey"), Expr::column("o_orderkey")], Arc::clone(&join_schema)),
+        )
+        .unwrap();
+    let customer_counts = builder
+        .add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column("c_custkey")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+            ),
+            customer_count_schema,
+        )
+        .unwrap();
+    let count_projection = builder
+        .add_projection(customer_counts, projection_outputs(vec![Expr::column("c_count")], c_count_schema))
+        .unwrap();
+    let distribution = builder
+        .add_aggregate(
+            count_projection,
+            AggregateSpec::new(
+                vec![Expr::column("c_count")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("c_count"), "custdist")],
+            ),
+            Arc::clone(&final_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            distribution,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("custdist"), true, false),
+                SortExpr::new(Expr::column("c_count"), true, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -287,14 +306,6 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
         Field::new("__grouping_id", DataType::UInt32, false),
         Field::new("sumsales", DataType::Int64, true),
     ]));
-    let ranked_schema = Arc::new(Schema::new(vec![
-        Field::new("category", DataType::Utf8, true),
-        Field::new("class", DataType::Utf8, true),
-        Field::new("brand", DataType::Utf8, true),
-        Field::new("__grouping_id", DataType::UInt32, false),
-        Field::new("sumsales", DataType::Int64, true),
-        Field::new("rk", DataType::UInt64, false),
-    ]));
 
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
@@ -302,83 +313,95 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
         fact_schema,
         vec!["id".into(), "category".into(), "class".into(), "brand".into(), "amount".into()],
     )));
-    let detail_aggregate = builder.add_aggregate(
-        fact,
-        AggregateSpec::new(
-            vec![Expr::column("id"), Expr::column("category"), Expr::column("class"), Expr::column("brand")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "detail_sales")],
-        ),
-        Arc::clone(&detail_aggregate_schema),
-    );
+    let detail_aggregate = builder
+        .add_aggregate(
+            fact,
+            AggregateSpec::new(
+                vec![Expr::column("id"), Expr::column("category"), Expr::column("class"), Expr::column("brand")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "detail_sales")],
+            ),
+            Arc::clone(&detail_aggregate_schema),
+        )
+        .unwrap();
     let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_path(
         &dim_path,
         dim_schema,
         vec!["id".into()],
     )));
-    let join = builder.add_join(
-        detail_aggregate,
-        dim,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+    let join = builder
+        .add_join(
+            detail_aggregate,
+            dim,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "class", "class"), "class"),
+                JoinOutputColumn::left(ColumnRef::input(0, "brand", "brand"), "brand"),
+                JoinOutputColumn::left(ColumnRef::input(0, "detail_sales", "detail_sales"), "detail_sales"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "class", "class"), "class"),
-            JoinOutputColumn::left(ColumnRef::input(0, "brand", "brand"), "brand"),
-            JoinOutputColumn::left(ColumnRef::input(0, "detail_sales", "detail_sales"), "detail_sales"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("category"), Expr::column("class"), Expr::column("brand")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("detail_sales"), "sumsales")],
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("category"), Expr::column("class"), Expr::column("brand")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("detail_sales"), "sumsales")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(
+                vec![
+                    vec![false, false, false],
+                    vec![false, false, true],
+                    vec![false, true, true],
+                    vec![true, true, true],
+                ],
+                "__grouping_id",
+            )),
+            Arc::clone(&aggregate_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(
-            vec![vec![false, false, false], vec![false, false, true], vec![false, true, true], vec![true, true, true]],
-            "__grouping_id",
-        )),
-        Arc::clone(&aggregate_schema),
-    );
+        .unwrap();
     // DataFusion sorts a rank input on its partition key before the order
     // key, so each category's rows are adjacent when the rank counts them.
-    let window_input_sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("category"), false, true),
-            SortExpr::new(Expr::column("sumsales"), true, false),
-        ]),
-        Arc::clone(&aggregate_schema),
-    );
-    let window = builder.add_window(
-        window_input_sort,
-        WindowSpec::new(
-            vec![Expr::column("category")],
-            vec![SortExpr::new(Expr::column("sumsales"), true, false)],
-            vec![WindowFunction::rank("rk")],
-        ),
-        Arc::clone(&ranked_schema),
-    );
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))),
-        Arc::clone(&ranked_schema),
-    );
-    let final_sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("category"), false, true),
-            SortExpr::new(Expr::column("class"), false, true),
-            SortExpr::new(Expr::column("brand"), false, true),
-            SortExpr::new(Expr::column("sumsales"), true, false),
-        ]),
-        Arc::clone(&ranked_schema),
-    );
-    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), ranked_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let window_input_sort = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("category"), false, true),
+                SortExpr::new(Expr::column("sumsales"), true, false),
+            ]),
+        )
+        .unwrap();
+    let window = builder
+        .add_window(
+            window_input_sort,
+            WindowSpec::new(
+                vec![Expr::column("category")],
+                vec![SortExpr::new(Expr::column("sumsales"), true, false)],
+                vec![WindowFunction::rank("rk")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("rk"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(100))))
+        .unwrap();
+    let final_sort = builder
+        .add_sort(
+            filter,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("category"), false, true),
+                SortExpr::new(Expr::column("class"), false, true),
+                SortExpr::new(Expr::column("brand"), false, true),
+                SortExpr::new(Expr::column("sumsales"), true, false),
+            ]),
+        )
+        .unwrap();
+    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
     assert_bounded_pipeline_admitted(&plan);
 
     let context = bounded_join_execution_context(&runtime);
@@ -496,27 +519,31 @@ fn bounded_stddev_join_aggregate_plan(runtime: &Arc<cudf::Runtime>, dir: &Path) 
         builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
     let right =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&right_path, &right_schema, &["order_id"])));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("order_id")],
-            vec![AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "qty_stddev")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregate_schema));
-    builder.finish_with_host_sink(sort)
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            join_schema,
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("order_id")],
+                vec![AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "qty_stddev")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 #[test]

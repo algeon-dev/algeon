@@ -124,6 +124,8 @@ impl WindowSpec {
 }
 
 /// Supported native window functions.
+///
+/// Each function owns the output field it appends to the window input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowFunction {
     /// Full-partition aggregate window. The frame must be constant for every
@@ -133,23 +135,24 @@ pub enum WindowFunction {
         function: AggregateFunction,
         /// Input expression to aggregate.
         expr: Expr,
-        /// Output column name.
-        alias: String,
+        /// Output field. The frontend declares the aggregate's result type and
+        /// nullability.
+        output: Field,
         /// Native frame contract.
         frame: WindowFrame,
     },
-    /// SQL `rank()` over the window peer groups.
+    /// SQL `rank()` over the window peer groups. Its output is a non-nullable
+    /// UInt64.
     Rank {
-        /// Output column name.
-        alias: String,
+        /// Output field.
+        output: Field,
     },
-    /// SQL `row_number()` over the ordered window partition.
+    /// SQL `row_number()` over the ordered window partition. Its output is a
+    /// non-nullable UInt64; internal dense-id mapping may request Int64 for
+    /// downstream native consumers.
     RowNumber {
-        /// Output column name.
-        alias: String,
-        /// Integer output type. SQL lowering uses UInt64; internal dense-id
-        /// mapping may request Int64 for downstream native consumers.
-        output_type: DataType,
+        /// Output field.
+        output: Field,
     },
     /// SQL `LAG(expr, offset, default)` or `LEAD(expr, offset, default)` over
     /// the ordered window partition.
@@ -171,8 +174,8 @@ pub enum WindowFunction {
         /// Fill value when the shift overflows the partition. `None` means
         /// `NULL` of the output type.
         default: Option<LiteralValue>,
-        /// Output column name.
-        alias: String,
+        /// Output field, typed like the input expression.
+        output: Field,
         /// Whether the shift moves the value forward (`Lag`) or backward
         /// (`Lead`) within each partition's ordered rows.
         direction: ShiftDirection,
@@ -201,48 +204,53 @@ pub enum WindowFrame {
 
 impl WindowFunction {
     /// Create a full-partition aggregate window function.
-    pub fn aggregate(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
-        Self::Aggregate { function, expr, alias: alias.into(), frame: WindowFrame::WholePartition }
+    pub fn aggregate(function: AggregateFunction, expr: Expr, output: Field) -> Self {
+        Self::Aggregate { function, expr, output, frame: WindowFrame::WholePartition }
     }
 
     /// Create a cumulative aggregate window function from partition start to current row.
-    pub fn cumulative_aggregate(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
-        Self::Aggregate { function, expr, alias: alias.into(), frame: WindowFrame::RowsUnboundedPrecedingToCurrent }
+    pub fn cumulative_aggregate(function: AggregateFunction, expr: Expr, output: Field) -> Self {
+        Self::Aggregate { function, expr, output, frame: WindowFrame::RowsUnboundedPrecedingToCurrent }
     }
 
     /// Create a `rank()` window function.
     pub fn rank(alias: impl Into<String>) -> Self {
-        Self::Rank { alias: alias.into() }
+        Self::Rank { output: Field::new(alias, DataType::UInt64, false) }
     }
 
     /// Create a `row_number()` window function.
     pub fn row_number(alias: impl Into<String>) -> Self {
-        Self::RowNumber { alias: alias.into(), output_type: DataType::UInt64 }
+        Self::RowNumber { output: Field::new(alias, DataType::UInt64, false) }
     }
 
     /// Create a one-based `row_number()` with an Int64 output.
     pub fn row_number_i64(alias: impl Into<String>) -> Self {
-        Self::RowNumber { alias: alias.into(), output_type: DataType::Int64 }
+        Self::RowNumber { output: Field::new(alias, DataType::Int64, false) }
     }
 
     /// Create a `LAG(expr, offset, default)` window function.
-    pub fn lag(expr: Expr, offset: u32, default: Option<LiteralValue>, alias: impl Into<String>) -> Self {
-        Self::LagLead { expr, offset, default, alias: alias.into(), direction: ShiftDirection::Lag }
+    pub fn lag(expr: Expr, offset: u32, default: Option<LiteralValue>, output: Field) -> Self {
+        Self::LagLead { expr, offset, default, output, direction: ShiftDirection::Lag }
     }
 
     /// Create a `LEAD(expr, offset, default)` window function.
-    pub fn lead(expr: Expr, offset: u32, default: Option<LiteralValue>, alias: impl Into<String>) -> Self {
-        Self::LagLead { expr, offset, default, alias: alias.into(), direction: ShiftDirection::Lead }
+    pub fn lead(expr: Expr, offset: u32, default: Option<LiteralValue>, output: Field) -> Self {
+        Self::LagLead { expr, offset, default, output, direction: ShiftDirection::Lead }
+    }
+
+    /// The field this function appends to the window input.
+    pub fn output(&self) -> &Field {
+        match self {
+            Self::Aggregate { output, .. }
+            | Self::Rank { output }
+            | Self::RowNumber { output }
+            | Self::LagLead { output, .. } => output,
+        }
     }
 
     /// Output column name for this window function.
-    pub(crate) fn alias(&self) -> &str {
-        match self {
-            Self::Aggregate { alias, .. }
-            | Self::Rank { alias }
-            | Self::RowNumber { alias, .. }
-            | Self::LagLead { alias, .. } => alias,
-        }
+    pub fn alias(&self) -> &str {
+        self.output().name()
     }
 }
 

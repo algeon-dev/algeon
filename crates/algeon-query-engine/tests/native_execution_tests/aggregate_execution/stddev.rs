@@ -56,10 +56,10 @@ fn grouped_stddev_samp_matches_datafusion_welford_contract() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema);
-    let projection = builder.add_projection(aggregate, projection);
-    let sort = builder.add_sort(projection, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema).unwrap();
+    let projection = builder.add_projection(aggregate, projection).unwrap();
+    let sort = builder.add_sort(projection, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -159,9 +159,9 @@ fn grouped_stddev_samp_handles_repeated_string_multi_key_groups() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -214,8 +214,8 @@ fn assert_global_stddev_samp_count_zero_and_one_return_null(mode: StatisticalAgg
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, output_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, output_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -256,8 +256,8 @@ fn global_stddev_samp_preserves_multifile_input_order_bits() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -313,15 +313,14 @@ fn global_stddev_samp_preserves_row_group_filter_projection_order_bits() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filtered = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&schema),
-    );
-    let projected =
-        builder.add_projection(filtered, projection_outputs(vec![Expr::column("v")], Arc::clone(&projected_schema)));
-    let aggregate = builder.add_aggregate(projected, aggregate, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let filtered = builder
+        .add_filter(source, Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))))
+        .unwrap();
+    let projected = builder
+        .add_projection(filtered, projection_outputs(vec![Expr::column("v")], Arc::clone(&projected_schema)))
+        .unwrap();
+    let aggregate = builder.add_aggregate(projected, aggregate, Arc::clone(&output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -411,53 +410,59 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left));
     let right = builder.add_source(SourceNode::LocalParquet(right));
-    let right = builder.add_filter(
-        right,
-        Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&right_schema),
-    );
-    let right = builder.add_projection(
-        right,
-        projection_outputs(vec![Expr::column("k"), Expr::column("grp")], Arc::clone(&projected_right_schema)),
-    );
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let right = builder
+        .add_filter(right, Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))))
+        .unwrap();
+    let right = builder
+        .add_projection(
+            right,
+            projection_outputs(vec![Expr::column("k"), Expr::column("grp")], Arc::clone(&projected_right_schema)),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("grp")],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let projection = builder.add_projection(
-        aggregate,
-        projection_outputs(
-            vec![
-                Expr::column("grp"),
-                Expr::column("stdev"),
-                Expr::column("avg_v"),
-                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_v")).alias("cov"),
-            ],
-            Arc::clone(&output_schema),
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+        .unwrap();
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("grp")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(
+                vec![
+                    Expr::column("grp"),
+                    Expr::column("stdev"),
+                    Expr::column("avg_v"),
+                    Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_v")).alias("cov"),
+                ],
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -573,54 +578,60 @@ fn bounded_join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left));
     let right = builder.add_source(SourceNode::LocalParquet(right));
-    let right = builder.add_filter(
-        right,
-        Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&right_schema),
-    );
-    let right = builder.add_projection(
-        right,
-        projection_outputs(vec![Expr::column("k"), Expr::column("grp")], Arc::clone(&projected_right_schema)),
-    );
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let right = builder
+        .add_filter(right, Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))))
+        .unwrap();
+    let right = builder
+        .add_projection(
+            right,
+            projection_outputs(vec![Expr::column("k"), Expr::column("grp")], Arc::clone(&projected_right_schema)),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right)
-        .with_datafusion_order_preserved_side(JoinSide::Left),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("grp")],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let projection = builder.add_projection(
-        aggregate,
-        projection_outputs(
-            vec![
-                Expr::column("grp"),
-                Expr::column("stdev"),
-                Expr::column("avg_v"),
-                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_v")).alias("cov"),
-            ],
-            Arc::clone(&output_schema),
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+        .unwrap();
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right)
+            .with_datafusion_order_preserved_side(JoinSide::Left),
+            Arc::clone(&join_schema),
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("grp")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(
+                vec![
+                    Expr::column("grp"),
+                    Expr::column("stdev"),
+                    Expr::column("avg_v"),
+                    Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_v")).alias("cov"),
+                ],
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -701,45 +712,54 @@ fn join_grouped_stddev_samp_can_preserve_left_probe_order_bits() {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(SourceNode::LocalParquet(fact));
     let date = builder.add_source(SourceNode::LocalParquet(date));
-    let join = builder.add_join(
-        fact,
-        date,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
+    let join = builder
+        .add_join(
+            fact,
+            date,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "date_sk", "date_sk"),
+                    ColumnRef::input(1, "date_sk", "date_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "grp", "grp"), "grp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right)
+            .with_datafusion_order_preserved_side(JoinSide::Left),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right)
-        .with_datafusion_order_preserved_side(JoinSide::Left),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("grp")],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty"),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let projection = builder.add_projection(
-        aggregate,
-        projection_outputs(
-            vec![
-                Expr::column("grp"),
-                Expr::column("stdev"),
-                Expr::column("avg_qty"),
-                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_qty")).alias("cov"),
-            ],
-            Arc::clone(&output_schema),
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("grp")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(
+                vec![
+                    Expr::column("grp"),
+                    Expr::column("stdev"),
+                    Expr::column("avg_qty"),
+                    Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_qty")).alias("cov"),
+                ],
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -818,56 +838,65 @@ fn bounded_residual_join_grouped_stddev_samp_keeps_order_bits_after_filter() {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(SourceNode::LocalParquet(fact));
     let date = builder.add_source(SourceNode::LocalParquet(date));
-    let join = builder.add_join(
-        fact,
-        date,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
+    let join = builder
+        .add_join(
+            fact,
+            date,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "date_sk", "date_sk"),
+                    ColumnRef::input(1, "date_sk", "date_sk"),
+                )],
+            )
+            .with_residual_predicate(Expr::case(
+                vec![CaseWhen::new(
+                    Expr::binary(
+                        Expr::input_column(0, "date_sk", "date_sk"),
+                        BinaryOp::Eq,
+                        Expr::input_column(1, "date_sk", "date_sk"),
+                    ),
+                    Expr::literal(LiteralValue::Boolean(true)),
+                )],
+                Expr::literal(LiteralValue::Boolean(false)),
+            ))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "grp", "grp"), "grp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right)
+            .with_datafusion_order_preserved_side(JoinSide::Left),
+            Arc::clone(&join_schema),
         )
-        .with_residual_predicate(Expr::case(
-            vec![CaseWhen::new(
-                Expr::binary(
-                    Expr::input_column(0, "date_sk", "date_sk"),
-                    BinaryOp::Eq,
-                    Expr::input_column(1, "date_sk", "date_sk"),
-                ),
-                Expr::literal(LiteralValue::Boolean(true)),
-            )],
-            Expr::literal(LiteralValue::Boolean(false)),
-        ))
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right)
-        .with_datafusion_order_preserved_side(JoinSide::Left),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("grp")],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty"),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let projection = builder.add_projection(
-        aggregate,
-        projection_outputs(
-            vec![
-                Expr::column("grp"),
-                Expr::column("stdev"),
-                Expr::column("avg_qty"),
-                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_qty")).alias("cov"),
-            ],
-            Arc::clone(&output_schema),
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("grp")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("qty"), "stdev"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(
+                vec![
+                    Expr::column("grp"),
+                    Expr::column("stdev"),
+                    Expr::column("avg_qty"),
+                    Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_qty")).alias("cov"),
+                ],
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -959,35 +988,39 @@ fn bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch() {
         Arc::clone(&right_schema),
         vec!["k".to_string(), "i_item_id".to_string(), "i_item_desc".to_string(), "s_state".to_string()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "i_item_id", "i_item_id"), "i_item_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "i_item_desc", "i_item_desc"), "i_item_desc"),
+                JoinOutputColumn::right(ColumnRef::input(1, "s_state", "s_state"), "s_state"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "i_item_id", "i_item_id"), "i_item_id"),
-            JoinOutputColumn::right(ColumnRef::input(1, "i_item_desc", "i_item_desc"), "i_item_desc"),
-            JoinOutputColumn::right(ColumnRef::input(1, "s_state", "s_state"), "s_state"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("i_item_id"), Expr::column("i_item_desc"), Expr::column("s_state")],
-            vec![
-                AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "count_v"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v"),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("i_item_id"), Expr::column("i_item_desc"), Expr::column("s_state")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "count_v"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -1124,9 +1157,9 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1208,9 +1241,9 @@ fn grouped_tolerant_statistical_aggregate_preserves_decimal_avg_scale() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1264,9 +1297,9 @@ fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1373,39 +1406,40 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
         Arc::clone(&right_schema),
         vec!["k".to_string(), "grp".to_string()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                JoinOutputColumn::left(ColumnRef::input(0, "d", "d"), "d"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            JoinOutputColumn::left(ColumnRef::input(0, "d", "d"), "d"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("grp")],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("d"), "avg_d"),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("grp"), false, false)]),
-        Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("grp")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("d"), "avg_d"),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("grp"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1514,40 +1548,41 @@ fn bounded_tolerant_filtered_grouped_statistical_aggregate_uses_filter_preparati
         Arc::clone(&right_schema),
         vec!["k".to_string(), "grp".to_string()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                JoinOutputColumn::left(ColumnRef::input(0, "keep", "keep"), "keep"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "grp", "grp"), "grp"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            JoinOutputColumn::left(ColumnRef::input(0, "keep", "keep"), "keep"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("grp")],
-            vec![
-                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v")
-                    .with_filter(Some(Expr::column("keep"))),
-                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v")
-                    .with_filter(Some(Expr::column("keep"))),
-            ],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![SortExpr::new(Expr::column("grp"), false, false)]),
-        Arc::clone(&aggregate_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("grp")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev_v")
+                        .with_filter(Some(Expr::column("keep"))),
+                    AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v")
+                        .with_filter(Some(Expr::column("keep"))),
+                ],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort =
+        builder.add_sort(aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("grp"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

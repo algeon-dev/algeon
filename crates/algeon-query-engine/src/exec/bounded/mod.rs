@@ -59,7 +59,7 @@ pub(in crate::exec::bounded) use operator::{
 };
 use operator::{
     execute_bounded_gpu_resident_source, execute_bounded_literal_batch_source, execute_bounded_local_parquet_source,
-    execute_bounded_union,
+    execute_bounded_union, union_branch_with_output_names,
 };
 pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
 pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;

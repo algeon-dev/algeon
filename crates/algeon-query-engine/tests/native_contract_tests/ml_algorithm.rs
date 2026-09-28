@@ -47,10 +47,10 @@ fn supervised_plan_for(
     let mut builder = QueryPlanBuilder::new();
     let training = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("training", training_schema)));
     let predict = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("predict", predict_schema)));
-    let mut training_binding = MlRelationBinding::new(training, VectorRowIdBinding::column("id"), ["x0", "x1"]);
+    let mut training_binding = MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]);
     training_binding.label = label.map(|_| "label".to_owned());
     let predict_binding = MlRelationBinding::new(
-        predict,
+        1,
         VectorRowIdBinding::column("id"),
         (0..predict_dimensions).map(|index| format!("x{index}")),
     );
@@ -70,12 +70,13 @@ fn supervised_plan_for(
     };
     let prediction_type =
         if algorithm == MlAlgorithm::RandomForestRegressor { DataType::Float32 } else { DataType::Int32 };
-    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        algorithm,
-        params,
-        ml_predictions_output_schema(DataType::Utf8, prediction_type),
-    ));
-    builder.finish_with_host_sink(root)
+    let root = builder
+        .add_ml_algorithm(
+            vec![training, predict],
+            MlAlgorithmSpec::new(algorithm, params, ml_predictions_output_schema(DataType::Utf8, prediction_type)),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 #[test]
@@ -133,7 +134,10 @@ fn supervised_bindings_validate_both_relations_and_compile_role_order() {
     let plan = supervised_plan(Some((DataType::Int32, false)), false, 2);
     preflight_query_plan(&plan).unwrap();
     let PlanNode::MlAlgorithm(node) = &plan.root_node().kind else { panic!("supervised root") };
-    assert_eq!(node.inputs, node.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>());
+    assert_eq!(
+        node.inputs,
+        node.spec.params.relation_bindings().map(|binding| node.inputs[binding.input]).collect::<Vec<_>>()
+    );
     assert_eq!(node.inputs.len(), 2);
     assert!(plan.to_string().contains("training=("));
     assert!(plan.to_string().contains("predict=("));
@@ -177,22 +181,27 @@ fn plan_with_schema(input_schema: SchemaRef, id: &str, components: usize, output
     let mut builder = QueryPlanBuilder::new();
     let columns = input_schema.fields().iter().skip(1).map(|field| field.name().clone()).collect::<Vec<_>>();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
-    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Tsvd,
-        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
-            MlRelationBinding::new(input, VectorRowIdBinding::column(id), columns),
-            components,
-        )),
-        output_schema,
-    ));
-    builder.finish_with_host_sink(root)
+    let root = builder
+        .add_ml_algorithm(
+            vec![input],
+            MlAlgorithmSpec::new(
+                MlAlgorithm::Tsvd,
+                MlAlgorithmParams::Tsvd(MlTsvdParams::new(
+                    MlRelationBinding::new(0, VectorRowIdBinding::column(id), columns),
+                    components,
+                )),
+                output_schema,
+            ),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn plan(algorithm: MlAlgorithm) -> QueryPlan {
     let input_schema = schema("id", DataType::Float32, 2);
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
-    let binding = MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x0", "x1"]);
+    let binding = MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]);
     let params = match algorithm {
         MlAlgorithm::Tsvd => MlAlgorithmParams::Tsvd(MlTsvdParams::new(binding, 1)),
         MlAlgorithm::Hdbscan
@@ -205,9 +214,12 @@ fn plan(algorithm: MlAlgorithm) -> QueryPlan {
         },
     };
     let root = builder
-        .try_add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, vector_pca_output_schema(DataType::Int64, 1)))
+        .add_ml_algorithm(
+            vec![input],
+            MlAlgorithmSpec::new(algorithm, params, vector_pca_output_schema(DataType::Int64, 1)),
+        )
         .unwrap();
-    builder.finish_with_host_sink(root)
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 #[test]
@@ -337,7 +349,7 @@ fn clustering_and_embedding_options_and_pipeline_contracts() {
         let mut builder = QueryPlanBuilder::new();
         let source = builder
             .add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema("id", DataType::Float32, 2))));
-        let binding = MlRelationBinding::new(source, VectorRowIdBinding::column("id"), ["x0", "x1"]);
+        let binding = MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]);
         let (params, expected) = match algorithm {
             MlAlgorithm::Hdbscan => {
                 (MlAlgorithmParams::Hdbscan(MlHdbscanParams::new(binding)), ml_hdbscan_output_schema(DataType::Int64))
@@ -347,9 +359,10 @@ fn clustering_and_embedding_options_and_pipeline_contracts() {
             },
             _ => unreachable!(),
         };
-        let root =
-            builder.try_add_ml_algorithm(MlAlgorithmSpec::new(algorithm, params, Arc::clone(&expected))).unwrap();
-        let plan = builder.finish_with_host_sink(root);
+        let root = builder
+            .add_ml_algorithm(vec![source], MlAlgorithmSpec::new(algorithm, params, Arc::clone(&expected)))
+            .unwrap();
+        let plan = builder.finish_with_host_sink(root).unwrap();
         preflight_query_plan(&plan).expect("new ML algorithm must be supported");
         let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
         assert!(matches!(
@@ -372,7 +385,10 @@ fn builder_display_and_pipeline_preserve_ml_contract() {
     let plan = plan(algorithm);
     preflight_query_plan(&plan).unwrap();
     let PlanNode::MlAlgorithm(ml) = &plan.root_node().kind else { panic!("ML root") };
-    assert_eq!(ml.inputs, ml.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>());
+    assert_eq!(
+        ml.inputs,
+        ml.spec.params.relation_bindings().map(|binding| ml.inputs[binding.input]).collect::<Vec<_>>()
+    );
     assert_eq!(ml.output_schema().as_ref(), vector_pca_output_schema(DataType::Int64, 1).as_ref());
     assert!(plan.to_string().contains(&format!("algorithm={algorithm}")));
     assert!(plan.to_string().contains("features:x0|x1"));
@@ -454,15 +470,21 @@ fn validation_and_capability_reject_bad_ml_contracts() {
     let input = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new("one_row", schema("id", DataType::Float32, 2)).with_row_count_upper_bound(1),
     ));
-    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Tsvd,
-        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
-            MlRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x0", "x1"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    preflight_query_plan(&builder.finish_with_host_sink(root)).expect("one-row upper bound can include empty input");
+    let root = builder
+        .add_ml_algorithm(
+            vec![input],
+            MlAlgorithmSpec::new(
+                MlAlgorithm::Tsvd,
+                MlAlgorithmParams::Tsvd(MlTsvdParams::new(
+                    MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]),
+                    1,
+                )),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    preflight_query_plan(&builder.finish_with_host_sink(root).unwrap())
+        .expect("one-row upper bound can include empty input");
 }
 
 #[test]
@@ -480,37 +502,53 @@ fn optimizer_remaps_both_supervised_inputs() {
     ]));
     let mut builder = QueryPlanBuilder::new();
     let mut bindings = Vec::new();
+    let mut projections = Vec::new();
     for (name, schema) in [("training", training_schema), ("predict", predict_schema)] {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(name, Arc::clone(&schema))));
-        let projection = builder.add_projection(
-            source,
-            schema
-                .fields()
-                .iter()
-                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-                .collect(),
-        );
-        let mut binding = MlRelationBinding::new(projection, VectorRowIdBinding::column("id"), ["x0", "x1"]);
+        let projection = builder
+            .add_projection(
+                source,
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                    .collect(),
+            )
+            .unwrap();
+        let mut binding = MlRelationBinding::new(projections.len(), VectorRowIdBinding::column("id"), ["x0", "x1"]);
+        projections.push(projection);
         if name == "training" {
             binding.label = Some("label".to_string());
         }
         bindings.push(binding);
     }
-    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::LogisticRegression,
-        MlAlgorithmParams::LogisticRegression(MlLogisticRegressionParams::new(bindings.remove(0), bindings.remove(0))),
-        ml_predictions_output_schema(DataType::Utf8, DataType::Int32),
-    ));
+    let root = builder
+        .add_ml_algorithm(
+            projections,
+            MlAlgorithmSpec::new(
+                MlAlgorithm::LogisticRegression,
+                MlAlgorithmParams::LogisticRegression(MlLogisticRegressionParams::new(
+                    bindings.remove(0),
+                    bindings.remove(0),
+                )),
+                ml_predictions_output_schema(DataType::Utf8, DataType::Int32),
+            ),
+        )
+        .unwrap();
     let optimized = optimize_query_plan(
-        builder.finish_with_host_sink(root),
+        builder.finish_with_host_sink(root).unwrap(),
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
+    .unwrap()
     .plan;
     preflight_query_plan(&optimized).unwrap();
     let PlanNode::MlAlgorithm(ml) = &optimized.root_node().kind else { panic!("ML root") };
-    assert_eq!(ml.inputs, ml.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>());
+    assert_eq!(
+        ml.inputs,
+        ml.spec.params.relation_bindings().map(|binding| ml.inputs[binding.input]).collect::<Vec<_>>()
+    );
     assert!(
         ml.inputs
             .iter()
@@ -524,32 +562,43 @@ fn rewrite_remaps_ml_relation_inputs() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-    let projected = builder.add_projection(
-        source,
-        input_schema
-            .fields()
-            .iter()
-            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-            .collect(),
-    );
-    let ml = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Tsvd,
-        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
-            MlRelationBinding::new(projected, VectorRowIdBinding::column("id"), ["x0", "x1"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
+    let projected = builder
+        .add_projection(
+            source,
+            input_schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        )
+        .unwrap();
+    let ml = builder
+        .add_ml_algorithm(
+            vec![projected],
+            MlAlgorithmSpec::new(
+                MlAlgorithm::Tsvd,
+                MlAlgorithmParams::Tsvd(MlTsvdParams::new(
+                    MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]),
+                    1,
+                )),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
     let optimized = optimize_query_plan(
-        builder.finish_with_host_sink(ml),
+        builder.finish_with_host_sink(ml).unwrap(),
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
+    .unwrap()
     .plan;
     preflight_query_plan(&optimized).unwrap();
     let PlanNode::MlAlgorithm(node) = &optimized.root_node().kind else { panic!("ML root") };
-    assert_eq!(node.inputs, node.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>());
+    assert_eq!(
+        node.inputs,
+        node.spec.params.relation_bindings().map(|binding| node.inputs[binding.input]).collect::<Vec<_>>()
+    );
     assert!(matches!(optimized.node(node.inputs[0]).map(|node| &node.kind), Some(PlanNode::Source(_))));
 }
 
@@ -559,20 +608,23 @@ fn ml_pipeline_keeps_relational_handoffs() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-    let filtered = builder.add_filter(
-        source,
-        Expr::binary(Expr::column("x0"), BinaryOp::Gt, Expr::literal(LiteralValue::Float32(0.0))),
-        Arc::clone(&input_schema),
-    );
-    let ml = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::Tsvd,
-        MlAlgorithmParams::Tsvd(MlTsvdParams::new(
-            MlRelationBinding::new(filtered, VectorRowIdBinding::column("id"), ["x0", "x1"]),
-            1,
-        )),
-        vector_pca_output_schema(DataType::Int64, 1),
-    ));
-    let plan = builder.finish_with_host_sink(ml);
+    let filtered = builder
+        .add_filter(source, Expr::binary(Expr::column("x0"), BinaryOp::Gt, Expr::literal(LiteralValue::Float32(0.0))))
+        .unwrap();
+    let ml = builder
+        .add_ml_algorithm(
+            vec![filtered],
+            MlAlgorithmSpec::new(
+                MlAlgorithm::Tsvd,
+                MlAlgorithmParams::Tsvd(MlTsvdParams::new(
+                    MlRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x0", "x1"]),
+                    1,
+                )),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(ml).unwrap();
     let pipeline =
         compile_pipeline(&plan, &plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()))).unwrap();
     pipeline.validate().unwrap();
@@ -603,17 +655,19 @@ fn forest_plan(dimensions: usize, model: MlForestModelSnapshot, output_schema: S
         "input",
         schema("id", DataType::Float32, dimensions),
     )));
-    let binding = MlRelationBinding::new(
-        input,
-        VectorRowIdBinding::column("id"),
-        (0..dimensions).map(|index| format!("x{index}")),
-    );
-    let root = builder.add_ml_algorithm(MlAlgorithmSpec::new(
-        MlAlgorithm::ForestPredict,
-        MlAlgorithmParams::ForestPredict(MlForestPredictParams { input: binding, model }),
-        output_schema,
-    ));
-    builder.finish_with_host_sink(root)
+    let binding =
+        MlRelationBinding::new(0, VectorRowIdBinding::column("id"), (0..dimensions).map(|index| format!("x{index}")));
+    let root = builder
+        .add_ml_algorithm(
+            vec![input],
+            MlAlgorithmSpec::new(
+                MlAlgorithm::ForestPredict,
+                MlAlgorithmParams::ForestPredict(MlForestPredictParams { input: binding, model }),
+                output_schema,
+            ),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 #[test]

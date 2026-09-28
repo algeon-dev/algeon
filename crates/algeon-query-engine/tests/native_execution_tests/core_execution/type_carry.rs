@@ -217,7 +217,7 @@ fn native_literal_batch_carries_decimal32_and_decimal64_with_exact_schemas() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(actual) = result.output() else {
@@ -252,18 +252,16 @@ fn native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payl
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(
         source,
-        Expr::binary(Expr::column("id"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2))),
-        Arc::clone(&schema),
-    );
+        Expr::binary(Expr::column("id"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2)))).unwrap();
     let projection = builder.add_projection(
         filter,
         projection_outputs(
             vec![Expr::alias(Expr::column("amount32"), "small"), Expr::alias(Expr::column("amount64"), "large")],
             Arc::clone(&output_schema),
         ),
-    );
-    let limit = builder.add_limit(projection, LimitSpec::fetch(2), Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink_schema(limit, Arc::clone(&output_schema));
+    ).unwrap();
+    let limit = builder.add_limit(projection, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink_schema(limit, Arc::clone(&output_schema)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(actual) = result.output() else {
@@ -319,7 +317,7 @@ fn native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128
             );
             let mut builder = QueryPlanBuilder::new();
             let source = builder.add_source(SourceNode::LocalParquet(source));
-            let plan = builder.finish_with_host_sink_schema(source, schema);
+            let plan = builder.finish_with_host_sink_schema(source, schema).unwrap();
             let result = execute_query_plan(&context, &plan).unwrap();
             let QueryOutput::HostArrow(batch) = result.output() else {
                 panic!("host sink should materialize decimal output");
@@ -375,7 +373,7 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -400,7 +398,7 @@ fn native_literal_batch_carries_exact_basic_list_matrix() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(actual) = result.output() else {
@@ -429,7 +427,7 @@ fn native_local_parquet_carries_exact_basic_list_matrix() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(actual) = result.output() else {
@@ -488,7 +486,7 @@ fn native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_
         Arc::clone(&schema),
         vec![empty, expected.clone()],
     )));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(actual) = result.output() else {
@@ -537,15 +535,13 @@ fn native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_li
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(
         source,
-        Expr::binary(Expr::column("id"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2))),
-        Arc::clone(&schema),
-    );
+        Expr::binary(Expr::column("id"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2)))).unwrap();
     let projection = builder.add_projection(
         filter,
         projection_outputs(vec![Expr::column("id"), Expr::column("features")], Arc::clone(&output_schema)),
-    );
-    let limit = builder.add_limit(projection, LimitSpec::fetch(2), Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink_schema(limit, Arc::clone(&output_schema));
+    ).unwrap();
+    let limit = builder.add_limit(projection, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink_schema(limit, Arc::clone(&output_schema)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(actual) = result.output() else {
@@ -607,9 +603,9 @@ fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_o
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&source_schema));
-    let projection = builder.add_projection(filter, projection);
-    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&output_schema));
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection).unwrap();
+    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&output_schema)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -645,9 +641,7 @@ fn native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads
         )));
         let filter = builder.add_filter(
             source,
-            Expr::binary(Expr::column("key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2))),
-            Arc::clone(&input_schema),
-        );
+            Expr::binary(Expr::column("key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2)))).unwrap();
         let projection = builder.add_projection(
             filter,
             projection_outputs(
@@ -660,15 +654,13 @@ fn native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads
                 ],
                 Arc::clone(&output_schema),
             ),
-        );
+        ).unwrap();
         let sort = builder.add_sort(
             projection,
-            SortSpec::new(vec![SortExpr::new(Expr::column("sort_key"), false, false)]),
-            Arc::clone(&output_schema),
-        );
+            SortSpec::new(vec![SortExpr::new(Expr::column("sort_key"), false, false)])).unwrap();
         let root =
-            limit.map_or(sort, |rows| builder.add_limit(sort, LimitSpec::fetch(rows), Arc::clone(&output_schema)));
-        let plan = builder.finish_with_host_sink(root);
+            limit.map_or(sort, |rows| builder.add_limit(sort, LimitSpec::fetch(rows)).unwrap());
+        let plan = builder.finish_with_host_sink(root).unwrap();
         let result = execute_query_plan(&context, &plan).unwrap();
         let QueryOutput::HostArrow(batch) = result.output() else {
             panic!("host sink should materialize carried list payloads");
@@ -732,8 +724,8 @@ fn native_local_parquet_limit_materializes_basic_list_shape() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let limit = builder.add_limit(source, LimitSpec::fetch(10), Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(limit);
+    let limit = builder.add_limit(source, LimitSpec::fetch(10)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -784,7 +776,7 @@ fn native_local_parquet_source_carries_large_list_large_utf8_to_host_output() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

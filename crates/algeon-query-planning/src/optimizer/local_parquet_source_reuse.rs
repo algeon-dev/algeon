@@ -12,8 +12,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, CaseWhen, Expr},
     plan::{
-        FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan,
-        RewrittenNodes, SchemaBehavior,
+        FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes,
     },
     source::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef,
@@ -138,32 +137,32 @@ pub(crate) fn optimize_local_parquet_source_reuse(
     options: &LocalParquetSourceReuseOptions,
     dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
     ctx: AnalysisContext<'_>,
-) -> LocalParquetSourceReuseResult {
+) -> Result<LocalParquetSourceReuseResult> {
     if !options.enabled {
-        return LocalParquetSourceReuseResult {
+        return Ok(LocalParquetSourceReuseResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: LocalParquetSourceReuseDiagnostics::default(),
-        };
+        });
     }
 
     let discovery = discover_source_reuse_candidates(&plan, options, dynamic_filter_options, ctx);
     if discovery.rewrites.is_empty() {
-        return LocalParquetSourceReuseResult {
+        return Ok(LocalParquetSourceReuseResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: discovery.diagnostics,
-        };
+        });
     }
 
     let mut rewriter = LocalParquetSourceReuseRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
-    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
-    LocalParquetSourceReuseResult {
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
+    Ok(LocalParquetSourceReuseResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,
         diagnostics: discovery.diagnostics,
-    }
+    })
 }
 
 struct SourceReuseDiscovery {
@@ -177,12 +176,8 @@ fn discover_source_reuse_candidates(
     dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
     ctx: AnalysisContext<'_>,
 ) -> SourceReuseDiscovery {
-    let reachable = rewrite::sink_reachable_nodes(plan);
     let mut groups = BTreeMap::<SourceGroupKey, Vec<SourceVariant>>::new();
     for node in plan.nodes() {
-        if !reachable.contains(&node.id) {
-            continue;
-        }
         let PlanNode::Source(source) = &node.kind else {
             continue;
         };
@@ -736,10 +731,8 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
         }
         let source = self.rewrites[rewrite_index].shared_source.clone();
         let output_schema = Arc::clone(&source.schema);
-        let new_id = self.push_node(
-            PlanNode::Source(Box::new(SourceNode::LocalParquet(source))),
-            PlanFacts::device(output_schema, SchemaBehavior::SourceOutput),
-        );
+        let new_id =
+            self.push_node(PlanNode::Source(Box::new(SourceNode::LocalParquet(source))), PlanFacts::new(output_schema));
         self.shared_nodes.insert(rewrite_index, new_id);
         new_id
     }
@@ -758,7 +751,7 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
             let output_schema = Arc::clone(self.nodes[current.index()].output_schema());
             current = self.push_node(
                 PlanNode::Filter(FilterNode { input: current, predicate: branch_replay_predicate(predicate) }),
-                PlanFacts::device(output_schema, SchemaBehavior::PreservesInput),
+                PlanFacts::new(output_schema),
             );
         }
         if self.nodes[current.index()].output_schema() != &variant.source.schema {
@@ -771,10 +764,7 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
                 .collect::<Vec<_>>();
             let projection = ProjectionNode::new(current, outputs);
             let output_schema = Arc::clone(projection.output_schema());
-            current = self.push_node(
-                PlanNode::Projection(projection),
-                PlanFacts::device(output_schema, SchemaBehavior::Projection),
-            );
+            current = self.push_node(PlanNode::Projection(projection), PlanFacts::new(output_schema));
         }
         self.branch_nodes.insert(old_source_id, current);
         current
@@ -785,7 +775,7 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

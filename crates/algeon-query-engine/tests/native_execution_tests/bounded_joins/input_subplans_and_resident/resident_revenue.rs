@@ -133,73 +133,81 @@ fn resident_revenue_keyed_hash_join_subplan_plan(
         Arc::clone(&revenue_projection_schema),
         Arc::clone(&revenue_schema),
     );
-    let revenue_for_supplier = builder.add_projection(
-        revenue,
-        projection_outputs(
-            vec![Expr::column("supplier_no"), Expr::column("total_revenue")],
-            Arc::clone(&revenue_schema),
-        ),
-    );
-    let supplier_revenue = builder.add_join(
-        supplier,
-        revenue_for_supplier,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
-                ColumnRef::input(1, "supplier_no", "supplier_no"),
-            )],
+    let revenue_for_supplier = builder
+        .add_projection(
+            revenue,
+            projection_outputs(
+                vec![Expr::column("supplier_no"), Expr::column("total_revenue")],
+                Arc::clone(&revenue_schema),
+            ),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-            JoinOutputColumn::right(ColumnRef::input(1, "total_revenue", "total_revenue"), "total_revenue"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&supplier_revenue_schema),
-    );
-    let supplier_revenue = builder.add_projection(
-        supplier_revenue,
-        projection_outputs(
-            vec![Expr::column("s_suppkey"), Expr::column("s_name"), Expr::column("total_revenue")],
+        .unwrap();
+    let supplier_revenue = builder
+        .add_join(
+            supplier,
+            revenue_for_supplier,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                    ColumnRef::input(1, "supplier_no", "supplier_no"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+                JoinOutputColumn::right(ColumnRef::input(1, "total_revenue", "total_revenue"), "total_revenue"),
+            ])
+            .with_build_side(JoinSide::Right),
             Arc::clone(&supplier_revenue_schema),
-        ),
-    );
+        )
+        .unwrap();
+    let supplier_revenue = builder
+        .add_projection(
+            supplier_revenue,
+            projection_outputs(
+                vec![Expr::column("s_suppkey"), Expr::column("s_name"), Expr::column("total_revenue")],
+                Arc::clone(&supplier_revenue_schema),
+            ),
+        )
+        .unwrap();
 
     let revenue_for_max = builder
-        .add_projection(revenue, projection_outputs(vec![Expr::column("total_revenue")], scalar_revenue_input_schema));
-    let max_revenue = builder.add_aggregate(
-        revenue_for_max,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("total_revenue"), "max_revenue")],
-        ),
-        Arc::clone(&max_revenue_schema),
-    );
-    let root = builder.add_join(
-        supplier_revenue,
-        max_revenue,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "total_revenue", "total_revenue"),
-                ColumnRef::input(1, "max_revenue", "max_revenue"),
-            )],
+        .add_projection(revenue, projection_outputs(vec![Expr::column("total_revenue")], scalar_revenue_input_schema))
+        .unwrap();
+    let max_revenue = builder
+        .add_aggregate(
+            revenue_for_max,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("total_revenue"), "max_revenue")],
+            ),
+            Arc::clone(&max_revenue_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
-            JoinOutputColumn::left(ColumnRef::input(0, "total_revenue", "total_revenue"), "total_revenue"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&supplier_revenue_schema),
-    );
-    let output = builder.add_sort(
-        root,
-        SortSpec::new(vec![SortExpr::new(Expr::column("s_suppkey"), false, false)]),
-        supplier_revenue_schema,
-    );
-    builder.finish_with_host_sink(output)
+        .unwrap();
+    let root = builder
+        .add_join(
+            supplier_revenue,
+            max_revenue,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "total_revenue", "total_revenue"),
+                    ColumnRef::input(1, "max_revenue", "max_revenue"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "s_suppkey", "s_suppkey"), "s_suppkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "s_name", "s_name"), "s_name"),
+                JoinOutputColumn::left(ColumnRef::input(0, "total_revenue", "total_revenue"), "total_revenue"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&supplier_revenue_schema),
+        )
+        .unwrap();
+    let output =
+        builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("s_suppkey"), false, false)])).unwrap();
+    builder.finish_with_host_sink(output).unwrap()
 }
 
 fn build_resident_revenue_aggregate(
@@ -214,24 +222,29 @@ fn build_resident_revenue_aggregate(
         lineitem_schema,
         &["l_suppkey", "l_shipdate", "l_extendedprice"],
     )));
-    let filtered = builder.add_filter(
-        lineitem,
-        Expr::binary(Expr::column("l_shipdate"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(lineitem_schema),
-    );
-    let projected = builder.add_projection(
-        filtered,
-        projection_outputs(
-            vec![Expr::column("l_suppkey").alias("supplier_no"), Expr::column("l_extendedprice").alias("revenue")],
-            revenue_projection_schema,
-        ),
-    );
-    builder.add_aggregate(
-        projected,
-        AggregateSpec::new(
-            vec![Expr::column("supplier_no")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("revenue"), "total_revenue")],
-        ),
-        revenue_schema,
-    )
+    let filtered = builder
+        .add_filter(
+            lineitem,
+            Expr::binary(Expr::column("l_shipdate"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(0))),
+        )
+        .unwrap();
+    let projected = builder
+        .add_projection(
+            filtered,
+            projection_outputs(
+                vec![Expr::column("l_suppkey").alias("supplier_no"), Expr::column("l_extendedprice").alias("revenue")],
+                revenue_projection_schema,
+            ),
+        )
+        .unwrap();
+    builder
+        .add_aggregate(
+            projected,
+            AggregateSpec::new(
+                vec![Expr::column("supplier_no")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("revenue"), "total_revenue")],
+            ),
+            revenue_schema,
+        )
+        .unwrap()
 }

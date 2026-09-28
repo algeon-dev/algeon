@@ -22,8 +22,8 @@ use crate::{
     exec::{
         GpuDataFrame,
         dense_relation::{
-            VECTOR_OPERATIONS, checked_output_rows, matrix_bytes_for, pack_dense_relation_for, relation_dimension,
-            relation_element_type_for, relation_input_for, size_overflow_for,
+            DenseRelationInputs, VECTOR_OPERATIONS, checked_output_rows, matrix_bytes_for, pack_dense_relation_for,
+            relation_dimension, relation_element_type_for, relation_input_for, size_overflow_for,
         },
         *,
     },
@@ -74,7 +74,7 @@ fn unsupported_vector_element(
 
 fn relation_element(
     plan: &QueryPlan,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     binding: &VectorRelationBinding,
     node_id: NodeId,
     algorithm: VectorAlgorithm,
@@ -114,6 +114,7 @@ pub(in crate::exec) fn execute_vector_algorithm(
     inputs: &BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation(EXECUTE_OPERATION)?;
+    let inputs = DenseRelationInputs::new(&node.inputs, inputs);
     // Vector operators do not have an independent workspace estimate. Use
     // the context's allocation member for the boundary: the live member makes
     // cuVS's device-current temporaries domain-accounted before resources are
@@ -544,7 +545,7 @@ fn execute_knn<T: DeviceElement, F>(
     plan: &QueryPlan,
     node_id: NodeId,
     knn: KnnExecutionOptions<'_, F>,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame>
@@ -607,7 +608,7 @@ where
         algorithm,
         "dataset",
         params.dataset,
-        dataset,
+        inputs,
         resources,
         native_version,
         |dataset_tensor| {
@@ -630,10 +631,11 @@ where
             }
 
             if queries.num_rows() == 0 {
+                let query_input = inputs.node_id(params.queries.input);
                 let query_schema = plan
-                    .node(params.queries.input)
+                    .node(query_input)
                     .ok_or_else(|| {
-                        invalid_node_reference(params.queries.input, "vector query relation references a missing input")
+                        invalid_node_reference(query_input, "vector query relation references a missing input")
                     })?
                     .output_schema();
                 let query_dimension = relation_dimension(&params.queries.vector, query_schema, node_id, "queries")?;
@@ -678,7 +680,7 @@ where
                 algorithm,
                 "queries",
                 params.queries,
-                queries,
+                inputs,
                 resources,
                 native_version,
                 |query_tensor| {
@@ -758,7 +760,7 @@ fn execute_pairwise_distance<E: PairwiseElement>(
     plan: &QueryPlan,
     node_id: NodeId,
     params: &VectorPairwiseDistanceParams,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
@@ -793,7 +795,7 @@ fn execute_pairwise_distance<E: PairwiseElement>(
         VectorAlgorithm::PairwiseDistance,
         "x",
         &params.x,
-        x,
+        inputs,
         resources,
         native_version,
         |x_tensor| {
@@ -805,7 +807,7 @@ fn execute_pairwise_distance<E: PairwiseElement>(
                 VectorAlgorithm::PairwiseDistance,
                 "y",
                 &params.y,
-                y,
+                inputs,
                 resources,
                 native_version,
                 |y_tensor| {
@@ -865,7 +867,7 @@ fn execute_top_k(
     plan: &QueryPlan,
     node_id: NodeId,
     params: &VectorTopKParams,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
@@ -897,7 +899,7 @@ fn execute_top_k(
         VectorAlgorithm::TopK,
         "input",
         &params.input,
-        input,
+        inputs,
         resources,
         native_version,
         |tensor| {
@@ -969,7 +971,7 @@ fn execute_kmeans<E: KMeansElement>(
     plan: &QueryPlan,
     node_id: NodeId,
     params: &VectorKMeansParams,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
@@ -1020,7 +1022,7 @@ fn execute_kmeans<E: KMeansElement>(
         VectorAlgorithm::KMeans,
         "input",
         &params.input,
-        input,
+        inputs,
         resources,
         native_version,
         |input_tensor| {
@@ -1063,13 +1065,7 @@ fn execute_kmeans<E: KMeansElement>(
                     VectorAlgorithm::KMeans,
                     "initial_centroids",
                     centroid_binding,
-                    relation_input_for(
-                        &VECTOR_OPERATIONS,
-                        inputs,
-                        centroid_binding.input,
-                        node_id,
-                        "initial_centroids",
-                    )?,
+                    inputs,
                     resources,
                     native_version,
                     MatrixLayout::RowMajor,
@@ -1152,7 +1148,7 @@ fn execute_pca(
     plan: &QueryPlan,
     node_id: NodeId,
     params: &VectorPcaParams,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
 ) -> Result<GpuDataFrame> {
@@ -1175,7 +1171,7 @@ fn execute_pca(
         VectorAlgorithm::Pca,
         "input",
         &params.input,
-        input,
+        inputs,
         resources,
         native_version,
         MatrixLayout::ColumnMajor,
@@ -1251,14 +1247,16 @@ fn with_relation_tensor<E: DeviceElement, T>(
     algorithm: VectorAlgorithm,
     role: &'static str,
     binding: &VectorRelationBinding,
-    input: &GpuDataFrame,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
     body: impl FnOnce(&ValidatedDeviceTensor<'_, E>) -> Result<T>,
 ) -> Result<T> {
+    let input_id = inputs.node_id(binding.input);
+    let input = relation_input_for(&VECTOR_OPERATIONS, inputs, binding.input, node_id, role)?;
     let input_schema = plan
-        .node(binding.input)
-        .ok_or_else(|| invalid_node_reference(binding.input, "vector relation references a missing input"))?
+        .node(input_id)
+        .ok_or_else(|| invalid_node_reference(input_id, "vector relation references a missing input"))?
         .output_schema();
     if matches!(
         &binding.vector,
@@ -1460,12 +1458,13 @@ fn with_owned_relation_matrix<E: DeviceElement, T>(
     algorithm: VectorAlgorithm,
     role: &'static str,
     binding: &VectorRelationBinding,
-    input: &GpuDataFrame,
+    inputs: DenseRelationInputs<'_>,
     resources: &CuvsResources,
     native_version: (u16, u16, u16),
     layout: MatrixLayout,
     body: impl FnOnce(OwnedMatrix<E>, usize) -> Result<T>,
 ) -> Result<T> {
+    let input = relation_input_for(&VECTOR_OPERATIONS, inputs, binding.input, node_id, role)?;
     let (packed, dimension) = pack_dense_relation_for(
         &VECTOR_OPERATIONS,
         context,
@@ -1474,7 +1473,7 @@ fn with_owned_relation_matrix<E: DeviceElement, T>(
         node_id,
         role,
         algorithm.as_str(),
-        binding.input,
+        inputs.node_id(binding.input),
         &binding.vector,
         input,
         E::TYPE_ID,
@@ -1968,14 +1967,18 @@ mod tests {
         ]));
         let mut builder = QueryPlanBuilder::new();
         let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing", Arc::clone(&schema))));
-        let params =
-            VectorPcaParams::new(VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"]), 1);
-        let root = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
-            VectorAlgorithm::Pca,
-            VectorAlgorithmParams::Pca(params),
-            vector_pca_output_schema(DataType::Int64, 1),
-        ));
-        let plan = builder.finish_gpu_resident(root);
+        let params = VectorPcaParams::new(VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]), 1);
+        let root = builder
+            .add_vector_algorithm(
+                vec![input],
+                VectorAlgorithmSpec::new(
+                    VectorAlgorithm::Pca,
+                    VectorAlgorithmParams::Pca(params),
+                    vector_pca_output_schema(DataType::Int64, 1),
+                ),
+            )
+            .unwrap();
+        let plan = builder.finish_gpu_resident(root).unwrap();
         let PlanNode::VectorAlgorithm(node) = &plan.node(root).expect("vector node").kind else {
             panic!("root should remain a vector node");
         };

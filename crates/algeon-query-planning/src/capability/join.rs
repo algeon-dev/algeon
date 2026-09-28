@@ -953,7 +953,7 @@ mod tests {
 
     fn single_use_join(join_type: JoinType) -> JoinNode {
         JoinNode {
-            inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
+            inputs: [NodeId::from_index_for_test(0), NodeId::from_index_for_test(1)],
             spec: JoinSpec::new(
                 join_type,
                 vec![JoinKey::new(

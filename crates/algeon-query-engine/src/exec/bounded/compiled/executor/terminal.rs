@@ -11,7 +11,7 @@ use crate::{
                 resource::CompiledGpuResourcePayload,
             },
             execute_bounded_unary, execute_bounded_union, materialize_bounded_frame_to_host,
-            materialize_bounded_join_leaf_local_parquet_source_stream,
+            materialize_bounded_join_leaf_local_parquet_source_stream, union_branch_with_output_names,
         },
         operators::execute_limit,
     },
@@ -103,7 +103,12 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.union_payload_ref_to_inputs(task, node_id, *resource, payload, &mut inputs)?;
             }
         }
-        Ok(inputs)
+        let Some(node) = self.plan.node(node_id) else {
+            return Err(invalid("compiled union task references a missing plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id));
+        };
+        inputs.into_iter().map(|input| union_branch_with_output_names(node_id, input, node.output_schema())).collect()
     }
 
     pub(super) fn union_payload_to_inputs(

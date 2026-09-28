@@ -5,12 +5,12 @@ use super::{
     AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics, AggregateJoinPushdownPolicy,
     AggregateJoinPushdownRejectedReason, AggregateNode, AggregateSpec, ColumnRef, Expr, JoinNode, JoinOutputColumn,
     JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode, PreAggregateColumn, PreAggregateMeasureState,
-    ProjectionNode, QueryNode, QueryPlan, SchemaBehavior, SchemaRef, arrow_fixed_width_byte_size,
-    coalesce_preagg_projection_outputs, decomposable_union_partial_aggregate_expr,
-    final_aggregate_rewrite_after_preagg, final_aggregate_spec_after_union_preagg, join_key_for_side, join_side_index,
-    join_with_replaced_input, measure_input_projection_outputs, new_join_output_schema, opposite_side,
-    preaggregate_measure_states, preaggregate_schema, preaggregate_spec, preaggregate_state_aliases,
-    push_unique_preagg_group_column, rewrite, rewritten_join_key_after_preagg, unique_measure_input_alias,
+    ProjectionNode, QueryNode, QueryPlan, SchemaRef, arrow_fixed_width_byte_size, coalesce_preagg_projection_outputs,
+    decomposable_union_partial_aggregate_expr, final_aggregate_rewrite_after_preagg,
+    final_aggregate_spec_after_union_preagg, join_key_for_side, join_side_index, join_with_replaced_input,
+    measure_input_projection_outputs, new_join_output_schema, opposite_side, preaggregate_measure_states,
+    preaggregate_schema, preaggregate_spec, preaggregate_state_aliases, push_unique_preagg_group_column, rewrite,
+    rewritten_join_key_after_preagg, unique_measure_input_alias,
 };
 use crate::{plan::UnionNode, source::SourceNode};
 
@@ -362,10 +362,8 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             )?;
             let projection_node = ProjectionNode::new(preagg_input, projection_outputs);
             let projection_schema = Arc::clone(projection_node.output_schema());
-            let projection_id = self.push_node(
-                PlanNode::Projection(projection_node),
-                PlanFacts::device(Arc::clone(&projection_schema), SchemaBehavior::Projection),
-            );
+            let projection_id =
+                self.push_node(PlanNode::Projection(projection_node), PlanFacts::new(Arc::clone(&projection_schema)));
             (projection_id, projection_schema, measure_input_aliases)
         } else {
             // Plain-column measures: pre-aggregate reads each measure column
@@ -404,7 +402,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             .unwrap_or_else(|| {
                 self.push_node(
                     PlanNode::Aggregate(AggregateNode { input: preagg_input_id, spec: preagg_spec }),
-                    PlanFacts::device(Arc::clone(&preagg_schema), SchemaBehavior::Aggregate),
+                    PlanFacts::new(Arc::clone(&preagg_schema)),
                 )
             });
 
@@ -425,7 +423,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             preagg_side,
             join_type,
         )?;
-        let join_id = self.push_node(PlanNode::Join(new_join), PlanFacts::device(join_schema, SchemaBehavior::Join));
+        let join_id = self.push_node(PlanNode::Join(new_join), PlanFacts::new(join_schema));
         let final_input = if coalesce_preagg_nulls_to_zero {
             let projection_outputs = coalesce_preagg_projection_outputs(
                 aggregate,
@@ -434,10 +432,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             )?;
             let projection_node = ProjectionNode::new(join_id, projection_outputs);
             let projection_schema = Arc::clone(projection_node.output_schema());
-            self.push_node(
-                PlanNode::Projection(projection_node),
-                PlanFacts::device(projection_schema, SchemaBehavior::Projection),
-            )
+            self.push_node(PlanNode::Projection(projection_node), PlanFacts::new(projection_schema))
         } else {
             join_id
         };
@@ -448,15 +443,12 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         )?;
         let final_aggregate_id = self.push_node(
             PlanNode::Aggregate(AggregateNode { input: final_input, spec: final_rewrite.spec }),
-            PlanFacts::device(Arc::clone(&final_rewrite.output_schema), SchemaBehavior::Aggregate),
+            PlanFacts::new(Arc::clone(&final_rewrite.output_schema)),
         );
         if let Some(projection_outputs) = final_rewrite.projection_outputs {
             let projection_node = ProjectionNode::new(final_aggregate_id, projection_outputs);
             let projection_schema = Arc::clone(projection_node.output_schema());
-            return Ok(self.push_node(
-                PlanNode::Projection(projection_node),
-                PlanFacts::device(projection_schema, SchemaBehavior::Projection),
-            ));
+            return Ok(self.push_node(PlanNode::Projection(projection_node), PlanFacts::new(projection_schema)));
         }
         Ok(final_aggregate_id)
     }
@@ -572,18 +564,18 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                 let branch_join_id = self.push_node(PlanNode::Join(branch_join), join_facts.clone());
                 self.push_node(
                     PlanNode::Aggregate(AggregateNode { input: branch_join_id, spec: preagg_spec.clone() }),
-                    PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Aggregate),
+                    PlanFacts::new(Arc::clone(preagg_schema)),
                 )
             })
             .collect::<Vec<_>>();
         let partial_union = self.push_node(
             PlanNode::Union(UnionNode { inputs: branch_aggregates }),
-            PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Union),
+            PlanFacts::new(Arc::clone(preagg_schema)),
         );
         let final_spec = final_aggregate_spec_after_union_preagg(preagg_spec, preagg_schema)?;
         Some(self.push_node(
             PlanNode::Aggregate(AggregateNode { input: partial_union, spec: final_spec }),
-            PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Aggregate),
+            PlanFacts::new(Arc::clone(preagg_schema)),
         ))
     }
 
@@ -697,7 +689,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         if let Some(existing) = self.nodes.iter().find(|node| node.kind == kind && node.facts == facts) {
             return existing.id;
         }
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

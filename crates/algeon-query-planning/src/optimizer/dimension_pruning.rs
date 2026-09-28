@@ -196,17 +196,17 @@ pub fn optimize_dimension_derived_row_group_pruning(
     options: &DimensionDerivedRowGroupPruningOptions,
     ctx: AnalysisContext<'_>,
     resolver: &dyn LocalParquetPruningResolver,
-) -> DimensionDerivedRowGroupPruningResult {
+) -> Result<DimensionDerivedRowGroupPruningResult> {
     if !options.enabled {
-        return DimensionDerivedRowGroupPruningResult {
+        return Ok(DimensionDerivedRowGroupPruningResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: DimensionDerivedRowGroupPruningDiagnostics::default(),
-        };
+        });
     }
 
     let original_plan = plan.clone();
-    let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan, ctx);
+    let (plan, seeded_reader_predicates) = seed_reader_predicates_from_group_key_filters(plan, ctx)?;
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut diagnostics = DimensionDerivedRowGroupPruningDiagnostics::default();
@@ -371,20 +371,20 @@ pub fn optimize_dimension_derived_row_group_pruning(
     }
 
     if seeded_reader_predicates && diagnostics.applied_count == 0 {
-        return DimensionDerivedRowGroupPruningResult {
+        return Ok(DimensionDerivedRowGroupPruningResult {
             plan: original_plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics,
-        };
+        });
     }
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    DimensionDerivedRowGroupPruningResult {
-        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root)),
+    Ok(DimensionDerivedRowGroupPruningResult {
+        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root))?,
         change,
         diagnostics,
-    }
+    })
 }
 
 /// Plan-shape candidate for dimension-derived fact row-group pruning.
@@ -602,14 +602,16 @@ pub(crate) fn apply_local_parquet_row_group_selections(
     plan: QueryPlan,
     source_node_id: NodeId,
     selections: &[LocalParquetRowGroupSelection],
-) -> LocalParquetRowGroupSelectionApplyResult {
+) -> Result<LocalParquetRowGroupSelectionApplyResult> {
     let mut nodes = plan.nodes().to_vec();
     let root = plan.root_id();
-    let unchanged = |nodes: Vec<QueryNode>| LocalParquetRowGroupSelectionApplyResult {
-        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root)),
-        applied: false,
-        before: 0,
-        after: 0,
+    let unchanged = |nodes: Vec<QueryNode>| -> Result<LocalParquetRowGroupSelectionApplyResult> {
+        Ok(LocalParquetRowGroupSelectionApplyResult {
+            plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root))?,
+            applied: false,
+            before: 0,
+            after: 0,
+        })
     };
 
     let Some(source) = mutable_local_parquet_source(&mut nodes, source_node_id) else {
@@ -666,12 +668,12 @@ pub(crate) fn apply_local_parquet_row_group_selections(
         file.row_group_rows = Some(row_group_rows);
     }
     source.refresh_diagnostics();
-    LocalParquetRowGroupSelectionApplyResult {
-        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root)),
+    Ok(LocalParquetRowGroupSelectionApplyResult {
+        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root))?,
         applied: true,
         before,
         after,
-    }
+    })
 }
 
 /// Applies an externally-derived dimension key filter to a fact source.
@@ -688,14 +690,16 @@ pub fn apply_dimension_derived_pruning_with_stats(
     target_source_node_id: NodeId,
     per_file_row_group_key_ranges: &[Vec<Option<KeyRange>>],
     filter: &DimensionKeyFilter,
-) -> DimensionDerivedApplyResult {
+) -> Result<DimensionDerivedApplyResult> {
     let mut nodes = plan.nodes().to_vec();
     let root = plan.root_id();
-    let unchanged = |nodes: Vec<QueryNode>| DimensionDerivedApplyResult {
-        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root)),
-        applied: false,
-        before: 0,
-        after: 0,
+    let unchanged = |nodes: Vec<QueryNode>| -> Result<DimensionDerivedApplyResult> {
+        Ok(DimensionDerivedApplyResult {
+            plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root))?,
+            applied: false,
+            before: 0,
+            after: 0,
+        })
     };
 
     let Some(source) = mutable_local_parquet_source(&mut nodes, target_source_node_id) else {
@@ -734,12 +738,12 @@ pub fn apply_dimension_derived_pruning_with_stats(
         file.row_groups = Some(row_groups);
     }
     source.refresh_diagnostics();
-    DimensionDerivedApplyResult {
-        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root)),
+    Ok(DimensionDerivedApplyResult {
+        plan: plan.rewrite(RewrittenNodes::refined_sources(nodes, root))?,
         applied: true,
         before,
         after,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -770,7 +774,8 @@ mod tests {
                 row_groups: vec![1, 2],
                 row_group_rows: vec![10, 20, 30, 40, 50],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(result.applied);
         assert_eq!(result.before, 3);
@@ -800,7 +805,8 @@ mod tests {
                 row_groups: vec![1, 4],
                 row_group_rows: vec![10, 20, 30, 40, 50],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
@@ -820,7 +826,8 @@ mod tests {
                 row_groups: vec![1, 2],
                 row_group_rows: vec![10, 20, 30, 40, 50],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
@@ -839,7 +846,8 @@ mod tests {
                 row_groups: Vec::new(),
                 row_group_rows: vec![10, 20, 30, 40, 50],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
@@ -858,7 +866,8 @@ mod tests {
                 row_groups: vec![1, 1],
                 row_group_rows: vec![10, 20, 30, 40, 50],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
@@ -877,7 +886,8 @@ mod tests {
                 row_groups: vec![2, 1],
                 row_group_rows: vec![10, 20, 30, 40, 50],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
@@ -896,7 +906,8 @@ mod tests {
                 row_groups: vec![1, 2],
                 row_group_rows: vec![10, 20],
             }],
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
@@ -919,7 +930,8 @@ mod tests {
                 Some(KeyRange { min: 10, max: 12 }),
             ]],
             &DimensionKeyFilter::from_bounds(KeyRange { min: 5, max: 5 }),
-        );
+        )
+        .unwrap();
 
         assert!(result.applied);
         assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
@@ -938,7 +950,8 @@ mod tests {
             source_node_id,
             &[vec![Some(KeyRange { min: 0, max: 2 })]],
             &DimensionKeyFilter::from_bounds(KeyRange { min: 5, max: 5 }),
-        );
+        )
+        .unwrap();
 
         assert!(!result.applied);
         assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
@@ -953,7 +966,7 @@ mod tests {
         let source = LocalParquetSource::from_files(vec![file], schema, vec!["x".to_string()]);
         let mut builder = QueryPlanBuilder::new();
         let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
-        (builder.finish_with_host_sink(source_node_id), source_node_id)
+        (builder.finish_with_host_sink(source_node_id).unwrap(), source_node_id)
     }
 
     fn test_dynamic_filter_route(source_node_id: NodeId) -> DynamicFilterRoute {

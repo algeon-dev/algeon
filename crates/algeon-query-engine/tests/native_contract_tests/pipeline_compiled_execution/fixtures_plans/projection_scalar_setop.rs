@@ -81,9 +81,9 @@ pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         left_schema,
-    );
+    ).unwrap();
     let count_input = builder
-        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema));
+        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema)).unwrap();
     let count = builder.add_aggregate(
         count_input,
         AggregateSpec::new(
@@ -91,9 +91,9 @@ pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
         ),
         Arc::clone(&count_schema),
-    );
-    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], count_schema));
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], count_schema)).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan {
@@ -130,7 +130,7 @@ pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan 
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("score"), "avg_score")],
         ),
         Arc::clone(&grouped_schema),
-    );
+    ).unwrap();
     let join = builder.add_join(
         left,
         grouped,
@@ -147,16 +147,14 @@ pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan 
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let filtered = builder.add_filter(
         join,
-        Expr::binary(Expr::column("score"), BinaryOp::Gt, Expr::column("avg_score")),
-        join_schema,
-    );
+        Expr::binary(Expr::column("score"), BinaryOp::Gt, Expr::column("avg_score"))).unwrap();
     let count_input = builder.add_projection(
         filtered,
         projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema),
-    );
+    ).unwrap();
     let count = builder.add_aggregate(
         count_input,
         AggregateSpec::new(
@@ -164,9 +162,9 @@ pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan 
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
         ),
         Arc::clone(&count_schema),
-    );
-    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], count_schema));
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], count_schema)).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPlan {
@@ -196,7 +194,7 @@ pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPla
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("amount"), "cnt")],
         ),
         Arc::clone(&grouped_schema),
-    );
+    ).unwrap();
     let avg = builder.add_aggregate(
         fact,
         AggregateSpec::new(
@@ -204,7 +202,7 @@ pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPla
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("amount"), "avg_amount")],
         ),
         Arc::clone(&avg_schema),
-    );
+    ).unwrap();
     let cross = builder.add_join(
         grouped,
         avg,
@@ -215,7 +213,7 @@ pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPla
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let projection = builder.add_projection(
         cross,
         projection_outputs(
@@ -228,8 +226,8 @@ pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPla
             }],
             output_schema,
         ),
-    );
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 pub(super) fn projection_root_scalar_join_aggregate_input_plan() -> QueryPlan {
@@ -269,7 +267,7 @@ pub(super) fn projection_root_scalar_join_aggregate_input_plan() -> QueryPlan {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_k", "fact_k"), "fact_k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let joined_b = builder.add_join(
         joined_a,
         dim_b,
@@ -280,11 +278,11 @@ pub(super) fn projection_root_scalar_join_aggregate_input_plan() -> QueryPlan {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_k", "fact_k"), "fact_k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let presence = builder.add_projection(
         joined_b,
         projection_outputs(vec![Expr::literal(LiteralValue::Int32(1)).alias("__row_present")], presence_schema),
-    );
+    ).unwrap();
     let count = builder.add_aggregate(
         presence,
         AggregateSpec::new(
@@ -292,9 +290,9 @@ pub(super) fn projection_root_scalar_join_aggregate_input_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("__row_present"), "cnt")],
         ),
         Arc::clone(&count_schema),
-    );
-    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("cnt")], count_schema));
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("cnt")], count_schema)).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 pub(super) fn projection_root_keyed_grouped_aggregate_input_plan() -> QueryPlan {
@@ -336,7 +334,7 @@ pub(super) fn projection_root_keyed_grouped_aggregate_input_plan() -> QueryPlan 
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_k", "fact_k"), "fact_k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let joined_b = builder.add_join(
         joined_a,
         dim_b,
@@ -347,7 +345,7 @@ pub(super) fn projection_root_keyed_grouped_aggregate_input_plan() -> QueryPlan 
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_k", "fact_k"), "fact_k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let aggregate = builder.add_aggregate(
         joined_b,
         AggregateSpec::new(
@@ -355,12 +353,12 @@ pub(super) fn projection_root_keyed_grouped_aggregate_input_plan() -> QueryPlan 
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("fact_k"), "cnt")],
         ),
         Arc::clone(&grouped_schema),
-    );
+    ).unwrap();
     let projection = builder.add_projection(
         aggregate,
         projection_outputs(vec![Expr::column("fact_k"), Expr::column("cnt")], grouped_schema),
-    );
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,7 +407,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
                 )
                 .with_scan_limit(Some(1)),
             ));
-            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema))
+            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema)).unwrap()
         },
         ProjectionScalarSetopPlanVariant::MaxRowsDriver => {
             let driver = builder.add_source(SourceNode::LocalParquet(
@@ -420,7 +418,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
                 )
                 .with_max_rows(Some(1)),
             ));
-            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema))
+            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema)).unwrap()
         },
         ProjectionScalarSetopPlanVariant::LimitDriver => {
             let driver = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
@@ -428,8 +426,8 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
                 Arc::clone(&driver_schema),
                 vec!["driver_id".into()],
             )));
-            let driver = builder.add_limit(driver, LimitSpec::fetch(1), driver_schema);
-            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema))
+            let driver = builder.add_limit(driver, LimitSpec::fetch(1)).unwrap();
+            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema)).unwrap()
         },
         ProjectionScalarSetopPlanVariant::ScalarFanout
         | ProjectionScalarSetopPlanVariant::UnsupportedJoin
@@ -446,10 +444,8 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
             )));
             let driver = builder.add_filter(
                 driver,
-                Expr::binary(Expr::column("driver_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))),
-                Arc::new(Schema::new(vec![Field::new("driver_id", DataType::Int32, false)])),
-            );
-            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema))
+                Expr::binary(Expr::column("driver_id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1)))).unwrap();
+            builder.add_projection(driver, projection_outputs(Vec::new(), driver_projection_schema)).unwrap()
         },
     };
     let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
@@ -458,19 +454,19 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
         vec!["amount".into(), "qty".into()],
     )));
     let count_projection =
-        builder.add_projection(fact, projection_outputs(vec![Expr::column("qty")], Arc::clone(&count_arg_schema)));
+        builder.add_projection(fact, projection_outputs(vec![Expr::column("qty")], Arc::clone(&count_arg_schema))).unwrap();
     let count = builder.add_aggregate(
         count_projection,
         AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "cnt")]),
         Arc::clone(&count_schema),
-    );
+    ).unwrap();
     let avg_projection = builder.add_projection(
         fact,
         projection_outputs(
             vec![Expr::column("amount")],
             Arc::new(Schema::new(vec![Field::new("amount", DataType::Int64, true)])),
         ),
-    );
+    ).unwrap();
     let avg = builder.add_aggregate(
         avg_projection,
         AggregateSpec::new(
@@ -478,7 +474,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("amount"), "avg_amount")],
         ),
         Arc::clone(&avg_schema),
-    );
+    ).unwrap();
     let scalar_join = builder.add_join(
         count,
         avg,
@@ -489,7 +485,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let join_type =
         if variant == ProjectionScalarSetopPlanVariant::UnsupportedJoin { JoinType::LeftAnti } else { JoinType::Left };
     let root_join = builder.add_join(
@@ -502,7 +498,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let projection = builder.add_projection(
         root_join,
         projection_outputs(
@@ -515,8 +511,8 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
             }],
             output_schema,
         ),
-    );
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionScalarSetopPlanVariant) -> QueryPlan {
@@ -569,15 +565,15 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
             ],
         ),
         aggregate_schema,
-    );
+    ).unwrap();
     let count = builder
-        .add_projection(aggregate, projection_outputs(vec![Expr::column("count_all")], Arc::clone(&count_schema)));
+        .add_projection(aggregate, projection_outputs(vec![Expr::column("count_all")], Arc::clone(&count_schema))).unwrap();
     let sum =
-        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("sum_qty")], Arc::clone(&sum_schema)));
+        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("sum_qty")], Arc::clone(&sum_schema))).unwrap();
     let avg = builder
-        .add_projection(aggregate, projection_outputs(vec![Expr::column("avg_amount")], Arc::clone(&avg_schema)));
+        .add_projection(aggregate, projection_outputs(vec![Expr::column("avg_amount")], Arc::clone(&avg_schema))).unwrap();
     let max =
-        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("max_qty")], Arc::clone(&max_schema)));
+        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("max_qty")], Arc::clone(&max_schema))).unwrap();
     let count_sum = builder.add_join(
         count,
         sum,
@@ -588,7 +584,7 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&count_sum_schema),
-    );
+    ).unwrap();
     let count_sum_avg = builder.add_join(
         count_sum,
         avg,
@@ -600,7 +596,7 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&count_sum_avg_schema),
-    );
+    ).unwrap();
     let repeated = builder.add_join(
         count_sum_avg,
         max,
@@ -613,7 +609,7 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
-    );
+    ).unwrap();
     let root_input = if variant == ProjectionScalarSetopPlanVariant::RepeatedScalarFanoutUnboundedInput {
         let driver = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
             "/tmp/projection-repeated-scalar-setop-driver.parquet",
@@ -632,7 +628,7 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
                 ])
                 .with_build_side(JoinSide::Right),
             Arc::clone(&output_schema),
-        )
+        ).unwrap()
     } else {
         repeated
     };
@@ -647,8 +643,8 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
             ],
             output_schema,
         ),
-    );
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScalarSetopPlanVariant) -> QueryPlan {
@@ -672,7 +668,7 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
     let left_dedup = if variant == ProjectionScalarSetopPlanVariant::NonDedupLeftAntiInput {
         left
     } else {
-        builder.add_aggregate(left, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&dedup_schema))
+        builder.add_aggregate(left, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&dedup_schema)).unwrap()
     };
     let (right_aggregate_exprs, right_dedup_schema) = if variant == ProjectionScalarSetopPlanVariant::DistinctAggregate
     {
@@ -690,7 +686,7 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
         right,
         AggregateSpec::new(vec![Expr::column("k")], right_aggregate_exprs),
         right_dedup_schema,
-    );
+    ).unwrap();
     let anti = builder.add_join(
         left_dedup,
         right_dedup,
@@ -701,13 +697,13 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&dedup_schema),
-    );
+    ).unwrap();
     if variant == ProjectionScalarSetopPlanVariant::SetopDedupInput {
-        let projection = builder.add_projection(anti, projection_outputs(vec![Expr::column("k")], dedup_schema));
-        return builder.finish_with_host_sink(projection);
+        let projection = builder.add_projection(anti, projection_outputs(vec![Expr::column("k")], dedup_schema)).unwrap();
+        return builder.finish_with_host_sink(projection).unwrap();
     }
     let count_input = builder
-        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema));
+        .add_projection(anti, projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema)).unwrap();
     let count = builder.add_aggregate(
         count_input,
         AggregateSpec::new(
@@ -715,9 +711,9 @@ fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScala
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
         ),
         Arc::clone(&scalar_schema),
-    );
-    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema)).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 /// Three group-only dedup aggregates combined by two stacked keyed LeftAnti
@@ -748,11 +744,11 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
         vec!["k".into()],
     )));
     let dedup_a =
-        builder.add_aggregate(a, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema));
+        builder.add_aggregate(a, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema)).unwrap();
     let dedup_b =
-        builder.add_aggregate(b, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema));
+        builder.add_aggregate(b, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema)).unwrap();
     let dedup_c =
-        builder.add_aggregate(c, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema));
+        builder.add_aggregate(c, AggregateSpec::new(vec![Expr::column("k")], Vec::new()), Arc::clone(&key_schema)).unwrap();
 
     // EXCEPT DISTINCT is NULL-equality: NULL matches NULL. The single-anti-join
     // fixtures above use the `JoinSpec` default (`NullsDoNotMatch`); this chain
@@ -768,7 +764,7 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&key_schema),
-    );
+    ).unwrap();
     let anti_abc = builder.add_join(
         anti_ab,
         dedup_c,
@@ -780,12 +776,12 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&key_schema),
-    );
+    ).unwrap();
 
     let count_input = builder.add_projection(
         anti_abc,
         projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema),
-    );
+    ).unwrap();
     let count = builder.add_aggregate(
         count_input,
         AggregateSpec::new(
@@ -793,9 +789,9 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
         ),
         Arc::clone(&scalar_schema),
-    );
-    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema)).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 #[test]

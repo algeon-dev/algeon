@@ -36,7 +36,7 @@ pub(super) fn graph_algorithm_parameters(params: &GraphAlgorithmParams) -> Strin
             format!("alpha={},epsilon={},max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
         },
         GraphAlgorithmParams::PersonalizedPageRank(params) => format!(
-            "alpha={},epsilon={},max_iterations={},personalization_node={},personalization_vertex_col={},personalization_value_col={}",
+            "alpha={},epsilon={},max_iterations={},personalization_input={},personalization_vertex_col={},personalization_value_col={}",
             params.pagerank.alpha,
             params.pagerank.epsilon,
             params.pagerank.max_iterations,
@@ -135,7 +135,7 @@ pub(super) fn graph_algorithm_parameters(params: &GraphAlgorithmParams) -> Strin
             params.seed,
         ),
         GraphAlgorithmParams::Similarity(params) => format!(
-            "vertex_pairs_node={},first_column={},second_column={}",
+            "vertex_pairs_input={},first_column={},second_column={}",
             params.vertex_pairs.input, params.vertex_pairs.first_column, params.vertex_pairs.second_column,
         ),
     }

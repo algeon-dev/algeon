@@ -36,7 +36,7 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
     write_non_tpch_semijoin_fixture(&dir);
 
     let plan = non_tpch_semijoin_sql_plan(&dir).await;
-    let lowering = lower_physical_plan_to_native(plan);
+    let lowering = lower_physical_plan_to_native(plan).unwrap();
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
@@ -53,7 +53,8 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimized.change, NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);

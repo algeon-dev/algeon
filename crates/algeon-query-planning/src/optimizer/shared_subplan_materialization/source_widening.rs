@@ -147,6 +147,9 @@ fn widen_local_parquet_source(
         }
     }
     source.schema = Arc::new(Schema::new(fields));
+    // The widened source emits its whole schema; an override derived from the
+    // narrower column roles would hide the added columns.
+    source.output_schema_override = None;
     source.projected_output_columns = source.read_columns.clone();
     source.projected_output_column_source_refs =
         source.read_column_file_indices.iter().copied().map(SourceColumnRef::File).collect();
@@ -154,4 +157,35 @@ fn widen_local_parquet_source(
     source.pure_filter_column_source_refs.clear();
     source.refresh_diagnostics();
     true
+}
+
+#[cfg(test)]
+mod source_widening_tests {
+    use super::*;
+
+    #[test]
+    fn widened_source_emits_the_columns_it_adds() {
+        let read_schema = Arc::new(Schema::new(vec![Field::new("q", DataType::Int32, false)]));
+        let mut source =
+            LocalParquetSource::from_files(vec![LocalParquetFile::new("/tmp/widen.parquet")], read_schema, vec![
+                "q".to_string(),
+            ])
+            .with_column_roles(vec!["q".to_string()], Vec::new());
+        let added = Field::new("x", DataType::Int64, true);
+        let columns = BTreeMap::from([(
+            "x".to_string(),
+            SourceColumnMaterialization {
+                name: "x".to_string(),
+                file_index: 1,
+                source_ref: SourceColumnRef::File(1),
+                field: added.clone(),
+            },
+        )]);
+
+        assert!(widen_local_parquet_source(&mut source, &columns));
+
+        let output = source.output_schema();
+        assert_eq!(output.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), ["q", "x"]);
+        assert_eq!(output.field(1), &added);
+    }
 }

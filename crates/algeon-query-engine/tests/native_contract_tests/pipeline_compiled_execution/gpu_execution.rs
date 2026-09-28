@@ -161,6 +161,7 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
+    .unwrap()
     .plan;
     assert_eq!(plan.dynamic_filter_routes().len(), 1);
     assert!(matches!(plan.dynamic_filter_routes()[0].producer, DynamicFilterProducer::AggregateGroupKeys { .. }));
@@ -282,18 +283,22 @@ fn execute_query_plan_runs_independent_union_branches_through_unified_admission(
     let mut builder = QueryPlanBuilder::new();
     let left =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![left_batch])));
-    let left = builder.add_projection(
-        left,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
+    let left = builder
+        .add_projection(
+            left,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
     let right =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![right_batch])));
-    let right = builder.add_projection(
-        right,
-        vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
-    );
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
+    let right = builder
+        .add_projection(
+            right,
+            vec![ProjectionOutput::new(Expr::column("order_key"), Field::new("order_key", DataType::Int32, false))],
+        )
+        .unwrap();
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
 
     let decision = admit(
         &plan,
@@ -405,6 +410,7 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
+    .unwrap()
     .plan;
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
@@ -487,6 +493,7 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     )
+    .unwrap()
     .plan;
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source aggregate plan should compile");
@@ -776,7 +783,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         "compiled_root_join",
         Arc::clone(plan.output_schema()),
     )));
-    let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
+    let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source).unwrap();
     let root_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
     let passthrough_evidence = AttemptCapabilityEvidence::for_query_plan(&passthrough_plan);
     let composed_evidence = AttemptCapabilityEvidence::aggregate([root_evidence, passthrough_evidence])

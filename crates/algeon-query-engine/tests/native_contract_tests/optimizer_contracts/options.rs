@@ -16,7 +16,7 @@ fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {
         &NativeOptimizerOptions::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -47,7 +47,7 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
         &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    ).unwrap();
 
     assert!(!options.projection_simplification.enabled);
     assert!(!options.semijoin_reduction.enabled);

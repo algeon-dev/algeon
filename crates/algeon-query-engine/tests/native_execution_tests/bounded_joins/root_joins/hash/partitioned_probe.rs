@@ -36,14 +36,12 @@ fn partitioned_probe_retry_plan(runtime: &cudf::Runtime, dir: &Path, rows_per_ch
                 JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             ]),
         Arc::clone(&probe_schema),
-    );
+    ).unwrap();
     let sorted = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)]),
-        Arc::clone(&probe_schema),
-    );
-    let limited = builder.add_limit(sorted, LimitSpec::fetch(2), probe_schema);
-    builder.finish_with_host_sink(limited)
+        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), true, false)])).unwrap();
+    let limited = builder.add_limit(sorted, LimitSpec::fetch(2)).unwrap();
+    builder.finish_with_host_sink(limited).unwrap()
 }
 
 fn partitioned_probe_context(cap: u64, min_units: usize) -> BackendQueryContext {

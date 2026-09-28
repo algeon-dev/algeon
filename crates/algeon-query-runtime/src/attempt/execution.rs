@@ -137,7 +137,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(name, schema)));
-        builder.finish_with_host_sink(source)
+        builder.finish_with_host_sink(source).unwrap()
     }
 
     #[test]

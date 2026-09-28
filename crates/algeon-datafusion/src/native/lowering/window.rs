@@ -39,7 +39,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringRejection,
+        LoweringFailure,
         expression_contract::validate_physical_expr_contract,
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeInput, NormalizedNativeSort, NormalizedNativeWindow},
@@ -51,7 +51,7 @@ pub(super) fn lower_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let sorted = lower_unprojected_sort_input(sort, builder, required_output_fields)?;
     project_sort_output(builder, sort.sort.output_schema(), sorted.input, required_output_fields)
 }
@@ -60,7 +60,7 @@ fn lower_unprojected_sort_input(
     sort: &NormalizedNativeSort<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<SortedNativeInput, LoweringRejection> {
+) -> Result<SortedNativeInput, LoweringFailure> {
     validate_schema(Arc::clone(sort.sort.output_schema()))?;
     validate_sort_ordering(sort.sort.ordering(), sort.sort.input_schema())?;
     let mut child_required = BTreeSet::new();
@@ -81,11 +81,11 @@ fn apply_sort_fetch_limit(
     builder: &mut NativeQueryPlanBuilder,
     sorted: LoweredNativeInput,
     fetch: Option<NativeLimitSpec>,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let Some(fetch) = fetch else {
         return Ok(sorted);
     };
-    let node = builder.add_limit(sorted.node, fetch, Arc::clone(&sorted.schema));
+    let node = builder.add_limit(sorted.node, fetch)?;
     Ok(LoweredNativeInput::with_bindings(node, sorted.schema, sorted.bindings))
 }
 
@@ -93,7 +93,7 @@ pub(super) fn lower_window_input(
     window: &NormalizedNativeWindow<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let window_schema = window.window.schema();
     let window_input_schema = window.window.input_schema();
     validate_schema(Arc::clone(&window_schema))?;
@@ -129,16 +129,17 @@ pub(super) fn lower_window_input(
         &window_input_schema,
         &prepared.input,
         &output_bindings,
+        &output_schema,
         &prepared.keys,
     )?;
-    let window_node = builder.add_window(prepared.input.node, spec, Arc::clone(&output_schema));
+    let window_node = builder.add_window(prepared.input.node, spec)?;
     project_required_output_columns(builder, window_node, output_schema, output_bindings, required_output_fields)
 }
 
 fn validate_window_exprs(
     window_exprs: &[Arc<dyn WindowExpr>],
     input_schema: &SchemaRef,
-) -> Result<(), LoweringRejection> {
+) -> Result<(), LoweringFailure> {
     if window_exprs.is_empty() {
         return Err(CapabilityReason::UnsupportedOperator.into());
     }
@@ -160,7 +161,7 @@ fn validate_window_exprs(
     Ok(())
 }
 
-fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
+fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringFailure> {
     validate_physical_expr_contract(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_supported_arrow_type(&data_type)
@@ -176,7 +177,7 @@ fn validate_window_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaR
 fn validate_plain_aggregate_window(
     plain: &PlainAggregateWindowExpr,
     input_schema: &SchemaRef,
-) -> Result<(), LoweringRejection> {
+) -> Result<(), LoweringFailure> {
     let whole_partition = is_whole_partition_frame(plain.get_window_frame());
     let cumulative = is_rows_unbounded_preceding_to_current_frame(plain.get_window_frame());
     if !whole_partition && !cumulative {
@@ -208,7 +209,7 @@ enum StandardWindowKind {
     Lead,
 }
 
-fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
+fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), LoweringFailure> {
     match standard_window_kind(standard)? {
         StandardWindowKind::Rank if standard.order_by().is_empty() => Err(CapabilityReason::UnsupportedOperator.into()),
         StandardWindowKind::Rank | StandardWindowKind::RowNumber => Ok(()),
@@ -226,7 +227,7 @@ fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &Schema
     }
 }
 
-fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, LoweringRejection> {
+fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, LoweringFailure> {
     let udf = standard
         .get_standard_func_expr()
         .as_any()
@@ -269,7 +270,7 @@ struct LagLeadArgs {
 fn parse_lag_lead_args(
     standard: &StandardWindowExpr,
     input_schema: &SchemaRef,
-) -> Result<LagLeadArgs, LoweringRejection> {
+) -> Result<LagLeadArgs, LoweringFailure> {
     let udf = standard
         .get_standard_func_expr()
         .as_any()
@@ -300,7 +301,7 @@ fn parse_lag_lead_args(
     Ok(LagLeadArgs { value_expr, offset, default })
 }
 
-fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringRejection> {
+fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), LoweringFailure> {
     validate_physical_expr_contract(expr, input_schema)?;
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     if is_supported_arrow_type(&data_type)
@@ -313,7 +314,7 @@ fn validate_window_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schem
     }
 }
 
-fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, LoweringRejection> {
+fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, LoweringFailure> {
     let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     match literal.value() {
         ScalarValue::Null => Ok(1u32),
@@ -346,7 +347,7 @@ fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, LoweringRe
 /// `[0, i32::MAX]`. Rejecting larger offsets here means the plan falls back
 /// to CPU DataFusion instead of admitting a native plan that would error at
 /// execute time.
-fn offset_from_i64(value: i64) -> Result<u32, LoweringRejection> {
+fn offset_from_i64(value: i64) -> Result<u32, LoweringFailure> {
     if value < 0 {
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
@@ -357,7 +358,7 @@ fn offset_from_i64(value: i64) -> Result<u32, LoweringRejection> {
     Ok(value as u32)
 }
 
-fn offset_from_u32(value: u32) -> Result<u32, LoweringRejection> {
+fn offset_from_u32(value: u32) -> Result<u32, LoweringFailure> {
     if value > i32::MAX as u32 {
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
@@ -367,7 +368,7 @@ fn offset_from_u32(value: u32) -> Result<u32, LoweringRejection> {
 fn parse_lag_lead_default(
     expr: &Arc<dyn PhysicalExpr>,
     value_type: &DataType,
-) -> Result<Option<NativeLiteralValue>, LoweringRejection> {
+) -> Result<Option<NativeLiteralValue>, LoweringFailure> {
     let literal = expr.downcast_ref::<Literal>().ok_or(CapabilityReason::UnsupportedExpression)?;
     let scalar = literal.value();
     // Match DataFusion's lag/lead constructor, which encodes the missing
@@ -437,7 +438,7 @@ fn scalar_is_unbounded(value: &ScalarValue) -> bool {
 fn native_window_output_schema_and_bindings(
     input: &LoweredNativeInput,
     window_schema: &SchemaRef,
-) -> Result<(SchemaRef, Vec<FieldBinding>), LoweringRejection> {
+) -> Result<(SchemaRef, Vec<FieldBinding>), LoweringFailure> {
     if window_schema.fields().len() < input.bindings.len() {
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
@@ -478,7 +479,7 @@ fn materialize_window_key_expressions(
     input_schema: &SchemaRef,
     input: LoweredNativeInput,
     sorted_keys: &SortedWindowKeys<'_>,
-) -> Result<PreparedWindowInput, LoweringRejection> {
+) -> Result<PreparedWindowInput, LoweringFailure> {
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     let mut materialized_keys = Vec::<MaterializedWindowKey>::new();
     let mut prepared_keys = Vec::with_capacity(window_exprs.len());
@@ -508,7 +509,7 @@ fn materialize_window_key_expressions(
                     sort_expr.options.nulls_first,
                 ))
             })
-            .collect::<Result<Vec<_>, LoweringRejection>>()?;
+            .collect::<Result<Vec<_>, LoweringFailure>>()?;
         prepared_keys.push(PreparedWindowKeys { partition_by, order_by });
     }
 
@@ -528,7 +529,7 @@ fn materialize_window_key_expressions(
         expressions.push(key.expr.alias(key.name.as_str()));
     }
     let schema = Arc::new(Schema::new(fields));
-    let node = builder.add_projection(input.node, super::projection_outputs(expressions, &schema)?);
+    let node = builder.add_projection(input.node, super::projection_outputs(expressions, &schema)?)?;
     Ok(PreparedWindowInput {
         input: LoweredNativeInput::with_bindings(node, schema, input.bindings),
         keys: prepared_keys,
@@ -549,7 +550,7 @@ fn window_key_expr(
     sorted_keys: &SortedWindowKeys<'_>,
     used_names: &mut BTreeSet<String>,
     materialized_keys: &mut Vec<MaterializedWindowKey>,
-) -> Result<NativeExpr, LoweringRejection> {
+) -> Result<NativeExpr, LoweringFailure> {
     if let Some(column) = expr.downcast_ref::<Column>() {
         let binding = input.binding_for_column(column)?;
         return Ok(NativeExpr::column(binding.native_name.as_str()));
@@ -587,8 +588,9 @@ fn lower_window_spec(
     input_schema: &SchemaRef,
     input: &LoweredNativeInput,
     output_bindings: &[FieldBinding],
+    output_schema: &SchemaRef,
     prepared_keys: &[PreparedWindowKeys],
-) -> Result<NativeWindowSpec, LoweringRejection> {
+) -> Result<NativeWindowSpec, LoweringFailure> {
     let input_field_count = input_schema.fields().len();
     if output_bindings.len() != input_field_count + window_exprs.len() || prepared_keys.len() != window_exprs.len() {
         return Err(CapabilityReason::UnsupportedExpression.into());
@@ -609,10 +611,15 @@ fn lower_window_spec(
             return Err(CapabilityReason::UnsupportedOperator.into());
         }
 
-        let alias = output_bindings
-            .get(input_field_count + function_index)
+        // The native output schema appends the window fields, renamed to their
+        // native names, after the native input fields.
+        let output = output_schema
+            .fields()
+            .len()
+            .checked_sub(window_exprs.len() - function_index)
+            .and_then(|index| output_schema.fields().get(index))
             .ok_or(CapabilityReason::UnsupportedExpression)?
-            .native_name
+            .as_ref()
             .clone();
         if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
             let aggregate = plain.get_aggregate_expr();
@@ -631,14 +638,14 @@ fn lower_window_spec(
             functions.push(NativeWindowFunction::Aggregate {
                 function: lower_native_aggregate_function(aggregate.fun())?,
                 expr,
-                alias,
+                output,
                 frame,
             });
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
             let kind = standard_window_kind(standard)?;
             match kind {
-                StandardWindowKind::Rank => functions.push(NativeWindowFunction::Rank { alias }),
-                StandardWindowKind::RowNumber => functions.push(NativeWindowFunction::row_number(alias)),
+                StandardWindowKind::Rank => functions.push(NativeWindowFunction::Rank { output }),
+                StandardWindowKind::RowNumber => functions.push(NativeWindowFunction::RowNumber { output }),
                 StandardWindowKind::Lag | StandardWindowKind::Lead => {
                     let direction = if kind == StandardWindowKind::Lag {
                         NativeShiftDirection::Lag
@@ -652,7 +659,7 @@ fn lower_window_spec(
                         expr: lowered_value,
                         offset: args.offset,
                         default: args.default,
-                        alias,
+                        output,
                         direction,
                     });
                 },

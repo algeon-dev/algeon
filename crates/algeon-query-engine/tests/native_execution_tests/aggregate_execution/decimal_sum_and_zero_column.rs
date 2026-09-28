@@ -76,10 +76,10 @@ fn bounded_native_query_executes_filtered_decimal_global_sum() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -131,10 +131,10 @@ fn bounded_native_zero_column_count_uses_row_group_metadata_without_read_columns
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

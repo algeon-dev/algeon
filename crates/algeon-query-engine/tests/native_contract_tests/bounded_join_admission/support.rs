@@ -46,14 +46,12 @@ fn bounded_compiled_pipeline_rejects_duplicate_fused_topk_limit_claims() {
     // one limit pass-through: two tasks claiming `FusedTopK` for the same
     // limit would apply fetch/skip twice.
     let mut builder = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(limit);
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
@@ -102,14 +100,12 @@ fn bounded_offset_only_limit_runs_below_a_full_sort() {
     // fuse, so the sort stays a full sort and the limit applies the offset
     // over one complete frame.
     let mut builder = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::offset(1), Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(limit);
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::offset(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
@@ -135,14 +131,12 @@ fn bounded_sort_strategy_records_fused_binding_once() {
     // task's strategy; with the consuming limit task and plan node bound to
     // it; readers use the recorded value instead of re-deriving fusion.
     let mut builder = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
-    let plan = builder.finish_with_host_sink(limit);
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
@@ -178,23 +172,19 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
     // it through, a projection that drops the key column ends it, and an
     // aggregate stream never carries one.
     let mut builder = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
     let filter = builder.add_filter(
         limit,
         Expr::binary(
             Expr::column("right_value"),
             BinaryOp::Gt,
             Expr::literal(LiteralValue::Int32(i32::MIN)),
-        ),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(filter);
+        )).unwrap();
+    let plan = builder.finish_with_host_sink(filter).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
         .expect("join sort limit filter should compile");
@@ -225,20 +215,18 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
     }
 
     let mut dropped = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut dropped);
+    let join = compositional_inner_join_base(&mut dropped);
     let sort = dropped.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
     let projection = dropped.add_projection(
         sort,
         vec![ProjectionOutput::new(
             Expr::column("left_id"),
             Field::new("left_id", DataType::Int32, false),
         )],
-    );
-    let dropped_plan = dropped.finish_with_host_sink(projection);
+    ).unwrap();
+    let dropped_plan = dropped.finish_with_host_sink(projection).unwrap();
     let dropped_analysis = dropped_plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let dropped_pipeline =
         compile_pipeline(&dropped_plan, &dropped_analysis)
@@ -260,7 +248,7 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
     );
 
     let mut aggregated = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut aggregated);
+    let join = compositional_inner_join_base(&mut aggregated);
     let aggregate = aggregated.add_aggregate(
         join,
         AggregateSpec::new(
@@ -271,8 +259,8 @@ fn bounded_resource_ordering_tracks_sort_keys_through_frames() {
             Field::new("left_id", DataType::Int32, false),
             Field::new("count", DataType::Int64, false),
         ])),
-    );
-    let aggregate_plan = aggregated.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let aggregate_plan = aggregated.finish_with_host_sink(aggregate).unwrap();
     let aggregate_analysis = aggregate_plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let aggregate_pipeline =
         compile_pipeline(&aggregate_plan, &aggregate_analysis)
@@ -288,7 +276,7 @@ fn bounded_aggregate_task_records_single_stage() {
     // Compiled aggregate tasks always run single-shot: partial state never
     // crosses a compiled edge, it is merged inside the task.
     let mut builder = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let aggregate = builder.add_aggregate(
         join,
         AggregateSpec::new(
@@ -299,8 +287,8 @@ fn bounded_aggregate_task_records_single_stage() {
             Field::new("left_id", DataType::Int32, false),
             Field::new("count", DataType::Int64, false),
         ])),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
@@ -339,7 +327,7 @@ fn bounded_aggregate_state_and_max_rows_are_node_facts() {
         source,
         AggregateSpec::new(vec![Expr::column("k")], Vec::new()),
         Arc::clone(&key_schema),
-    );
+    ).unwrap();
     let scalar = builder.add_aggregate(
         dedup,
         AggregateSpec::new(
@@ -347,13 +335,11 @@ fn bounded_aggregate_state_and_max_rows_are_node_facts() {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("k"), "count")],
         ),
         Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)])),
-    );
+    ).unwrap();
     let limit = builder.add_limit(
         scalar,
-        LimitSpec::fetch(1),
-        Arc::new(Schema::new(vec![Field::new("count", DataType::Int64, false)])),
-    );
-    let plan = builder.finish_with_host_sink(limit);
+        LimitSpec::fetch(1)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let node_fact = |id| {
@@ -393,7 +379,7 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
             Field::new("k", DataType::Int32, false),
             Field::new("count", DataType::Int64, false),
         ])),
-    );
+    ).unwrap();
     let anti = builder.add_join(
         left,
         grouped,
@@ -404,8 +390,8 @@ fn bounded_left_anti_build_edge_requires_dedup_aggregate() {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&key_schema),
-    );
-    let plan = builder.finish_with_host_sink(anti);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(anti).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let build_edge = analysis
@@ -445,7 +431,7 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
         right,
         AggregateSpec::new(vec![Expr::column("k")], Vec::new()),
         Arc::clone(&key_schema),
-    );
+    ).unwrap();
     let anti = builder.add_join(
         left,
         dedup,
@@ -456,11 +442,11 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
         .with_build_side(JoinSide::Right),
         Arc::clone(&key_schema),
-    );
+    ).unwrap();
     let count_input = builder.add_projection(
         anti,
         projection_outputs(vec![Expr::literal(LiteralValue::Int64(1)).alias("one")], one_schema),
-    );
+    ).unwrap();
     let count = builder.add_aggregate(
         count_input,
         AggregateSpec::new(
@@ -468,9 +454,9 @@ fn bounded_left_anti_probe_edge_requires_dedup_proven_input() {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("one"), "count")],
         ),
         Arc::clone(&scalar_schema),
-    );
-    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    ).unwrap();
+    let projection = builder.add_projection(count, projection_outputs(vec![Expr::column("count")], scalar_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
 
     let probe_edge = analysis
@@ -492,7 +478,7 @@ fn bounded_admission_refuses_a_plan_with_an_unreachable_node_as_malformed() {
     // A detached aggregate is not part of the plan the sink reads. Admission
     // validates the plan, so the IR itself is the error instead of a decision.
     let mut builder = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let detached_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),
         Field::new("metric", DataType::Int64, false),
@@ -507,14 +493,11 @@ fn bounded_admission_refuses_a_plan_with_an_unreachable_node_as_malformed() {
             ],
         ),
         detached_schema,
-    );
-    let plan = builder.finish_with_host_sink(join);
-
-    let unreachable = plan.unreachable_node_ids();
-    assert!(unreachable.contains(&detached), "fixture must keep the aggregate detached: {unreachable:?}");
-    let error = malformed_plan_error(&plan);
+    ).unwrap();
+    let error = builder.finish_with_host_sink(join).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "query_engine.plan.validate_reachability");
+    assert_eq!(error.operation(), "query_engine.plan.graph");
+    assert_eq!(error.fact_value("node"), Some(detached.to_string().as_str()));
 }
 
 fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'static str, String>, label: &str) {
@@ -546,7 +529,7 @@ fn bounded_compiled_aggregate_task_runs_single_stage_without_partial_edges() {
     // crosses a compiled edge (it is merged inside the task), so the task
     // records `Single` and no edge carries a partial-state label.
     let mut builder = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),
         Field::new("line_count", DataType::Int64, false),
@@ -558,8 +541,8 @@ fn bounded_compiled_aggregate_task_runs_single_stage_without_partial_edges() {
             vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("right_value"), "line_count")],
         ),
         aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+    ).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline =

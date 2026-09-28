@@ -324,11 +324,7 @@ fn execute_query_plan_output(
     // A build without the backend rejects before any source work.
     #[cfg(not(feature = "cuml"))]
     if plan.contains_ml_algorithm() {
-        let unreachable = plan.unreachable_node_ids();
-        if let Some(node) = plan
-            .nodes()
-            .iter()
-            .find(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::MlAlgorithm(_)))
+        if let Some(node) = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::MlAlgorithm(_)))
             && let PlanNode::MlAlgorithm(ml) = &node.kind
         {
             return Err(ml_algorithm_execution_unavailable(node.id, ml));
@@ -336,11 +332,7 @@ fn execute_query_plan_output(
     }
     #[cfg(not(feature = "cuvs"))]
     if plan.contains_vector_algorithm() {
-        let unreachable = plan.unreachable_node_ids();
-        if let Some(node) = plan
-            .nodes()
-            .iter()
-            .find(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::VectorAlgorithm(_)))
+        if let Some(node) = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::VectorAlgorithm(_)))
             && let PlanNode::VectorAlgorithm(vector) = &node.kind
         {
             return Err(vector_algorithm_execution_unavailable(node.id, vector));
@@ -396,7 +388,7 @@ mod tests {
             .expect("literal batch is valid");
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-        builder.finish_with_host_sink(source)
+        builder.finish_with_host_sink(source).unwrap()
     }
 
     fn unavailable_key_session(query_id: &str) -> RuntimeObservationSession {

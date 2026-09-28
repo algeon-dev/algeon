@@ -1,7 +1,7 @@
 #[test]
 fn fixed_width_low_cardinality_prior_selects_prepared_sort_groupby() {
     let (schema, spec) = fixed_width_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(7);
+    let node_id = NodeId::from_index_for_test(7);
     let metrics =
         metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 1_000, "libcudf_groupby");
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -23,7 +23,7 @@ fn fixed_width_low_cardinality_prior_selects_prepared_sort_groupby() {
 #[test]
 fn prior_partial_evidence_selects_the_same_strategy_when_no_decision_row_is_retained() {
     let (schema, spec) = fixed_width_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(7);
+    let node_id = NodeId::from_index_for_test(7);
     let session = RuntimeObservationSession::new(
         "zero-retention",
         None,
@@ -57,8 +57,8 @@ fn prior_partial_evidence_selects_the_same_strategy_when_no_decision_row_is_reta
 #[test]
 fn fixed_width_low_cardinality_structural_prior_selects_prepared_sort_groupby_for_different_node() {
     let (schema, spec) = fixed_width_sum_spec();
-    let prior_node_id = NodeId::from_index_for_internal_use(7);
-    let current_node_id = NodeId::from_index_for_internal_use(11);
+    let prior_node_id = NodeId::from_index_for_test(7);
+    let current_node_id = NodeId::from_index_for_test(11);
     let metrics = metrics_with_prior_partial_structural_decision(
         prior_node_id,
         &spec,
@@ -89,8 +89,8 @@ fn fixed_width_low_cardinality_structural_prior_selects_prepared_sort_groupby_fo
 #[test]
 fn exact_node_partial_cardinality_prior_takes_precedence_over_structural_prior() {
     let (schema, spec) = fixed_width_sum_spec();
-    let current_node_id = NodeId::from_index_for_internal_use(12);
-    let structural_node_id = NodeId::from_index_for_internal_use(13);
+    let current_node_id = NodeId::from_index_for_test(12);
+    let structural_node_id = NodeId::from_index_for_test(13);
     let metrics = metrics_with_prior_partial_structural_decision(
         structural_node_id,
         &spec,
@@ -130,7 +130,7 @@ fn exact_node_partial_cardinality_prior_takes_precedence_over_structural_prior()
 #[test]
 fn exact_node_partial_cardinality_prior_with_mismatched_structural_key_is_ignored() {
     let (schema, spec) = fixed_width_sum_spec();
-    let current_node_id = NodeId::from_index_for_internal_use(14);
+    let current_node_id = NodeId::from_index_for_test(14);
     let metrics = ExecutionMetrics::detached("aggregate-test");
     let mismatched_facts = BTreeMap::from([
         ("execution_stage", "partial".to_string()),
@@ -167,7 +167,7 @@ fn exact_node_partial_cardinality_prior_with_mismatched_structural_key_is_ignore
 #[test]
 fn multi_key_string_fixed_low_cardinality_prior_supersedes_encoded_key() {
     let (schema, spec) = multi_key_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(8);
+    let node_id = NodeId::from_index_for_test(8);
     let metrics =
         metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 1_000, "libcudf_groupby");
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -188,7 +188,7 @@ fn multi_key_string_fixed_low_cardinality_prior_supersedes_encoded_key() {
 #[test]
 fn simple_string_low_cardinality_prior_keeps_encoded_key_partial() {
     let (schema, spec) = simple_string_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(9);
+    let node_id = NodeId::from_index_for_test(9);
     let metrics =
         metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 1_000, "libcudf_groupby");
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -213,7 +213,7 @@ fn simple_string_low_cardinality_prior_keeps_encoded_key_partial() {
 #[test]
 fn aggregate_strategy_options_change_encoded_key_partial_reduction_threshold() {
     let (schema, spec) = simple_string_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(20);
+    let node_id = NodeId::from_index_for_test(20);
     let metrics =
         metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 750_000, "libcudf_groupby");
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -254,7 +254,7 @@ fn aggregate_strategy_options_change_encoded_key_partial_reduction_threshold() {
 #[test]
 fn aggregate_strategy_options_change_prepared_sort_groupby_reduction_threshold() {
     let (schema, spec) = fixed_width_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(21);
+    let node_id = NodeId::from_index_for_test(21);
     let metrics =
         metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 750_000, "libcudf_groupby");
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
@@ -291,7 +291,7 @@ fn aggregate_strategy_options_change_prepared_sort_groupby_reduction_threshold()
 #[test]
 fn simple_string_prepared_sort_groupby_prior_keeps_prepared_sort_groupby() {
     let (schema, spec) = simple_string_sum_spec();
-    let node_id = NodeId::from_index_for_internal_use(19);
+    let node_id = NodeId::from_index_for_test(19);
     let metrics =
         metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 1_000, "prepared_sort_groupby");
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);

@@ -206,7 +206,7 @@ impl CugraphAlgoExec {
             edge_vertex_upper_bound,
         })?;
         let graph_residency =
-            cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted);
+            cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted)?;
         // Footer pruning is async and can change the exact graph cardinality.
         // Do not let this pre-hydration plan carry an admission ticket; the
         // one immutable ticket is minted after metadata preparation.
@@ -291,7 +291,7 @@ impl CugraphAlgoExec {
             &self.spec,
             Arc::clone(&self.edge_source),
             self.edge_normalize_inserted(),
-        );
+        )?;
         Ok(self)
     }
 
@@ -1033,7 +1033,6 @@ pub(super) fn pushed_logical_consumer_options(
 ) -> Result<Option<CugraphResultPlanOptions>> {
     if producer.spec.is_bfs_path_output()
         || !graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema())?
-        || !consumer_plan.unreachable_node_ids().is_empty()
         || consumer_plan.output_schema() != &producer.schema()
     {
         return Ok(None);

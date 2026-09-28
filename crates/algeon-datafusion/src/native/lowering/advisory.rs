@@ -7,8 +7,12 @@ use datafusion::{
     common::stats::Precision,
     physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext},
 };
-use query_engine::plan::{
-    AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason, NodeId, QueryPlanBuilder,
+use query_engine::{
+    error::QueryError,
+    plan::{
+        AdvisoryOutputBinding, AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryUnknownReason, NodeId,
+        QueryPlanBuilder,
+    },
 };
 
 use super::LoweredNativeInput;
@@ -30,7 +34,12 @@ fn lower_statistic(precision: Precision<usize>) -> AdvisoryStatistic {
     }
 }
 
-pub(super) fn attach(builder: &mut QueryPlanBuilder, node: NodeId, schema: &SchemaRef, frontend: &dyn ExecutionPlan) {
+pub(super) fn attach(
+    builder: &mut QueryPlanBuilder,
+    node: NodeId,
+    schema: &SchemaRef,
+    frontend: &dyn ExecutionPlan,
+) -> Result<(), QueryError> {
     let (mut statistics, mut unknown_reason) = match output_statistics(frontend) {
         Some(statistics) => {
             let reason = (statistics.rows == AdvisoryStatistic::Absent
@@ -58,7 +67,8 @@ pub(super) fn attach(builder: &mut QueryPlanBuilder, node: NodeId, schema: &Sche
         frontend_version: datafusion::DATAFUSION_VERSION.to_owned(),
         statistics,
         unknown_reason,
-    });
+    })?;
+    Ok(())
 }
 
 fn absent() -> AdvisoryOutputStatistics {
@@ -69,7 +79,7 @@ pub(super) fn attach_input(
     builder: &mut QueryPlanBuilder,
     input: &NormalizedNativeInput<'_>,
     output: &LoweredNativeInput,
-) {
+) -> Result<(), QueryError> {
     let frontend: &dyn ExecutionPlan = match input {
         NormalizedNativeInput::Filter(filter) => filter.filter,
         NormalizedNativeInput::Projection(projection) => projection.projection,
@@ -84,8 +94,8 @@ pub(super) fn attach_input(
                 frontend_version: datafusion::DATAFUSION_VERSION.to_owned(),
                 statistics: absent(),
                 unknown_reason: Some(AdvisoryUnknownReason::CartesianFallback),
-            });
-            return;
+            })?;
+            return Ok(());
         },
         NormalizedNativeInput::Source(source) => {
             if let Some(filter) = source.filter {
@@ -103,7 +113,7 @@ pub(super) fn attach_input(
         | NormalizedNativeInput::GpuResidentSource(_)
         | NormalizedNativeInput::Sort(_)
         | NormalizedNativeInput::Window(_)
-        | NormalizedNativeInput::Union(_) => return,
+        | NormalizedNativeInput::Union(_) => return Ok(()),
     };
-    attach(builder, output.node, &output.schema, frontend);
+    attach(builder, output.node, &output.schema, frontend)
 }

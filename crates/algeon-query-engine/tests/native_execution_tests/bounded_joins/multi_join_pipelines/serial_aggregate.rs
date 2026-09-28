@@ -55,78 +55,99 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
         &supplier_schema,
         &["s_suppkey"],
     )));
-    let part_join = builder.add_join(
-        partsupp,
-        part,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                ColumnRef::input(1, "p_partkey", "p_partkey"),
-            )],
+    let part_join = builder
+        .add_join(
+            partsupp,
+            part,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    ColumnRef::input(1, "p_partkey", "p_partkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+                JoinOutputColumn::right(ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
+                JoinOutputColumn::right(ColumnRef::input(1, "p_type", "p_type"), "p_type"),
+                JoinOutputColumn::right(ColumnRef::input(1, "p_size", "p_size"), "p_size"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-            JoinOutputColumn::right(ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::right(ColumnRef::input(1, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::right(ColumnRef::input(1, "p_size", "p_size"), "p_size"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let supplier_join = builder.add_join(
-        part_join,
-        supplier,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
-                ColumnRef::input(1, "s_suppkey", "s_suppkey"),
-            )],
+        .unwrap();
+    let supplier_join = builder
+        .add_join(
+            part_join,
+            supplier,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                    ColumnRef::input(1, "s_suppkey", "s_suppkey"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+                JoinOutputColumn::left(ColumnRef::input(0, "p_brand", "p_brand"), "p_brand"),
+                JoinOutputColumn::left(ColumnRef::input(0, "p_type", "p_type"), "p_type"),
+                JoinOutputColumn::left(ColumnRef::input(0, "p_size", "p_size"), "p_size"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-            JoinOutputColumn::left(ColumnRef::input(0, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::left(ColumnRef::input(0, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::left(ColumnRef::input(0, "p_size", "p_size"), "p_size"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let distinct_suppliers = builder.add_aggregate(
-        supplier_join,
-        AggregateSpec::new(
-            vec![Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size"), Expr::column("ps_suppkey")],
-            vec![],
-        ),
-        distinct_schema,
-    );
-    let supplier_counts = builder.add_aggregate(
-        distinct_suppliers,
-        AggregateSpec::new(
-            vec![Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("ps_suppkey"), "supplier_cnt")],
-        ),
-        Arc::clone(&counted_schema),
-    );
-    let projection = builder.add_projection(
-        supplier_counts,
-        projection_outputs(
-            vec![Expr::column("supplier_cnt"), Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
-            Arc::clone(&projected_schema),
-        ),
-    );
-    let sort = builder.add_sort(
-        projection,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("supplier_cnt"), true, false),
-            SortExpr::new(Expr::column("p_brand"), false, false),
-            SortExpr::new(Expr::column("p_type"), false, false),
-            SortExpr::new(Expr::column("p_size"), false, false),
-        ]),
-        projected_schema,
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let distinct_suppliers = builder
+        .add_aggregate(
+            supplier_join,
+            AggregateSpec::new(
+                vec![
+                    Expr::column("p_brand"),
+                    Expr::column("p_type"),
+                    Expr::column("p_size"),
+                    Expr::column("ps_suppkey"),
+                ],
+                vec![],
+            ),
+            distinct_schema,
+        )
+        .unwrap();
+    let supplier_counts = builder
+        .add_aggregate(
+            distinct_suppliers,
+            AggregateSpec::new(
+                vec![Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("ps_suppkey"), "supplier_cnt")],
+            ),
+            Arc::clone(&counted_schema),
+        )
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            supplier_counts,
+            projection_outputs(
+                vec![
+                    Expr::column("supplier_cnt"),
+                    Expr::column("p_brand"),
+                    Expr::column("p_type"),
+                    Expr::column("p_size"),
+                ],
+                Arc::clone(&projected_schema),
+            ),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            projection,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("supplier_cnt"), true, false),
+                SortExpr::new(Expr::column("p_brand"), false, false),
+                SortExpr::new(Expr::column("p_type"), false, false),
+                SortExpr::new(Expr::column("p_size"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

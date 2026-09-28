@@ -24,20 +24,22 @@ fn native_query_rejects_invalid_cross_join_before_source_read() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Cross,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Cross,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
+            ]),
+            output_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "id", "left_id"), "left_id"),
-            JoinOutputColumn::right(ColumnRef::input(1, "id", "right_id"), "right_id"),
-        ]),
-        output_schema,
-    );
-    let plan = builder.finish_with_host_sink(join);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let context = backend_context();
 
     let error = match execute_query_plan(&context, &plan) {
@@ -88,29 +90,33 @@ fn native_query_rejects_duplicate_join_output_names_before_runtime_materializati
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left_input", Arc::clone(&left_schema))));
     let right =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right_input", Arc::clone(&right_schema))));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "n_name", "supp_n_name"), "n_name"),
+                JoinOutputColumn::right(ColumnRef::input(1, "n_name", "cust_n_name"), "n_name"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            duplicate_join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "n_name", "supp_n_name"), "n_name"),
-            JoinOutputColumn::right(ColumnRef::input(1, "n_name", "cust_n_name"), "n_name"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        duplicate_join_schema,
-    );
-    let projection = builder.add_projection(
-        join,
-        projection_outputs(
-            vec![Expr::column("n_name").alias("supp_nation"), Expr::column("n_name").alias("cust_nation")],
-            projected_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+        .unwrap();
+    let projection = builder
+        .add_projection(
+            join,
+            projection_outputs(
+                vec![Expr::column("n_name").alias("supp_nation"), Expr::column("n_name").alias("cust_nation")],
+                projected_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
     let context = backend_context();
 
     let error = match execute_query_plan(&context, &plan) {
@@ -124,6 +130,5 @@ fn native_query_rejects_duplicate_join_output_names_before_runtime_materializati
     assert_eq!(error.fact_value("duplicate_output_index"), Some("1"));
     assert_eq!(error.fact_value("output_names"), Some("n_name,n_name"));
     assert_eq!(error.fact_value("node_kind"), Some("join"));
-    assert_eq!(error.fact_value("schema_behavior"), Some("join"));
     assert!(error.fact_value("input_name").is_none());
 }

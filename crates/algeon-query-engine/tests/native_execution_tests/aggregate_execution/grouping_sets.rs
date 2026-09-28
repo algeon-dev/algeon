@@ -29,16 +29,18 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_empty_literal_input() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![empty_batch])));
-    let aggregate = builder.add_aggregate(
-        source,
-        AggregateSpec::new(
-            vec![Expr::column("key")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "s")],
+    let aggregate = builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "s")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
+            Arc::clone(&output_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -70,17 +72,19 @@ fn bounded_native_query_emits_rollup_grand_total_row_for_runtime_filtered_empty_
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filtered = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(
-        filtered,
-        AggregateSpec::new(
-            vec![Expr::column("key")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "s")],
+    let filtered = builder.add_filter(source, filter).unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            filtered,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "s")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
+            Arc::clone(&output_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics().clone();
@@ -154,56 +158,70 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     let mut builder = QueryPlanBuilder::new();
     let inventory = builder.add_source(SourceNode::LocalParquet(inventory_source));
     let item = builder.add_source(SourceNode::LocalParquet(item_source));
-    let join = builder.add_join(
-        inventory,
-        item,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "item_sk", "inventory_item_sk"),
-                ColumnRef::input(1, "item_sk", "item_item_sk"),
-            )],
+    let join = builder
+        .add_join(
+            inventory,
+            item,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "item_sk", "inventory_item_sk"),
+                    ColumnRef::input(1, "item_sk", "item_item_sk"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
+                JoinOutputColumn::right(ColumnRef::input(1, "brand", "brand"), "brand"),
+                JoinOutputColumn::right(ColumnRef::input(1, "class", "class"), "class"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&join_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
-            JoinOutputColumn::right(ColumnRef::input(1, "brand", "brand"), "brand"),
-            JoinOutputColumn::right(ColumnRef::input(1, "class", "class"), "class"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&join_schema),
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("product_name"), Expr::column("brand"), Expr::column("class"), Expr::column("category")],
-            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity_on_hand"), "avg_quantity_on_hand")],
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![
+                    Expr::column("product_name"),
+                    Expr::column("brand"),
+                    Expr::column("class"),
+                    Expr::column("category"),
+                ],
+                vec![AggregateExpr::new(
+                    AggregateFunction::Avg,
+                    Expr::column("quantity_on_hand"),
+                    "avg_quantity_on_hand",
+                )],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(
+                vec![
+                    vec![false, false, false, false],
+                    vec![false, false, false, true],
+                    vec![false, false, true, true],
+                    vec![false, true, true, true],
+                    vec![true, true, true, true],
+                ],
+                "__grouping_id",
+            )),
+            Arc::clone(&output_schema),
         )
-        .with_grouping_sets(GroupingSetsSpec::new(
-            vec![
-                vec![false, false, false, false],
-                vec![false, false, false, true],
-                vec![false, false, true, true],
-                vec![false, true, true, true],
-                vec![true, true, true, true],
-            ],
-            "__grouping_id",
-        )),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        aggregate,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("__grouping_id"), false, false),
-            SortExpr::new(Expr::column("product_name"), false, true),
-            SortExpr::new(Expr::column("brand"), false, true),
-            SortExpr::new(Expr::column("class"), false, true),
-            SortExpr::new(Expr::column("category"), false, true),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            aggregate,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("__grouping_id"), false, false),
+                SortExpr::new(Expr::column("product_name"), false, true),
+                SortExpr::new(Expr::column("brand"), false, true),
+                SortExpr::new(Expr::column("class"), false, true),
+                SortExpr::new(Expr::column("category"), false, true),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

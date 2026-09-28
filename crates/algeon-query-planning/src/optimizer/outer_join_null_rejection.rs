@@ -7,10 +7,11 @@ use super::{
     unique_join_output_for_name,
 };
 use crate::{
+    error::Result,
     expr::{BinaryOp, ColumnRef, Expr},
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
-        PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior, estimated_output_bytes,
+        PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes, estimated_output_bytes,
     },
 };
 
@@ -104,13 +105,13 @@ pub(crate) struct OuterJoinNullRejectionResult {
 pub(crate) fn optimize_outer_join_null_rejection(
     plan: QueryPlan,
     options: &OuterJoinNullRejectionOptions,
-) -> OuterJoinNullRejectionResult {
+) -> Result<OuterJoinNullRejectionResult> {
     if !options.enabled {
-        return OuterJoinNullRejectionResult {
+        return Ok(OuterJoinNullRejectionResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: OuterJoinNullRejectionDiagnostics::default(),
-        };
+        });
     }
 
     let consumer_counts = consumer_counts(&plan);
@@ -159,12 +160,11 @@ pub(crate) fn optimize_outer_join_null_rejection(
         });
 
         nodes[join_id.index()].kind = PlanNode::Join(rewrite.join);
-        nodes[join_id.index()].facts = PlanFacts::device(Arc::clone(&rewrite.output_schema), SchemaBehavior::Join);
+        nodes[join_id.index()].facts = PlanFacts::new(Arc::clone(&rewrite.output_schema));
         match rewrite.remaining_predicate {
             Some(predicate) => {
                 nodes[filter_id.index()].kind = PlanNode::Filter(FilterNode { input: join_id, predicate });
-                nodes[filter_id.index()].facts =
-                    PlanFacts::device(Arc::clone(&rewrite.output_schema), SchemaBehavior::PreservesInput);
+                nodes[filter_id.index()].facts = PlanFacts::new(Arc::clone(&rewrite.output_schema));
             },
             None => {
                 nodes[projection_index].kind =
@@ -183,7 +183,7 @@ pub(crate) fn optimize_outer_join_null_rejection(
         for rejecting_side in [JoinSide::Left, JoinSide::Right] {
             let mut candidate = OuterJoinNullRejectionCandidateDiagnostics {
                 rule_name: OUTER_JOIN_NULL_REJECTION_RULE_NAME,
-                candidate_node_id: NodeId::from_index_for_internal_use(0),
+                candidate_node_id: NodeId(0),
                 rejecting_node_id: parent_node.id,
                 rejecting_join_side: rejecting_side,
                 rejecting_columns: Vec::new(),
@@ -239,7 +239,7 @@ pub(crate) fn optimize_outer_join_null_rejection(
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    OuterJoinNullRejectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root)), change, diagnostics }
+    Ok(OuterJoinNullRejectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root))?, change, diagnostics })
 }
 
 #[derive(Debug, Clone)]
@@ -646,7 +646,7 @@ mod tests {
         let schema = Arc::new(Schema::empty());
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
-        let plan = builder.finish_with_host_sink(source);
+        let plan = builder.finish_with_host_sink(source).unwrap();
 
         let counts = consumer_counts(&plan);
 

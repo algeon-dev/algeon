@@ -3,7 +3,7 @@
 //! This module is the public vocabulary for local node, edge, and subgraph
 //! capabilities. Rejection reasons and fact keys are report-facing stable strings;
 //! add new labels instead of reusing old whole-plan family names.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::{
     AggregateFunction, GraphAlgorithm, JoinSide, JoinType, NodeId,
@@ -85,8 +85,6 @@ pub struct NodeCapability {
     pub operator: NodeOperator,
     /// Whether this node is executable before considering downstream edges.
     pub executable: CapabilityDecision,
-    /// Properties this node makes available to consumers.
-    pub(crate) produced_properties: Vec<ProducedProperty>,
     /// Aggregate state contract, set on aggregate nodes with a classifiable
     /// spec; edges consult it instead of re-deriving setop/dedup proofs.
     pub aggregate_state: Option<AggregateStateContract>,
@@ -203,19 +201,6 @@ pub enum ResidualRequirement {
     None,
     /// Join includes a residual predicate that must be proven supported.
     Required,
-}
-
-/// Properties produced by a node for downstream edge contracts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ProducedProperty {
-    /// Output is a resident cudf frame available to downstream consumers.
-    Resident,
-    /// Output is a grouped aggregate frame.
-    Grouped,
-    /// Output is a one-row scalar aggregate frame.
-    Scalar,
-    /// Output ordering is established for downstream order-sensitive consumers.
-    Ordered,
 }
 
 /// Producer-consumer capability for one dependency edge.
@@ -542,13 +527,6 @@ pub struct CapabilityAnalysis {
     /// Execution policy the plan was analyzed under; compile and the compiled
     /// contracts read the join strategy thresholds from it.
     pub(crate) policy: PlanningPolicy,
-    /// Sink-reachable node ids of the analyzed plan.
-    ///
-    /// Local rejections on nodes, edges, and invariants outside this set never
-    /// veto admission: the compiler emits no task for them, so they cannot
-    /// break execution. A malformed plan whose reachability walk fails records
-    /// every node here, preserving the unfiltered behavior for that case.
-    pub(crate) reachable_node_ids: BTreeSet<NodeId>,
 }
 
 impl CapabilityAnalysis {
@@ -559,11 +537,10 @@ impl CapabilityAnalysis {
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
 
-    /// The first local rejection of a sink-reachable node, edge, or invariant.
+    /// The first local rejection of a node, edge, or invariant.
     pub fn first_rejection(&self) -> Option<Rejection> {
         self.nodes
             .iter()
-            .filter(|node| self.reachable_node_ids.contains(&node.node_id))
             .find_map(|node| {
                 Some(Rejection {
                     owner: RejectionOwner::Node(node.node_id),
@@ -572,34 +549,22 @@ impl CapabilityAnalysis {
                 })
             })
             .or_else(|| {
-                self.edges
-                    .iter()
-                    .filter(|edge| {
-                        self.reachable_node_ids.contains(&edge.producer)
-                            && match edge.consumer {
-                                EdgeConsumer::Node(consumer) => self.reachable_node_ids.contains(&consumer),
-                                EdgeConsumer::Sink(_) => true,
-                            }
+                self.edges.iter().find_map(|edge| {
+                    Some(Rejection {
+                        owner: RejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
+                        reason: edge.decision.rejection_reason()?,
+                        facts: edge.decision.rejection_facts()?.clone(),
                     })
-                    .find_map(|edge| {
-                        Some(Rejection {
-                            owner: RejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
-                            reason: edge.decision.rejection_reason()?,
-                            facts: edge.decision.rejection_facts()?.clone(),
-                        })
-                    })
+                })
             })
             .or_else(|| {
-                self.invariants
-                    .iter()
-                    .filter(|invariant| invariant.nodes.iter().all(|node| self.reachable_node_ids.contains(node)))
-                    .find_map(|invariant| {
-                        Some(Rejection {
-                            owner: RejectionOwner::Invariant(invariant.invariant_id),
-                            reason: invariant.decision.rejection_reason()?,
-                            facts: invariant.decision.rejection_facts()?.clone(),
-                        })
+                self.invariants.iter().find_map(|invariant| {
+                    Some(Rejection {
+                        owner: RejectionOwner::Invariant(invariant.invariant_id),
+                        reason: invariant.decision.rejection_reason()?,
+                        facts: invariant.decision.rejection_facts()?.clone(),
                     })
+                })
             })
     }
 }

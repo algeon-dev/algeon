@@ -5,25 +5,25 @@ struct ScalarAggregateDerivationRewrite {
     derived_spec: AggregateSpec,
 }
 
-pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> SharedSubplanMaterializationResult {
+pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> Result<SharedSubplanMaterializationResult, QueryError> {
     let discovery = discover_scalar_aggregate_from_grouped_aggregate_candidates(&plan);
     if discovery.rewrites.is_empty() {
-        return SharedSubplanMaterializationResult {
+        return Ok(SharedSubplanMaterializationResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: discovery.diagnostics,
-        };
+        });
     }
 
     let root = plan.root_id();
     let mut rewriter = ScalarAggregateDerivationRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(root);
-    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
-    SharedSubplanMaterializationResult {
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
+    Ok(SharedSubplanMaterializationResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,
         diagnostics: discovery.diagnostics,
-    }
+    })
 }
 
 struct ScalarAggregateDerivationDiscovery {
@@ -32,12 +32,11 @@ struct ScalarAggregateDerivationDiscovery {
 }
 
 fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan) -> ScalarAggregateDerivationDiscovery {
-    let reachable = rewrite::sink_reachable_nodes(plan);
     let aggregates = plan
         .nodes()
         .iter()
         .filter_map(|node| match &node.kind {
-            PlanNode::Aggregate(aggregate) if reachable.contains(&node.id) => Some((node.id, aggregate)),
+            PlanNode::Aggregate(aggregate) => Some((node.id, aggregate)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -342,7 +341,7 @@ impl<'a> ScalarAggregateDerivationRewriter<'a> {
         if let Some(existing) = self.nodes.iter().find(|node| node.kind == kind && node.facts == facts) {
             return existing.id;
         }
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

@@ -15,7 +15,7 @@ fn bounded_native_query_executes_non_aggregate_source_plan() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -57,7 +57,7 @@ fn bounded_native_query_preserves_multi_file_source_order() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
     let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -82,8 +82,8 @@ fn bounded_native_query_executes_union_plan_without_legacy_aggregate_path() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
-    let plan = builder.finish_with_host_sink(union);
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema)).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -142,7 +142,7 @@ fn native_query_preserves_multi_file_source_order() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1024 * 1024,
         max_source_chunk_bytes: 1024,

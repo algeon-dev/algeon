@@ -1,7 +1,5 @@
 //! Graph traversal algorithm parameter contracts.
 
-use super::NodeId;
-
 /// Breadth-first search parameters.
 ///
 /// `source_vertex` is the traversal root. `depth_limit = None` means the
@@ -47,26 +45,9 @@ impl GraphBfsParams {
         }
     }
 
-    /// Visits every side-input node id in stable role order.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.source_vertices.iter().map(|input| input.input).chain(self.predicates.node_ids())
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        let predicates = &mut self.predicates;
-        let inputs = self
-            .source_vertices
-            .iter_mut()
-            .chain(predicates.include_vertices.iter_mut())
-            .chain(predicates.exclude_vertices.iter_mut())
-            .chain(predicates.target_vertices.iter_mut())
-            .chain(predicates.include_edge_ids.iter_mut())
-            .map(|input| &mut input.input)
-            .chain(predicates.include_edges.iter_mut().map(|input| &mut input.input));
-        for input in inputs {
-            *input = remap(*input);
-        }
+    /// Visits every side-input ordinal in stable role order.
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
+        self.source_vertices.iter().map(|input| input.input).chain(self.predicates.ordinals())
     }
 }
 
@@ -125,8 +106,8 @@ pub struct GraphBfsPredicateInputs {
 }
 
 impl GraphBfsPredicateInputs {
-    /// Visits every side-input node id in stable role order.
-    pub(crate) fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    /// Visits every side-input ordinal in stable role order.
+    pub(crate) fn ordinals(&self) -> impl Iterator<Item = usize> + '_ {
         self.include_vertices
             .iter()
             .map(|input| input.input)
@@ -140,15 +121,15 @@ impl GraphBfsPredicateInputs {
 /// Single-column graph predicate input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphPredicateInput {
-    /// Native plan node producing the predicate relation.
-    pub input: NodeId,
+    /// Position of the relation among the algorithm node inputs.
+    pub input: usize,
     /// Non-null id column in the predicate relation.
     pub column: String,
 }
 
 impl GraphPredicateInput {
     /// Creates a single-column predicate input binding.
-    pub fn new(input: NodeId, column: impl Into<String>) -> Self {
+    pub fn new(input: usize, column: impl Into<String>) -> Self {
         Self { input, column: column.into() }
     }
 }
@@ -156,8 +137,8 @@ impl GraphPredicateInput {
 /// Edge relation predicate input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphEdgePredicateInput {
-    /// Native plan node producing the allowed-edge relation.
-    pub input: NodeId,
+    /// Position of the relation among the algorithm node inputs.
+    pub input: usize,
     /// Source vertex column used to align with the primary edge relation.
     pub source: String,
     /// Destination vertex column used to align with the primary edge relation.
@@ -169,7 +150,7 @@ pub struct GraphEdgePredicateInput {
 impl GraphEdgePredicateInput {
     /// Creates an edge predicate input binding.
     pub fn new(
-        input: NodeId,
+        input: usize,
         source: impl Into<String>,
         destination: impl Into<String>,
         edge_id: Option<impl Into<String>>,
@@ -212,18 +193,11 @@ impl std::fmt::Display for GraphSsspSource {
 
 impl GraphSsspParams {
     /// Visits the source side-input node when this call uses one.
-    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_ordinals(&self) -> impl Iterator<Item = usize> + '_ {
         match &self.source_vertex {
             GraphSsspSource::I64(_) => None,
             GraphSsspSource::Input(input) => Some(input.input),
         }
         .into_iter()
-    }
-
-    /// Rewrites every side-input node id visited by [`Self::side_input_node_ids`].
-    pub(crate) fn remap_side_inputs(&mut self, remap: &mut impl FnMut(NodeId) -> NodeId) {
-        if let GraphSsspSource::Input(input) = &mut self.source_vertex {
-            input.input = remap(input.input);
-        }
     }
 }

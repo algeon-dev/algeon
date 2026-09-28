@@ -369,7 +369,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "cuvs")]
     use crate::{
-        plan::{NodeId, VectorDistanceMetric, VectorRowIdBinding},
+        plan::{VectorDistanceMetric, VectorRowIdBinding},
         runtime::StandaloneConfig,
     };
 
@@ -400,12 +400,8 @@ mod tests {
                 .expect("query frame"),
         );
         let params = VectorBruteForceKnnParams::new(
-            VectorRelationBinding::new(NodeId::from_index_for_internal_use(0), VectorRowIdBinding::column("id"), ["x"]),
-            VectorRelationBinding::new(
-                NodeId::from_index_for_internal_use(1),
-                VectorRowIdBinding::column("query_id"),
-                ["x"],
-            ),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x"]),
             2,
             VectorDistanceMetric::L2Expanded,
         );
@@ -460,10 +456,8 @@ mod tests {
         let queries = GpuDataFrame::new(
             runtime.empty_dataframe().assign([("id", runtime.series(&[7_i64, 8]).unwrap())]).unwrap(),
         );
-        let dataset_binding =
-            VectorRelationBinding::new(NodeId::from_index_for_internal_use(0), VectorRowIdBinding::column("id"), ["x"]);
-        let queries_binding =
-            VectorRelationBinding::new(NodeId::from_index_for_internal_use(1), VectorRowIdBinding::column("id"), ["x"]);
+        let dataset_binding = VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]);
+        let queries_binding = VectorRelationBinding::new(1, VectorRowIdBinding::column("id"), ["x"]);
         let output = assemble_knn_output(
             &context,
             KnnAssemblyParams {
@@ -502,12 +496,8 @@ mod tests {
                 .expect("query frame"),
         );
         let params = VectorBruteForceKnnParams::new(
-            VectorRelationBinding::new(NodeId::from_index_for_internal_use(0), VectorRowIdBinding::column("id"), ["x"]),
-            VectorRelationBinding::new(
-                NodeId::from_index_for_internal_use(1),
-                VectorRowIdBinding::column("query_id"),
-                ["x"],
-            ),
+            VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]),
+            VectorRelationBinding::new(1, VectorRowIdBinding::column("query_id"), ["x"]),
             1,
             VectorDistanceMetric::L2Expanded,
         );
@@ -537,8 +527,7 @@ mod tests {
                 .assign([("id", runtime.series(&[4_i64, 4, 9]).expect("input ids"))])
                 .expect("input frame"),
         );
-        let binding =
-            VectorRelationBinding::new(NodeId::from_index_for_internal_use(0), VectorRowIdBinding::column("id"), ["x"]);
+        let binding = VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), ["x"]);
 
         let kmeans =
             assemble_kmeans_output(&context, &input, &binding, runtime.series(&[1_i32, 0, 1]).expect("labels"))

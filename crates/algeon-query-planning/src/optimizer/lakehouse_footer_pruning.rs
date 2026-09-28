@@ -13,6 +13,7 @@ use super::{
 };
 use crate::{
     backend::AnalysisContext,
+    error::Result,
     expr::Expr,
     plan::{NodeId, PlanNode, QueryPlan},
     source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
@@ -127,12 +128,12 @@ pub async fn optimize_lakehouse_footer_pruning<R>(
     options: LakehouseFooterPruningOptions,
     resolver: &mut R,
     ctx: AnalysisContext<'_>,
-) -> LakehouseFooterPruningResult
+) -> Result<LakehouseFooterPruningResult>
 where
     R: LakehouseFooterPruningResolver + ?Sized,
 {
     let original_plan = plan.clone();
-    let mut plan = seed_dimension_derived_reader_predicates(plan, ctx);
+    let mut plan = seed_dimension_derived_reader_predicates(plan, ctx)?;
     let mut any_applied = false;
     let mut events = Vec::new();
 
@@ -149,7 +150,7 @@ where
                 options.max_target_files
             ),
         });
-        return LakehouseFooterPruningResult { plan: original_plan, events };
+        return Ok(LakehouseFooterPruningResult { plan: original_plan, events });
     }
 
     let mut static_plan = plan.clone();
@@ -166,7 +167,7 @@ where
         };
         match resolver.static_row_group_selections(source_node_id, &source, predicate).await {
             Ok(Some(selections)) => {
-                let result = apply_local_parquet_row_group_selections(static_plan, source_node_id, &selections);
+                let result = apply_local_parquet_row_group_selections(static_plan, source_node_id, &selections)?;
                 if result.applied {
                     static_before = static_before.saturating_add(result.before);
                     static_after = static_after.saturating_add(result.after);
@@ -194,7 +195,7 @@ where
 
     let requests = discover_dimension_derived_pruning_requests(&plan);
     if requests.is_empty() && !any_applied {
-        return LakehouseFooterPruningResult { plan: original_plan, events };
+        return Ok(LakehouseFooterPruningResult { plan: original_plan, events });
     }
 
     let target_file_count: usize = requests
@@ -210,12 +211,12 @@ where
                 options.max_target_files
             ),
         });
-        return LakehouseFooterPruningResult { plan: if any_applied { plan } else { original_plan }, events };
+        return Ok(LakehouseFooterPruningResult { plan: if any_applied { plan } else { original_plan }, events });
     }
 
     for request in requests {
         let target_source_node_id = request.target_source_node_id;
-        match resolve_dimension_derived_request(plan.clone(), resolver, &request).await {
+        match resolve_dimension_derived_request(plan.clone(), resolver, &request).await? {
             DimensionDerivedRequestOutcome::Applied { plan: patched, before, after } => {
                 events.push(LakehouseFooterPruningEvent::DimensionDerivedApplied {
                     target_source_node_id,
@@ -234,7 +235,7 @@ where
         }
     }
 
-    LakehouseFooterPruningResult { plan: if any_applied { plan } else { original_plan }, events }
+    Ok(LakehouseFooterPruningResult { plan: if any_applied { plan } else { original_plan }, events })
 }
 
 fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
@@ -269,32 +270,32 @@ async fn resolve_dimension_derived_request<R>(
     plan: QueryPlan,
     resolver: &mut R,
     request: &DimensionDerivedPruningRequest,
-) -> DimensionDerivedRequestOutcome
+) -> Result<DimensionDerivedRequestOutcome>
 where
     R: LakehouseFooterPruningResolver + ?Sized,
 {
     let target_source_node_id = request.target_source_node_id;
     let Some(target_source) = local_parquet_source(&plan, target_source_node_id).cloned() else {
-        return DimensionDerivedRequestOutcome::Skipped { reason: "missing_target_source" };
+        return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "missing_target_source" });
     };
     if target_source.files.iter().all(|file| file.location.as_local_path().is_some()) {
-        return DimensionDerivedRequestOutcome::Skipped { reason: "target_is_local_path" };
+        return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "target_is_local_path" });
     }
     if !target_source.files.iter().all(|file| matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })) {
-        return DimensionDerivedRequestOutcome::Skipped { reason: "mixed_or_unsupported_target_locations" };
+        return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "mixed_or_unsupported_target_locations" });
     }
 
     let Some(dimension_source) = local_parquet_source(&plan, request.dimension_source_node_id).cloned() else {
-        return DimensionDerivedRequestOutcome::Skipped { reason: "missing_dimension_source" };
+        return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "missing_dimension_source" });
     };
     let Some(predicate) = dimension_source.reader_predicate.as_ref() else {
-        return DimensionDerivedRequestOutcome::Skipped { reason: "missing_dimension_predicate" };
+        return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "missing_dimension_predicate" });
     };
 
     let Some(projection_indices) =
         reader_projection_indices(&dimension_source, request.dimension_key_column.as_str(), predicate)
     else {
-        return DimensionDerivedRequestOutcome::Error { error: "unsupported_dimension_projection".to_string() };
+        return Ok(DimensionDerivedRequestOutcome::Error { error: "unsupported_dimension_projection".to_string() });
     };
 
     let projection_indices = projection_indices.into_iter().collect::<Vec<_>>();
@@ -310,15 +311,15 @@ where
     {
         Ok(Some(key_filter)) => key_filter,
         Ok(None) => {
-            return DimensionDerivedRequestOutcome::Skipped { reason: "empty_or_unsupported_dimension_range" };
+            return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "empty_or_unsupported_dimension_range" });
         },
-        Err(error) => return DimensionDerivedRequestOutcome::Error { error },
+        Err(error) => return Ok(DimensionDerivedRequestOutcome::Error { error }),
     };
 
     let target_key_column_index = match target_source.source_column_ref(request.target_key_column.as_str()) {
         Some(SourceColumnRef::File(index)) => index,
-        Some(_) => return DimensionDerivedRequestOutcome::Skipped { reason: "target_key_not_file_column" },
-        None => return DimensionDerivedRequestOutcome::Error { error: "missing_target_key_column".to_string() },
+        Some(_) => return Ok(DimensionDerivedRequestOutcome::Skipped { reason: "target_key_not_file_column" }),
+        None => return Ok(DimensionDerivedRequestOutcome::Error { error: "missing_target_key_column".to_string() }),
     };
 
     let per_file_row_group_key_ranges = match resolver
@@ -326,7 +327,7 @@ where
         .await
     {
         Ok(ranges) => ranges,
-        Err(error) => return DimensionDerivedRequestOutcome::Error { error },
+        Err(error) => return Ok(DimensionDerivedRequestOutcome::Error { error }),
     };
 
     let result = apply_dimension_derived_pruning_with_stats(
@@ -334,8 +335,8 @@ where
         target_source_node_id,
         &per_file_row_group_key_ranges,
         &key_filter,
-    );
-    if result.applied {
+    )?;
+    Ok(if result.applied {
         DimensionDerivedRequestOutcome::Applied {
             plan: Box::new(result.plan),
             before: result.before,
@@ -343,5 +344,5 @@ where
         }
     } else {
         DimensionDerivedRequestOutcome::Skipped { reason: "no_fact_row_group_reduction" }
-    }
+    })
 }

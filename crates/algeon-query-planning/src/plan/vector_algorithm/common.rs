@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::plan::{DenseVectorBinding, NodeId};
+use crate::plan::DenseVectorBinding;
 
 /// Row identity emitted alongside vector algorithm results.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,8 +28,8 @@ impl VectorRowIdBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorRelationBinding {
-    /// Native relation that supplies row ids and feature columns.
-    pub input: NodeId,
+    /// Position of the relation among the algorithm node inputs.
+    pub input: usize,
     /// Row identity emitted by relational results.
     pub row_id: VectorRowIdBinding,
     /// Ordered dense vector binding.
@@ -39,7 +39,7 @@ pub struct VectorRelationBinding {
 impl VectorRelationBinding {
     /// Construct a vector relation binding.
     pub fn new(
-        input: NodeId,
+        input: usize,
         row_id: VectorRowIdBinding,
         feature_columns: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
@@ -47,7 +47,7 @@ impl VectorRelationBinding {
     }
 
     /// Construct a binding backed by one list/vector column.
-    pub fn new_vector_column(input: NodeId, row_id: VectorRowIdBinding, column: impl Into<String>) -> Self {
+    pub fn new_vector_column(input: usize, row_id: VectorRowIdBinding, column: impl Into<String>) -> Self {
         Self { input, row_id, vector: DenseVectorBinding::vector_column(column) }
     }
 }

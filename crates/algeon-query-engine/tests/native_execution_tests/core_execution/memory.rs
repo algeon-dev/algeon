@@ -19,7 +19,7 @@ fn native_query_executes_multi_file_direct_parquet_source_in_file_order() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -64,8 +64,8 @@ fn native_context_restores_duplicate_host_sink_schema_without_swapping_columns()
             vec![Expr::column("m00").alias("exec_left_value"), Expr::column("m01").alias("exec_right_value")],
             executable_schema,
         ),
-    );
-    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema));
+    ).unwrap();
+    let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema)).unwrap();
     let context = backend_context();
 
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -116,12 +116,12 @@ fn native_context_executes_direct_parquet_pipeline_to_host_sink() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -197,12 +197,12 @@ fn native_context_executes_multi_file_direct_parquet_source() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();

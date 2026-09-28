@@ -13,7 +13,7 @@ use super::{
     naming::unique_name_with_suffix,
     project_bindings_to_schema, projection_outputs,
 };
-use crate::{capability::CapabilityReason, native::LoweringRejection};
+use crate::{capability::CapabilityReason, native::LoweringFailure};
 
 pub(super) fn lower_sort_ordering_with_input(
     builder: &mut NativeQueryPlanBuilder,
@@ -22,7 +22,7 @@ pub(super) fn lower_sort_ordering_with_input(
     sort_output_schema: &SchemaRef,
     input: LoweredNativeInput,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let sorted = lower_sort_ordering_unprojected_with_input(builder, ordering, sort_input_schema, input)?;
     project_sort_output(builder, sort_output_schema, sorted.input, required_output_fields)
 }
@@ -42,13 +42,12 @@ pub(super) fn lower_sort_ordering_unprojected_with_input(
     ordering: &LexOrdering,
     sort_input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<SortedNativeInput, LoweringRejection> {
+) -> Result<SortedNativeInput, LoweringFailure> {
     let prepared = materialize_sort_expressions(builder, ordering, sort_input_schema, input)?;
     let node = builder.add_sort(
         prepared.input.node,
         lower_sort_spec_with_prepared_input(ordering, &prepared.input, &prepared.sort_columns)?,
-        Arc::clone(&prepared.input.schema),
-    );
+    )?;
     Ok(SortedNativeInput {
         input: LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.original_bindings),
         key_columns: prepared.sort_columns,
@@ -66,7 +65,7 @@ fn materialize_sort_expressions(
     ordering: &LexOrdering,
     sort_input_schema: &SchemaRef,
     input: LoweredNativeInput,
-) -> Result<PreparedSortInput, LoweringRejection> {
+) -> Result<PreparedSortInput, LoweringFailure> {
     let mut sort_columns = Vec::with_capacity(ordering.len());
     let mut temp_exprs = Vec::new();
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
@@ -110,7 +109,7 @@ fn materialize_sort_expressions(
         ));
     }
     let schema = Arc::new(Schema::new(fields));
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?)?;
     Ok(PreparedSortInput {
         input: LoweredNativeInput::with_bindings(node, schema, input.bindings),
         original_bindings,
@@ -123,7 +122,7 @@ pub(super) fn project_sort_output(
     sort_output_schema: &SchemaRef,
     sorted: LoweredNativeInput,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     let (schema, bindings) = executable_schema_and_bindings(sort_output_schema, required_output_fields)?;
     if bindings.len() == sorted.bindings.len()
         && bindings
@@ -147,7 +146,7 @@ fn lower_sort_spec_with_prepared_input(
     ordering: &LexOrdering,
     input: &LoweredNativeInput,
     sort_columns: &[String],
-) -> Result<NativeSortSpec, LoweringRejection> {
+) -> Result<NativeSortSpec, LoweringFailure> {
     if ordering.len() != sort_columns.len() {
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
@@ -156,7 +155,7 @@ fn lower_sort_spec_with_prepared_input(
         .zip(sort_columns.iter())
         .map(|(sort_expr, column)| {
             if input.schema.field_with_name(column.as_str()).is_err() {
-                return Err(LoweringRejection::from(CapabilityReason::UnsupportedExpression));
+                return Err(LoweringFailure::from(CapabilityReason::UnsupportedExpression));
             }
             Ok(NativeSortExpr::new(
                 NativeExpr::column(column.as_str()),

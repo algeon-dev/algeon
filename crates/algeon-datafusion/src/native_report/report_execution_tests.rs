@@ -812,7 +812,8 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let mut report = PlanningReport::new();
@@ -863,7 +864,8 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimizer_result.diagnostics.projection_simplification.considered_count, 1);
     assert_eq!(optimizer_result.diagnostics.projection_simplification.applied_count, 1);
 
@@ -911,7 +913,8 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
         &Default::default(),
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
-    );
+    )
+    .unwrap();
     assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
 
     let mut report = PlanningReport::new();
@@ -997,37 +1000,41 @@ fn semijoin_reduction_projection_plan() -> QueryPlan {
     let keyset = semijoin_aggregate_keyset_source(&mut builder, "keyset", "y_key");
 
     let xy_schema = semijoin_schema(&["x_key", "x_payload", "y_key", "y_payload"]);
-    let xy = builder.add_join(
-        x,
-        y,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
+    let xy = builder
+        .add_join(
+            x,
+            y,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "x_key", "x_key"), ColumnRef::input(1, "y_key", "y_key"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "x_key", "x_key"), "x_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "x_payload", "x_payload"), "x_payload"),
+                JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "y_key"),
+                JoinOutputColumn::right(ColumnRef::input(1, "y_payload", "y_payload"), "y_payload"),
+            ]),
+            Arc::clone(&xy_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "x_key", "x_key"), "x_key"),
-            JoinOutputColumn::left(ColumnRef::input(0, "x_payload", "x_payload"), "x_payload"),
-            JoinOutputColumn::right(ColumnRef::input(1, "y_key", "y_key"), "y_key"),
-            JoinOutputColumn::right(ColumnRef::input(1, "y_payload", "y_payload"), "y_payload"),
-        ]),
-        Arc::clone(&xy_schema),
-    );
-    let semi = builder.add_join(
-        xy,
-        keyset,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "y_key", "y_key"), ColumnRef::input(1, "y_key", "y_key"))],
+        .unwrap();
+    let semi = builder
+        .add_join(
+            xy,
+            keyset,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "y_key", "y_key"), ColumnRef::input(1, "y_key", "y_key"))],
+            )
+            .with_output_projection(
+                ["x_key", "x_payload", "y_key", "y_payload"]
+                    .into_iter()
+                    .map(|name| JoinOutputColumn::left(ColumnRef::input(0, name, name), name))
+                    .collect(),
+            ),
+            xy_schema,
         )
-        .with_output_projection(
-            ["x_key", "x_payload", "y_key", "y_payload"]
-                .into_iter()
-                .map(|name| JoinOutputColumn::left(ColumnRef::input(0, name, name), name))
-                .collect(),
-        ),
-        xy_schema,
-    );
-    builder.finish_gpu_resident(semi)
+        .unwrap();
+    builder.finish_gpu_resident(semi).unwrap()
 }
 
 fn projection_simplification_identity_plan() -> QueryPlan {
@@ -1036,11 +1043,13 @@ fn projection_simplification_identity_plan() -> QueryPlan {
         "identity_projection_source",
         semijoin_schema(&["key"]),
     )));
-    let projection = builder.add_projection(
-        source,
-        vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::Int32, false))],
-    );
-    builder.finish_gpu_resident(projection)
+    let projection = builder
+        .add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::Int32, false))],
+        )
+        .unwrap();
+    builder.finish_gpu_resident(projection).unwrap()
 }
 
 fn dynamic_filter_route_plan() -> QueryPlan {
@@ -1070,24 +1079,26 @@ fn dynamic_filter_route_plan() -> QueryPlan {
         right_schema,
         vec!["right_key".to_string()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "left_key", "left_key"),
-                ColumnRef::input(1, "right_key", "right_key"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "left_key", "left_key"),
+                    ColumnRef::input(1, "right_key", "right_key"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
+                JoinOutputColumn::right(ColumnRef::input(1, "right_key", "right_key"), "right_key"),
+            ])
+            .with_build_side(JoinSide::Right),
+            output_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
-            JoinOutputColumn::right(ColumnRef::input(1, "right_key", "right_key"), "right_key"),
-        ])
-        .with_build_side(JoinSide::Right),
-        output_schema,
-    );
-    builder.finish_with_host_sink(join)
+        .unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn semijoin_gpu_source(name: &str, fields: &[&str]) -> SourceNode {
@@ -1096,11 +1107,13 @@ fn semijoin_gpu_source(name: &str, fields: &[&str]) -> SourceNode {
 
 fn semijoin_aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name: &str) -> NodeId {
     let source = builder.add_source(semijoin_gpu_source(name, &[key_name]));
-    builder.add_aggregate(
-        source,
-        AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()),
-        semijoin_schema(&[key_name]),
-    )
+    builder
+        .add_aggregate(
+            source,
+            AggregateSpec::new(vec![Expr::column(key_name)], Vec::new()),
+            semijoin_schema(&[key_name]),
+        )
+        .unwrap()
 }
 
 fn semijoin_schema(fields: &[&str]) -> Arc<Schema> {
@@ -1181,7 +1194,9 @@ fn native_exec_leaf_for_report() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["key".to_string()],
     )));
-    Arc::new(AlgeonNativeExec::try_new(builder.finish_with_host_sink(source), native_execution_config()).unwrap())
+    Arc::new(
+        AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), native_execution_config()).unwrap(),
+    )
 }
 
 fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
@@ -1193,8 +1208,11 @@ fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
         vec!["key".to_string()],
     )));
     let producer = Arc::new(
-        AlgeonNativeGpuProducerExec::try_new("fragment_input", producer_builder.finish_gpu_resident(producer_source))
-            .unwrap(),
+        AlgeonNativeGpuProducerExec::try_new(
+            "fragment_input",
+            producer_builder.finish_gpu_resident(producer_source).unwrap(),
+        )
+        .unwrap(),
     );
 
     let mut consumer_builder = QueryPlanBuilder::new();
@@ -1202,7 +1220,7 @@ fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
         .add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment_input", Arc::clone(&schema))));
     Arc::new(
         AlgeonNativeComposedExec::try_new(
-            consumer_builder.finish_with_host_sink(consumer_source),
+            consumer_builder.finish_with_host_sink(consumer_source).unwrap(),
             vec![producer],
             native_execution_config(),
         )

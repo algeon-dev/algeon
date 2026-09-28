@@ -44,7 +44,7 @@ fn native_optimizer_discovers_residual_equality_route_between_filtered_dimension
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&sales_with_d1_schema),
-    );
+    ).unwrap();
     let inventory_with_d2_schema = schema(&["inv_item_sk", "d_week_seq"]);
     let inventory_with_d2 = builder.add_join(
         inventory,
@@ -62,7 +62,7 @@ fn native_optimizer_discovers_residual_equality_route_between_filtered_dimension
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&inventory_with_d2_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         sales_with_d1,
         inventory_with_d2,
@@ -84,14 +84,14 @@ fn native_optimizer_discovers_residual_equality_route_between_filtered_dimension
         )])
         .with_build_side(JoinSide::Right),
         schema(&["cs_item_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(root);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(root).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let route = result
         .plan
@@ -171,15 +171,15 @@ fn native_optimizer_rejects_residual_equality_route_when_producer_lineage_crosse
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&left_schema),
-    );
+    ).unwrap();
     let d1_passthrough = builder.add_projection(
         filtered_d1,
         vec![
             ProjectionOutput::new(Expr::column("d_date_sk"), Field::new("cs_item_sk", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false)),
         ],
-    );
-    let left_union = builder.add_union(vec![sales_with_d1, d1_passthrough], Arc::clone(&left_schema));
+    ).unwrap();
+    let left_union = builder.add_union(vec![sales_with_d1, d1_passthrough], Arc::clone(&left_schema)).unwrap();
     let right_schema = schema(&["inv_item_sk", "d_week_seq"]);
     let inventory_with_d2 = builder.add_join(
         inventory,
@@ -197,7 +197,7 @@ fn native_optimizer_rejects_residual_equality_route_when_producer_lineage_crosse
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&right_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         left_union,
         inventory_with_d2,
@@ -219,14 +219,14 @@ fn native_optimizer_rejects_residual_equality_route_when_producer_lineage_crosse
         )])
         .with_build_side(JoinSide::Right),
         schema(&["cs_item_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(root);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(root).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     assert!(result.diagnostics.dynamic_filter_route_discovery.candidates.iter().any(|candidate| {
         candidate.candidate_node_id == root
@@ -303,7 +303,7 @@ fn native_optimizer_avoids_mutual_residual_equality_dynamic_filter_cycle() {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let inventory_with_d2 = builder.add_join(
         inventory,
         d2,
@@ -320,7 +320,7 @@ fn native_optimizer_avoids_mutual_residual_equality_dynamic_filter_cycle() {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&branch_schema),
-    );
+    ).unwrap();
     let root = builder.add_join(
         sales_with_d1,
         inventory_with_d2,
@@ -336,14 +336,14 @@ fn native_optimizer_avoids_mutual_residual_equality_dynamic_filter_cycle() {
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk")])
         .with_build_side(JoinSide::Right),
         schema(&["item_sk"]),
-    );
-    let plan = builder.finish_gpu_resident(root);
+    ).unwrap();
+    let plan = builder.finish_gpu_resident(root).unwrap();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver());
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context(PlanningPolicy::default()), local_dimension_pruning_resolver()).unwrap();
 
     let residual_week_routes = result
         .plan

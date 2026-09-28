@@ -39,17 +39,19 @@ fn left_match_plan(
             Expr::input_column(1, "payload", "right_payload"),
         ),
     );
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(join_type, vec![join_order_id_key()])
-            .with_residual_predicate(predicate)
-            .with_null_equality(null_equality)
-            .with_build_side(JoinSide::Left)
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")]),
-        Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, true)])),
-    );
-    builder.finish_with_host_sink(join)
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(join_type, vec![join_order_id_key()])
+                .with_residual_predicate(predicate)
+                .with_null_equality(null_equality)
+                .with_build_side(JoinSide::Left)
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")]),
+            Arc::new(Schema::new(vec![Field::new("qty", DataType::Int32, true)])),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(join).unwrap()
 }
 
 fn write_left_match_batch(

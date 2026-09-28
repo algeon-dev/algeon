@@ -111,23 +111,26 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-        let root =
-            builder.add_projection(source, vec![ProjectionOutput::new(Expr::column("key"), schema.field(0).clone())]);
-        let plain = builder.clone().finish_gpu_resident(root);
-        builder.set_advisory_output(AdvisoryOutputBinding {
-            node: root,
-            schema: Arc::clone(&schema),
-            frontend: "test frontend".to_owned(),
-            frontend_version: "1".to_owned(),
-            statistics: AdvisoryOutputStatistics {
-                rows: AdvisoryStatistic::Inexact(100),
-                bytes: AdvisoryStatistic::Inexact(800),
-            },
-            unknown_reason: None,
-        });
-        let plan = builder.clone().finish_gpu_resident(root);
+        let root = builder
+            .add_projection(source, vec![ProjectionOutput::new(Expr::column("key"), schema.field(0).clone())])
+            .unwrap();
+        let plain = builder.clone().finish_gpu_resident(root).unwrap();
+        builder
+            .set_advisory_output(AdvisoryOutputBinding {
+                node: root,
+                schema: Arc::clone(&schema),
+                frontend: "test frontend".to_owned(),
+                frontend_version: "1".to_owned(),
+                statistics: AdvisoryOutputStatistics {
+                    rows: AdvisoryStatistic::Inexact(100),
+                    bytes: AdvisoryStatistic::Inexact(800),
+                },
+                unknown_reason: None,
+            })
+            .unwrap();
+        let plan = builder.clone().finish_gpu_resident(root).unwrap();
         assert_eq!(plain.execution_fingerprint(), plan.execution_fingerprint());
-        let unchanged = plan.rewrite(RewrittenNodes::in_place(plan.nodes().to_vec(), root));
+        let unchanged = plan.rewrite(RewrittenNodes::in_place(plan.nodes().to_vec(), root)).unwrap();
         assert_eq!(unchanged.advisory_outputs(), plan.advisory_outputs());
 
         let mut nodes = plan.nodes().to_vec();
@@ -135,12 +138,12 @@ mod tests {
             "different input",
             Arc::clone(&schema),
         ))));
-        let rewritten = plan.rewrite(RewrittenNodes::in_place(nodes, root));
+        let rewritten = plan.rewrite(RewrittenNodes::in_place(nodes, root)).unwrap();
         assert!(rewritten.advisory_outputs()[0].statistics.is_absent());
         assert_eq!(rewritten.advisory_outputs()[0].unknown_reason, Some(AdvisoryUnknownReason::RewrittenSubtree));
 
-        let limited = builder.add_limit(root, LimitSpec { skip: 90, fetch: Some(20) }, schema);
-        let limited = builder.finish_gpu_resident(limited);
+        let limited = builder.add_limit(root, LimitSpec { skip: 90, fetch: Some(20) }).unwrap();
+        let limited = builder.finish_gpu_resident(limited).unwrap();
         let limit_statistics =
             limited.advisory_outputs().iter().find(|binding| binding.node == limited.root_id()).unwrap();
         assert_eq!(limit_statistics.statistics.rows, AdvisoryStatistic::Inexact(10));

@@ -6,10 +6,14 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use super::{
     AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, MlAlgorithmNode, NodeRemap,
-    PlanFacts, ProjectionNode, ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode,
-    VectorAlgorithmNode, WindowNode, compact_reachable_nodes,
+    PlanFacts, ProjectionNode, ResultSink, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode,
+    WindowNode, compact_reachable_nodes,
+    graph::{check_node_order, validated_plan_parts},
 };
-use crate::dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute};
+use crate::{
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute},
+    error::{QueryError, QueryErrorCode, Result},
+};
 
 /// Query plan consumed by the native cuDF execution engine.
 ///
@@ -18,13 +22,17 @@ use crate::dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, Dynami
 /// not infer any execution scheduling guarantee beyond the dependency edges
 /// recorded by each node.
 ///
+/// Every plan value holds these invariants, checked when it is built: each
+/// node id equals its position, each input precedes its consumer, the sink
+/// reaches every node, and each node's output schema has one source (see
+/// [`PlanFacts`]).
+///
 /// The plan always ends at an explicit [`ResultSink`]. Native execution keeps
 /// intermediate and final data GPU-resident by default; host materialization is a
 /// sink choice, not an implicit side effect of reaching the root.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryPlan {
     pub(super) nodes: Vec<QueryNode>,
-    pub(super) root: NodeId,
     pub(super) sink: ResultSink,
     pub(super) annotations: Annotations,
 }
@@ -84,16 +92,21 @@ impl RewrittenNodes {
 }
 
 impl QueryPlan {
+    /// The only constructor: checks the plan invariants and derives each
+    /// node's output schema.
+    pub(crate) fn from_parts(nodes: Vec<QueryNode>, sink: ResultSink, annotations: Annotations) -> Result<Self> {
+        let nodes = validated_plan_parts(nodes, &sink)?;
+        Ok(Self { nodes, sink, annotations })
+    }
+
     /// Returns the node consumed by the plan sink.
     pub fn root_id(&self) -> NodeId {
-        self.root
+        self.sink.input()
     }
 
     /// Returns the root node.
-    ///
-    /// Plans built through [`crate::plan::QueryPlanBuilder`] guarantee that the root exists.
     pub fn root_node(&self) -> &QueryNode {
-        self.node(self.root).expect("query plan root node must exist")
+        &self.nodes[self.root_id().index()]
     }
 
     /// Returns the explicit execution boundary for this plan.
@@ -123,16 +136,19 @@ impl QueryPlan {
     /// advisory binding moves with its node and is invalidated when that node
     /// or any dependency changed. The sink keeps its kind and host contract at
     /// the new root.
-    pub(crate) fn rewrite(&self, rewritten: RewrittenNodes) -> Self {
+    ///
+    /// The rewritten node list is checked before compaction reads it by id,
+    /// and the result is checked like any other plan.
+    pub(crate) fn rewrite(&self, rewritten: RewrittenNodes) -> Result<Self> {
         let RewrittenNodes { nodes, root, origin } = rewritten;
         let sink = |root| self.sink.with_input(root);
         match origin {
             RewriteOrigin::InPlace => self.rebuilt(nodes, root, &NodeRemap::identity(self.node_count()), sink),
             RewriteOrigin::RefinedSources => {
                 debug_assert_eq!(nodes.len(), self.node_count(), "refining sources keeps every node");
-                let mut refined = self.rebuilt(nodes, root, &NodeRemap::identity(self.node_count()), sink);
+                let mut refined = self.rebuilt(nodes, root, &NodeRemap::identity(self.node_count()), sink)?;
                 refined.annotations.dynamic_filter_routes.clone_from(&self.annotations.dynamic_filter_routes);
-                refined
+                Ok(refined)
             },
             RewriteOrigin::Rebuilt(origin) => self.rebuilt(nodes, root, &origin, sink),
         }
@@ -140,7 +156,7 @@ impl QueryPlan {
 
     /// The subplan rooted at `root`, ending at a GPU-resident sink, with the
     /// side state of the nodes it keeps.
-    pub(crate) fn resident_subplan(&self, root: NodeId) -> Self {
+    pub(crate) fn resident_subplan(&self, root: NodeId) -> Result<Self> {
         let origin = NodeRemap::identity(self.node_count());
         self.rebuilt(self.nodes.clone(), root, &origin, |input| ResultSink::GpuResident { input })
     }
@@ -151,10 +167,11 @@ impl QueryPlan {
         root: NodeId,
         origin: &NodeRemap,
         sink: impl FnOnce(NodeId) -> ResultSink,
-    ) -> Self {
+    ) -> Result<Self> {
+        check_node_order(&nodes, root)?;
         let (nodes, root, compaction) = compact_reachable_nodes(nodes, root);
         let remap = origin.then(&compaction);
-        let mut rewritten = Self { nodes, root, sink: sink(root), annotations: Annotations::default() };
+        let mut rewritten = Self::from_parts(nodes, sink(root), Annotations::default())?;
         rewritten.annotations.dynamic_filter_routes = self
             .annotations
             .dynamic_filter_routes
@@ -166,7 +183,7 @@ impl QueryPlan {
             })
             .collect();
         rewritten.annotations.advisory = self.remapped_advisory_outputs(&rewritten, &remap);
-        rewritten
+        Ok(rewritten)
     }
 
     /// Moves each advisory binding to its node's image and invalidates it
@@ -202,8 +219,8 @@ impl QueryPlan {
     /// side state through [`Self::rewrite`].
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
-    pub fn with_nodes_for_test(&self, nodes: Vec<QueryNode>) -> Self {
-        self.rewrite(RewrittenNodes::in_place(nodes, self.root))
+    pub fn with_nodes_for_test(&self, nodes: Vec<QueryNode>) -> Result<Self> {
+        self.rewrite(RewrittenNodes::in_place(nodes, self.root_id()))
     }
 
     /// Return a copy of this plan with the same root and a GPU-resident sink.
@@ -213,7 +230,7 @@ impl QueryPlan {
     /// host-arrow boundary.
     pub fn clone_with_gpu_resident_sink(&self) -> Self {
         let mut plan = self.clone();
-        plan.sink = ResultSink::GpuResident { input: self.root };
+        plan.sink = ResultSink::GpuResident { input: self.root_id() };
         plan
     }
 
@@ -247,22 +264,28 @@ impl QueryPlan {
     /// root is not a valid reference for this check.
     ///
     /// [`QueryPlanBuilder::finish_with_host_sink_schema`]: crate::plan::QueryPlanBuilder::finish_with_host_sink_schema
-    pub fn with_host_sink_schema(mut self, schema: SchemaRef) -> Self {
+    pub fn with_host_sink_schema(mut self, schema: SchemaRef) -> Result<Self> {
         match &mut self.sink {
             ResultSink::HostArrow { schema: host_schema, .. }
             | ResultSink::DeferredHostArrow { schema: host_schema, .. } => {
-                assert_eq!(
-                    host_schema.fields(),
-                    schema.fields(),
-                    "host sink schema replacement must preserve the existing host sink fields"
-                );
+                if host_schema.fields() != schema.fields() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "query_engine.plan.host_sink_schema",
+                        "host sink schema replacement must preserve the existing host sink fields",
+                    ));
+                }
                 *host_schema = schema;
             },
             ResultSink::GpuResident { .. } => {
-                panic!("cannot replace the host sink schema of a GPU-resident plan")
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "query_engine.plan.host_sink_schema",
+                    "a GPU-resident plan has no host sink schema to replace",
+                ));
             },
         }
-        self
+        Ok(self)
     }
 
     /// Returns this plan with a native sort appended above the current root.
@@ -271,17 +294,15 @@ impl QueryPlan {
     /// new root. This is used by frontends that need to make an ordering
     /// contract explicit after lowering an order-breaking operator.
     pub fn with_appended_sort(mut self, spec: SortSpec) -> Self {
-        let input = self.root;
+        let input = self.root_id();
         let output_schema = Arc::clone(self.root_node().output_schema());
         let root = NodeId(self.nodes.len());
         let output_ordering = spec.expressions.clone();
         self.nodes.push(QueryNode {
             id: root,
             kind: PlanNode::Sort(SortNode { input, spec }),
-            facts: PlanFacts::device(output_schema, SchemaBehavior::PreservesInput)
-                .with_output_ordering(output_ordering),
+            facts: PlanFacts::new(output_schema).with_output_ordering(output_ordering),
         });
-        self.root = root;
         self.sink = self.sink.with_input(root);
         self
     }
@@ -299,9 +320,13 @@ impl QueryPlan {
         &self.nodes
     }
 
-    /// Returns the node for `id` when it is still present at that stable index.
+    /// Returns the node for `id` when it is in range.
+    ///
+    /// [`NodeId`] is a plan-local index: an id from another plan that happens
+    /// to be in range returns this plan's node at that index. Callers that
+    /// carry ids across plans bind them to the plan's scope and fingerprint.
     pub fn node(&self, id: NodeId) -> Option<&QueryNode> {
-        self.nodes.get(id.index()).filter(|node| node.id == id)
+        self.nodes.get(id.index())
     }
 
     /// Returns the schema visible at the plan boundary.
@@ -311,7 +336,7 @@ impl QueryPlan {
     pub fn output_schema(&self) -> &SchemaRef {
         match &self.sink {
             ResultSink::GpuResident { input } | ResultSink::DeferredHostArrow { input, .. } => {
-                self.node(*input).expect("query plan sink input must exist").output_schema()
+                self.nodes[input.index()].output_schema()
             },
             ResultSink::HostArrow { schema, .. } => schema,
         }
@@ -347,26 +372,6 @@ impl QueryPlan {
     pub fn contains_ml_algorithm(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::MlAlgorithm(_)))
     }
-
-    /// Returns nodes that are not reachable from the explicit sink input.
-    ///
-    /// Builders normally produce sink-reachable plans, but this is useful for
-    /// validation and diagnostics when composing partial DAGs.
-    pub fn unreachable_node_ids(&self) -> Vec<NodeId> {
-        let mut reachable = vec![false; self.nodes.len()];
-        let mut stack = vec![self.sink.input()];
-        while let Some(id) = stack.pop() {
-            let Some(node) = self.node(id) else {
-                continue;
-            };
-            if reachable[id.index()] {
-                continue;
-            }
-            reachable[id.index()] = true;
-            stack.extend(node.input_ids().iter().copied());
-        }
-        self.nodes.iter().filter(|node| !reachable[node.id.index()]).map(|node| node.id).collect()
-    }
 }
 
 /// Stable identifier for a node inside one [`QueryPlan`].
@@ -377,7 +382,7 @@ impl QueryPlan {
 /// lifetime of the plan so expressions, join inputs, sinks, and diagnostics can
 /// refer to it durably.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NodeId(pub(super) usize);
+pub struct NodeId(pub(crate) usize);
 
 impl NodeId {
     /// Returns the stable index into [`QueryPlan::nodes`].
@@ -385,12 +390,10 @@ impl NodeId {
         self.0
     }
 
-    /// Builds a `NodeId` from a raw index for crate-internal tests and validators.
-    ///
-    /// Frontends should obtain ids from [`QueryPlanBuilder`] so existence and
-    /// append-order invariants are checked as the plan is constructed.
+    /// A raw id for tests that need an id without building a plan.
+    #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
-    pub const fn from_index_for_internal_use(index: usize) -> Self {
+    pub const fn from_index_for_test(index: usize) -> Self {
         Self(index)
     }
 }
@@ -420,13 +423,7 @@ pub struct QueryNode {
 impl QueryNode {
     /// Returns the schema produced by this node.
     pub fn output_schema(&self) -> &SchemaRef {
-        match &self.kind {
-            PlanNode::Projection(projection) => projection.output_schema(),
-            PlanNode::GraphAlgorithm(graph) => graph.output_schema(),
-            PlanNode::VectorAlgorithm(vector) => vector.output_schema(),
-            PlanNode::MlAlgorithm(ml) => ml.output_schema(),
-            _ => &self.facts.output_schema,
-        }
+        &self.facts.output_schema
     }
 
     /// Returns input node ids referenced by this operation.

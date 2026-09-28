@@ -7,6 +7,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use super::rewrite;
 use crate::{
+    error::Result,
     expr::{AggregateExpr, AggregateFunction, Expr, LiteralValue},
     plan::{
         AggregateNode, FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan, RewrittenNodes,
@@ -101,39 +102,43 @@ pub(crate) struct CountNonNullColumnPruningResult {
 pub(crate) fn optimize_count_non_null_column_pruning(
     plan: QueryPlan,
     options: &CountNonNullColumnPruningOptions,
-) -> CountNonNullColumnPruningResult {
+) -> Result<CountNonNullColumnPruningResult> {
     if !options.enabled {
-        return CountNonNullColumnPruningResult {
+        return Ok(CountNonNullColumnPruningResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: CountNonNullColumnPruningDiagnostics::default(),
-        };
+        });
     }
     if !plan.dynamic_filter_routes().is_empty() {
         // This pass compacts node ids. Dynamic-filter route discovery currently
         // runs later, so routed plans should only appear if a caller runs this
         // pass directly or reorders the optimizer. Keep those routes valid by
         // declining the compacting rewrite.
-        return CountNonNullColumnPruningResult {
+        return Ok(CountNonNullColumnPruningResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: CountNonNullColumnPruningDiagnostics::default(),
-        };
+        });
     }
 
     let mut rewriter = CountNonNullColumnPruningRewriter::new(&plan);
     let new_root = rewriter.rewrite_subtree(plan.root_id(), RequiredColumns::All);
     if !rewriter.changed || rewriter.diagnostics.applied_count == 0 {
         let diagnostics = rewriter.diagnostics.clone();
-        return CountNonNullColumnPruningResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+        return Ok(CountNonNullColumnPruningResult {
+            plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics,
+        });
     }
 
     let origin = rewriter.single_image_origin();
-    CountNonNullColumnPruningResult {
-        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, origin)),
+    Ok(CountNonNullColumnPruningResult {
+        plan: plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, origin))?,
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
-    }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -338,7 +343,7 @@ impl<'a> CountNonNullColumnPruningRewriter<'a> {
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

@@ -23,16 +23,17 @@ fn lineage_accepts_source_passthrough_key() {
 fn lineage_accepts_filter_and_simple_alias_projection() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source("orders", vec![field("o_orderkey"), field("payload")]));
-    let filter =
-        builder.add_filter(source, Expr::column("payload"), schema(vec![field("o_orderkey"), field("payload")]));
-    let projection = builder.add_projection(
-        filter,
-        vec![ProjectionOutput::new(
-            Expr::column("o_orderkey").alias("orderkey"),
-            Field::new("orderkey", DataType::Int32, false),
-        )],
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let filter = builder.add_filter(source, Expr::column("payload")).unwrap();
+    let projection = builder
+        .add_projection(
+            filter,
+            vec![ProjectionOutput::new(
+                Expr::column("o_orderkey").alias("orderkey"),
+                Field::new("orderkey", DataType::Int32, false),
+            )],
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
 
     let analysis = analyze_keys(&plan, projection, &[left_key("orderkey")]).expect("alias should map to source key");
 
@@ -82,30 +83,34 @@ fn lineage_reaches_deepest_supported_inner_join_subtree() {
     let a = builder.add_source(source("a", vec![field("a_key")]));
     let b = builder.add_source(source("b", vec![field("b_key")]));
     let c = builder.add_source(source("c", vec![field("c_key")]));
-    let ab = builder.add_join(
-        a,
-        b,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "a_key", "a_key"), ColumnRef::input(1, "b_key", "b_key"))],
+    let ab = builder
+        .add_join(
+            a,
+            b,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "a_key", "a_key"), ColumnRef::input(1, "b_key", "b_key"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+                JoinOutputColumn::right(ColumnRef::input(1, "b_key", "b_key"), "b_key"),
+            ]),
+            schema(vec![field("a_key"), field("b_key")]),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::right(ColumnRef::input(1, "b_key", "b_key"), "b_key"),
-        ]),
-        schema(vec![field("a_key"), field("b_key")]),
-    );
-    let abc = builder.add_join(
-        ab,
-        c,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "c_key", "c_key"))],
+        .unwrap();
+    let abc = builder
+        .add_join(
+            ab,
+            c,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "c_key", "c_key"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "b_key", "b_key"), "join_key")]),
+            schema(vec![Field::new("join_key", DataType::Int32, false)]),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "b_key", "b_key"), "join_key")]),
-        schema(vec![Field::new("join_key", DataType::Int32, false)]),
-    );
-    let plan = builder.finish_gpu_resident(abc);
+        .unwrap();
+    let plan = builder.finish_gpu_resident(abc).unwrap();
 
     let analysis = analyze_keys(&plan, abc, &[left_key("join_key")]).expect("nested key should map to b");
 
@@ -121,14 +126,16 @@ fn lineage_reaches_deepest_supported_inner_join_subtree() {
 fn lineage_rejects_expression_derived_projection_key() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source("orders", vec![field("k")]));
-    let projection = builder.add_projection(
-        source,
-        vec![ProjectionOutput::new(
-            Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::column("k")),
-            Field::new("k2", DataType::Int32, false),
-        )],
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            vec![ProjectionOutput::new(
+                Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::column("k")),
+                Field::new("k2", DataType::Int32, false),
+            )],
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
 
     assert_eq!(
         analyze_keys(&plan, projection, &[left_key("k2")]).unwrap_err(),
@@ -203,7 +210,7 @@ fn cost_gate_accepts_selective_row_estimate() {
     let mut builder = QueryPlanBuilder::new();
     let target = builder.add_source(local_source("target", 1_000, Some(8_000)));
     let semi_right = builder.add_source(local_source("semi_right", 100, Some(800)));
-    let plan = builder.finish_gpu_resident(target);
+    let plan = gate_plan(builder, target, semi_right);
 
     let analysis = lineage_analysis_for_target(target);
     let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
@@ -218,7 +225,7 @@ fn cost_gate_rejects_unselective_row_estimate() {
     let mut builder = QueryPlanBuilder::new();
     let target = builder.add_source(local_source("target", 700, Some(7_000)));
     let semi_right = builder.add_source(local_source("semi_right", 100, Some(800)));
-    let plan = builder.finish_gpu_resident(target);
+    let plan = gate_plan(builder, target, semi_right);
 
     let analysis = lineage_analysis_for_target(target);
     let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
@@ -232,7 +239,7 @@ fn cost_gate_prefers_filtered_keyset_evidence_over_stale_row_estimate() {
     let mut builder = QueryPlanBuilder::new();
     let target = builder.add_source(local_source("target", 700, Some(7_000)));
     let semi_right = builder.add_source(local_filtered_source("semi_right", 100, Some(800)));
-    let plan = builder.finish_gpu_resident(target);
+    let plan = gate_plan(builder, target, semi_right);
 
     let analysis = lineage_analysis_crossing_to_target(target);
     let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
@@ -255,7 +262,7 @@ fn cost_gate_falls_back_to_byte_estimate_when_rows_are_unavailable() {
     let mut builder = QueryPlanBuilder::new();
     let target = builder.add_source(local_source_with_bytes_only("target", 8_000));
     let semi_right = builder.add_source(local_source_with_bytes_only("semi_right", 1_100));
-    let plan = builder.finish_gpu_resident(target);
+    let plan = gate_plan(builder, target, semi_right);
 
     let analysis = lineage_analysis_for_target(target);
     let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
@@ -299,7 +306,7 @@ fn lineage_analysis_crossing_to_target(target_subtree_id: NodeId) -> SemijoinLin
 fn single_source_plan(fields: Vec<Field>) -> (QueryPlan, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source("input", fields));
-    let plan = builder.finish_gpu_resident(source);
+    let plan = builder.finish_gpu_resident(source).unwrap();
     (plan, source)
 }
 
@@ -316,46 +323,45 @@ fn two_source_join_plan(
             .map(|output| Field::new(output.output_name.as_str(), DataType::Int32, false))
             .collect::<Vec<_>>(),
     ));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            join_type,
-            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                join_type,
+                vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+            )
+            .with_output_projection(output_projection),
+            output_schema,
         )
-        .with_output_projection(output_projection),
-        output_schema,
-    );
-    let plan = builder.finish_gpu_resident(join);
+        .unwrap();
+    let plan = builder.finish_gpu_resident(join).unwrap();
     (plan, join, left, right)
 }
 
 fn unsupported_aggregate_plan() -> (QueryPlan, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source("input", vec![field("k")]));
-    let aggregate =
-        builder.add_aggregate(source, AggregateSpec::new(vec![Expr::column("k")], vec![]), schema(vec![field("k")]));
-    let plan = builder.finish_gpu_resident(aggregate);
+    let aggregate = builder
+        .add_aggregate(source, AggregateSpec::new(vec![Expr::column("k")], vec![]), schema(vec![field("k")]))
+        .unwrap();
+    let plan = builder.finish_gpu_resident(aggregate).unwrap();
     (plan, aggregate)
 }
 
 fn unsupported_sort_plan() -> (QueryPlan, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source("input", vec![field("k")]));
-    let sort = builder.add_sort(
-        source,
-        SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-        schema(vec![field("k")]),
-    );
-    let plan = builder.finish_gpu_resident(sort);
+    let sort = builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)])).unwrap();
+    let plan = builder.finish_gpu_resident(sort).unwrap();
     (plan, sort)
 }
 
 fn unsupported_limit_plan() -> (QueryPlan, NodeId) {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source("input", vec![field("k")]));
-    let limit = builder.add_limit(source, LimitSpec::fetch(10), schema(vec![field("k")]));
-    let plan = builder.finish_gpu_resident(limit);
+    let limit = builder.add_limit(source, LimitSpec::fetch(10)).unwrap();
+    let plan = builder.finish_gpu_resident(limit).unwrap();
     (plan, limit)
 }
 
@@ -394,6 +400,12 @@ fn local_source_with_bytes_only(name: &str, bytes: u64) -> SourceNode {
         schema(vec![field("k")]),
         vec!["k".to_string()],
     ))
+}
+
+/// Both gate inputs, reachable through one union root.
+fn gate_plan(mut builder: QueryPlanBuilder, target: NodeId, semi_right: NodeId) -> QueryPlan {
+    let root = builder.add_union(vec![target, semi_right], schema(vec![field("k")])).unwrap();
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn schema(fields: Vec<Field>) -> Arc<Schema> {

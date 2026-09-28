@@ -14,7 +14,7 @@ impl QueryPlan {
     /// Advisory output bindings are not compared: they carry frontend volume
     /// signals, and a refined source invalidates the bindings that depend on it.
     pub(crate) fn first_change_beyond_source_refinement(&self, refined: &Self) -> Option<String> {
-        if self.root != refined.root || self.sink != refined.sink {
+        if self.sink != refined.sink {
             return Some("sink".to_string());
         }
         if self.annotations.dynamic_filter_routes != refined.annotations.dynamic_filter_routes {

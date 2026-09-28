@@ -38,34 +38,37 @@ fn native_query_executes_inner_equi_join_with_explicit_output_projection() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("order_id"), false, false),
-            SortExpr::new(Expr::column("qty"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            join,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("order_id"), false, false),
+                SortExpr::new(Expr::column("qty"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -125,30 +128,28 @@ fn native_query_executes_inner_join_when_output_projection_omits_keys() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -192,30 +193,28 @@ fn native_query_executes_left_join_with_null_padded_right_projection() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Left,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Left,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -274,36 +273,39 @@ fn native_query_executes_full_join_with_null_padded_output_projection() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Full,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Full,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
-            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("left_order_id"), false, false),
-            SortExpr::new(Expr::column("qty"), false, false),
-            SortExpr::new(Expr::column("right_order_id"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            join,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("left_order_id"), false, false),
+                SortExpr::new(Expr::column("qty"), false, false),
+                SortExpr::new(Expr::column("right_order_id"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -375,27 +377,25 @@ fn native_query_executes_left_semi_join_with_left_only_projection() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -439,22 +439,24 @@ fn native_query_executes_left_anti_join_with_left_only_projection() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftAnti,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftAnti,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -514,20 +516,22 @@ fn null_aware_anti_join_output_qtys<C: TestExecutionContext + ?Sized>(
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftAnti,
-            vec![JoinKey::new(ColumnRef::input(0, "key", "left_key"), ColumnRef::input(1, "key", "right_key"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftAnti,
+                vec![JoinKey::new(ColumnRef::input(0, "key", "left_key"), ColumnRef::input(1, "key", "right_key"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right)
+            .with_null_aware(true),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right)
-        .with_null_aware(true),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(join);
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
 
     let result = execute_query_plan(context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -591,28 +595,26 @@ fn native_query_executes_left_mark_join_with_boolean_mark_column() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftMark,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftMark,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right)
+            .with_mark_column_name("mark"),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right)
-        .with_mark_column_name("mark"),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -670,28 +672,26 @@ fn native_query_executes_left_mark_join_with_no_matches() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftMark,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftMark,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_id", "left_order_id"),
+                    ColumnRef::input(1, "order_id", "right_order_id"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(JoinSide::Right)
+            .with_mark_column_name("exists"),
+            Arc::clone(&output_schema),
         )
-        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right)
-        .with_mark_column_name("exists"),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+        .unwrap();
+    let sort = builder.add_sort(join, SortSpec::new(vec![SortExpr::new(Expr::column("qty"), false, false)])).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
 

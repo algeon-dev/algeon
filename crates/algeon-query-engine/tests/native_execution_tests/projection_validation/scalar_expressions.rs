@@ -30,14 +30,16 @@ fn native_query_projects_date64_and_time_types() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![Expr::column("event_date64"), Expr::column("event_time_ms"), Expr::column("event_time_ns")],
-            output_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![Expr::column("event_date64"), Expr::column("event_time_ms"), Expr::column("event_time_ns")],
+                output_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -162,9 +164,9 @@ fn native_query_executes_scalar_expression_families() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -263,8 +265,8 @@ fn native_query_executes_bitwise_scalar_expressions() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -307,8 +309,8 @@ fn native_query_executes_float64_to_int64_cast_with_datafusion_truncation_semant
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -349,8 +351,8 @@ fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("invalid Float64 -> Int64 casts must fail"),
@@ -415,8 +417,8 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -447,11 +449,13 @@ fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")], output_schema),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")], output_schema),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject LIKE over an integral input before cuDF execution"),
@@ -481,21 +485,23 @@ fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() 
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![
-                Expr::date_trunc(
-                    DatePart::Microsecond,
-                    Expr::column("event_ts"),
-                    DataType::Timestamp(TimeUnit::Millisecond, None),
-                )
-                .alias("bad_trunc"),
-            ],
-            output_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![
+                    Expr::date_trunc(
+                        DatePart::Microsecond,
+                        Expr::column("event_ts"),
+                        DataType::Timestamp(TimeUnit::Millisecond, None),
+                    )
+                    .alias("bad_trunc"),
+                ],
+                output_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject DATE_TRUNC output unit mismatches"),
@@ -526,17 +532,19 @@ fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution(
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![
-                Expr::binary(Expr::column("amount"), BinaryOp::Add, Expr::literal(LiteralValue::Float64(1.0)))
-                    .alias("bad_amount"),
-            ],
-            output_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![
+                    Expr::binary(Expr::column("amount"), BinaryOp::Add, Expr::literal(LiteralValue::Float64(1.0)))
+                        .alias("bad_amount"),
+                ],
+                output_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject implicit Decimal128/Float64 arithmetic"),
@@ -571,8 +579,8 @@ fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, untyped_divide, Arc::clone(&input_schema));
-    let plan = builder.finish_with_host_sink(filter);
+    let filter = builder.add_filter(source, untyped_divide).unwrap();
+    let plan = builder.finish_with_host_sink(filter).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject decimal division without a declared output type"),
@@ -611,17 +619,20 @@ fn native_query_executes_round_scalar_expression() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![
-                Expr::round(Expr::literal(LiteralValue::Float64(1.235)), 2, DataType::Float64).alias("rounded_literal"),
-                Expr::round(ratio, 1, DataType::Decimal128(38, 1)).alias("rounded_ratio"),
-            ],
-            output_schema,
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![
+                    Expr::round(Expr::literal(LiteralValue::Float64(1.235)), 2, DataType::Float64)
+                        .alias("rounded_literal"),
+                    Expr::round(ratio, 1, DataType::Decimal128(38, 1)).alias("rounded_ratio"),
+                ],
+                output_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -659,8 +670,8 @@ fn native_query_executes_round_decimal_cast_to_integral_expression() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(vec![rounded_segment], output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(vec![rounded_segment], output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -709,8 +720,8 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
         );
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
-        let plan = builder.finish_with_host_sink(projection);
+        let projection = builder.add_projection(source, projection_outputs(projection, output_schema)).unwrap();
+        let plan = builder.finish_with_host_sink(projection).unwrap();
 
         let error = match execute_query_plan(&context, &plan) {
             Ok(_) => panic!("{name} should reject Date64 before source read"),
@@ -766,8 +777,8 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
 
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let projection = builder.add_projection(source, projection_outputs(vec![expr], output_schema));
-        let plan = builder.finish_with_host_sink(projection);
+        let projection = builder.add_projection(source, projection_outputs(vec![expr], output_schema)).unwrap();
+        let plan = builder.finish_with_host_sink(projection).unwrap();
 
         let error = match execute_query_plan(&context, &plan) {
             Ok(_) => panic!("{name} should reject before source read"),
@@ -804,8 +815,8 @@ fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execut
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, projection_outputs(vec![label], output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder.add_projection(source, projection_outputs(vec![label], output_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject unread nested scalar columns before cuDF execution"),

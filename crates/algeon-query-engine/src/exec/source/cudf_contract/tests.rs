@@ -288,7 +288,7 @@ fn remote_multi_chunk_batch_preserves_uri_row_groups_projection_and_reader_mode(
     let context = ExecutionContext::standalone(runtime::StandaloneConfig::default()).expect("execution context builds");
     let source = remote_direct_test_source();
     let plan = chunk::plan_local_parquet_source_chunks(
-        plan::NodeId::from_index_for_internal_use(1),
+        plan::NodeId::from_index_for_test(1),
         &source,
         chunk::SourceChunkPlanningPolicy::new(None, 1),
     )
@@ -339,7 +339,7 @@ fn local_chunk_batch_lists_each_source_file_once_and_keeps_chunk_row_groups() {
         local_test_file("/tmp/lineitem-a.parquet", "a-again", 1),
     ]);
     let plan = chunk::plan_local_parquet_source_chunks(
-        plan::NodeId::from_index_for_internal_use(1),
+        plan::NodeId::from_index_for_test(1),
         &source,
         chunk::SourceChunkPlanningPolicy::new(None, 1),
     )
@@ -373,7 +373,7 @@ fn local_parquet_descriptors_key_planned_row_group_null_counts_by_read_column() 
             .with_row_group_null_counts(1, vec![Some(10), Some(4)]),
     ]);
     let plan = chunk::plan_local_parquet_source_chunks(
-        plan::NodeId::from_index_for_internal_use(1),
+        plan::NodeId::from_index_for_test(1),
         &source,
         chunk::SourceChunkPlanningPolicy::new(None, 1),
     )
@@ -453,7 +453,7 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
     assert!(source.reader_predicate_requires_source_contract(predicate));
     let file = &source.files[0];
     let chunk = SourceChunk {
-        source_node_id: plan::NodeId::from_index_for_internal_use(1),
+        source_node_id: plan::NodeId::from_index_for_test(1),
         chunk_index: 7,
         file_index: 0,
         location: file.location.clone(),
@@ -526,7 +526,7 @@ fn remote_direct_chunk_batch_reuses_planner_verified_decimal_reader_type() {
         .with_reader_predicate(predicate);
     let file = &source.files[0];
     let chunk = SourceChunk {
-        source_node_id: plan::NodeId::from_index_for_internal_use(1),
+        source_node_id: plan::NodeId::from_index_for_test(1),
         chunk_index: 7,
         file_index: 0,
         location: file.location.clone(),
@@ -577,7 +577,7 @@ fn chunk_batch_rejects_chunk_identity_mismatch_before_footer_verification() {
     let source = remote_direct_test_source();
     let file = &source.files[0];
     let mut chunk = SourceChunk {
-        source_node_id: plan::NodeId::from_index_for_internal_use(1),
+        source_node_id: plan::NodeId::from_index_for_test(1),
         chunk_index: 7,
         file_index: 0,
         location: file.location.clone(),

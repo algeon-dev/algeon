@@ -243,8 +243,8 @@ fn typed_graph_producer_evidence() -> (Arc<Schema>, AttemptCapabilityEvidence) {
         Arc::clone(&edge_schema),
         vec!["src".to_string(), "dst".to_string()],
     )));
-    let graph = builder.try_add_graph_algorithm(source, spec.clone()).expect("BFS graph plan must lower");
-    let graph_plan = builder.finish_gpu_resident(graph);
+    let graph = builder.add_graph_algorithm(source, Vec::new(), spec.clone()).expect("BFS graph plan must lower");
+    let graph_plan = builder.finish_gpu_resident(graph).unwrap();
     let mut evidence = AttemptCapabilityEvidence::for_query_plan(&graph_plan);
     evidence.attest_cugraph_graph_execution_scope(&graph_plan);
     (spec.output_schema, evidence)
@@ -263,7 +263,7 @@ fn typed_relational_producer_plan(schema: Arc<Schema>) -> QueryPlan {
         Arc::clone(&schema),
         schema.fields().iter().map(|field| field.name().to_owned()).collect(),
     )));
-    builder.finish_gpu_resident(source)
+    builder.finish_gpu_resident(source).unwrap()
 }
 
 fn typed_relational_producer_evidence(schema: Arc<Schema>) -> AttemptCapabilityEvidence {
@@ -281,9 +281,9 @@ fn consumer_plan_for_inputs(input_names: &[&str], schema: Arc<Schema>) -> QueryP
         .collect::<Vec<_>>();
     let root = match inputs.as_slice() {
         [input] => *input,
-        _ => builder.add_union(inputs, Arc::clone(&schema)),
+        _ => builder.add_union(inputs, Arc::clone(&schema)).unwrap(),
     };
-    builder.finish_with_host_sink(root)
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn consumer_plan(schema: Arc<Schema>) -> QueryPlan {
@@ -307,38 +307,40 @@ fn composed_constructor_preserves_host_owned_graph_gpu_output_rejection() {
 fn non_attested_projection_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
-    let projected = builder.add_projection(
-        source,
-        schema
-            .fields()
-            .iter()
-            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
-            .collect(),
-    );
-    builder.finish_with_host_sink(projected)
+    let projected = builder
+        .add_projection(
+            source,
+            schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        )
+        .unwrap();
+    builder.finish_with_host_sink(projected).unwrap()
 }
 
 fn filter_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
-    let filtered =
-        builder.add_filter(source, Expr::is_not_null(Expr::column(schema.field(0).name())), Arc::clone(&schema));
-    builder.finish_with_host_sink(filtered)
+    let filtered = builder.add_filter(source, Expr::is_not_null(Expr::column(schema.field(0).name()))).unwrap();
+    builder.finish_with_host_sink(filtered).unwrap()
 }
 
 fn zero_copy_projection_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
     let field = schema.field(0).clone();
-    let projected = builder.add_projection(source, vec![ProjectionOutput::new(Expr::column(field.name()), field)]);
-    builder.finish_with_host_sink(projected)
+    let projected =
+        builder.add_projection(source, vec![ProjectionOutput::new(Expr::column(field.name()), field)]).unwrap();
+    builder.finish_with_host_sink(projected).unwrap()
 }
 
 fn limit_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
-    let limited = builder.add_limit(source, LimitSpec::fetch(1), schema);
-    builder.finish_with_host_sink(limited)
+    let limited = builder.add_limit(source, LimitSpec::fetch(1)).unwrap();
+    builder.finish_with_host_sink(limited).unwrap()
 }
 
 fn sorted_consumer_plan(schema: Arc<Schema>) -> QueryPlan {

@@ -238,7 +238,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
     ] {
         let plan = optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()),local_dimension_pruning_resolver())
+            &NativeOptimizerOptions::default(), rapids_analysis_context(PlanningPolicy::default()),local_dimension_pruning_resolver()).unwrap()
         .plan;
 
         assert!(
@@ -250,7 +250,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
 
 /// One Inner keyed join over dummy paths. Admission never reads files, so the
 /// compositional tests below share this fragment instead of writing parquet.
-fn compositional_inner_join_base(builder: &mut QueryPlanBuilder) -> (NodeId, Arc<Schema>) {
+fn compositional_inner_join_base(builder: &mut QueryPlanBuilder) -> NodeId {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),
         Field::new("left_value", DataType::Int32, false),
@@ -273,7 +273,7 @@ fn compositional_inner_join_base(builder: &mut QueryPlanBuilder) -> (NodeId, Arc
         Arc::clone(&right_schema),
         vec!["right_id".into(), "right_value".into()],
     )));
-    let join = builder.add_join(
+    builder.add_join(
         left,
         right,
         JoinSpec::new(
@@ -285,9 +285,8 @@ fn compositional_inner_join_base(builder: &mut QueryPlanBuilder) -> (NodeId, Arc
             JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
         ])
         .with_build_side(JoinSide::Right),
-        Arc::clone(&output_schema),
-    );
-    (join, output_schema)
+        output_schema,
+    ).unwrap()
 }
 
 fn compositional_join_build_input_form(
@@ -318,19 +317,15 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
     // Join → Sort → Limit → Filter is decided by the Limit/Unary task contracts;
     // the retired post-limit projection allowlist must not reject the filter.
     let mut builder = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let sort = builder.add_sort(
         join,
-        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
-        Arc::clone(&output_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(1), Arc::clone(&output_schema));
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1)).unwrap();
     let filter = builder.add_filter(
         limit,
-        Expr::binary(Expr::column("right_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100))),
-        output_schema,
-    );
-    let plan = builder.finish_with_host_sink(filter);
+        Expr::binary(Expr::column("right_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100)))).unwrap();
+    let plan = builder.finish_with_host_sink(filter).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let pipeline = compile_pipeline(&plan, &analysis)
@@ -379,14 +374,12 @@ fn bounded_compositional_admission_accepts_join_limit_filter_without_sort() {
     // A Limit without an ORDER BY below it is still an executable composition;
     // the retired post-root rule demanding a sort input must not reject it.
     let mut builder = QueryPlanBuilder::new();
-    let (join, output_schema) = compositional_inner_join_base(&mut builder);
-    let limit = builder.add_limit(join, LimitSpec::fetch(10), Arc::clone(&output_schema));
+    let join = compositional_inner_join_base(&mut builder);
+    let limit = builder.add_limit(join, LimitSpec::fetch(10)).unwrap();
     let filter = builder.add_filter(
         limit,
-        Expr::binary(Expr::column("right_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100))),
-        output_schema,
-    );
-    let plan = builder.finish_with_host_sink(filter);
+        Expr::binary(Expr::column("right_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100)))).unwrap();
+    let plan = builder.finish_with_host_sink(filter).unwrap();
 
     bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
@@ -400,8 +393,8 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
     // selection or the recorded contracts: both variants are admitted and the
     // join build input carries the same form and sharing.
     let mut plain_builder = QueryPlanBuilder::new();
-    let (plain_join, _) = compositional_inner_join_base(&mut plain_builder);
-    let plain = plain_builder.finish_with_host_sink(plain_join);
+    let plain_join = compositional_inner_join_base(&mut plain_builder);
+    let plain = plain_builder.finish_with_host_sink(plain_join).unwrap();
 
     // Rebuild with identity projections spliced over both join inputs.
     let mut spliced = QueryPlanBuilder::new();
@@ -428,7 +421,7 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
             ProjectionOutput::new(Expr::column("left_id"), Field::new("left_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("left_value"), Field::new("left_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let right = spliced.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         "/tmp/compositional-right.parquet",
         Arc::clone(&right_schema),
@@ -440,7 +433,7 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
             ProjectionOutput::new(Expr::column("right_id"), Field::new("right_id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("right_value"), Field::new("right_value", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let spliced_join = spliced.add_join(
         left_projected,
         right_projected,
@@ -454,8 +447,8 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
         ])
         .with_build_side(JoinSide::Right),
         output_schema,
-    );
-    let projected = spliced.finish_with_host_sink(spliced_join);
+    ).unwrap();
+    let projected = spliced.finish_with_host_sink(spliced_join).unwrap();
 
     for (label, plan) in [("plain", &plain), ("projected", &projected)] {
         bounded_pipeline_admission(plan)
@@ -473,15 +466,15 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
 /// renaming the join output. Same executable pipeline plus one unary stage.
 fn compositional_alias_join_plan() -> QueryPlan {
     let mut aliased_builder = QueryPlanBuilder::new();
-    let (join, _) = compositional_inner_join_base(&mut aliased_builder);
+    let join = compositional_inner_join_base(&mut aliased_builder);
     let aliased = aliased_builder.add_projection(
         join,
         vec![
             ProjectionOutput::new(Expr::column("left_id"), Field::new("id", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("right_value"), Field::new("right_value", DataType::Int32, true)),
         ],
-    );
-    aliased_builder.finish_with_host_sink(aliased)
+    ).unwrap();
+    aliased_builder.finish_with_host_sink(aliased).unwrap()
 }
 
 #[test]
@@ -489,8 +482,8 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
     // Renaming the join output through an alias-only projection is the same
     // executable pipeline plus one unary stage.
     let mut plain_builder = QueryPlanBuilder::new();
-    let (plain_join, _) = compositional_inner_join_base(&mut plain_builder);
-    let plain = plain_builder.finish_with_host_sink(plain_join);
+    let plain_join = compositional_inner_join_base(&mut plain_builder);
+    let plain = plain_builder.finish_with_host_sink(plain_join).unwrap();
     let plain_tasks = compile_pipeline(&plain, &plain.capability_analysis(rapids_analysis_context(PlanningPolicy::default())))
         .expect("plain join should compile")
         .tasks()
@@ -549,7 +542,7 @@ fn compositional_edge_normalize_plan() -> (QueryPlan, NodeId) {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
+    ).unwrap();
     let edge_normalize = builder.add_edge_normalize(
         join,
         EdgeNormalizeSpec {
@@ -557,10 +550,8 @@ fn compositional_edge_normalize_plan() -> (QueryPlan, NodeId) {
             add_reverse: false,
             dedup: EdgeDedupStrategy::KeepLast,
             weight_combiner: EdgeWeightCombiner::None,
-        },
-        join_schema,
-    );
-    let plan = builder.finish_with_host_sink(edge_normalize);
+        }).unwrap();
+    let plan = builder.finish_with_host_sink(edge_normalize).unwrap();
     (plan, edge_normalize)
 }
 
@@ -585,27 +576,17 @@ fn bounded_compositional_support_admits_graph_task_on_sink_path() {
 /// first when `sorted`.
 fn compositional_join_row_number_plan(sorted: bool) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let (join, join_schema) = compositional_inner_join_base(&mut builder);
+    let join = compositional_inner_join_base(&mut builder);
     let order_key = SortExpr::new(Expr::column("left_id"), false, false);
     let window_input = if sorted {
-        builder.add_sort(join, SortSpec::new(vec![order_key.clone()]), Arc::clone(&join_schema))
+        builder.add_sort(join, SortSpec::new(vec![order_key.clone()])).unwrap()
     } else {
         join
     };
-    let window_schema = Arc::new(Schema::new(
-        join_schema
-            .fields()
-            .iter()
-            .map(|field| field.as_ref().clone())
-            .chain([Field::new("row_number", DataType::Int64, false)])
-            .collect::<Vec<_>>(),
-    ));
     let window = builder.add_window(
         window_input,
-        WindowSpec::new(Vec::new(), vec![order_key], vec![WindowFunction::row_number_i64("row_number")]),
-        window_schema,
-    );
-    builder.finish_with_host_sink(window)
+        WindowSpec::new(Vec::new(), vec![order_key], vec![WindowFunction::row_number_i64("row_number")])).unwrap();
+    builder.finish_with_host_sink(window).unwrap()
 }
 
 #[test]
@@ -656,7 +637,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&triple_schema),
-    );
+    ).unwrap();
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, false), Field::new("dst", DataType::Int32, false)]));
     let shared = builder.add_projection(
@@ -665,7 +646,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
             ProjectionOutput::new(Expr::column("src"), Field::new("src", DataType::Int32, false)),
             ProjectionOutput::new(Expr::column("dst"), Field::new("dst", DataType::Int32, false)),
         ],
-    );
+    ).unwrap();
     let edge_normalize = builder.add_edge_normalize(
         shared,
         EdgeNormalizeSpec {
@@ -673,16 +654,12 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
             add_reverse: false,
             dedup: EdgeDedupStrategy::KeepLast,
             weight_combiner: EdgeWeightCombiner::None,
-        },
-        Arc::clone(&edge_schema),
-    );
+        }).unwrap();
     let passthrough = builder.add_filter(
         shared,
-        Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        Arc::clone(&edge_schema),
-    );
-    let union = builder.add_union(vec![edge_normalize, passthrough], edge_schema);
-    let plan = builder.finish_with_host_sink(union);
+        Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)))).unwrap();
+    let union = builder.add_union(vec![edge_normalize, passthrough], edge_schema).unwrap();
+    let plan = builder.finish_with_host_sink(union).unwrap();
 
     let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
     let error =

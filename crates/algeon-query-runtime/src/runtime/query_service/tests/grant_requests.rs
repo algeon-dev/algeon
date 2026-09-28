@@ -231,7 +231,7 @@ fn explicit_sink_plan(input_name: &str) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
-    builder.finish_with_host_sink(source)
+    builder.finish_with_host_sink(source).unwrap()
 }
 
 fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptRequirement) {

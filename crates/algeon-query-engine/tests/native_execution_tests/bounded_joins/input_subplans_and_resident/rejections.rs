@@ -35,29 +35,33 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         Arc::clone(&right_schema),
         vec!["id".into()],
     )));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            ])
+            .with_build_side(JoinSide::Left),
+            join_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
-        ])
-        .with_build_side(JoinSide::Left),
-        join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        join,
-        AggregateSpec::new(
-            vec![Expr::column("id")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
-        ),
-        aggregate_schema,
-    );
-    let plan = builder.finish_with_host_sink(aggregate);
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            join,
+            AggregateSpec::new(
+                vec![Expr::column("id")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+            ),
+            aggregate_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let context = backend_context_with_grant(1024 * 1024);
 
@@ -101,29 +105,33 @@ fn bounded_native_query_executes_grouped_aggregate_join_build_input() {
         Arc::clone(&right_schema),
         vec!["id".into()],
     )));
-    let aggregate = builder.add_aggregate(
-        left,
-        AggregateSpec::new(
-            vec![Expr::column("id")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let join = builder.add_join(
-        aggregate,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+    let aggregate = builder
+        .add_aggregate(
+            left,
+            AggregateSpec::new(
+                vec![Expr::column("id")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+            ),
+            Arc::clone(&aggregate_schema),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
-        ])
-        .with_build_side(JoinSide::Left),
-        join_schema,
-    );
-    let plan = builder.finish_with_host_sink(join);
+        .unwrap();
+    let join = builder
+        .add_join(
+            aggregate,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
+            ])
+            .with_build_side(JoinSide::Left),
+            join_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(join).unwrap();
     let decision = admit(
         &plan,
         StatisticalAggregateExecutionMode::default(),

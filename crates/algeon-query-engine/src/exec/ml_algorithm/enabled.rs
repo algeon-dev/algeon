@@ -21,7 +21,8 @@ use crate::{
     exec::{
         GpuDataFrame,
         dense_relation::{
-            ML_OPERATIONS, matrix_bytes_for, pack_dense_relation_for, relation_element_type_for, relation_input_for,
+            DenseRelationInputs, ML_OPERATIONS, matrix_bytes_for, pack_dense_relation_for, relation_element_type_for,
+            relation_input_for,
         },
     },
     native_error::{cudf_query_error, cudf_unsupported_type_error, cuml_query_error},
@@ -52,9 +53,7 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
     node_id: NodeId,
     ml: &MlAlgorithmNode,
 ) -> Result<()> {
-    if !ml.spec.params.supports_algorithm(ml.spec.algorithm)
-        || ml.inputs != ml.spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>()
-    {
+    if !ml.spec.params.supports_algorithm(ml.spec.algorithm) {
         return Err(QueryError::new(QueryErrorCode::InvalidPlan, EXECUTE, "ML node payload does not match its inputs")
             .with_fact("node_id", node_id)
             .with_fact("reason", "algorithm_parameter_mismatch"));
@@ -75,7 +74,7 @@ pub(in crate::exec) fn validate_ml_algorithm_execution(
             .with_fact("reason", "missing_logical_row_id_column"));
     };
     let schema = plan
-        .node(binding.input)
+        .node(ml.inputs[binding.input])
         .ok_or_else(|| {
             QueryError::new(QueryErrorCode::InvalidPlan, EXECUTE, "ML input node is missing")
                 .with_fact("node_id", node_id)
@@ -119,6 +118,7 @@ pub(in crate::exec) fn execute_ml_algorithm(
 ) -> Result<GpuDataFrame> {
     context.check_cancellation(EXECUTE)?;
     validate_ml_algorithm_execution(plan, node_id, ml)?;
+    let inputs = DenseRelationInputs::new(&ml.inputs, inputs);
     let binding = match &ml.spec.params {
         MlAlgorithmParams::LogisticRegression(params) => &params.predict,
         MlAlgorithmParams::RandomForestClassifier(params) | MlAlgorithmParams::RandomForestRegressor(params) => {
@@ -189,7 +189,7 @@ fn execute_tsvd_ml(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CumlResources,
     version: (u16, u16, u16),
     params: &MlTsvdParams,
@@ -237,7 +237,7 @@ fn execute_tsvd_ml(
         node_id,
         "input",
         algorithm.as_str(),
-        binding.input,
+        inputs.node_id(binding.input),
         &binding.features,
         input,
         TypeId::Float32,
@@ -379,7 +379,7 @@ fn execute_logistic_regression(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CumlResources,
     version: (u16, u16, u16),
     params: &MlLogisticRegressionParams,
@@ -566,7 +566,7 @@ fn execute_random_forest(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     native: (&CumlResources, (u16, u16, u16), &cudf::ExecutionBudgetToken),
     params: &MlRandomForestParams,
     algorithm: MlAlgorithm,
@@ -796,7 +796,7 @@ fn pack_supervised_relation(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     native: (&CumlResources, &RuntimeOperatorStageIdentity),
     relation: (&GpuDataFrame, &MlRelationBinding, &'static str),
     algorithm: &'static str,
@@ -826,7 +826,7 @@ fn pack_supervised_relation(
         node_id,
         role,
         algorithm,
-        binding.input,
+        inputs.node_id(binding.input),
         &binding.features,
         input,
         TypeId::Float32,
@@ -847,7 +847,7 @@ fn execute_row_major_ml(
     plan: &QueryPlan,
     node_id: NodeId,
     ml: &MlAlgorithmNode,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     native: (&CumlResources, (u16, u16, u16)),
     params: RowMajorParams<'_>,
 ) -> Result<GpuDataFrame> {
@@ -917,7 +917,7 @@ fn execute_row_major_ml(
         node_id,
         "input",
         ml.spec.algorithm.as_str(),
-        binding.input,
+        inputs.node_id(binding.input),
         &binding.features,
         input,
         TypeId::Float32,
@@ -1178,7 +1178,7 @@ fn execute_forest_predict(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    inputs: DenseRelationInputs<'_>,
     resources: &CumlResources,
     params: &MlForestPredictParams,
 ) -> Result<GpuDataFrame> {
@@ -1267,7 +1267,7 @@ fn execute_forest_predict(
             node_id,
             "input",
             algorithm,
-            binding.input,
+            inputs.node_id(binding.input),
             &binding.features,
             batch,
             TypeId::Float32,

@@ -8,8 +8,8 @@ use crate::{
     expr::{ColumnQualifier, ColumnRef, Expr},
     plan::{
         FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
-        PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes, SchemaBehavior,
-        estimated_output_bytes, estimated_output_rows,
+        PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, RewrittenNodes, estimated_output_bytes,
+        estimated_output_rows,
     },
     source::SourceNode,
 };
@@ -218,13 +218,16 @@ pub enum SemijoinReductionRejectedReason {
 }
 
 /// Runs the semijoin-reduction pass.
-pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionOptions) -> SemijoinReductionResult {
+pub fn optimize_semijoin_reduction(
+    plan: QueryPlan,
+    options: &SemijoinReductionOptions,
+) -> Result<SemijoinReductionResult> {
     if !options.enabled {
-        return SemijoinReductionResult {
+        return Ok(SemijoinReductionResult {
             plan,
             change: super::NativeOptimizerChange::Unchanged,
             diagnostics: SemijoinReductionDiagnostics::default(),
-        };
+        });
     }
 
     let mut rewriter = SemijoinReductionRewriter::new(&plan, options);
@@ -232,16 +235,16 @@ pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionO
     let mut diagnostics = rewriter.diagnostics;
 
     if !rewriter.changed {
-        return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+        return Ok(SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics });
     }
 
-    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo));
+    let rewritten_plan = plan.rewrite(RewrittenNodes::rebuilt(rewriter.nodes, new_root, rewriter.memo))?;
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
         reject_applied_candidates(&mut diagnostics, reason);
-        return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
+        return Ok(SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics });
     }
 
-    SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics }
+    Ok(SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -657,7 +660,7 @@ impl<'a> SemijoinReductionRewriter<'a> {
 
         self.push_node(
             PlanNode::Join(JoinNode { inputs: [target_new_id, right_new_id], spec }),
-            PlanFacts::device(target_schema, SchemaBehavior::Join),
+            PlanFacts::new(target_schema),
         )
     }
 
@@ -688,12 +691,12 @@ impl<'a> SemijoinReductionRewriter<'a> {
             .collect::<Vec<_>>();
         self.push_node(
             PlanNode::Projection(ProjectionNode::new(pushed_left, outputs)),
-            PlanFacts::device(projected_schema, SchemaBehavior::Projection),
+            PlanFacts::new(projected_schema),
         )
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
-        let id = NodeId::from_index_for_internal_use(self.nodes.len());
+        let id = NodeId(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }

@@ -19,6 +19,7 @@ mod display;
 mod estimates;
 mod facts;
 mod gpu_function_options;
+mod graph;
 mod graph_algorithm;
 mod identity;
 mod join;
@@ -41,7 +42,7 @@ pub use builder::QueryPlanBuilder;
 #[doc(hidden)]
 pub use estimates::estimated_output_bytes;
 pub(crate) use estimates::{advisory_output_bytes, advisory_output_rows, estimated_output_rows};
-pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
+pub use facts::PlanFacts;
 pub use gpu_function_options::{
     DenseVectorBinding, GpuOptionDefinition, GpuOptionKind, GpuOptionValidationError, GpuOutputFieldDefinition,
     RELATION_ID_TYPES, RelationIdType, VectorElementType,

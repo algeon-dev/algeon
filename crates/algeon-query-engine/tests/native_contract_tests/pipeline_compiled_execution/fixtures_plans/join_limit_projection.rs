@@ -41,13 +41,13 @@ pub(super) fn join_limit_projection_plan() -> QueryPlan {
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
-    );
-    let limit = builder.add_limit(join, LimitSpec::fetch(10), Arc::clone(&join_schema));
+    ).unwrap();
+    let limit = builder.add_limit(join, LimitSpec::fetch(10)).unwrap();
     let projection = builder.add_projection(
         limit,
         projection_outputs(vec![Expr::column("v"), Expr::column("k")], Arc::clone(&join_projection_schema)),
-    );
-    builder.finish_with_host_sink(projection)
+    ).unwrap();
+    builder.finish_with_host_sink(projection).unwrap()
 }
 
 /// Two joins sharing one filtered dimension scan, under an aggregate and limit.
@@ -83,9 +83,7 @@ fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
     )));
     let filtered_dimension = builder.add_filter(
         dimension,
-        Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(2000))),
-        Arc::clone(&dim_schema),
-    );
+        Expr::binary(Expr::column("year"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(2000)))).unwrap();
     let join_against_dimension = |builder: &mut QueryPlanBuilder, path: &str| {
         let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
             path,
@@ -105,7 +103,7 @@ fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
             ])
             .with_build_side(JoinSide::Right),
             Arc::clone(&joined_schema),
-        )
+        ).unwrap()
     };
     let store_sales = join_against_dimension(&mut builder, "/tmp/shared-filtered-store-sales.parquet");
     let web_sales = join_against_dimension(&mut builder, "/tmp/shared-filtered-web-sales.parquet");
@@ -119,7 +117,7 @@ fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&joined_schema),
-    );
+    ).unwrap();
     let grouped = builder.add_aggregate(
         combined,
         AggregateSpec::new(
@@ -127,9 +125,9 @@ fn shared_filtered_dimension_fan_out_plan() -> QueryPlan {
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total")],
         ),
         Arc::clone(&grouped_schema),
-    );
-    let limit = builder.add_limit(grouped, LimitSpec::fetch(100), Arc::clone(&grouped_schema));
-    builder.finish_with_host_sink(limit)
+    ).unwrap();
+    let limit = builder.add_limit(grouped, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 #[test]

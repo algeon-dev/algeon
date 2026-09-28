@@ -248,7 +248,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     })
     .expect("execution context builds");
     let metrics = ExecutionMetrics::detached("aggregate-test");
-    let node_id = NodeId::from_index_for_internal_use(7);
+    let node_id = NodeId::from_index_for_test(7);
     let stats = FilteredGlobalSegmentRuntimeStats {
         chunk_count: 2,
         segment_count: 5,

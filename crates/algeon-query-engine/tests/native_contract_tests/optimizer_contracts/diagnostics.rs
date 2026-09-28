@@ -88,7 +88,7 @@ fn native_optimizer_stable_rule_rows_project_count_non_null_pruning_candidates()
             Field::new("o_custkey", DataType::Int32, false),
             Field::new("c_count", DataType::Int64, false),
         ])),
-    );
+    ).unwrap();
 
     let diagnostics = NativeOptimizerDiagnostics {
         count_non_null_column_pruning: CountNonNullColumnPruningDiagnostics {
@@ -131,7 +131,7 @@ fn native_optimizer_stable_rule_rows_project_aggregate_join_pushdown_candidates(
             )],
         ),
         schema(&["left_key", "right_key"]),
-    );
+    ).unwrap();
 
     let diagnostics = NativeOptimizerDiagnostics {
         aggregate_join_pushdown: AggregateJoinPushdownDiagnostics {

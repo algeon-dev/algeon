@@ -81,27 +81,29 @@ pub(crate) fn aggregate_over_join_subplan_topk_plan_inner(
     };
     let projection = if matches!(variant, AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression)
     {
-        builder.add_projection(
-            root,
-            projection_outputs(vec![Expr::column("k"), Expr::case(Vec::new(), Expr::column("v"))], key_value_schema()),
-        )
+        builder
+            .add_projection(
+                root,
+                projection_outputs(
+                    vec![Expr::column("k"), Expr::case(Vec::new(), Expr::column("v"))],
+                    key_value_schema(),
+                ),
+            )
+            .unwrap()
     } else {
         project_key_value(&mut builder, root)
     };
-    let sort = builder.add_sort(
-        projection,
-        SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-        key_value_schema(),
-    );
+    let sort =
+        builder.add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)])).unwrap();
     match variant {
-        AggregateOverJoinSubplanTopKVariant::MissingFetchLimit => builder.finish_with_host_sink(sort),
+        AggregateOverJoinSubplanTopKVariant::MissingFetchLimit => builder.finish_with_host_sink(sort).unwrap(),
         AggregateOverJoinSubplanTopKVariant::Admitted
         | AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin
         | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan
         | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide
         | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression => {
-            let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
-            builder.finish_with_host_sink(limit)
+            let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+            builder.finish_with_host_sink(limit).unwrap()
         },
     }
 }
@@ -131,9 +133,7 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inn
     ) {
         builder.add_filter(
             grouped_input,
-            Expr::binary(Expr::column("v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
-            key_value_schema(),
-        )
+            Expr::binary(Expr::column("v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0)))).unwrap()
     } else {
         builder.add_projection(
             grouped_input,
@@ -141,14 +141,10 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inn
                 vec![Expr::column("k")],
                 Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
             ),
-        )
+        ).unwrap()
     };
     if matches!(variant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter) {
-        grouped_input = builder.add_filter(
-            grouped_input,
-            Expr::in_list(Expr::column("k"), Vec::new()),
-            Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
-        );
+        grouped_input = builder.add_filter(grouped_input, Expr::in_list(Expr::column("k"), Vec::new())).unwrap();
     }
     let ab = join(&mut builder, a, b, "ab");
     let right_tree = join(&mut builder, ab, c, "right_tree");
@@ -185,14 +181,11 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inn
         },
     };
     let projection = project_key_value(&mut builder, post_join_aggregate);
-    let sort = builder.add_sort(
-        projection,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
+    let sort =
+        builder.add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
     match variant {
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::MissingFetchLimit => {
-            builder.finish_with_host_sink(sort)
+            builder.finish_with_host_sink(sort).unwrap()
         },
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput
@@ -200,8 +193,8 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inn
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::ScalarPostJoinAggregate
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter => {
-            let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
-            builder.finish_with_host_sink(limit)
+            let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+            builder.finish_with_host_sink(limit).unwrap()
         },
     }
 }
@@ -240,41 +233,39 @@ fn resident_grouped_aggregate_subquery_filter_plan_inner(with_source_metadata: b
     let cd = join(&mut builder, c, d, "cd");
     let right_tree = residual_join_against_grouped_aggregate(&mut builder, grouped_projection, cd);
     let root = semi_join(&mut builder, left_tree, right_tree);
-    let sort =
-        builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]), key_value_schema());
-    builder.finish_with_host_sink(sort)
+    let sort = builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(crate) fn root_topk_grouped_aggregate_input_left_join_plan() -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let edges = source(&mut builder, "root-topk-grouped-aggregate-input-edges");
     let grouped = grouped_aggregate(&mut builder, edges);
-    let grouped_sort = builder.add_sort(
-        grouped,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
-    let grouped_topk = builder.add_limit(grouped_sort, LimitSpec::fetch(30), key_value_schema());
+    let grouped_sort =
+        builder.add_sort(grouped, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let grouped_topk = builder.add_limit(grouped_sort, LimitSpec::fetch(30)).unwrap();
     let nodes = source(&mut builder, "root-topk-grouped-aggregate-input-nodes");
-    let joined = builder.add_join(
-        grouped_topk,
-        nodes,
-        JoinSpec::new(JoinType::Left, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+    let joined = builder
+        .add_join(
+            grouped_topk,
+            nodes,
+            JoinSpec::new(
+                JoinType::Left,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                 JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
             ])
             .with_build_side(JoinSide::Right),
-        key_value_schema(),
-    );
+            key_value_schema(),
+        )
+        .unwrap();
     let joined = project_key_value(&mut builder, joined);
-    let final_sort = builder.add_sort(
-        joined,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
-    let final_topk = builder.add_limit(final_sort, LimitSpec::fetch(30), key_value_schema());
-    builder.finish_with_host_sink(final_topk)
+    let final_sort =
+        builder.add_sort(joined, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let final_topk = builder.add_limit(final_sort, LimitSpec::fetch(30)).unwrap();
+    builder.finish_with_host_sink(final_topk).unwrap()
 }
 
 pub(crate) fn root_topk_keyless_conditional_direct_source_aggregates_plan(
@@ -291,13 +282,10 @@ pub(crate) fn root_topk_keyless_conditional_direct_source_aggregates_plan(
     let right = root_topk_keyless_conditional_aggregate_branch(&mut builder, right_grouped_source, right_scalar_source);
     let root = join(&mut builder, left, right, "direct_source_root");
     let projection = project_key_value(&mut builder, root);
-    let sort = builder.add_sort(
-        projection,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
-    builder.finish_with_host_sink(limit)
+    let sort =
+        builder.add_sort(projection, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn root_topk_keyless_conditional_aggregate_branch(
@@ -309,22 +297,24 @@ fn root_topk_keyless_conditional_aggregate_branch(
     let grouped = project_key_value(builder, grouped_aggregate);
     let scalar_aggregate = scalar_key_value_aggregate(builder, scalar_source);
     let scalar = project_key_value(builder, scalar_aggregate);
-    builder.add_join(
-        grouped,
-        scalar,
-        JoinSpec::new(JoinType::Inner, Vec::new())
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "v", "grouped_v"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "v", "scalar_v"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-        key_value_schema(),
-    )
+    builder
+        .add_join(
+            grouped,
+            scalar,
+            JoinSpec::new(JoinType::Inner, Vec::new())
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "v", "grouped_v"),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "v", "scalar_v"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+            key_value_schema(),
+        )
+        .unwrap()
 }
 
 pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggregateVariant) -> QueryPlan {
@@ -399,31 +389,38 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggrega
                     | RootTopKJoinAggregateVariant::DistinctAggregateTransitiveKeyedOuterJoin
                     | RootTopKJoinAggregateVariant::DistinctAggregateUnrelatedKeyedOuterJoin
             ) {
-                builder.add_aggregate(
-                    fact_store,
-                    AggregateSpec::new(
-                        vec![Expr::column("k")],
-                        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "v").with_distinct(true)],
-                    ),
-                    key_value_schema(),
-                )
+                builder
+                    .add_aggregate(
+                        fact_store,
+                        AggregateSpec::new(
+                            vec![Expr::column("k")],
+                            vec![
+                                AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "v")
+                                    .with_distinct(true),
+                            ],
+                        ),
+                        key_value_schema(),
+                    )
+                    .unwrap()
             } else if matches!(variant, RootTopKJoinAggregateVariant::FilteredDistinctAggregate) {
-                builder.add_aggregate(
-                    fact_store,
-                    AggregateSpec::new(
-                        vec![Expr::column("k")],
-                        vec![
-                            AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "v")
-                                .with_distinct(true)
-                                .with_filter(Some(Expr::binary(
-                                    Expr::column("v"),
-                                    BinaryOp::Gt,
-                                    Expr::literal(LiteralValue::Int64(0)),
-                                ))),
-                        ],
-                    ),
-                    key_value_schema(),
-                )
+                builder
+                    .add_aggregate(
+                        fact_store,
+                        AggregateSpec::new(
+                            vec![Expr::column("k")],
+                            vec![
+                                AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "v")
+                                    .with_distinct(true)
+                                    .with_filter(Some(Expr::binary(
+                                        Expr::column("v"),
+                                        BinaryOp::Gt,
+                                        Expr::literal(LiteralValue::Int64(0)),
+                                    ))),
+                            ],
+                        ),
+                        key_value_schema(),
+                    )
+                    .unwrap()
             } else {
                 grouped_aggregate(&mut builder, fact_store)
             };
@@ -441,231 +438,257 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggrega
         let right = sorted_rank_window_project_key_value(&mut builder, customer);
         full_join(&mut builder, left, right, FullJoinOutput::LeftOnly)
     } else if matches!(variant, RootTopKJoinAggregateVariant::DistinctAggregateUnrelatedKeyedOuterJoin) {
-        let unrelated_outer = builder.add_join(
-            fact_store,
-            customer,
-            JoinSpec::new(
-                JoinType::Left,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        let unrelated_outer = builder
+            .add_join(
+                fact_store,
+                customer,
+                JoinSpec::new(
+                    JoinType::Left,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                key_value_schema(),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        );
+            .unwrap();
         join(&mut builder, grouped_projection, unrelated_outer, "root_distinct_unrelated_outer")
     } else if matches!(variant, RootTopKJoinAggregateVariant::DistinctAggregateBuildSideKeyedOuterJoin) {
-        builder.add_join(
-            customer,
-            grouped_projection,
-            JoinSpec::new(
-                JoinType::Left,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                customer,
+                grouped_projection,
+                JoinSpec::new(
+                    JoinType::Left,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                key_value_schema(),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::DistinctAggregatePreservedSideAggregateOuterJoin) {
         let right_aggregate = grouped_aggregate(&mut builder, customer);
         let right_aggregate = project_key_value(&mut builder, right_aggregate);
-        builder.add_join(
-            grouped_projection,
-            right_aggregate,
-            JoinSpec::new(
-                JoinType::Left,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                grouped_projection,
+                right_aggregate,
+                JoinSpec::new(
+                    JoinType::Left,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                key_value_schema(),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::DistinctAggregateTransitiveKeyedOuterJoin) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::Left,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::Left,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                key_value_schema(),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate) {
         let unrelated_scalar_projection =
             unrelated_scalar_projection.expect("unrelated scalar variant should build a scalar projection");
         let left = join(&mut builder, grouped_projection, unrelated_scalar_projection, "left_with_unrelated_scalar");
-        builder.add_join(
-            left,
-            customer,
-            JoinSpec::new(JoinType::Inner, vec![])
+        builder
+            .add_join(
+                left,
+                customer,
+                JoinSpec::new(JoinType::Inner, vec![])
+                    .with_residual_predicate(Expr::binary(
+                        Expr::input_column(0, "k", "k"),
+                        BinaryOp::LtEq,
+                        Expr::input_column(1, "k", "k"),
+                    ))
+                    .with_output_projection(vec![
+                        JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                        JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                    ])
+                    .with_build_side(JoinSide::Right),
+                key_value_schema(),
+            )
+            .unwrap()
+    } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput) {
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
                 .with_residual_predicate(Expr::binary(
-                    Expr::input_column(0, "k", "k"),
-                    BinaryOp::LtEq,
-                    Expr::input_column(1, "k", "k"),
+                    Expr::input_column(0, "v", "v"),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "v", "v"),
                 ))
                 .with_output_projection(vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                     JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
                 ])
                 .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
-    } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                key_value_schema(),
             )
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "v", "v"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "v", "v"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput) {
         semi_join(&mut builder, grouped_projection, customer)
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::LeftSemi,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::LeftSemi,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "v", "v"),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "v", "v"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                key_value_schema(),
             )
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "v", "v"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "v", "v"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::LeftSemi,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::LeftSemi,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Left),
+                key_value_schema(),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Left),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput) {
         // A disjunctive EXISTS (`EXISTS a OR EXISTS b`) cannot decorrelate to a
         // semi join, so the frontend emits a mark join per branch and filters on
         // the boolean columns. The executor synthesizes the mark column, so it
         // never appears in the output projection.
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::LeftMark,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::LeftMark,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_mark_column_name("mark")
+                .with_build_side(JoinSide::Right),
+                key_value_mark_schema("mark"),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_mark_column_name("mark")
-            .with_build_side(JoinSide::Right),
-            key_value_mark_schema("mark"),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::LeftSemi,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::LeftSemi,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::right(ColumnRef::input(1, "k", "k"), "k"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+                key_value_schema(),
             )
-            .with_output_projection(vec![
-                JoinOutputColumn::right(ColumnRef::input(1, "k", "k"), "k"),
-                JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(
-                JoinType::LeftAnti,
-                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
-            )
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
-    } else if matches!(
-        variant,
-        RootTopKJoinAggregateVariant::KeylessJoin | RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput
-    ) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(JoinType::Inner, vec![])
-                .with_residual_predicate(Expr::binary(
-                    Expr::input_column(0, "k", "k"),
-                    BinaryOp::LtEq,
-                    Expr::input_column(1, "k", "k"),
-                ))
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(
+                    JoinType::LeftAnti,
+                    vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+                )
                 .with_output_projection(vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                     JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
                 ])
                 .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+                key_value_schema(),
+            )
+            .unwrap()
+    } else if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::KeylessJoin | RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput
+    ) {
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(JoinType::Inner, vec![])
+                    .with_residual_predicate(Expr::binary(
+                        Expr::input_column(0, "k", "k"),
+                        BinaryOp::LtEq,
+                        Expr::input_column(1, "k", "k"),
+                    ))
+                    .with_output_projection(vec![
+                        JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                        JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                    ])
+                    .with_build_side(JoinSide::Right),
+                key_value_schema(),
+            )
+            .unwrap()
     } else if matches!(
         variant,
         RootTopKJoinAggregateVariant::ProjectedCrossJoin
             | RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput
     ) {
-        builder.add_join(
-            grouped_projection,
-            customer,
-            JoinSpec::new(JoinType::Cross, vec![])
-                .with_output_projection(vec![
-                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-                ])
-                .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+        builder
+            .add_join(
+                grouped_projection,
+                customer,
+                JoinSpec::new(JoinType::Cross, vec![])
+                    .with_output_projection(vec![
+                        JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                        JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                    ])
+                    .with_build_side(JoinSide::Right),
+                key_value_schema(),
+            )
+            .unwrap()
     } else if matches!(variant, RootTopKJoinAggregateVariant::KeylessOuterCrossJoin) {
         keyless_outer_cross_join(&mut builder, grouped_projection, customer)
     } else {
@@ -694,48 +717,32 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggrega
     } else {
         project_key_value(&mut builder, root)
     };
-    let topk_schema = if matches!(variant, RootTopKJoinAggregateVariant::Window) {
+    if matches!(variant, RootTopKJoinAggregateVariant::Window) {
         topk_projection = sorted_rank_window_project_key_value(&mut builder, topk_projection);
-        key_value_schema()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortedAggregateWindow) {
-        let sorted = builder.add_sort(
-            topk_projection,
-            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-            key_value_schema(),
-        );
+        let sorted = builder
+            .add_sort(topk_projection, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]))
+            .unwrap();
         topk_projection = unordered_aggregate_window_project_key_value(&mut builder, sorted);
-        key_value_schema()
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow) {
-        let sorted = builder.add_sort(
-            topk_projection,
-            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-            key_value_schema(),
-        );
+        let sorted = builder
+            .add_sort(topk_projection, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]))
+            .unwrap();
         topk_projection = unordered_global_aggregate_window_project_key_value(&mut builder, sorted);
-        key_value_schema()
     } else if matches!(variant, RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection) {
         topk_projection = rank_filter_window_project_key_value(&mut builder, topk_projection);
-        key_value_schema()
     } else if matches!(variant, RootTopKJoinAggregateVariant::UnsortedRankWindow) {
         topk_projection = rank_window_project_key_value(&mut builder, topk_projection);
-        key_value_schema()
-    } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftMarkJoinInput) {
-        key_value_mark_schema("mark")
-    } else {
-        key_value_schema()
-    };
-    let mut sort = builder.add_sort(
-        topk_projection,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        Arc::clone(&topk_schema),
-    );
+    }
+    let mut sort =
+        builder.add_sort(topk_projection, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
     if matches!(variant, RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection) {
         sort = project_key_value(&mut builder, sort);
     }
     match variant {
         RootTopKJoinAggregateVariant::MissingFetchLimit => {
-            let limit = builder.add_limit(sort, LimitSpec::offset(0), topk_schema);
-            builder.finish_with_host_sink(limit)
+            let limit = builder.add_limit(sort, LimitSpec::offset(0)).unwrap();
+            builder.finish_with_host_sink(limit).unwrap()
         },
         RootTopKJoinAggregateVariant::Admitted
         | RootTopKJoinAggregateVariant::MissingSourceReduction
@@ -782,8 +789,8 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggrega
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild
         | RootTopKJoinAggregateVariant::Window => {
-            let limit = builder.add_limit(sort, LimitSpec::fetch(100), topk_schema);
-            builder.finish_with_host_sink(limit)
+            let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+            builder.finish_with_host_sink(limit).unwrap()
         },
         // Dispatched by `is_aggregate_window_filter_topk` before this function body
         // runs; listed here only to keep this match exhaustive over the enum.
@@ -919,24 +926,25 @@ fn root_topk_shared_computed_fanout_plan(variant: RootTopKJoinAggregateVariant) 
 }
 
 fn finish_root_topk(mut builder: QueryPlanBuilder, input: NodeId) -> QueryPlan {
-    let sort =
-        builder.add_sort(input, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]), key_value_schema());
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
-    builder.finish_with_host_sink(limit)
+    let sort = builder.add_sort(input, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn keyless_outer_cross_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId) -> NodeId {
-    builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Left, vec![])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-            ])
-            .with_build_side(JoinSide::Right),
-        key_value_schema(),
-    )
+    builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Left, vec![])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+            key_value_schema(),
+        )
+        .unwrap()
 }
 
 /// Root TopK join/aggregate fixture variants. Each variant either proves a
@@ -1185,16 +1193,18 @@ fn root_topk_null_filtered_aggregate_fan_in_plan(variant: RootTopKJoinAggregateV
         variant,
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection
     ) {
-        builder.add_projection(
-            web,
-            projection_outputs(
-                vec![
-                    Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
-                    Expr::column("v"),
-                ],
-                key_value_schema(),
-            ),
-        )
+        builder
+            .add_projection(
+                web,
+                projection_outputs(
+                    vec![
+                        Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
+                        Expr::column("v"),
+                    ],
+                    key_value_schema(),
+                ),
+            )
+            .unwrap()
     } else {
         web
     };
@@ -1216,19 +1226,13 @@ fn root_topk_null_filtered_aggregate_fan_in_plan(variant: RootTopKJoinAggregateV
         };
     let store_web = aggregate_fan_in_left_join(&mut builder, store, web_fan_in_input);
     let joined = aggregate_fan_in_left_join(&mut builder, store_web, catalog);
-    let filtered = builder.add_filter(
-        joined,
-        Expr::binary(Expr::column("v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
-        key_value_schema(),
-    );
+    let filtered = builder
+        .add_filter(joined, Expr::binary(Expr::column("v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))))
+        .unwrap();
     let projected = project_key_value(&mut builder, filtered);
-    let sort = builder.add_sort(
-        projected,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
-    builder.finish_with_host_sink(limit)
+    let sort = builder.add_sort(projected, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 #[expect(clippy::too_many_arguments, reason = "test fixture parameters are independent fixture axes")]
@@ -1257,41 +1261,49 @@ fn null_filtered_aggregate_branch(
         },
     };
     let marker_name = format!("{label}_return_marker");
-    let joined = builder.add_join(
-        fact,
-        returns,
-        JoinSpec::new(JoinType::Left, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+    let joined = builder
+        .add_join(
+            fact,
+            returns,
+            JoinSpec::new(
+                JoinType::Left,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                 JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
                 JoinOutputColumn::right(ColumnRef::input(1, "k", "k"), marker_name.as_str()),
             ])
             .with_build_side(if wrong_build_side { JoinSide::Left } else { JoinSide::Right }),
-        key_value_marker_schema(&marker_name),
-    );
+            key_value_marker_schema(&marker_name),
+        )
+        .unwrap();
     let filtered = if missing_filter {
         joined
     } else if marker_filter_reuse {
-        builder.add_filter(
-            joined,
-            Expr::binary(
-                Expr::is_null(Expr::column(&marker_name)),
-                BinaryOp::And,
-                Expr::binary(Expr::column(&marker_name), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-            ),
-            key_value_marker_schema(&marker_name),
-        )
+        builder
+            .add_filter(
+                joined,
+                Expr::binary(
+                    Expr::is_null(Expr::column(&marker_name)),
+                    BinaryOp::And,
+                    Expr::binary(Expr::column(&marker_name), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+                ),
+            )
+            .unwrap()
     } else {
-        builder.add_filter(joined, Expr::is_null(Expr::column(&marker_name)), key_value_marker_schema(&marker_name))
+        builder.add_filter(joined, Expr::is_null(Expr::column(&marker_name))).unwrap()
     };
     let projected = if marker_escapes {
-        builder.add_projection(
-            filtered,
-            projection_outputs(
-                vec![Expr::column("k"), Expr::column("v"), Expr::column(&marker_name)],
-                key_value_marker_schema(&marker_name),
-            ),
-        )
+        builder
+            .add_projection(
+                filtered,
+                projection_outputs(
+                    vec![Expr::column("k"), Expr::column("v"), Expr::column(&marker_name)],
+                    key_value_marker_schema(&marker_name),
+                ),
+            )
+            .unwrap()
     } else {
         project_key_value(builder, filtered)
     };
@@ -1302,22 +1314,27 @@ fn null_filtered_aggregate_branch(
 }
 
 fn aggregate_fan_in_left_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId) -> NodeId {
-    builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Left, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+    builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Left,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                 JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
                 JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "right_v"),
             ])
             .with_build_side(JoinSide::Right),
-        Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("v", DataType::Int64, true),
-            Field::new("right_v", DataType::Int64, true),
-        ])),
-    )
+            Arc::new(Schema::new(vec![
+                Field::new("k", DataType::Int32, false),
+                Field::new("v", DataType::Int64, true),
+                Field::new("right_v", DataType::Int64, true),
+            ])),
+        )
+        .unwrap()
 }
 
 fn grouped_aggregate_with_extra_key(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
@@ -1326,15 +1343,19 @@ fn grouped_aggregate_with_extra_key(builder: &mut QueryPlanBuilder, input: NodeI
         Field::new("v", DataType::Int64, true),
         Field::new("right_v", DataType::Int64, true),
     ]));
-    let grouped = builder.add_aggregate(
-        input,
-        AggregateSpec::new(
-            vec![Expr::column("k"), Expr::column("v")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "right_v")],
-        ),
-        Arc::clone(&schema),
-    );
-    builder.add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
+    let grouped = builder
+        .add_aggregate(
+            input,
+            AggregateSpec::new(
+                vec![Expr::column("k"), Expr::column("v")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "right_v")],
+            ),
+            Arc::clone(&schema),
+        )
+        .unwrap();
+    builder
+        .add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
+        .unwrap()
 }
 
 fn root_topk_aggregate_window_filter_topk_plan(variant: RootTopKJoinAggregateVariant) -> QueryPlan {
@@ -1353,61 +1374,54 @@ fn root_topk_aggregate_window_filter_topk_plan(variant: RootTopKJoinAggregateVar
         // subcontract, which the root TopK envelope models but the generic closed
         // multi-join subtree does not. Otherwise the whole plan is admitted by the
         // generic envelope and the window near-miss never projects a rejection.
-        builder.add_join(
-            fact_date,
-            store,
-            JoinSpec::new(JoinType::Inner, vec![])
-                .with_residual_predicate(Expr::binary(
-                    Expr::input_column(0, "k", "k"),
-                    BinaryOp::LtEq,
-                    Expr::input_column(1, "k", "k"),
-                ))
-                .with_output_projection(vec![
-                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-                ])
-                .with_build_side(JoinSide::Right),
-            key_value_schema(),
-        )
+        builder
+            .add_join(
+                fact_date,
+                store,
+                JoinSpec::new(JoinType::Inner, vec![])
+                    .with_residual_predicate(Expr::binary(
+                        Expr::input_column(0, "k", "k"),
+                        BinaryOp::LtEq,
+                        Expr::input_column(1, "k", "k"),
+                    ))
+                    .with_output_projection(vec![
+                        JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                        JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                    ])
+                    .with_build_side(JoinSide::Right),
+                key_value_schema(),
+            )
+            .unwrap()
     } else {
         join(&mut builder, fact_date, store, "fact_store")
     };
     let grouped = grouped_aggregate(&mut builder, fact_store);
 
-    let (filter, filter_schema) = if missing_input_sort {
+    let filter = if missing_input_sort {
         // Ordered window fed directly from the aggregate, without an input sort:
         // pins that this near-miss keeps its own `requires_ordered_window_input`
         // diagnosis instead of the generic pre-window rejection.
         let window = rank_window(&mut builder, grouped);
-        let schema = rank_window_schema();
-        let filter = builder.add_filter(
-            window,
-            Expr::binary(Expr::column("rank"), BinaryOp::Gt, Expr::literal(LiteralValue::UInt64(0))),
-            Arc::clone(&schema),
-        );
-        (filter, schema)
+        builder
+            .add_filter(
+                window,
+                Expr::binary(Expr::column("rank"), BinaryOp::Gt, Expr::literal(LiteralValue::UInt64(0))),
+            )
+            .unwrap()
     } else {
-        let sorted = builder.add_sort(
-            grouped,
-            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
-            key_value_schema(),
-        );
+        let sorted =
+            builder.add_sort(grouped, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)])).unwrap();
         let window = unordered_aggregate_window(&mut builder, sorted);
-        let schema = unordered_aggregate_window_schema();
-        let filter = builder.add_filter(
-            window,
-            Expr::binary(Expr::column("window_v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
-            Arc::clone(&schema),
-        );
-        (filter, schema)
+        builder
+            .add_filter(
+                window,
+                Expr::binary(Expr::column("window_v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+            )
+            .unwrap()
     };
-    let sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        Arc::clone(&filter_schema),
-    );
-    let limit = builder.add_limit(sort, LimitSpec::fetch(100), filter_schema);
-    builder.finish_with_host_sink(limit)
+    let sort = builder.add_sort(filter, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn root_topk_cumulative_window_full_outer_topk_plan() -> QueryPlan {
@@ -1416,25 +1430,16 @@ fn root_topk_cumulative_window_full_outer_topk_plan() -> QueryPlan {
     let right = cumulative_window_grouped_aggregate_branch(&mut builder, "root-topk-cumulative-full-outer-right");
     let full_outer = full_join(&mut builder, left, right, FullJoinOutput::BothSides);
     let projected = project_key_value(&mut builder, full_outer);
-    let sorted = builder.add_sort(
-        projected,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
+    let sorted =
+        builder.add_sort(projected, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
     let window = cumulative_aggregate_window(&mut builder, sorted);
-    let schema = cumulative_aggregate_window_schema();
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("window_v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
-        Arc::clone(&schema),
-    );
-    let final_sort = builder.add_sort(
-        filter,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        Arc::clone(&schema),
-    );
-    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), schema);
-    builder.finish_with_host_sink(limit)
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("window_v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))))
+        .unwrap();
+    let final_sort =
+        builder.add_sort(filter, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
+    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100)).unwrap();
+    builder.finish_with_host_sink(limit).unwrap()
 }
 
 fn cumulative_window_grouped_aggregate_branch(builder: &mut QueryPlanBuilder, label: &str) -> NodeId {
@@ -1442,11 +1447,7 @@ fn cumulative_window_grouped_aggregate_branch(builder: &mut QueryPlanBuilder, la
     let date = source(builder, &format!("{label}-date"));
     let fact_date = join(builder, fact, date, "fact_date");
     let grouped = grouped_aggregate(builder, fact_date);
-    let sorted = builder.add_sort(
-        grouped,
-        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
-        key_value_schema(),
-    );
+    let sorted = builder.add_sort(grouped, SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)])).unwrap();
     cumulative_aggregate_window(builder, sorted)
 }
 
@@ -1468,9 +1469,8 @@ pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan
     let aggregate_branch = project_key_value(&mut builder, aggregate_branch);
 
     let root = join(&mut builder, joined_branch, aggregate_branch, "root");
-    let sort =
-        builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]), key_value_schema());
-    builder.finish_with_host_sink(sort)
+    let sort = builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)])).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 fn source(builder: &mut QueryPlanBuilder, label: &str) -> NodeId {
@@ -1521,29 +1521,29 @@ fn source_with_known_size(builder: &mut QueryPlanBuilder, label: &str, file_size
 }
 
 fn filter_source(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_filter(
-        input,
-        Expr::binary(Expr::column("k"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
-        key_value_schema(),
-    )
+    builder
+        .add_filter(input, Expr::binary(Expr::column("k"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))))
+        .unwrap()
 }
 
 fn join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId, _value_name: &str) -> NodeId {
     let output_schema = key_value_schema();
-    builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            output_schema,
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        output_schema,
-    )
+        .unwrap()
 }
 
 fn full_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId, output: FullJoinOutput) -> NodeId {
@@ -1557,14 +1557,19 @@ fn full_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId, output
             JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
         ],
     };
-    builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Full, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+    builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::Full,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
             .with_output_projection(output_projection)
             .with_build_side(JoinSide::Left),
-        key_value_schema(),
-    )
+            key_value_schema(),
+        )
+        .unwrap()
 }
 
 enum FullJoinOutput {
@@ -1573,87 +1578,88 @@ enum FullJoinOutput {
 }
 
 fn semi_join(builder: &mut QueryPlanBuilder, left: NodeId, right: NodeId) -> NodeId {
-    builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            key_value_schema(),
         )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
-            JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Right),
-        key_value_schema(),
-    )
+        .unwrap()
 }
 
 fn residual_join_against_grouped_aggregate(builder: &mut QueryPlanBuilder, grouped: NodeId, subtree: NodeId) -> NodeId {
-    builder.add_join(
-        grouped,
-        subtree,
-        JoinSpec::new(
-            JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+    builder
+        .add_join(
+            grouped,
+            subtree,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(1, "v", "v"),
+                BinaryOp::Gt,
+                Expr::input_column(0, "v", "v"),
+            ))
+            .with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "k", "k"), "k"),
+                JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Left),
+            key_value_schema(),
         )
-        .with_residual_predicate(Expr::binary(
-            Expr::input_column(1, "v", "v"),
-            BinaryOp::Gt,
-            Expr::input_column(0, "v", "v"),
-        ))
-        .with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "k", "k"), "k"),
-            JoinOutputColumn::right(ColumnRef::input(1, "v", "v"), "v"),
-        ])
-        .with_build_side(JoinSide::Left),
-        key_value_schema(),
-    )
+        .unwrap()
 }
 
 fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_aggregate(
-        input,
-        AggregateSpec::new(
-            vec![Expr::column("k")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")],
-        ),
-        key_value_schema(),
-    )
+    builder
+        .add_aggregate(
+            input,
+            AggregateSpec::new(
+                vec![Expr::column("k")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "v")],
+            ),
+            key_value_schema(),
+        )
+        .unwrap()
 }
 
 fn scalar_key_value_aggregate(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_aggregate(
-        input,
-        AggregateSpec::new(
-            vec![],
-            vec![
-                AggregateExpr::new(AggregateFunction::Min, Expr::column("k"), "k"),
-                AggregateExpr::new(AggregateFunction::Min, Expr::column("v"), "v"),
-            ],
-        ),
-        key_value_schema(),
-    )
+    builder
+        .add_aggregate(
+            input,
+            AggregateSpec::new(
+                vec![],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("k"), "k"),
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("v"), "v"),
+                ],
+            ),
+            key_value_schema(),
+        )
+        .unwrap()
 }
 
 fn rank_window(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_window(
-        input,
-        WindowSpec::new(
-            vec![Expr::column("k")],
-            vec![SortExpr::new(Expr::column("v"), true, false)],
-            vec![WindowFunction::Rank { alias: "rank".to_string() }],
-        ),
-        rank_window_schema(),
-    )
-}
-
-fn rank_window_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("rank", DataType::UInt64, false),
-    ]))
+    builder
+        .add_window(
+            input,
+            WindowSpec::new(
+                vec![Expr::column("k")],
+                vec![SortExpr::new(Expr::column("v"), true, false)],
+                vec![WindowFunction::rank("rank")],
+            ),
+        )
+        .unwrap()
 }
 
 fn rank_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
@@ -1662,35 +1668,33 @@ fn rank_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) 
 }
 
 fn sorted_rank_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    let sort = builder.add_sort(
-        input,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("k"), false, false),
-            SortExpr::new(Expr::column("v"), true, false),
-        ]),
-        key_value_schema(),
-    );
+    let sort = builder
+        .add_sort(
+            input,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("k"), false, false),
+                SortExpr::new(Expr::column("v"), true, false),
+            ]),
+        )
+        .unwrap();
     rank_window_project_key_value(builder, sort)
 }
 
 fn unordered_aggregate_window(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_window(
-        input,
-        WindowSpec::new(
-            vec![Expr::column("k")],
-            vec![],
-            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
-        ),
-        unordered_aggregate_window_schema(),
-    )
-}
-
-fn unordered_aggregate_window_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("window_v", DataType::Int64, true),
-    ]))
+    builder
+        .add_window(
+            input,
+            WindowSpec::new(
+                vec![Expr::column("k")],
+                vec![],
+                vec![WindowFunction::aggregate(
+                    AggregateFunction::Sum,
+                    Expr::column("v"),
+                    Field::new("window_v", DataType::Int64, true),
+                )],
+            ),
+        )
+        .unwrap()
 }
 
 fn unordered_aggregate_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
@@ -1699,76 +1703,70 @@ fn unordered_aggregate_window_project_key_value(builder: &mut QueryPlanBuilder, 
 }
 
 fn unordered_global_aggregate_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    let window_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("window_v", DataType::Int64, true),
-    ]));
-    let window = builder.add_window(
-        input,
-        WindowSpec::new(
-            vec![],
-            vec![],
-            vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
-        ),
-        window_schema,
-    );
+    let window = builder
+        .add_window(
+            input,
+            WindowSpec::new(
+                vec![],
+                vec![],
+                vec![WindowFunction::aggregate(
+                    AggregateFunction::Sum,
+                    Expr::column("v"),
+                    Field::new("window_v", DataType::Int64, true),
+                )],
+            ),
+        )
+        .unwrap();
     project_key_value(builder, window)
 }
 
 fn cumulative_aggregate_window(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_window(
-        input,
-        WindowSpec::new(
-            vec![Expr::column("k")],
-            vec![SortExpr::new(Expr::column("v"), true, false)],
-            vec![WindowFunction::cumulative_aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
-        ),
-        cumulative_aggregate_window_schema(),
-    )
-}
-
-fn cumulative_aggregate_window_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("window_v", DataType::Int64, true),
-    ]))
+    builder
+        .add_window(
+            input,
+            WindowSpec::new(
+                vec![Expr::column("k")],
+                vec![SortExpr::new(Expr::column("v"), true, false)],
+                vec![WindowFunction::cumulative_aggregate(
+                    AggregateFunction::Sum,
+                    Expr::column("v"),
+                    Field::new("window_v", DataType::Int64, true),
+                )],
+            ),
+        )
+        .unwrap()
 }
 
 fn rank_filter_window_project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    let sorted = builder.add_sort(
-        input,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("k"), false, false),
-            SortExpr::new(Expr::column("v"), true, false),
-        ]),
-        key_value_schema(),
-    );
-    let window_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("rank", DataType::UInt64, false),
-    ]));
-    let window = builder.add_window(
-        sorted,
-        WindowSpec::new(
-            vec![Expr::column("k")],
-            vec![SortExpr::new(Expr::column("v"), true, false)],
-            vec![WindowFunction::Rank { alias: "rank".to_string() }],
-        ),
-        Arc::clone(&window_schema),
-    );
-    let filter = builder.add_filter(
-        window,
-        Expr::binary(Expr::column("rank"), BinaryOp::Gt, Expr::literal(LiteralValue::UInt64(0))),
-        window_schema,
-    );
+    let sorted = builder
+        .add_sort(
+            input,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("k"), false, false),
+                SortExpr::new(Expr::column("v"), true, false),
+            ]),
+        )
+        .unwrap();
+    let window = builder
+        .add_window(
+            sorted,
+            WindowSpec::new(
+                vec![Expr::column("k")],
+                vec![SortExpr::new(Expr::column("v"), true, false)],
+                vec![WindowFunction::rank("rank")],
+            ),
+        )
+        .unwrap();
+    let filter = builder
+        .add_filter(window, Expr::binary(Expr::column("rank"), BinaryOp::Gt, Expr::literal(LiteralValue::UInt64(0))))
+        .unwrap();
     project_key_value(builder, filter)
 }
 
 fn project_key_value(builder: &mut QueryPlanBuilder, input: NodeId) -> NodeId {
-    builder.add_projection(input, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
+    builder
+        .add_projection(input, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
+        .unwrap()
 }
 
 fn key_value_schema() -> Arc<Schema> {

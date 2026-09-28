@@ -249,17 +249,18 @@ pub(super) fn execute_window(
         frame = execute_cumulative_window_aggregate(context, node, frame, metrics)?;
     }
     for function in &node.spec.functions {
-        if let WindowFunction::Rank { alias } = function {
-            frame = execute_rank_window(context, node, frame, alias.as_str(), metrics)?;
+        if let WindowFunction::Rank { output } = function {
+            frame = execute_rank_window(context, node, frame, output.name(), metrics)?;
         }
     }
     for function in &node.spec.functions {
-        if let WindowFunction::RowNumber { alias, output_type } = function {
-            frame = execute_row_number_window(context, node, frame, alias.as_str(), output_type, metrics)?;
+        if let WindowFunction::RowNumber { output } = function {
+            frame = execute_row_number_window(context, node, frame, output.name(), output.data_type(), metrics)?;
         }
     }
     for function in &node.spec.functions {
-        if let WindowFunction::LagLead { expr, offset, default, alias, direction } = function {
+        if let WindowFunction::LagLead { expr, offset, default, output, direction } = function {
+            let alias = output.name();
             frame = execute_lag_lead_window(
                 context,
                 node,
@@ -319,8 +320,8 @@ fn execute_partition_window_aggregate(
         .functions
         .iter()
         .filter_map(|function| match function {
-            WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::WholePartition } => {
-                Some(AggregateExpr::new(*function, expr.clone(), alias.clone()))
+            WindowFunction::Aggregate { function, expr, output, frame: WindowFrame::WholePartition } => {
+                Some(AggregateExpr::new(*function, expr.clone(), output.name().clone()))
             },
             WindowFunction::Aggregate { .. }
             | WindowFunction::Rank { .. }
@@ -410,9 +411,10 @@ fn window_aggregate_schema(
         })?);
     }
     for function in &node.spec.functions {
-        let WindowFunction::Aggregate { alias, frame: WindowFrame::WholePartition, .. } = function else {
+        let WindowFunction::Aggregate { output, frame: WindowFrame::WholePartition, .. } = function else {
             continue;
         };
+        let alias = output.name();
         fields.push(output_schema.field_with_name(alias.as_str()).map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -478,11 +480,12 @@ fn execute_cumulative_window_aggregate(
     })?;
 
     for (function_index, function) in node.spec.functions.iter().enumerate() {
-        let WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::RowsUnboundedPrecedingToCurrent } =
+        let WindowFunction::Aggregate { function, expr, output, frame: WindowFrame::RowsUnboundedPrecedingToCurrent } =
             function
         else {
             continue;
         };
+        let alias = output.name();
         let scan_agg = cumulative_scan_agg(*function)?;
         let value_name =
             unique_temp_column_name(&working, &format!("__algeon_native_window_cumulative_value_{function_index}"));

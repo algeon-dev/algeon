@@ -7,16 +7,12 @@
 use super::{
     ColumnQualifier, Expr, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan,
     edge::{edge_consumer_fact, node_operator_fact},
-    graph::{
-        GraphScheduleProof, collect_reachable_node_ids, collect_reachable_node_ids_from, consumer_nodes_for_reachable,
-        peel_projection_chain_for_capability, peel_resident_unary_chain_for_capability, reachable_join_count_from_sink,
-    },
+    graph::{consumer_nodes, peel_projection_chain_for_capability, peel_resident_unary_chain_for_capability},
     lineage::{OutputLineage, expression_lineage_for_input, output_lineage},
     model::{
-        CapabilityDecision, EdgeConsumer, EdgeContract, InvariantId, ProducedProperty, ResidentResource,
-        ScheduleConstraint, SubgraphInvariant, SubgraphInvariantKind,
+        CapabilityDecision, EdgeConsumer, EdgeContract, InvariantId, ResidentResource, ScheduleConstraint,
+        SubgraphInvariant, SubgraphInvariantKind,
     },
-    node::produced_properties,
     rejection::Reason,
 };
 
@@ -29,7 +25,9 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
         let build_input = join.inputs[if join.spec.build_side == JoinSide::Left { 0 } else { 1 }];
         let probe_input = join.inputs[if join.spec.build_side == JoinSide::Left { 1 } else { 0 }];
         let invariant_id = InvariantId(invariants.len());
-        let decision = solve_build_before_probe_invariant(plan, node.id, build_input, probe_input);
+        // Plan construction orders both inputs before the join, so neither
+        // input subgraph can contain it.
+        let decision = CapabilityDecision::Satisfied;
         invariants.push(SubgraphInvariant {
             invariant_id,
             kind: SubgraphInvariantKind::BuildBeforeProbe { join_id: node.id },
@@ -59,7 +57,7 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_projection_transparent_residency_invariants(plan, &mut invariants);
     append_resident_unary_chain_preserves_residency_invariants(plan, &mut invariants);
 
-    if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
+    if plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Join(_))).count() > 1 {
         let invariant_id = InvariantId(invariants.len());
         invariants.push(SubgraphInvariant {
             invariant_id,
@@ -71,13 +69,13 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
                 .collect(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
-            decision: solve_topological_build_probe_schedule_invariant(plan),
+            decision: CapabilityDecision::Satisfied,
         });
         let invariant_id = InvariantId(invariants.len());
         invariants.push(SubgraphInvariant {
             invariant_id,
             kind: SubgraphInvariantKind::ResidentLifetimeDominatesConsumers,
-            nodes: collect_reachable_node_ids(plan).map(|nodes| nodes.into_iter().collect()).unwrap_or_default(),
+            nodes: plan.nodes().iter().map(|node| node.id).collect(),
             required_schedule: ScheduleConstraint::Topological,
             required_resources: Vec::new(),
             decision: solve_resident_lifetime_invariant(plan, edges),
@@ -92,10 +90,7 @@ pub(super) fn append_shared_resident_subplan_invariants(
     edges: &[EdgeContract],
     invariants: &mut Vec<SubgraphInvariant>,
 ) {
-    let Ok(reachable) = collect_reachable_node_ids(plan) else {
-        return;
-    };
-    for (producer, consumers) in consumer_nodes_for_reachable(plan, &reachable) {
+    for (producer, consumers) in consumer_nodes(plan) {
         if consumers.len() <= 1 {
             continue;
         }
@@ -109,16 +104,13 @@ pub(super) fn append_shared_resident_subplan_invariants(
             nodes,
             required_schedule: ScheduleConstraint::None,
             required_resources: vec![ResidentResource::NodeOutput(producer)],
-            decision: solve_shared_resident_subplan_invariant(plan, edges, producer, &consumers),
+            decision: solve_shared_resident_subplan_invariant(edges, producer, &consumers),
         });
     }
 }
 
 pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
-    let Ok(reachable) = collect_reachable_node_ids(plan) else {
-        return;
-    };
-    let consumers = consumer_nodes_for_reachable(plan, &reachable);
+    let consumers = consumer_nodes(plan);
     for node in plan.nodes() {
         let PlanNode::Aggregate(aggregate) = &node.kind else {
             continue;
@@ -200,59 +192,11 @@ pub(super) fn append_resident_unary_chain_preserves_residency_invariants(
     }
 }
 
-pub(super) fn solve_build_before_probe_invariant(
-    plan: &QueryPlan,
-    join_id: NodeId,
-    build_input: NodeId,
-    probe_input: NodeId,
-) -> CapabilityDecision {
-    let build_nodes = match collect_reachable_node_ids_from(plan, build_input) {
-        Ok(nodes) => nodes,
-        Err(decision) => return decision,
-    };
-    let probe_nodes = match collect_reachable_node_ids_from(plan, probe_input) {
-        Ok(nodes) => nodes,
-        Err(decision) => return decision,
-    };
-    if build_nodes.contains(&join_id) || probe_nodes.contains(&join_id) {
-        return CapabilityDecision::rejected(
-            Reason::BuildBeforeProbeCycle,
-            [
-                ("join_id", join_id.to_string()),
-                ("build_input", build_input.to_string()),
-                ("probe_input", probe_input.to_string()),
-            ],
-        );
-    }
-    CapabilityDecision::Satisfied
-}
-
-pub(super) fn solve_topological_build_probe_schedule_invariant(plan: &QueryPlan) -> CapabilityDecision {
-    let mut scheduler = GraphScheduleProof::new(plan);
-    scheduler.schedule_from(plan.sink().input()).map_or_else(|decision| decision, |()| CapabilityDecision::Satisfied)
-}
-
 pub(super) fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeContract]) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    let mut consumers = consumer_nodes_for_reachable(plan, &reachable);
+    let mut consumers = consumer_nodes(plan);
     consumers.entry(plan.sink().input()).or_default();
 
-    for producer in reachable {
-        let Some(node) = plan.node(producer) else {
-            return CapabilityDecision::rejected(
-                Reason::ResidentLifetimeMissingNode,
-                [("node_id", producer.to_string())],
-            );
-        };
-        if !produced_properties(node).contains(&ProducedProperty::Resident) {
-            return CapabilityDecision::rejected(
-                Reason::ResidentLifetimeRequiresResidentFrame,
-                [("node_id", producer.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-            );
-        }
+    for producer in plan.nodes().iter().map(|node| node.id) {
         for edge in edges.iter().filter(|edge| edge.producer == producer) {
             if let EdgeConsumer::Node(consumer) = edge.consumer
                 && !consumers.get(&producer).is_some_and(|values| values.contains(&consumer))
@@ -271,23 +215,10 @@ pub(super) fn solve_resident_lifetime_invariant(plan: &QueryPlan, edges: &[EdgeC
 }
 
 pub(super) fn solve_shared_resident_subplan_invariant(
-    plan: &QueryPlan,
     edges: &[EdgeContract],
     producer: NodeId,
     consumers: &[NodeId],
 ) -> CapabilityDecision {
-    let Some(node) = plan.node(producer) else {
-        return CapabilityDecision::rejected(
-            Reason::SharedResidentSubplanMissingNode,
-            [("node_id", producer.to_string())],
-        );
-    };
-    if !produced_properties(node).contains(&ProducedProperty::Resident) {
-        return CapabilityDecision::rejected(
-            Reason::SharedResidentSubplanRequiresResidentFrame,
-            [("node_id", producer.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-        );
-    }
     for consumer in consumers {
         let Some(edge) =
             edges.iter().find(|edge| edge.producer == producer && edge.consumer == EdgeConsumer::Node(*consumer))
@@ -312,12 +243,12 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
     shared_producer: NodeId,
     aggregate_id: NodeId,
 ) -> CapabilityDecision {
-    let Some(producer) = plan.node(shared_producer) else {
+    if plan.node(shared_producer).is_none() {
         return CapabilityDecision::rejected(
             Reason::AggregateSharedProducerMissingNode,
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
-    };
+    }
     let Some(aggregate_node) = plan.node(aggregate_id) else {
         return CapabilityDecision::rejected(
             Reason::AggregateSharedProducerMissingAggregate,
@@ -330,12 +261,6 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
-    if !produced_properties(producer).contains(&ProducedProperty::Resident) {
-        return CapabilityDecision::rejected(
-            Reason::AggregateSharedProducerRequiresResidentFrame,
-            [("shared_producer", shared_producer.to_string())],
-        );
-    }
 
     let Some((peeled_input, _projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input) else {
         return CapabilityDecision::rejected(
@@ -392,12 +317,12 @@ pub(super) fn solve_projection_transparent_residency_invariant(
     peeled_producer: NodeId,
     projection_id: NodeId,
 ) -> CapabilityDecision {
-    let Some(producer) = plan.node(peeled_producer) else {
+    if plan.node(peeled_producer).is_none() {
         return CapabilityDecision::rejected(
             Reason::ProjectionTransparentResidencyMissingProducer,
             [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
         );
-    };
+    }
     let Some(projection) = plan.node(projection_id) else {
         return CapabilityDecision::rejected(
             Reason::ProjectionTransparentResidencyMissingProjection,
@@ -410,14 +335,6 @@ pub(super) fn solve_projection_transparent_residency_invariant(
             [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
         );
     }
-    if !produced_properties(producer).contains(&ProducedProperty::Resident)
-        || !produced_properties(projection).contains(&ProducedProperty::Resident)
-    {
-        return CapabilityDecision::rejected(
-            Reason::ProjectionTransparentResidencyRequiresResidentFrames,
-            [("peeled_producer", peeled_producer.to_string()), ("projection_id", projection_id.to_string())],
-        );
-    }
     CapabilityDecision::Satisfied
 }
 
@@ -426,15 +343,9 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
     peeled_producer: NodeId,
     chain_ids_from_consumer: &[NodeId],
 ) -> CapabilityDecision {
-    let Some(producer) = plan.node(peeled_producer) else {
+    if plan.node(peeled_producer).is_none() {
         return CapabilityDecision::rejected(
             Reason::ResidentUnaryChainMissingProducer,
-            [("peeled_producer", peeled_producer.to_string())],
-        );
-    };
-    if !produced_properties(producer).contains(&ProducedProperty::Resident) {
-        return CapabilityDecision::rejected(
-            Reason::ResidentUnaryChainRequiresResidentProducer,
             [("peeled_producer", peeled_producer.to_string())],
         );
     }
@@ -474,12 +385,6 @@ pub(super) fn solve_resident_unary_chain_preserves_residency_invariant(
                     ("expected_input", expected_input.to_string()),
                     ("actual_input", actual_input.to_string()),
                 ],
-            );
-        }
-        if !produced_properties(chain_node).contains(&ProducedProperty::Resident) {
-            return CapabilityDecision::rejected(
-                Reason::ResidentUnaryChainRequiresResidentNodes,
-                [("node_id", chain_id.to_string()), ("peeled_producer", peeled_producer.to_string())],
             );
         }
         expected_input = *chain_id;

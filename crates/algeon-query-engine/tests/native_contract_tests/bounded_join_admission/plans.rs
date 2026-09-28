@@ -85,11 +85,40 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
             Arc::clone(&orders_schema),
             vec!["order_id".into()],
         )));
-        builder.add_join(
-            lineitem,
-            extra_orders,
+        builder
+            .add_join(
+                lineitem,
+                extra_orders,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(
+                        ColumnRef::input(0, "order_id", "left_order_id"),
+                        ColumnRef::input(1, "order_id", "right_order_id"),
+                    )],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+                Arc::clone(&left_subplan_schema),
+            )
+            .unwrap()
+    } else {
+        lineitem
+    };
+
+    let anti_join_type = if matches!(variant, KeylessInputSubplanVariant::InnerJoinInput) {
+        JoinType::Inner
+    } else {
+        JoinType::LeftAnti
+    };
+    let anti_join = builder
+        .add_join(
+            nested_join_left,
+            anti_orders,
             JoinSpec::new(
-                JoinType::Inner,
+                anti_join_type,
                 vec![JoinKey::new(
                     ColumnRef::input(0, "order_id", "left_order_id"),
                     ColumnRef::input(1, "order_id", "right_order_id"),
@@ -102,61 +131,41 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
             .with_build_side(JoinSide::Right),
             Arc::clone(&left_subplan_schema),
         )
-    } else {
-        lineitem
-    };
-
-    let anti_join_type = if matches!(variant, KeylessInputSubplanVariant::InnerJoinInput) {
-        JoinType::Inner
-    } else {
-        JoinType::LeftAnti
-    };
-    let anti_join = builder.add_join(
-        nested_join_left,
-        anti_orders,
-        JoinSpec::new(
-            anti_join_type,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "order_id", "left_order_id"),
-                ColumnRef::input(1, "order_id", "right_order_id"),
-            )],
-        )
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ])
-        .with_build_side(JoinSide::Right),
-        Arc::clone(&left_subplan_schema),
-    );
+        .unwrap();
     let left_input = if matches!(variant, KeylessInputSubplanVariant::BareLeftAntiInput) {
         anti_join
     } else {
-        builder.add_projection(
-            anti_join,
-            projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&left_subplan_schema)),
-        )
+        builder
+            .add_projection(
+                anti_join,
+                projection_outputs(
+                    vec![Expr::column("order_id"), Expr::column("qty")],
+                    Arc::clone(&left_subplan_schema),
+                ),
+            )
+            .unwrap()
     };
 
     let right_input = match variant {
-        KeylessInputSubplanVariant::GroupedAggregate => builder.add_aggregate(
-            threshold_source,
-            AggregateSpec::new(
-                vec![Expr::column("order_id")],
-                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_id"), "threshold")],
-            ),
-            grouped_aggregate_schema,
-        ),
+        KeylessInputSubplanVariant::GroupedAggregate => builder
+            .add_aggregate(
+                threshold_source,
+                AggregateSpec::new(
+                    vec![Expr::column("order_id")],
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_id"), "threshold")],
+                ),
+                grouped_aggregate_schema,
+            )
+            .unwrap(),
         KeylessInputSubplanVariant::SortInput => {
             let scalar_aggregate = threshold_scalar_aggregate(&mut builder, threshold_source, &scalar_aggregate_schema);
-            builder.add_sort(
-                scalar_aggregate,
-                SortSpec::new(vec![SortExpr::new(Expr::column("threshold"), false, false)]),
-                scalar_aggregate_schema,
-            )
+            builder
+                .add_sort(scalar_aggregate, SortSpec::new(vec![SortExpr::new(Expr::column("threshold"), false, false)]))
+                .unwrap()
         },
         KeylessInputSubplanVariant::LimitInput => {
             let scalar_aggregate = threshold_scalar_aggregate(&mut builder, threshold_source, &scalar_aggregate_schema);
-            builder.add_limit(scalar_aggregate, LimitSpec::fetch(1), scalar_aggregate_schema)
+            builder.add_limit(scalar_aggregate, LimitSpec::fetch(1)).unwrap()
         },
         KeylessInputSubplanVariant::Admitted
         | KeylessInputSubplanVariant::BareLeftAntiInput
@@ -166,24 +175,26 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
         },
     };
 
-    let root = builder.add_join(
-        left_input,
-        right_input,
-        JoinSpec::new(JoinType::Inner, Vec::new())
-            .with_residual_predicate(Expr::binary(
-                Expr::input_column(0, "qty", "qty"),
-                BinaryOp::Gt,
-                Expr::input_column(1, "threshold", "threshold"),
-            ))
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "threshold", "threshold"), "threshold"),
-            ])
-            .with_build_side(JoinSide::Left),
-        output_schema,
-    );
-    builder.finish_with_host_sink(root)
+    let root = builder
+        .add_join(
+            left_input,
+            right_input,
+            JoinSpec::new(JoinType::Inner, Vec::new())
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "qty", "qty"),
+                    BinaryOp::Gt,
+                    Expr::input_column(1, "threshold", "threshold"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "threshold", "threshold"), "threshold"),
+                ])
+                .with_build_side(JoinSide::Left),
+            output_schema,
+        )
+        .unwrap();
+    builder.finish_with_host_sink(root).unwrap()
 }
 
 fn threshold_scalar_aggregate(
@@ -191,12 +202,14 @@ fn threshold_scalar_aggregate(
     threshold_source: NodeId,
     scalar_aggregate_schema: &Arc<Schema>,
 ) -> NodeId {
-    builder.add_aggregate(
-        threshold_source,
-        AggregateSpec::new(
-            Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("order_id"), "threshold")],
-        ),
-        Arc::clone(scalar_aggregate_schema),
-    )
+    builder
+        .add_aggregate(
+            threshold_source,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("order_id"), "threshold")],
+            ),
+            Arc::clone(scalar_aggregate_schema),
+        )
+        .unwrap()
 }

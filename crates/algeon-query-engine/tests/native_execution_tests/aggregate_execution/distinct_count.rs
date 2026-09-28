@@ -26,8 +26,8 @@ fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 3);
@@ -65,8 +65,8 @@ fn bounded_global_nunique_casts_to_declared_count_dtype() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 3);
@@ -123,8 +123,9 @@ fn assert_bounded_global_count_and_nunique_matches_controls(
         ));
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source.clone()));
-        let aggregate = builder.add_aggregate(source, AggregateSpec::new(Vec::new(), expressions), output_schema);
-        builder.finish_with_host_sink(aggregate)
+        let aggregate =
+            builder.add_aggregate(source, AggregateSpec::new(Vec::new(), expressions), output_schema).unwrap();
+        builder.finish_with_host_sink(aggregate).unwrap()
     };
     let count = AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "row_count");
     let distinct = AggregateExpr::new(AggregateFunction::NUnique, Expr::column("label"), "distinct_labels");
@@ -179,9 +180,9 @@ fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 3);
@@ -247,9 +248,9 @@ fn bounded_grouped_count_distinct_with_count_star_across_multiple_files_is_corre
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort_node = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort_node);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort_node = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort_node).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(
@@ -309,9 +310,9 @@ fn bounded_grouped_count_distinct_only_across_multiple_files_is_correct() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort_node = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(sort_node);
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort_node = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort_node).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(

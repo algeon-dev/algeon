@@ -126,17 +126,13 @@ pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
             similarity_pair_schema(algorithm),
         )))
     });
-    let params = if let Some(personalization) = personalization {
+    let params = if personalization.is_some() {
         GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
             pagerank: GraphPageRankParams::default(),
-            personalization: GraphPageRankPersonalizationInput::new(personalization, "vertex", "value"),
+            personalization: GraphPageRankPersonalizationInput::new(1, "vertex", "value"),
         })
-    } else if let Some(vertex_pairs) = vertex_pairs {
-        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
-            vertex_pairs,
-            "first",
-            "second",
-        )))
+    } else if vertex_pairs.is_some() {
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(1, "first", "second")))
     } else {
         default_params(algorithm)
     };
@@ -148,8 +144,9 @@ pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
         params,
         output_schema,
     );
-    let graph = builder.add_graph_algorithm(input, spec);
-    builder.finish_with_host_sink(graph)
+    let side_inputs = personalization.into_iter().chain(vertex_pairs).collect();
+    let graph = builder.add_graph_algorithm(input, side_inputs, spec).unwrap();
+    builder.finish_with_host_sink(graph).unwrap()
 }
 
 #[test]

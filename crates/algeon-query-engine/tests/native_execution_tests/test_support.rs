@@ -58,11 +58,11 @@ pub(super) fn partition_column_query_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, source_schema);
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    builder.finish_with_host_sink(sort)
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn partition_passthrough_query_plan(
@@ -115,9 +115,9 @@ pub(super) fn partition_passthrough_query_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    builder.finish_with_host_sink(sort)
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    builder.finish_with_host_sink(sort).unwrap()
 }
 
 pub(super) fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {

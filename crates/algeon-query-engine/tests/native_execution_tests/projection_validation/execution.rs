@@ -32,17 +32,19 @@ fn native_boolean_and_or_use_sql_three_valued_logic() {
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("bool_input", Arc::clone(&input_schema))));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![
-                Expr::binary(Expr::column("a"), BinaryOp::Or, Expr::column("b")).alias("a_or_b"),
-                Expr::binary(Expr::column("a"), BinaryOp::And, Expr::column("b")).alias("a_and_b"),
-            ],
-            Arc::clone(&output_schema),
-        ),
-    );
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![
+                    Expr::binary(Expr::column("a"), BinaryOp::Or, Expr::column("b")).alias("a_or_b"),
+                    Expr::binary(Expr::column("a"), BinaryOp::And, Expr::column("b")).alias("a_and_b"),
+                ],
+                Arc::clone(&output_schema),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -169,9 +171,9 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let filter = builder.add_filter(source, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -217,11 +219,13 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
         GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))
             .with_row_count_upper_bound(batch.num_rows() as u64),
     ));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -273,15 +277,17 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema);
-    let projection = builder.add_projection(
-        aggregate,
-        projection_outputs(
-            vec![Expr::column("key"), Expr::column("sum_amount").alias("mkt_share")],
-            Arc::clone(&projection_schema),
-        ),
-    );
-    let plan = builder.finish_gpu_resident(projection);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema).unwrap();
+    let projection = builder
+        .add_projection(
+            aggregate,
+            projection_outputs(
+                vec![Expr::column("key"), Expr::column("sum_amount").alias("mkt_share")],
+                Arc::clone(&projection_schema),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_gpu_resident(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::GpuResident(handle) = result.output() else {
@@ -332,8 +338,8 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))));
     let projection =
-        builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
-    let plan = builder.finish_with_host_sink(projection);
+        builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema))).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
@@ -378,8 +384,8 @@ fn bounded_native_projection_decimal_division_uses_declared_binary_output_type()
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection =
-        builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
-    let plan = builder.finish_with_host_sink(projection);
+        builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema))).unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(
@@ -449,14 +455,17 @@ fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(vec![Expr::column("o_year"), target_volume, Expr::column("volume")], projected_schema),
-    );
-    let aggregate = builder.add_aggregate(projection, aggregate, aggregate_schema);
-    let projection =
-        builder.add_projection(aggregate, projection_outputs(vec![Expr::column("o_year"), mkt_share], output_schema));
-    let plan = builder.finish_with_host_sink(projection);
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(vec![Expr::column("o_year"), target_volume, Expr::column("volume")], projected_schema),
+        )
+        .unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregate_schema).unwrap();
+    let projection = builder
+        .add_projection(aggregate, projection_outputs(vec![Expr::column("o_year"), mkt_share], output_schema))
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {

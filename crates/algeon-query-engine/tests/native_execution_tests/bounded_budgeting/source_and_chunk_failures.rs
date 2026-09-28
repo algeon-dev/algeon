@@ -25,8 +25,8 @@ fn bounded_native_query_enforces_the_query_memory_cap() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: 1,
         max_source_chunk_bytes: 1024 * 1024,
@@ -69,8 +69,8 @@ fn bounded_native_query_uses_exact_source_owner_instead_of_spurious_chunk_retrie
 
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1024 * 1024,
@@ -116,8 +116,8 @@ fn bounded_native_query_grants_global_count_source_and_output_owners() {
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, output_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(source, aggregate, output_schema).unwrap();
+    let plan = builder.finish_with_host_sink(aggregate).unwrap();
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1,
@@ -177,12 +177,12 @@ fn bounded_native_query_does_not_retry_from_source_estimate() {
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 3)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
-    let filter = builder.add_filter(source_id, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
-    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let filter = builder.add_filter(source_id, filter).unwrap();
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema)).unwrap();
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema)).unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let limit = builder.add_limit(sort, LimitSpec::fetch(3)).unwrap();
+    let plan = builder.finish_with_host_sink(limit).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
@@ -237,7 +237,7 @@ fn bounded_native_source_owner_preserves_row_group_order_without_spurious_retry(
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 3)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
-    let plan = builder.finish_with_host_sink(source_id);
+    let plan = builder.finish_with_host_sink(source_id).unwrap();
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy {
         device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
@@ -288,8 +288,8 @@ fn cap_recovery_plan(path: &Path, input_schema: &Arc<Schema>) -> QueryPlan {
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
-    builder.finish_with_host_sink(aggregate)
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema).unwrap();
+    builder.finish_with_host_sink(aggregate).unwrap()
 }
 
 fn cap_recovery_policy(device_budget_bytes: u64, max_row_groups_per_chunk: usize) -> MemoryControlPolicy {

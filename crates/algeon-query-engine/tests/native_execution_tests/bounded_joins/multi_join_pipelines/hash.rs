@@ -43,40 +43,46 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
         &region_schema,
         &["order_id", "region"],
     )));
-    let first_join = builder.add_join(
-        lineitem,
-        orders,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            ])
-            .with_build_side(JoinSide::Right),
-        first_join_schema,
-    );
-    let second_join = builder.add_join(
-        first_join,
-        regions,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(ColumnRef::input(1, "region", "region"), "region"),
-            ])
-            .with_build_side(JoinSide::Right),
-        second_join_schema,
-    );
-    let aggregate = builder.add_aggregate(
-        second_join,
-        AggregateSpec::new(
-            vec![Expr::column("region")],
-            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
-        ),
-        Arc::clone(&aggregate_schema),
-    );
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregate_schema));
-    let plan = builder.finish_with_host_sink(sort);
+    let first_join = builder
+        .add_join(
+            lineitem,
+            orders,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                ])
+                .with_build_side(JoinSide::Right),
+            first_join_schema,
+        )
+        .unwrap();
+    let second_join = builder
+        .add_join(
+            first_join,
+            regions,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "region", "region"), "region"),
+                ])
+                .with_build_side(JoinSide::Right),
+            second_join_schema,
+        )
+        .unwrap();
+    let aggregate = builder
+        .add_aggregate(
+            second_join,
+            AggregateSpec::new(
+                vec![Expr::column("region")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        )
+        .unwrap();
+    let sort = builder.add_sort(aggregate, sort).unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -133,29 +139,33 @@ fn bounded_native_query_keeps_partitioned_strategy_for_streamed_multi_join_probe
     let orders =
         builder.add_source(SourceNode::LocalParquet(join_right_source(&orders_path, &orders_schema, &["order_id"])));
     let regions = builder.add_source(SourceNode::LocalParquet(region_source));
-    let first_join = builder.add_join(
-        lineitem,
-        orders,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            ])
-            .with_build_side(JoinSide::Right),
-        first_join_schema,
-    );
-    let second_join = builder.add_join(
-        first_join,
-        regions,
-        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
-            .with_output_projection(vec![
-                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::right(ColumnRef::input(1, "region", "region"), "region"),
-            ])
-            .with_build_side(JoinSide::Right),
-        second_join_schema,
-    );
-    let plan = builder.finish_with_host_sink(second_join);
+    let first_join = builder
+        .add_join(
+            lineitem,
+            orders,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                ])
+                .with_build_side(JoinSide::Right),
+            first_join_schema,
+        )
+        .unwrap();
+    let second_join = builder
+        .add_join(
+            first_join,
+            regions,
+            JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                    JoinOutputColumn::right(ColumnRef::input(1, "region", "region"), "region"),
+                ])
+                .with_build_side(JoinSide::Right),
+            second_join_schema,
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(second_join).unwrap();
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();

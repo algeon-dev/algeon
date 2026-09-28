@@ -29,24 +29,27 @@ fn native_query_executes_cross_join_with_explicit_output_projection() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("qty"), false, false),
-            SortExpr::new(Expr::column("category"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            join,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("qty"), false, false),
+                SortExpr::new(Expr::column("category"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -110,24 +113,27 @@ fn native_query_preserves_cross_join_right_then_left_projection_order() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("category"), false, false),
-            SortExpr::new(Expr::column("qty"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            join,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("category"), false, false),
+                SortExpr::new(Expr::column("qty"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -194,28 +200,31 @@ fn native_query_preserves_cross_join_interleaved_projection_order() {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
     let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
-            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let sort = builder.add_sort(
-        join,
-        SortSpec::new(vec![
-            SortExpr::new(Expr::column("right_order_id"), false, false),
-            SortExpr::new(Expr::column("qty"), false, false),
-            SortExpr::new(Expr::column("category"), false, false),
-            SortExpr::new(Expr::column("left_order_id"), false, false),
-        ]),
-        Arc::clone(&output_schema),
-    );
-    let plan = builder.finish_with_host_sink(sort);
+    let join = builder
+        .add_join(
+            left,
+            right,
+            JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
+                JoinOutputColumn::right(ColumnRef::input(1, "order_id", "right_order_id"), "right_order_id"),
+                JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(ColumnRef::input(0, "order_id", "left_order_id"), "left_order_id"),
+            ]),
+            Arc::clone(&output_schema),
+        )
+        .unwrap();
+    let sort = builder
+        .add_sort(
+            join,
+            SortSpec::new(vec![
+                SortExpr::new(Expr::column("right_order_id"), false, false),
+                SortExpr::new(Expr::column("qty"), false, false),
+                SortExpr::new(Expr::column("category"), false, false),
+                SortExpr::new(Expr::column("left_order_id"), false, false),
+            ]),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(sort).unwrap();
 
     let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();

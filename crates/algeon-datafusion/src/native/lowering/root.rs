@@ -35,7 +35,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        LoweringRejection,
+        LoweringFailure,
         expression_contract::validate_physical_expr_contract,
         normalize::{
             NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan, NormalizedNativeSortExprs,
@@ -56,7 +56,7 @@ use crate::{
 pub(super) fn lower_slice1_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<NativeQueryPlan, LoweringRejection> {
+) -> Result<NativeQueryPlan, LoweringFailure> {
     let source = normalized.single_source_input().ok_or(CapabilityReason::UnsupportedOperator)?;
     let source_exec = source.scan;
     let filter = source.filter;
@@ -178,8 +178,7 @@ pub(super) fn lower_slice1_plan(
             builder.add_filter(
                 source_node,
                 lower_physical_expr_with_bindings(predicate, &table_schema, Some(&bindings))?,
-                Arc::clone(&source_output_schema),
-            ),
+            )?,
             Arc::clone(&source_output_schema),
         )
     } else {
@@ -193,7 +192,7 @@ pub(super) fn lower_slice1_plan(
         if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?), schema)
+            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?)?, schema)
         } else {
             (scan_input_node, scan_input_schema)
         }
@@ -261,12 +260,12 @@ pub(super) fn lower_slice1_plan(
                 prepared_aggregate_input.input.node,
                 aggregate_spec,
                 Arc::clone(&aggregate_output_schema),
-            ),
+            )?,
             aggregate_output_schema,
             aggregate_output_bindings,
         )
     };
-    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
+    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output)?;
     finish_with_post_projection_sort_limit(
         builder,
         aggregate_output,
@@ -280,7 +279,7 @@ pub(super) fn lower_slice1_plan(
 pub(super) fn lower_joined_aggregate_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<NativeQueryPlan, LoweringRejection> {
+) -> Result<NativeQueryPlan, LoweringFailure> {
     let pre_aggregate_projection = root.pre_aggregate_projection;
     let aggregate = root.aggregate;
     let post_aggregate_projection = root.post_aggregate_projection;
@@ -331,12 +330,12 @@ pub(super) fn lower_joined_aggregate_plan(
                 prepared_aggregate_input.input.node,
                 aggregate_spec,
                 Arc::clone(&aggregate_output_schema),
-            ),
+            )?,
             aggregate_output_schema,
             aggregate_output_bindings,
         )
     };
-    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output);
+    super::advisory::attach(&mut builder, aggregate_output.node, &aggregate_output.schema, root.statistics_output)?;
     finish_with_post_projection_sort_limit(
         builder,
         aggregate_output,
@@ -350,7 +349,7 @@ pub(super) fn lower_joined_aggregate_plan(
 pub(super) fn lower_input_root_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeInputRoot<'_>,
-) -> Result<NativeQueryPlan, LoweringRejection> {
+) -> Result<NativeQueryPlan, LoweringFailure> {
     if let Some(projection) = root.projection {
         validate_schema(projection.schema())?;
         for projection_expr in projection.expr() {
@@ -389,9 +388,9 @@ fn finish_with_post_projection_sort_limit(
     sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
     projection_order: PostAggregateProjectionOrder,
-) -> Result<NativeQueryPlan, LoweringRejection> {
+) -> Result<NativeQueryPlan, LoweringFailure> {
     let output = apply_post_projection_sort_limit(&mut builder, input, projection, sort, limit, projection_order)?;
-    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
+    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?)?)
 }
 
 fn apply_post_projection_sort_limit(
@@ -401,7 +400,7 @@ fn apply_post_projection_sort_limit(
     sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
     projection_order: PostAggregateProjectionOrder,
-) -> Result<LoweredNativeInput, LoweringRejection> {
+) -> Result<LoweredNativeInput, LoweringFailure> {
     if projection_order == PostAggregateProjectionOrder::AboveSort {
         let sorted = if let Some(sort) = sort {
             lower_sort_ordering_with_input(
@@ -421,7 +420,7 @@ fn apply_post_projection_sort_limit(
             sorted
         };
         if let Some(limit) = limit {
-            let node = builder.add_limit(projected.node, limit, Arc::clone(&projected.schema));
+            let node = builder.add_limit(projected.node, limit)?;
             Ok(LoweredNativeInput::with_bindings(node, projected.schema, projected.bindings))
         } else {
             Ok(projected)
@@ -445,7 +444,7 @@ fn apply_post_projection_sort_limit(
             projected
         };
         if let Some(limit) = limit {
-            let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
+            let node = builder.add_limit(sorted_or_projected.node, limit)?;
             Ok(LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings))
         } else {
             Ok(sorted_or_projected)
@@ -453,7 +452,7 @@ fn apply_post_projection_sort_limit(
     }
 }
 
-fn required_root_projection_input_fields(projection: &ProjectionExec) -> Result<RequiredFields, LoweringRejection> {
+fn required_root_projection_input_fields(projection: &ProjectionExec) -> Result<RequiredFields, LoweringFailure> {
     let mut required = BTreeSet::new();
     for projection_expr in projection.expr() {
         collect_required_field_indices(&projection_expr.expr, &projection.input().schema(), &mut required)?;

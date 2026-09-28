@@ -169,7 +169,7 @@ mod tests {
 
         let stream = BoundedJoinLeafLocalParquetSourceStream {
             source,
-            node_id: NodeId::from_index_for_internal_use(1),
+            node_id: NodeId::from_index_for_test(1),
             chunks,
             stages: Vec::new(),
             reader_dynamic_filters: Vec::new(),
@@ -193,7 +193,7 @@ mod tests {
 
     fn test_chunk(index: usize, bytes: u64) -> SourceChunk {
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(1),
+            source_node_id: NodeId::from_index_for_test(1),
             chunk_index: index,
             file_index: index,
             location: ParquetSourceLocation::LocalPath(PathBuf::from(format!("part-{index}.parquet"))),

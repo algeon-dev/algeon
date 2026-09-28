@@ -9,13 +9,12 @@ use std::collections::BTreeSet;
 use super::{
     JoinExecutionCapability, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
     aggregate::{AggregateStateContract, aggregate_state_contract},
-    graph::{collect_reachable_node_ids, consumer_nodes_for_reachable, join_side_index, opposite_join_side},
+    graph::{consumer_nodes, join_side_index, opposite_join_side},
     join_node_execution_capability,
     model::{
-        CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty, ResultSinkKind,
-        VectorInputRole,
+        CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ResultSinkKind, VectorInputRole,
     },
-    node::{produced_properties, source_format_capability},
+    node::source_format_capability,
     rejection::Reason,
 };
 
@@ -181,22 +180,10 @@ pub(super) fn edge_contract_kinds(
 }
 
 pub(super) fn edge_decision(plan: &QueryPlan, producer: NodeId, consumer: EdgeConsumer) -> CapabilityDecision {
-    let Some(producer_node) = plan.node(producer) else {
+    if plan.node(producer).is_none() {
         return CapabilityDecision::rejected(
             Reason::MissingEdgeProducer,
             [("producer", producer.to_string()), ("consumer", edge_consumer_fact(consumer))],
-        );
-    };
-    if !produced_properties(producer_node).contains(&ProducedProperty::Resident) {
-        return CapabilityDecision::rejected(
-            Reason::MissingEdgeRequiredProperty,
-            [
-                ("producer", producer.to_string()),
-                ("consumer", edge_consumer_fact(consumer)),
-                ("required_property", "resident_frame".to_string()),
-                ("producer_placement", producer_node.facts.placement.to_string()),
-                ("producer_operator", node_operator_fact(&producer_node.kind).to_string()),
-            ],
         );
     }
     CapabilityDecision::Satisfied
@@ -278,10 +265,7 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
 }
 
 pub(super) fn mark_shared_producer_edge_contracts(plan: &QueryPlan, edges: &mut [EdgeContract]) {
-    let Ok(reachable) = collect_reachable_node_ids(plan) else {
-        return;
-    };
-    let consumers = consumer_nodes_for_reachable(plan, &reachable);
+    let consumers = consumer_nodes(plan);
     for (producer, producer_consumers) in consumers {
         if producer_consumers.len() <= 1 {
             continue;

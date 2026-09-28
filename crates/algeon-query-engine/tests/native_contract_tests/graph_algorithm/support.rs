@@ -22,21 +22,23 @@ fn graph_edge_source_plan_from_source(source: LocalParquetSource, projection: Op
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let root = match projection {
-        Some(columns) => builder.add_projection(
-            source,
-            columns
-                .iter()
-                .map(|column| {
-                    ProjectionOutput::new(
-                        Expr::column(*column),
-                        graph_edge_field(column).expect("test projection column must exist"),
-                    )
-                })
-                .collect(),
-        ),
+        Some(columns) => builder
+            .add_projection(
+                source,
+                columns
+                    .iter()
+                    .map(|column| {
+                        ProjectionOutput::new(
+                            Expr::column(*column),
+                            graph_edge_field(column).expect("test projection column must exist"),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap(),
         None => source,
     };
-    builder.finish_gpu_resident(root)
+    builder.finish_gpu_resident(root).unwrap()
 }
 
 fn graph_local_parquet_source(read_columns: &[&str]) -> LocalParquetSource {
@@ -107,8 +109,8 @@ fn graph_plan_with_options(
         params,
         output_schema,
     );
-    let graph = builder.add_graph_algorithm(input, spec);
-    builder.finish_with_host_sink(graph)
+    let graph = builder.add_graph_algorithm(input, Vec::new(), spec).unwrap();
+    builder.finish_with_host_sink(graph).unwrap()
 }
 
 fn edge_schema(vertex_type: DataType, weight_type: DataType, weight_nullable: bool) -> Arc<Schema> {

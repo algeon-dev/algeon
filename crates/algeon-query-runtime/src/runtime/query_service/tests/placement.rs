@@ -11,7 +11,7 @@ fn evidence_device_entries_are_retained_through_admission() {
     )]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    let plan = builder.finish_with_host_sink(source);
+    let plan = builder.finish_with_host_sink(source).unwrap();
     let evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
     let request = QueryAdmissionRequest::test_attempt().with_query_plan_capability_evidence(evidence.clone());
 

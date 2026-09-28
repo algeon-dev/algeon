@@ -1,7 +1,6 @@
 use super::{
     QueryPlan,
     edge::{analyze_input_edges, analyze_sink_edge, mark_shared_producer_edge_contracts},
-    graph::collect_reachable_node_ids,
     invariant::analyze_invariants,
     model::CapabilityAnalysis,
     node::analyze_node,
@@ -26,9 +25,5 @@ pub(crate) fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<
     mark_shared_producer_edge_contracts(plan, &mut edges);
 
     let invariants = analyze_invariants(plan, &edges);
-    // A malformed plan whose reachability walk fails keeps every node, so the
-    // local-rejection projection stays unfiltered exactly as before.
-    let reachable_node_ids =
-        collect_reachable_node_ids(plan).unwrap_or_else(|_| plan.nodes().iter().map(|node| node.id).collect());
-    CapabilityAnalysis { nodes, edges, invariants, policy: ctx.policy(), reachable_node_ids }
+    CapabilityAnalysis { nodes, edges, invariants, policy: ctx.policy() }
 }
