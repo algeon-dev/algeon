@@ -1,8 +1,8 @@
 //! Admission boundary for compiled bounded pipelines.
 //!
-//! Capability-first bounded-pipeline admission evidence and rejection
-//! projection. This is the single bounded admission contract; "capability"
-//! appears only in preserved wire names. Runtime execution remains in
+//! Capability-first bounded-pipeline admission evidence and rejections. This
+//! is the single bounded admission contract; "capability" appears only in
+//! preserved wire names. Runtime execution remains in
 //! `exec::bounded`.
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -14,9 +14,7 @@ use super::shared::{
 };
 use crate::{
     backend::AnalysisContext,
-    capability::{
-        CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
-    },
+    capability::{Reason, Rejection, RejectionOwner, UnsupportedPart},
     error::{QueryError, QueryErrorCode, QueryErrorKind, Result},
     expr::{AggregateFunction, AggregateSpec, Expr},
     mode::{CapabilityEnvelopeStatus, StatisticalAggregateExecutionMode},
@@ -117,10 +115,10 @@ impl AdmissionDecision {
     }
 
     /// Rejection evidence, when rejected.
-    pub fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
+    pub fn rejection(&self) -> Option<&Rejection> {
         match self {
             Self::Admitted(_) => None,
-            Self::Rejected(rejection) => Some(rejection.projection()),
+            Self::Rejected(rejection) => Some(rejection.rejection()),
         }
     }
 }
@@ -128,7 +126,7 @@ impl AdmissionDecision {
 /// Why a plan has no compiled execution.
 #[derive(Debug, Clone)]
 pub struct AdmissionRejection {
-    projection: CapabilityRejectionProjection,
+    rejection: Rejection,
     pipeline: Option<Box<CompiledPipeline>>,
     cause: RejectionCause,
 }
@@ -145,8 +143,8 @@ enum RejectionCause {
 
 impl AdmissionRejection {
     /// The first operator, edge, or pipeline contract the plan misses.
-    pub fn projection(&self) -> &CapabilityRejectionProjection {
-        &self.projection
+    pub fn rejection(&self) -> &Rejection {
+        &self.rejection
     }
 
     /// Whether the requested statistical aggregate execution mode, rather than
@@ -175,7 +173,7 @@ impl AdmissionRejection {
                     rebuilt.with_fact(key, value)
                 }),
             RejectionCause::CompiledContract | RejectionCause::ExecutionMode => {
-                compiled_bounded_pipeline_required_error(plan, self.pipeline.as_deref(), &self.projection)
+                compiled_bounded_pipeline_required_error(plan, self.pipeline.as_deref(), &self.rejection)
             },
         }
     }
@@ -184,18 +182,10 @@ impl AdmissionRejection {
         let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
         facts.insert("validation_code", error.code().as_str().to_string());
         facts.insert("validation_operation", error.operation().to_string());
-        let category = match error.code() {
-            QueryErrorCode::UnsupportedType => CapabilityRejectionCategory::UnsupportedArrowDtype,
-            QueryErrorCode::UnsupportedExpression => CapabilityRejectionCategory::UnsupportedExpressionFamily,
-            _ => CapabilityRejectionCategory::UnsupportedNodeOperator,
-        };
         Self {
-            projection: CapabilityRejectionProjection {
-                owner: CapabilityRejectionOwner::Admission("plan_validation"),
-                category,
-                contract_scope: CapabilityScope::Subgraph,
-                boundary: "plan_validation",
-                reason: "native_plan_validation_unsupported",
+            rejection: Rejection {
+                owner: RejectionOwner::Plan,
+                reason: Reason::PlanValidation(UnsupportedPart::from_code(error.code())),
                 facts,
             },
             pipeline: None,
@@ -210,7 +200,7 @@ impl AdmissionRejection {
 /// The plan is validated first. A malformed plan has no correct fallback and
 /// is the validator's error; a well-formed plan that uses a type, operator,
 /// or expression the backend does not support is rejected with the
-/// validator's code and operation in the projection facts.
+/// validator's code and operation in the rejection facts.
 pub fn admit(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
@@ -225,10 +215,10 @@ pub fn admit(
         return Ok(AdmissionDecision::Rejected(AdmissionRejection::validation(error)));
     }
     let admission = capability_first_bounded_pipeline_admission(plan, ctx)?;
-    if let Some(projection) = statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
+    if let Some(rejection) = statistical_aggregate_execution_mode_rejection(plan, statistical_aggregate_execution_mode)
     {
         return Ok(AdmissionDecision::Rejected(AdmissionRejection {
-            projection,
+            rejection,
             pipeline: None,
             cause: RejectionCause::ExecutionMode,
         }));
@@ -240,12 +230,10 @@ pub fn admit(
             Ok(AdmissionDecision::Admitted(Arc::new(admitted)))
         },
         CapabilityFirstCandidateStatus::Rejected => {
-            let projection = admission
-                .rejection_projection()
-                .expect("rejected capability-first admission should carry a projection")
-                .clone();
+            let rejection =
+                admission.rejection().expect("rejected capability-first admission should carry a rejection").clone();
             Ok(AdmissionDecision::Rejected(AdmissionRejection {
-                projection,
+                rejection,
                 pipeline: admission.into_pipeline().map(Box::new),
                 cause: RejectionCause::CompiledContract,
             }))
@@ -264,7 +252,7 @@ pub fn admit(
 fn statistical_aggregate_execution_mode_rejection(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Option<CapabilityRejectionProjection> {
+) -> Option<Rejection> {
     if !statistical_aggregate_execution_mode.is_datafusion_exact() {
         return None;
     }
@@ -286,7 +274,7 @@ fn datafusion_exact_host_aggregate_rejection(
     spec: &AggregateSpec,
     input_schema: &Schema,
     output_schema: &Schema,
-) -> Option<CapabilityRejectionProjection> {
+) -> Option<Rejection> {
     let mut output_types = output_schema.fields().iter().map(|field| field.data_type());
     for expr in &spec.group_exprs {
         let input_type = column_input_type(expr, input_schema);
@@ -298,8 +286,7 @@ fn datafusion_exact_host_aggregate_rejection(
         }
         return Some(datafusion_exact_host_rejection(
             node_id,
-            CapabilityRejectionCategory::UnsupportedArrowDtype,
-            "datafusion_exact_statistical_group_key_unsupported",
+            Reason::DatafusionExactStatisticalGroupKeyUnsupported,
             [
                 ("group_key", expr.to_string()),
                 ("input_data_type", data_type_label(input_type)),
@@ -320,8 +307,7 @@ fn datafusion_exact_host_aggregate_rejection(
             {
                 return Some(datafusion_exact_host_rejection(
                     node_id,
-                    CapabilityRejectionCategory::UnsupportedNodeOperator,
-                    "datafusion_exact_ungrouped_float_sum_unsupported",
+                    Reason::DatafusionExactUngroupedFloatSumUnsupported,
                     [
                         ("aggregate_function", expr.function.as_str().to_string()),
                         ("aggregate_alias", expr.alias.clone()),
@@ -331,16 +317,14 @@ fn datafusion_exact_host_aggregate_rejection(
             Some(_) => continue,
             None => {},
         }
-        let category =
-            if expr.distinct || matches!(expr.function, AggregateFunction::NUnique | AggregateFunction::Median) {
-                CapabilityRejectionCategory::UnsupportedNodeOperator
-            } else {
-                CapabilityRejectionCategory::UnsupportedArrowDtype
-            };
+        let part = if expr.distinct || matches!(expr.function, AggregateFunction::NUnique | AggregateFunction::Median) {
+            UnsupportedPart::Operator
+        } else {
+            UnsupportedPart::DataType
+        };
         return Some(datafusion_exact_host_rejection(
             node_id,
-            category,
-            "datafusion_exact_statistical_aggregate_unsupported",
+            Reason::DatafusionExactStatisticalAggregateUnsupported(part),
             [
                 ("aggregate_function", expr.function.as_str().to_string()),
                 ("aggregate_alias", expr.alias.clone()),
@@ -355,23 +339,15 @@ fn datafusion_exact_host_aggregate_rejection(
 
 fn datafusion_exact_host_rejection(
     node_id: NodeId,
-    category: CapabilityRejectionCategory,
-    reason: &'static str,
+    reason: Reason,
     facts: impl IntoIterator<Item = (&'static str, String)>,
-) -> CapabilityRejectionProjection {
+) -> Rejection {
     let mut facts = BTreeMap::from_iter(facts);
     facts.insert(
         "statistical_aggregate_execution_mode",
         StatisticalAggregateExecutionMode::DataFusionExactHostWelford.as_str().to_string(),
     );
-    CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Node(node_id),
-        category,
-        contract_scope: CapabilityScope::Node,
-        boundary: "datafusion_exact_statistical_aggregate",
-        reason,
-        facts,
-    }
+    Rejection { owner: RejectionOwner::Node(node_id), reason, facts }
 }
 
 fn column_input_type<'a>(expr: &Expr, schema: &'a Schema) -> Option<&'a ArrowDataType> {
@@ -413,19 +389,19 @@ fn admitted_plan_from_capability_first(
 fn compiled_bounded_pipeline_required_error(
     plan: &QueryPlan,
     pipeline: Option<&CompiledPipeline>,
-    projection: &CapabilityRejectionProjection,
+    rejection: &Rejection,
 ) -> QueryError {
     let sink_kind = match plan.sink() {
         ResultSink::GpuResident { .. } | ResultSink::DeferredHostArrow { .. } => "gpu_resident",
         ResultSink::HostArrow { .. } => "host_arrow",
     };
     let mut error = QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedPipelineContract,
         "query_engine.bounded.compiled_pipeline_required",
         "bounded execution requires an admitted compiled pipeline",
     )
     .with_fact("compiled_pipeline_required", "true")
-    .with_fact("compiled_pipeline_rejection_reason", projection.reason)
+    .with_fact("compiled_pipeline_rejection_reason", rejection.reason)
     .with_fact("result_sink_kind", sink_kind);
 
     if let Some(pipeline) = pipeline {
@@ -437,9 +413,9 @@ fn compiled_bounded_pipeline_required_error(
             .with_fact("compiled_sink_kind", pipeline.sink().kind().as_str());
     }
 
-    // Projection facts may repeat pipeline-derived keys; the pipeline values
+    // Rejection facts may repeat pipeline-derived keys; the pipeline values
     // above are authoritative, so only absent keys are added here.
-    for (key, value) in &projection.facts {
+    for (key, value) in &rejection.facts {
         error = error.with_fact_if_absent(key, value.as_str());
     }
 
@@ -529,7 +505,7 @@ mod tests {
         );
         let rejection = statistical_aggregate_execution_mode_rejection(&avg, exact)
             .expect("an ungrouped AVG sums by batch in DataFusion");
-        assert_eq!(rejection.reason, "datafusion_exact_ungrouped_float_sum_unsupported");
+        assert_eq!(rejection.reason, Reason::DatafusionExactUngroupedFloatSumUnsupported);
         assert_eq!(rejection.facts.get("aggregate_alias").map(String::as_str), Some("quantity_avg"));
 
         let integer_sum = ungrouped(
@@ -554,8 +530,7 @@ mod tests {
         );
         let rejection = statistical_aggregate_execution_mode_rejection(&date_min, exact)
             .expect("the exact host kernel has no Date32 MIN accumulator");
-        assert_eq!(rejection.reason, "datafusion_exact_statistical_aggregate_unsupported");
-        assert!(matches!(rejection.category, CapabilityRejectionCategory::UnsupportedArrowDtype));
+        assert_eq!(rejection.reason, Reason::DatafusionExactStatisticalAggregateUnsupported(UnsupportedPart::DataType));
         assert_eq!(rejection.facts.get("aggregate_alias").map(String::as_str), Some("first_sold_date"));
         assert!(
             statistical_aggregate_execution_mode_rejection(

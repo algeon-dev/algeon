@@ -22,7 +22,7 @@ use crate::{
     attempt::InvocationAttempt,
     capability::CapabilityReason,
     cugraph_sql::is_feature_disabled_execution_plan,
-    error::{Error, ErrorCode},
+    error::{ClientDetail, Error, ErrorCode, Result},
     native::lakehouse_pruning,
     native_exec::{
         AlgeonNativeComposedExec, AlgeonNativeComposedGpuProducerExec, AlgeonNativeExec, AlgeonNativeExecutionConfig,
@@ -34,7 +34,7 @@ use crate::{
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
-    report::{CandidateOutcome, GpuCandidate, PlanningReport, UnsupportedColumnDetail},
+    report::{CandidateOutcome, GpuCandidate, NotSupportedDetail, PlanningReport},
     session::{ALGEON_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, ALGEON_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
 
@@ -60,14 +60,14 @@ use mixed::is_certified_mixed_execution_plan;
 ///
 /// `report` is the planning report of the rewrite that produced `plan`, used
 /// only to name the first unsupported candidate in the error.
-fn enforce_no_datafusion_cpu(plan: &dyn ExecutionPlan, report: Option<&PlanningReport>) -> DataFusionResult<()> {
+fn enforce_no_datafusion_cpu(plan: &dyn ExecutionPlan, report: Option<&PlanningReport>) -> Result<()> {
     let disposition = classify_final_plan(plan);
     // A feature-disabled cuGraph plan is a zero-child terminal capability
     // rejection. It executes neither a CPU fallback nor a GPU operator, so it
     // satisfies the no-CPU-execution contract without being misclassified as
     // a native workload.
     if disposition != FinalPlanDisposition::Native && !is_feature_disabled_execution_plan(plan) {
-        return Err(final_plan_requirement_error(plan, disposition, report).into());
+        return Err(final_plan_requirement_error(plan, disposition, report));
     }
     Ok(())
 }
@@ -78,9 +78,9 @@ pub(crate) fn final_plan_requirement_error(
     report: Option<&PlanningReport>,
 ) -> Error {
     let rejection = report.and_then(first_native_not_supported);
-    let message = rejection.and_then(|(_, _, detail)| detail).map_or_else(
+    let message = rejection.and_then(|(_, _, detail)| detail.column.as_ref()).map_or_else(
         || "exact final physical plan does not satisfy the configured GPU execution requirement".to_string(),
-        |detail| format!("GPU execution does not support a {} column with an unsupported Arrow type", detail.role),
+        |column| format!("GPU execution does not support a {} column with an unsupported Arrow type", column.role),
     );
     let mut error = Error::new(
         ErrorCode::FinalPlanRequirementUnsatisfied,
@@ -96,20 +96,29 @@ pub(crate) fn final_plan_requirement_error(
             .with_fact("candidate_shape", candidate.shape.as_str())
             .with_fact("capability_reason", capability_reason.code())
             .with_fact("operator_count", candidate.operator_count);
-        if let Some(detail) = detail {
+        if let Some(admission) = detail.admission_rejection() {
+            // The admission rejection names the contract the candidate missed;
+            // a validator refusal carries its own code, operation, and facts.
+            // Its facts can name caller columns, so they stay ordinary facts.
+            error = error
+                .with_log_safe_fact("capability_rejection_reason", admission.reason.as_str())
+                .with_log_safe_fact("capability_rejection_boundary", admission.boundary());
+            for (key, value) in &admission.facts {
+                error = error.with_fact(key, value);
+            }
+        }
+        if let Some(detail) = detail.column.as_ref() {
             // `reason` is bounded operational classification and may be
             // logged. The column name, Arrow type, and role name the query
-            // caller's own schema detail, so they stay ordinary facts hidden
-            // from operational logs and Debug by default, and out of
-            // `message()`, which the server logs verbatim. The server
-            // projection owner retains them explicitly for query-caller
-            // surfaces (Flight metadata allowlist, query-stats capture) and
-            // composes them into the actionable status message.
-            error = error
-                .with_log_safe_fact("reason", capability_reason.code())
-                .with_fact("unsupported_column", detail.name.as_str())
-                .with_fact("unsupported_column_type", detail.data_type.as_str())
-                .with_fact("unsupported_column_role", detail.role);
+            // caller's own schema, so they travel as client detail, out of
+            // `message()`, which the server logs verbatim.
+            error = error.with_log_safe_fact("reason", capability_reason.code()).with_client_detail(
+                ClientDetail::UnsupportedColumn {
+                    name: detail.name.clone(),
+                    data_type: detail.data_type.clone(),
+                    role: detail.role,
+                },
+            );
         }
     }
     error
@@ -117,10 +126,10 @@ pub(crate) fn final_plan_requirement_error(
 
 fn first_native_not_supported(
     report: &PlanningReport,
-) -> Option<(&GpuCandidate, CapabilityReason, Option<&UnsupportedColumnDetail>)> {
-    report.outcomes().iter().enumerate().find_map(|(index, outcome)| match outcome {
-        CandidateOutcome::NotSupported { candidate, capability_reason } => {
-            Some((candidate, *capability_reason, report.unsupported_column(index)))
+) -> Option<(&GpuCandidate, CapabilityReason, &NotSupportedDetail)> {
+    report.outcomes().iter().find_map(|outcome| match outcome {
+        CandidateOutcome::NotSupported { candidate, capability_reason, detail } => {
+            Some((candidate, *capability_reason, detail))
         },
         CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
@@ -304,7 +313,7 @@ impl AlgeonNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         invocation: Option<&Invocation>,
     ) -> DataFusionResult<(Arc<dyn ExecutionPlan>, Option<PlanningReport>)> {
-        self.config.validate().map_err(DataFusionError::from)?;
+        self.config.validate()?;
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok((plan, None));
         }
@@ -430,13 +439,13 @@ fn plan_native_admission(
     plan: &dyn ExecutionPlan,
     native_execution_config: &AlgeonNativeExecutionConfig,
     invocation: Option<&Invocation>,
-) -> DataFusionResult<Option<(QueryAdmissionSource, AttemptCapabilityEvidence)>> {
+) -> Result<Option<(QueryAdmissionSource, AttemptCapabilityEvidence)>> {
     let ticket_ask_error = |error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.native_optimizer.graph_ticket_ask",
             "failed to compute query admission ticket requirements",
             error,
-        ))
+        )
     };
     let fragment_evidence_items = native_fragment_capability_evidences(plan)?;
     let Some(source) = native_execution_config.query_admission_source() else {
@@ -454,33 +463,33 @@ fn plan_native_admission(
     Ok(Some((source, evidence)))
 }
 
-fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<AttemptCapabilityEvidence>> {
+fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> Result<Vec<AttemptCapabilityEvidence>> {
     let mut evidence_items = Vec::new();
     collect_native_fragment_capability_evidences(plan, false, true, &mut evidence_items)?;
     if let Some(manifest) = gpu_function_execution_manifest(plan)? {
         evidence_items.push(AttemptCapabilityEvidence::empty().with_execution_manifest(manifest).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.native_optimizer.execution_manifest",
                 "failed to bind the final GPU function occurrence manifest",
                 error,
-            ))
+            )
         })?);
     }
     Ok(evidence_items)
 }
 
-fn gpu_function_execution_manifest(plan: &dyn ExecutionPlan) -> DataFusionResult<Option<AttemptExecutionManifest>> {
+fn gpu_function_execution_manifest(plan: &dyn ExecutionPlan) -> Result<Option<AttemptExecutionManifest>> {
     let mut occurrences = Vec::new();
     let _ = collect_gpu_function_occurrences(plan, true, &mut occurrences)?;
     if occurrences.is_empty() {
         return Ok(None);
     }
     AttemptExecutionManifest::new(occurrences).map(Some).map_err(|error| {
-        DataFusionError::from(Error::from_native(
+        Error::from_native(
             "algeon_datafusion.native_optimizer.execution_manifest",
             "the final GPU function occurrence graph is invalid",
             error,
-        ))
+        )
     })
 }
 
@@ -539,7 +548,7 @@ fn collect_gpu_function_occurrences(
     plan: &dyn ExecutionPlan,
     materializes_host_result: bool,
     occurrences: &mut Vec<AttemptExecutionOccurrence>,
-) -> DataFusionResult<Vec<String>> {
+) -> Result<Vec<String>> {
     if plan.downcast_ref::<AlgeonNativeComposedExec>().is_some() {
         let mut predecessors = Vec::new();
         for child in plan.children() {
@@ -554,26 +563,22 @@ fn collect_gpu_function_occurrences(
     if let Some(bound) = plan.downcast_ref::<GpuFunctionHostOccurrenceExec>() {
         let predecessors = collect_gpu_function_occurrences(bound.input().as_ref(), false, occurrences)?;
         let producer = gpu_resident_producer(bound.input().as_ref()).ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_optimizer.execution_manifest",
-                    "a bound GPU function occurrence no longer wraps a typed producer",
-                )
-                .with_log_safe_fact("reason", "bound_gpu_occurrence_producer_missing")
-                .with_log_safe_fact("occurrence_id", bound.occurrence_id()),
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.native_optimizer.execution_manifest",
+                "a bound GPU function occurrence no longer wraps a typed producer",
             )
+            .with_log_safe_fact("reason", "bound_gpu_occurrence_producer_missing")
+            .with_log_safe_fact("occurrence_id", bound.occurrence_id())
         })?;
         let host_plan = producer.host_result_query_plan()?.ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.native_optimizer.execution_manifest",
-                    "a bound GPU function occurrence no longer exposes a host plan",
-                )
-                .with_log_safe_fact("reason", "bound_gpu_occurrence_host_plan_missing")
-                .with_log_safe_fact("occurrence_id", bound.occurrence_id()),
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.native_optimizer.execution_manifest",
+                "a bound GPU function occurrence no longer exposes a host plan",
             )
+            .with_log_safe_fact("reason", "bound_gpu_occurrence_host_plan_missing")
+            .with_log_safe_fact("occurrence_id", bound.occurrence_id())
         })?;
         occurrences.push(AttemptExecutionOccurrence::host_arrow_for_producer(
             bound.occurrence_id(),
@@ -604,15 +609,13 @@ fn collect_gpu_function_occurrences(
     if producer.host_result_query_plan()?.is_none() {
         return Ok(predecessors);
     }
-    Err(DataFusionError::from(
-        Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "algeon_datafusion.native_optimizer.execution_manifest",
-            "a host-materializing GPU function lacks final-plan occurrence lineage",
-        )
-        .with_log_safe_fact("reason", "gpu_function_occurrence_lineage_missing")
-        .with_log_safe_fact("producer_identity", producer.gpu_result_input_name()),
-    ))
+    Err(Error::new(
+        ErrorCode::InvalidExecutionPlan,
+        "algeon_datafusion.native_optimizer.execution_manifest",
+        "a host-materializing GPU function lacks final-plan occurrence lineage",
+    )
+    .with_log_safe_fact("reason", "gpu_function_occurrence_lineage_missing")
+    .with_log_safe_fact("producer_identity", producer.gpu_result_input_name()))
 }
 
 fn plan_contains_gpu_execution(plan: &dyn ExecutionPlan) -> bool {
@@ -627,7 +630,7 @@ fn collect_native_fragment_capability_evidences(
     executes_as_cugraph_input: bool,
     materializes_host_result: bool,
     evidence_items: &mut Vec<AttemptCapabilityEvidence>,
-) -> DataFusionResult<()> {
+) -> Result<()> {
     #[cfg(feature = "cugraph")]
     let is_composed = if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
         let gpu_plan;
@@ -691,13 +694,9 @@ fn collect_native_fragment_capability_evidences(
         } else {
             native_plan
         };
-        evidence_items.push(native_plan_capability_evidence(native_plan)?);
+        evidence_items.push(AttemptCapabilityEvidence::for_query_plan(native_plan));
     }
     Ok(())
-}
-
-fn native_plan_capability_evidence(native_plan: &QueryPlan) -> DataFusionResult<AttemptCapabilityEvidence> {
-    Ok(AttemptCapabilityEvidence::for_query_plan(native_plan))
 }
 
 fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&QueryPlan> {
@@ -736,7 +735,7 @@ mod tests {
         backend::InstalledTestGpuBackend,
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
         native_exec::SourceChunking,
-        report::NotSupportedDetail,
+        report::{NotSupportedDetail, UnsupportedColumnDetail},
     };
 
     fn local_parquet_native_plan(path: &str) -> QueryPlan {
@@ -802,6 +801,7 @@ mod tests {
             NotSupportedDetail {
                 column: Some(UnsupportedColumnDetail::new("訂單明細", "List(Int64)", "projected")),
                 expression: None,
+                admission: None,
             },
         );
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
@@ -809,9 +809,14 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
         assert!(!error.message().contains("訂單明細"), "{}", error.message());
-        assert_eq!(error.fact_value("unsupported_column"), Some("訂單明細"));
-        assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Int64)"));
-        assert_eq!(error.fact_value("unsupported_column_role"), Some("projected"));
+        assert_eq!(
+            error.client_detail(),
+            Some(&ClientDetail::UnsupportedColumn {
+                name: "訂單明細".to_string(),
+                data_type: "List(Int64)".to_string(),
+                role: "projected",
+            })
+        );
         let logs = error.facts().log_safe_projection();
         assert!(
             !logs.rendered().unwrap_or_default().contains("訂單明細"),
@@ -820,7 +825,7 @@ mod tests {
         assert!(
             error
                 .facts()
-                .retained_capture_entries()
+                .retained_capture_entries(error.client_detail())
                 .contains(&("unsupported_column".to_string(), "訂單明細".to_string())),
             "query-caller capture must retain the strict-rejection detail"
         );
@@ -971,9 +976,8 @@ mod tests {
             .report
             .outcomes()
             .iter()
-            .enumerate()
-            .find_map(|(index, outcome)| match outcome {
-                CandidateOutcome::NotSupported { .. } => diagnostics.report.unsupported_column(index),
+            .find_map(|outcome| match outcome {
+                CandidateOutcome::NotSupported { detail, .. } => detail.column.as_ref(),
                 CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
             })
             .expect("unsupported column detail")
@@ -995,7 +999,8 @@ mod tests {
             failure
                 .find_algeon_error()
                 .expect("typed adapter error")
-                .fact_value("unsupported_column")
+                .client_detail()
+                .and_then(|detail| detail.value("unsupported_column"))
                 .map(str::to_string)
         };
         let invocation_a = Invocation::detached();

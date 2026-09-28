@@ -133,7 +133,7 @@ fn unsupported_partial_column_dtype_is_rejected() {
             &[fixed_column(dtype.clone())],
         )
         .unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape, "dtype {dtype:?}");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "dtype {dtype:?}");
     }
 }
 

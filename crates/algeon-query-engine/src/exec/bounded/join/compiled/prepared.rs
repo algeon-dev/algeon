@@ -1,10 +1,10 @@
 use super::{
     BoundedCompiledPreparedJoinProbeState, BoundedExecutionAttempt, CompiledJoinExecutionStrategy, JoinNode, NodeId,
-    ResidentGpuFrame, Result, execute_compiled_keyless_join_materialize,
+    ResidentGpuFrame, Result, bounded_invariant_violation, execute_compiled_keyless_join_materialize,
     execute_compiled_keyless_outer_cross_join_materialize, execute_compiled_mixed_join_materialize,
     execute_compiled_one_shot_equi_join_materialize, execute_compiled_partitioned_hash_equi_join_materialize,
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize,
-    execute_compiled_projected_cross_join_materialize, unsupported_bounded_shape,
+    execute_compiled_projected_cross_join_materialize,
 };
 
 pub(super) fn execute_compiled_prepared_join_materialize(
@@ -48,7 +48,7 @@ pub(super) fn execute_compiled_prepared_join_materialize(
             )
         },
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            Err(unsupported_bounded_shape(
+            Err(bounded_invariant_violation(
                 "compiled prepared join state received an incompatible strategy",
                 "compiled_join_strategy_state_mismatch",
             ))

@@ -177,7 +177,7 @@ impl AttemptCapabilityEvidence {
     pub fn push_producer_occurrence(&mut self, occurrence: AttemptProducerOccurrence) -> Result<()> {
         let Some(scope) = self.execution_scopes.last_mut() else {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.admission.evidence",
                 "a producer occurrence has no admitted consumer scope to bind to",
             )
@@ -273,7 +273,7 @@ impl AttemptCapabilityEvidence {
             .collect::<Vec<_>>();
         if matching.is_empty() {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.admission.evidence",
                 "the admitted capability evidence has no occurrence manifest for the native plan",
             )
@@ -291,7 +291,7 @@ impl AttemptCapabilityEvidence {
         }
         let Some(same_len) = scheduled.iter().find(|candidate| candidate.len() == occurrence_ids.len()) else {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.admission.evidence",
                 "the runtime composed input count differs from the admitted capability manifest",
             )
@@ -302,7 +302,7 @@ impl AttemptCapabilityEvidence {
         for (scheduled, runtime) in same_len.iter().zip(occurrence_ids) {
             if *scheduled != runtime {
                 return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
+                    QueryErrorCode::InternalInvariantViolation,
                     "query_engine.admission.evidence",
                     "the runtime composed input order differs from the admitted capability manifest",
                 )
@@ -324,7 +324,7 @@ impl AttemptCapabilityEvidence {
                 || !self.attested_cugraph_graph_execution_scopes.iter().any(|scope| scope.matches(plan)))
         {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.admission.evidence",
                 "admitted capability evidence does not authorize cuGraph execution for the native plan",
             )
@@ -348,7 +348,7 @@ impl AttemptCapabilityEvidence {
             return Ok(());
         }
         Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::InternalInvariantViolation,
             "query_engine.admission.evidence",
             "admitted capability evidence has no scope for the native plan about to execute",
         )
@@ -359,7 +359,7 @@ impl AttemptCapabilityEvidence {
 
 fn duplicate_execution_manifest_error() -> QueryError {
     QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::InternalInvariantViolation,
         "query_engine.admission.evidence",
         "an admitted attempt has more than one execution manifest",
     )

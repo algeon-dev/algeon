@@ -73,9 +73,7 @@ pub(super) fn classify(
         return match code {
             "query_memory_limit_exceeded" => OutcomeClass::FailedQueryCap,
             "device_out_of_memory" => OutcomeClass::FailedPhysicalOom,
-            "device_allocation_failed" | "memory_reservation_failed" | "cudf_resource_exhausted" => {
-                OutcomeClass::FailedUnknownAllocation
-            },
+            "device_allocation_failed" | "memory_reservation_failed" => OutcomeClass::FailedUnknownAllocation,
             "cancelled" => OutcomeClass::Cancelled,
             "service_overloaded" | "query_budget_unavailable" => match failure_reason {
                 Some("admission_queue_full") => OutcomeClass::RejectedQueueFull,

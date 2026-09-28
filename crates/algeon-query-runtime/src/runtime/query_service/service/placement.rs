@@ -47,7 +47,7 @@ impl QueryService {
     ) -> Result<()> {
         if !self.device_supports_capabilities(device_ordinal, &fragment.required_capabilities) {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::UnsupportedOperator,
                 "query_engine.query_service.admitted_fragment",
                 "the granted device does not support every native capability the fragment requires",
             )

@@ -2,311 +2,183 @@ use std::fmt;
 
 use query_engine::error::QueryErrorCode;
 
-/// Stable, machine-readable adapter error codes.
-///
-/// Codes describe the closest adapter-level cause. [`ErrorKind`] and
-/// [`ErrorStatus`] are derived from the code by [`kind_for_code`] and
-/// [`status_for_code`]; consumers should treat those functions as the policy
-/// contract rather than inferring behavior from variant names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ErrorCode {
+/// Declares [`ErrorCode`] from one list: each variant with its report label,
+/// [`ErrorKind`], and [`ErrorStatus`]. Every table derives from the list, so a
+/// new code cannot ship without all three.
+macro_rules! error_codes {
+    ($($(#[$doc:meta])* $code:ident => $label:literal, $kind:ident, $status:ident;)+) => {
+        /// Stable, machine-readable adapter error codes.
+        ///
+        /// Codes describe the closest adapter-level cause. [`ErrorKind`] and
+        /// [`ErrorStatus`] are derived from the code by [`ErrorCode::kind`]
+        /// and [`ErrorCode::status`]; consumers should treat those methods as
+        /// the policy contract rather than inferring behavior from variant
+        /// names.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
+        pub enum ErrorCode {
+            $($(#[$doc])* $code,)+
+        }
+
+        impl ErrorCode {
+            /// Every adapter error code, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$code),+];
+
+            /// Stable snake-case code label used in reports and error text.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$code => $label,)+
+                }
+            }
+
+            /// Stable coarse category of this code.
+            ///
+            /// `kind` is the broad bucket used for diagnostics and
+            /// aggregation. It is less specific than [`ErrorCode`] and stays
+            /// stable for consumers that group failures without depending on
+            /// every code variant.
+            pub const fn kind(self) -> ErrorKind {
+                match self {
+                    $(Self::$code => ErrorKind::$kind,)+
+                }
+            }
+
+            /// Retry/remediation status of this code.
+            ///
+            /// Attempt retry advice is derived only after terminal evidence is
+            /// sealed. [`ErrorStatus::Persistent`] means a repeated or
+            /// known-continuing dependency failure that requires escalation or
+            /// intervention, while [`ErrorStatus::Permanent`] means the
+            /// request, input, configuration, or code must change before the
+            /// same operation can succeed.
+            pub const fn status(self) -> ErrorStatus {
+                match self {
+                    $(Self::$code => ErrorStatus::$status,)+
+                }
+            }
+        }
+    };
+}
+
+error_codes! {
     /// Query execution was canceled by the caller.
-    Cancelled,
+    Cancelled => "cancelled", Cancelled, Permanent;
     /// SQL text could not be parsed.
-    SqlParse,
+    SqlParse => "sql_parse", InvalidInput, Permanent;
     /// The server request envelope or handle was invalid for the operation.
-    InvalidRequest,
+    InvalidRequest => "invalid_request", InvalidInput, Permanent;
     /// DataFusion rejected the query during logical or physical planning.
-    DataFusionPlanning,
+    DataFusionPlanning => "datafusion_planning", Planning, Permanent;
     /// Adapter-owned planning exceeded its configured time budget.
     ///
     /// This is classified as permanent for the same request and budget: retry
     /// with table maintenance, a narrower request, or a larger configured
     /// planning budget.
-    PlanningTimeout,
+    PlanningTimeout => "planning_timeout", Planning, Permanent;
     /// A requested catalog, schema, table, table function, or similar named object was not found.
-    ObjectNotFound,
+    ObjectNotFound => "object_not_found", NotFound, Permanent;
     /// Source object storage denied access to the requested object or metadata.
-    SourceAccessDenied,
+    SourceAccessDenied => "source_access_denied", PermissionDenied, Permanent;
     /// Source object storage lacked valid authentication credentials.
-    SourceUnauthenticated,
+    SourceUnauthenticated => "source_unauthenticated", Unauthenticated, Permanent;
     /// Source object storage could not find the requested object.
-    SourceObjectNotFound,
+    SourceObjectNotFound => "source_object_not_found", NotFound, Permanent;
     /// Source object storage failed with a retryable transport or service error.
-    SourceTemporaryFailure,
+    SourceTemporaryFailure => "source_temporary_failure", DependencyFailure, Temporary;
     /// A source reader or source dependency failed permanently while serving the request.
-    SourceDependencyFailure,
+    SourceDependencyFailure => "source_dependency_failure", DependencyFailure, Permanent;
     /// A named field was not present in a resolved schema.
-    FieldNotFound,
+    FieldNotFound => "field_not_found", InvalidInput, Permanent;
     /// Materialized graph edges or side inputs violate the graph operation's
     /// declared input contract.
-    GraphInputInvalid,
+    GraphInputInvalid => "graph_input_invalid", InvalidInput, Permanent;
     /// A completed-plan requirement needed a GPU operation that the exact
     /// final physical plan could not provide.
-    RequiredGpuOperationUnsupported,
+    RequiredGpuOperationUnsupported => "required_gpu_operation_unsupported", Unsupported, Permanent;
     /// The exact completed physical plan did not satisfy a configured final
     /// plan requirement.
-    FinalPlanRequirementUnsatisfied,
+    FinalPlanRequirementUnsatisfied => "final_plan_requirement_unsatisfied", Planning, Permanent;
     /// A physical operator is unsupported by the GPU/native adapter path.
-    UnsupportedOperator,
+    UnsupportedOperator => "unsupported_operator", Unsupported, Permanent;
     /// A physical expression or expression form is unsupported.
-    UnsupportedExpression,
+    UnsupportedExpression => "unsupported_expression", Unsupported, Permanent;
     /// A data type, physical representation, or type combination is unsupported.
-    UnsupportedType,
+    UnsupportedType => "unsupported_type", Unsupported, Permanent;
     /// A DataFusion physical plan is invalid for the adapter boundary.
     ///
     /// Use this for malformed or inconsistent plans, not for well-formed plans
     /// that are merely outside the supported capability catalogue.
-    InvalidExecutionPlan,
+    InvalidExecutionPlan => "invalid_execution_plan", Planning, Permanent;
     /// An execution plan had an impossible child count for the adapter node.
-    InvalidChildCount,
+    InvalidChildCount => "invalid_child_count", Internal, Permanent;
     /// cuDF rejected an input, including permanent `NotFound` conditions.
-    CudfInvalidInput,
+    CudfInvalidInput => "cudf_invalid_input", InvalidInput, Permanent;
     /// cuDF reported a permanent unsupported capability.
-    CudfUnsupported,
-    /// cuDF reported resource exhaustion.
-    ///
-    /// This is classified as temporary because reducing memory pressure or
-    /// retrying with a different admission decision can remediate it.
-    CudfResourceExhausted,
+    CudfUnsupported => "cudf_unsupported", Unsupported, Permanent;
     /// A host materialization size computation overflowed the platform range.
-    SizeOverflow,
+    SizeOverflow => "size_overflow", ResourceExhausted, Permanent;
     /// One unsplittable Arrow host row exceeds the configured deterministic
     /// materialization ceiling.
-    HostMaterializationLimitExceeded,
+    HostMaterializationLimitExceeded => "host_materialization_limit_exceeded", ResourceExhausted, Permanent;
     /// A bounded host-staging boundary exceeded its configured cumulative byte
     /// ceiling before GPU admission or a device-to-host copy.
-    HostStagingLimitExceeded,
+    HostStagingLimitExceeded => "host_staging_limit_exceeded", ResourceExhausted, Permanent;
     /// DataFusion's host memory pool rejected a reservation.
     ///
     /// This is a temporary resource condition of the host-side pool only.
     /// Device memory is governed by the query domain allocator and reports
     /// through [`Self::QueryMemoryLimitExceeded`], [`Self::DeviceOutOfMemory`],
     /// and [`Self::DeviceAllocationFailed`].
-    HostMemoryExhausted,
+    HostMemoryExhausted => "host_memory_exhausted", ResourceExhausted, Temporary;
     /// cuDF reported a temporary dependency/runtime failure.
-    CudfTemporaryFailure,
+    CudfTemporaryFailure => "cudf_temporary_failure", DependencyFailure, Temporary;
     /// cuDF reported a persistent dependency/runtime failure.
     ///
     /// The failure has been observed to recur or is known to continue. Stop
     /// automatic retries and escalate or wait for intervention.
-    CudfPersistentFailure,
+    CudfPersistentFailure => "cudf_persistent_failure", DependencyFailure, Persistent;
     /// cuDF reported a permanent dependency failure.
-    CudfDependencyFailure,
+    CudfDependencyFailure => "cudf_dependency_failure", DependencyFailure, Permanent;
     /// An iterative native algorithm reached its configured iteration bound.
-    AlgorithmDidNotConverge,
+    AlgorithmDidNotConverge => "algorithm_did_not_converge", DependencyFailure, Permanent;
     /// cuDF reported an invariant or execution-context violation.
-    CudfInvariantViolation,
+    CudfInvariantViolation => "cudf_invariant_violation", InvariantViolation, Permanent;
     /// The native admission controller could not reserve requested memory.
     ///
     /// This is a temporary resource condition copied through from native
     /// execution, separate from a cuDF allocator failure.
-    MemoryReservationFailed,
+    MemoryReservationFailed => "memory_reservation_failed", ResourceExhausted, Temporary;
     /// The native query service rejected work because admission capacity was exhausted.
-    ServiceOverloaded,
+    ServiceOverloaded => "service_overloaded", ResourceExhausted, Temporary;
     /// The requested query cap cannot fit on any eligible device after
     /// subtracting resident ownership.
-    QueryBudgetUnavailable,
+    QueryBudgetUnavailable => "query_budget_unavailable", ResourceExhausted, Temporary;
     /// The query domain rejected an actual or exact-required allocation over
     /// the query's fixed memory cap.
-    QueryMemoryLimitExceeded,
+    QueryMemoryLimitExceeded => "query_memory_limit_exceeded", ResourceExhausted, Permanent;
     /// A device allocation failed with confirmed physical-memory provenance.
-    DeviceOutOfMemory,
+    DeviceOutOfMemory => "device_out_of_memory", ResourceExhausted, Temporary;
     /// A device allocation failed without confirmed physical-memory provenance.
-    DeviceAllocationFailed,
+    DeviceAllocationFailed => "device_allocation_failed", ResourceExhausted, Temporary;
     /// A persistent device or CUDA runtime fault made the affected device
     /// unavailable.
-    DeviceFault,
+    DeviceFault => "device_fault", DependencyFailure, Persistent;
     /// Cleanup or synchronization could not establish safe release of the
     /// attempt's device resources.
-    CleanupFailed,
+    CleanupFailed => "cleanup_failed", DependencyFailure, Persistent;
     /// An owner, provenance, ledger, or stream-routing invariant was violated.
-    InternalInvariantViolation,
+    InternalInvariantViolation => "internal_invariant_violation", InvariantViolation, Permanent;
     /// One logical Arrow row cannot be represented within the configured
     /// Flight/gRPC message limit.
     ///
     /// This is permanent for the same row and transport limit: callers must
     /// project a smaller value or otherwise change the request. The server
     /// must not raise tonic's message-size limit to hide this condition.
-    FlightFrameTooLarge,
+    FlightFrameTooLarge => "flight_frame_too_large", ResourceExhausted, Permanent;
     /// The Flight SQL server transport failed outside request handling.
-    ServerTransportFailure,
+    ServerTransportFailure => "server_transport_failure", DependencyFailure, Permanent;
     /// An internal adapter bug or unreachable condition.
-    Internal,
-}
-
-impl ErrorCode {
-    /// Every adapter error code supported by this crate release.
-    ///
-    /// This list keeps adapter projections and status policy mechanically
-    /// auditable when a new code is introduced.
-    pub const ALL: &'static [Self] = &[
-        Self::Cancelled,
-        Self::SqlParse,
-        Self::InvalidRequest,
-        Self::DataFusionPlanning,
-        Self::PlanningTimeout,
-        Self::ObjectNotFound,
-        Self::SourceAccessDenied,
-        Self::SourceUnauthenticated,
-        Self::SourceObjectNotFound,
-        Self::SourceTemporaryFailure,
-        Self::SourceDependencyFailure,
-        Self::FieldNotFound,
-        Self::GraphInputInvalid,
-        Self::RequiredGpuOperationUnsupported,
-        Self::FinalPlanRequirementUnsatisfied,
-        Self::UnsupportedOperator,
-        Self::UnsupportedExpression,
-        Self::UnsupportedType,
-        Self::InvalidExecutionPlan,
-        Self::InvalidChildCount,
-        Self::CudfInvalidInput,
-        Self::CudfUnsupported,
-        Self::CudfResourceExhausted,
-        Self::SizeOverflow,
-        Self::HostMaterializationLimitExceeded,
-        Self::HostStagingLimitExceeded,
-        Self::HostMemoryExhausted,
-        Self::CudfTemporaryFailure,
-        Self::CudfPersistentFailure,
-        Self::CudfDependencyFailure,
-        Self::AlgorithmDidNotConverge,
-        Self::CudfInvariantViolation,
-        Self::MemoryReservationFailed,
-        Self::ServiceOverloaded,
-        Self::QueryBudgetUnavailable,
-        Self::QueryMemoryLimitExceeded,
-        Self::DeviceOutOfMemory,
-        Self::DeviceAllocationFailed,
-        Self::DeviceFault,
-        Self::CleanupFailed,
-        Self::InternalInvariantViolation,
-        Self::FlightFrameTooLarge,
-        Self::ServerTransportFailure,
-        Self::Internal,
-    ];
-
-    /// Declaration-order position of this variant among [`Self::ALL`].
-    ///
-    /// `#[non_exhaustive]` on this enum only restricts construction and
-    /// matching from other crates; inside this crate an exhaustive `match`
-    /// still fails to compile when a variant is added without updating this
-    /// function, which is what keeps [`Self::ALL`] honest.
-    ///
-    /// Only the `tests` module below calls this; the compile-time exhaustiveness
-    /// check is the point even in a non-test build, so dead-code analysis is
-    /// suppressed outside `cfg(test)` rather than dropping the guard.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the exhaustive match is the guard; only tests call it"))]
-    const fn index(self) -> usize {
-        match self {
-            Self::Cancelled => 0,
-            Self::SqlParse => 1,
-            Self::InvalidRequest => 2,
-            Self::DataFusionPlanning => 3,
-            Self::PlanningTimeout => 4,
-            Self::ObjectNotFound => 5,
-            Self::SourceAccessDenied => 6,
-            Self::SourceUnauthenticated => 7,
-            Self::SourceObjectNotFound => 8,
-            Self::SourceTemporaryFailure => 9,
-            Self::SourceDependencyFailure => 10,
-            Self::FieldNotFound => 11,
-            Self::GraphInputInvalid => 12,
-            Self::RequiredGpuOperationUnsupported => 13,
-            Self::FinalPlanRequirementUnsatisfied => 14,
-            Self::UnsupportedOperator => 15,
-            Self::UnsupportedExpression => 16,
-            Self::UnsupportedType => 17,
-            Self::InvalidExecutionPlan => 18,
-            Self::InvalidChildCount => 19,
-            Self::CudfInvalidInput => 20,
-            Self::CudfUnsupported => 21,
-            Self::CudfResourceExhausted => 22,
-            Self::SizeOverflow => 23,
-            Self::HostMaterializationLimitExceeded => 24,
-            Self::HostStagingLimitExceeded => 25,
-            Self::HostMemoryExhausted => 26,
-            Self::CudfTemporaryFailure => 27,
-            Self::CudfPersistentFailure => 28,
-            Self::CudfDependencyFailure => 29,
-            Self::AlgorithmDidNotConverge => 30,
-            Self::CudfInvariantViolation => 31,
-            Self::MemoryReservationFailed => 32,
-            Self::ServiceOverloaded => 33,
-            Self::QueryBudgetUnavailable => 34,
-            Self::QueryMemoryLimitExceeded => 35,
-            Self::DeviceOutOfMemory => 36,
-            Self::DeviceAllocationFailed => 37,
-            Self::DeviceFault => 38,
-            Self::CleanupFailed => 39,
-            Self::InternalInvariantViolation => 40,
-            Self::FlightFrameTooLarge => 41,
-            Self::ServerTransportFailure => 42,
-            Self::Internal => 43,
-        }
-    }
-
-    /// Stable snake-case code label used in reports and error text.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cancelled => "cancelled",
-            Self::SqlParse => "sql_parse",
-            Self::InvalidRequest => "invalid_request",
-            Self::DataFusionPlanning => "datafusion_planning",
-            Self::PlanningTimeout => "planning_timeout",
-            Self::ObjectNotFound => "object_not_found",
-            Self::SourceAccessDenied => "source_access_denied",
-            Self::SourceUnauthenticated => "source_unauthenticated",
-            Self::SourceObjectNotFound => "source_object_not_found",
-            Self::SourceTemporaryFailure => "source_temporary_failure",
-            Self::SourceDependencyFailure => "source_dependency_failure",
-            Self::FieldNotFound => "field_not_found",
-            Self::GraphInputInvalid => "graph_input_invalid",
-            Self::RequiredGpuOperationUnsupported => "required_gpu_operation_unsupported",
-            Self::FinalPlanRequirementUnsatisfied => "final_plan_requirement_unsatisfied",
-            Self::UnsupportedOperator => "unsupported_operator",
-            Self::UnsupportedExpression => "unsupported_expression",
-            Self::UnsupportedType => "unsupported_type",
-            Self::InvalidExecutionPlan => "invalid_execution_plan",
-            Self::InvalidChildCount => "invalid_child_count",
-            Self::CudfInvalidInput => "cudf_invalid_input",
-            Self::CudfUnsupported => "cudf_unsupported",
-            Self::CudfResourceExhausted => "cudf_resource_exhausted",
-            Self::SizeOverflow => "size_overflow",
-            Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
-            Self::HostStagingLimitExceeded => "host_staging_limit_exceeded",
-            Self::HostMemoryExhausted => "host_memory_exhausted",
-            Self::CudfTemporaryFailure => "cudf_temporary_failure",
-            Self::CudfPersistentFailure => "cudf_persistent_failure",
-            Self::CudfDependencyFailure => "cudf_dependency_failure",
-            Self::AlgorithmDidNotConverge => "algorithm_did_not_converge",
-            Self::CudfInvariantViolation => "cudf_invariant_violation",
-            Self::MemoryReservationFailed => "memory_reservation_failed",
-            Self::ServiceOverloaded => "service_overloaded",
-            Self::QueryBudgetUnavailable => "query_budget_unavailable",
-            Self::QueryMemoryLimitExceeded => "query_memory_limit_exceeded",
-            Self::DeviceOutOfMemory => "device_out_of_memory",
-            Self::DeviceAllocationFailed => "device_allocation_failed",
-            Self::DeviceFault => "device_fault",
-            Self::CleanupFailed => "cleanup_failed",
-            Self::InternalInvariantViolation => "internal_invariant_violation",
-            Self::FlightFrameTooLarge => "flight_frame_too_large",
-            Self::ServerTransportFailure => "server_transport_failure",
-            Self::Internal => "internal",
-        }
-    }
-
-    /// Returns the stable coarse error category for this code.
-    pub const fn kind(self) -> ErrorKind {
-        kind_for_code(self)
-    }
-
-    /// Returns the retry/remediation status for this code.
-    pub const fn status(self) -> ErrorStatus {
-        status_for_code(self)
-    }
+    Internal => "internal", Internal, Permanent;
 }
 
 impl fmt::Display for ErrorCode {
@@ -408,67 +280,16 @@ impl fmt::Display for ErrorStatus {
     }
 }
 
-/// Maps each adapter error code to its stable coarse category.
-///
-/// `kind` is the broad bucket used for diagnostics and aggregation. It is less
-/// specific than [`ErrorCode`] and should remain stable for consumers that group
-/// failures without depending on every code variant.
-pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
-    match code {
-        ErrorCode::Cancelled => ErrorKind::Cancelled,
-        ErrorCode::SqlParse => ErrorKind::InvalidInput,
-        ErrorCode::InvalidRequest => ErrorKind::InvalidInput,
-        ErrorCode::DataFusionPlanning
-        | ErrorCode::PlanningTimeout
-        | ErrorCode::FinalPlanRequirementUnsatisfied
-        | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
-        ErrorCode::ObjectNotFound | ErrorCode::SourceObjectNotFound => ErrorKind::NotFound,
-        ErrorCode::SourceAccessDenied => ErrorKind::PermissionDenied,
-        ErrorCode::SourceUnauthenticated => ErrorKind::Unauthenticated,
-        ErrorCode::FieldNotFound | ErrorCode::GraphInputInvalid => ErrorKind::InvalidInput,
-        ErrorCode::RequiredGpuOperationUnsupported
-        | ErrorCode::UnsupportedOperator
-        | ErrorCode::UnsupportedExpression
-        | ErrorCode::UnsupportedType => ErrorKind::Unsupported,
-        ErrorCode::InvalidChildCount => ErrorKind::Internal,
-        ErrorCode::CudfInvalidInput => ErrorKind::InvalidInput,
-        ErrorCode::CudfUnsupported => ErrorKind::Unsupported,
-        ErrorCode::CudfResourceExhausted
-        | ErrorCode::SizeOverflow
-        | ErrorCode::HostMaterializationLimitExceeded
-        | ErrorCode::HostStagingLimitExceeded
-        | ErrorCode::HostMemoryExhausted
-        | ErrorCode::MemoryReservationFailed
-        | ErrorCode::ServiceOverloaded
-        | ErrorCode::QueryBudgetUnavailable
-        | ErrorCode::QueryMemoryLimitExceeded
-        | ErrorCode::DeviceOutOfMemory
-        | ErrorCode::DeviceAllocationFailed
-        | ErrorCode::FlightFrameTooLarge => ErrorKind::ResourceExhausted,
-        ErrorCode::CudfTemporaryFailure
-        | ErrorCode::CudfPersistentFailure
-        | ErrorCode::CudfDependencyFailure
-        | ErrorCode::AlgorithmDidNotConverge
-        | ErrorCode::SourceDependencyFailure
-        | ErrorCode::SourceTemporaryFailure
-        | ErrorCode::DeviceFault
-        | ErrorCode::CleanupFailed
-        | ErrorCode::ServerTransportFailure => ErrorKind::DependencyFailure,
-        ErrorCode::CudfInvariantViolation | ErrorCode::InternalInvariantViolation => ErrorKind::InvariantViolation,
-        ErrorCode::Internal => ErrorKind::Internal,
-    }
-}
-
 /// Maps a native engine error code to the closest adapter code.
 ///
-/// The mapping is intentionally lossy at the top-level code: native
-/// `UnsupportedPlanShape` becomes adapter `UnsupportedOperator` because the
-/// adapter has no shape-specific code. The exact native code remains available
-/// in the `native_code` fact attached by `Error::from_native`.
+/// The mapping is lossy at the top-level code: native
+/// `UnsupportedPipelineContract` becomes adapter `UnsupportedOperator` because
+/// the adapter has no pipeline-contract code. The exact native code remains
+/// available in the `native_code` fact attached by `Error::from_native`.
 pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
     match code {
         QueryErrorCode::Cancelled => ErrorCode::Cancelled,
-        QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
+        QueryErrorCode::UnsupportedPipelineContract => ErrorCode::UnsupportedOperator,
         QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
         QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
         QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
@@ -477,7 +298,6 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
         QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
         QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
         QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
-        QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
         QueryErrorCode::SizeOverflow => ErrorCode::SizeOverflow,
         QueryErrorCode::HostMaterializationLimitExceeded => ErrorCode::HostMaterializationLimitExceeded,
         QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
@@ -499,77 +319,5 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
         QueryErrorCode::CleanupFailed => ErrorCode::CleanupFailed,
         QueryErrorCode::InternalInvariantViolation => ErrorCode::InternalInvariantViolation,
         QueryErrorCode::Internal => ErrorCode::Internal,
-    }
-}
-
-/// Maps each adapter error code to its stable retry/remediation status.
-///
-/// Attempt retry advice is derived only after terminal evidence is sealed.
-/// [`ErrorStatus::Persistent`] means a repeated or known-continuing dependency
-/// failure that requires escalation or intervention, while
-/// [`ErrorStatus::Permanent`] means the request, input, configuration, or code
-/// must change before the same operation can succeed.
-pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
-    match code {
-        ErrorCode::Cancelled => ErrorStatus::Permanent,
-        ErrorCode::CudfResourceExhausted
-        | ErrorCode::CudfTemporaryFailure
-        | ErrorCode::SourceTemporaryFailure
-        | ErrorCode::HostMemoryExhausted
-        | ErrorCode::MemoryReservationFailed
-        | ErrorCode::ServiceOverloaded
-        | ErrorCode::QueryBudgetUnavailable
-        | ErrorCode::DeviceOutOfMemory
-        | ErrorCode::DeviceAllocationFailed => ErrorStatus::Temporary,
-        ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
-        ErrorCode::SqlParse
-        | ErrorCode::InvalidRequest
-        | ErrorCode::DataFusionPlanning
-        | ErrorCode::PlanningTimeout
-        | ErrorCode::ObjectNotFound
-        | ErrorCode::SourceAccessDenied
-        | ErrorCode::SourceUnauthenticated
-        | ErrorCode::SourceObjectNotFound
-        | ErrorCode::FieldNotFound
-        | ErrorCode::GraphInputInvalid
-        | ErrorCode::FlightFrameTooLarge
-        | ErrorCode::RequiredGpuOperationUnsupported
-        | ErrorCode::FinalPlanRequirementUnsatisfied
-        | ErrorCode::UnsupportedOperator
-        | ErrorCode::UnsupportedExpression
-        | ErrorCode::UnsupportedType
-        | ErrorCode::InvalidExecutionPlan
-        | ErrorCode::InvalidChildCount
-        | ErrorCode::CudfInvalidInput
-        | ErrorCode::CudfUnsupported
-        | ErrorCode::SizeOverflow
-        | ErrorCode::HostMaterializationLimitExceeded
-        | ErrorCode::HostStagingLimitExceeded
-        | ErrorCode::CudfDependencyFailure
-        | ErrorCode::AlgorithmDidNotConverge
-        | ErrorCode::SourceDependencyFailure
-        | ErrorCode::CudfInvariantViolation
-        | ErrorCode::QueryMemoryLimitExceeded
-        | ErrorCode::InternalInvariantViolation
-        | ErrorCode::ServerTransportFailure
-        | ErrorCode::Internal => ErrorStatus::Permanent,
-        ErrorCode::DeviceFault | ErrorCode::CleanupFailed => ErrorStatus::Persistent,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::ErrorCode;
-
-    #[test]
-    fn all_lists_every_variant_exactly_once_in_declaration_order() {
-        for (position, code) in ErrorCode::ALL.iter().enumerate() {
-            assert_eq!(code.index(), position, "ErrorCode::ALL entry {code:?} is out of declaration order");
-        }
-
-        let distinct_indices: HashSet<usize> = ErrorCode::ALL.iter().map(|code| code.index()).collect();
-        assert_eq!(distinct_indices.len(), ErrorCode::ALL.len(), "ErrorCode::ALL contains a duplicate variant");
     }
 }

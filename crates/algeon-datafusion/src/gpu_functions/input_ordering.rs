@@ -9,7 +9,6 @@
 use std::fmt;
 
 use datafusion::{
-    common::{DataFusionError, Result},
     logical_expr::{Expr, LogicalPlan, SortExpr, planner::RelationPlannerContext},
     sql::{
         planner::NullOrdering,
@@ -18,6 +17,8 @@ use datafusion::{
         },
     },
 };
+
+use crate::error::{Error, Result};
 
 /// Resolves `query`'s top-level `ORDER BY` against `planned`, the logical plan
 /// of that same query, as sort keys over the planned output columns.
@@ -31,7 +32,7 @@ pub(crate) fn resolve_input_ordering(
     query: &SqlQuery,
     planned: &LogicalPlan,
     context: &mut dyn RelationPlannerContext,
-    key_not_projected: impl Fn(String) -> DataFusionError,
+    key_not_projected: impl Fn(String) -> Error,
 ) -> Result<Vec<SortExpr>> {
     let Some(order_by) = &query.order_by else {
         return Ok(Vec::new());

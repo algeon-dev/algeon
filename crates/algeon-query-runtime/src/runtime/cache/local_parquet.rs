@@ -47,8 +47,9 @@ pub(crate) enum GpuLocalParquetSourceCachePromotion {
     /// The aggregate cache cap could not reserve capacity, even after all
     /// evictable LRU entries were retired.
     CapacitySkipped,
-    /// Cache-domain allocation failed after the pre-reservation. The original
-    /// attempt-owned frame remains the only usable source result.
+    /// Cache-domain allocation failed after the pre-reservation, or the copy
+    /// outgrew it. The original attempt-owned frame remains the only usable
+    /// source result.
     AllocationFailed,
 }
 
@@ -59,6 +60,8 @@ pub struct GpuLocalParquetSourceCachePromotionResult {
     pub(crate) outcome: GpuLocalParquetSourceCachePromotion,
     pub(crate) retained_device_bytes: u64,
     pub(crate) evicted_device_bytes: u64,
+    /// The allocation error code, when a copy allocation failed rather than
+    /// outgrew its pre-reservation.
     pub(crate) allocation_failure_code: Option<QueryErrorCode>,
 }
 
@@ -90,12 +93,12 @@ impl GpuLocalParquetSourceCachePromotionResult {
         }
     }
 
-    fn allocation_failed(evicted_device_bytes: u64, code: QueryErrorCode) -> Self {
+    fn allocation_failed(evicted_device_bytes: u64, code: Option<QueryErrorCode>) -> Self {
         Self {
             outcome: GpuLocalParquetSourceCachePromotion::AllocationFailed,
             retained_device_bytes: 0,
             evicted_device_bytes,
-            allocation_failure_code: Some(code),
+            allocation_failure_code: code,
         }
     }
 }
@@ -760,13 +763,12 @@ impl GpuLocalParquetSourceCache {
                     QueryErrorCode::QueryMemoryLimitExceeded
                         | QueryErrorCode::DeviceOutOfMemory
                         | QueryErrorCode::DeviceAllocationFailed
-                        | QueryErrorCode::CudfResourceExhausted
                 ) =>
             {
                 self.clear_promotion(&key)?;
                 return Ok(GpuLocalParquetSourceCachePromotionResult::allocation_failed(
                     evicted_device_bytes,
-                    error.code(),
+                    Some(error.code()),
                 ));
             },
             Err(error) => return Err(error),
@@ -795,10 +797,7 @@ impl GpuLocalParquetSourceCache {
         if !shrunk {
             self.discard_uncommitted_value(value, transaction)?;
             self.clear_promotion(&key)?;
-            return Ok(GpuLocalParquetSourceCachePromotionResult::allocation_failed(
-                evicted_device_bytes,
-                QueryErrorCode::CudfResourceExhausted,
-            ));
+            return Ok(GpuLocalParquetSourceCachePromotionResult::allocation_failed(evicted_device_bytes, None));
         }
 
         let residency = transaction.commit_evictable();

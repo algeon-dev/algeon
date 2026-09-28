@@ -462,7 +462,10 @@ fn report_owns_device(observation: &AttemptObservation) -> bool {
 /// cache-scope allocator record: a resident scope now publishes every
 /// allocation failure class with its immutable scope identity.
 fn memory_failure_requires_allocator_event(observation: &AttemptObservation) -> bool {
-    matches!(observation.failure.as_ref().map(|failure| failure.code.as_str()), Some("CudfResourceExhausted"))
+    matches!(
+        observation.failure.as_ref().map(|failure| failure.code.as_str()),
+        Some("QueryMemoryLimitExceeded" | "DeviceOutOfMemory" | "DeviceAllocationFailed")
+    )
 }
 
 /// An allocator event is attributable only when its own public provenance is
@@ -570,12 +573,12 @@ mod tests {
         let mut observation = observation();
         observation.failure = Some(AttemptFailureClass {
             origin: "Native".to_string(),
-            code: "CudfResourceExhausted".to_string(),
+            code: "QueryMemoryLimitExceeded".to_string(),
             status: "Temporary".to_string(),
             operation: "Execution".to_string(),
         });
         observation.terminal_evidence.primary_failure = Some(json!({
-            "code": "cudf_resource_exhausted",
+            "code": "query_memory_limit_exceeded",
             "facts": [{
                 "key": "allocation_source",
                 "value": allocation_source,

@@ -344,7 +344,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         assert!(
             decision.admission().is_some(),
             "the complete optimized q21 pipeline must admit residual semi/anti joins with {build_side:?} build side: {:?}\n{plan}",
-            decision.rejection_projection()
+            decision.rejection()
         );
     }
 
@@ -749,7 +749,7 @@ fn assert_q11_keyless_proof_admitted(plan: &QueryPlan, context: &str) {
     assert!(
         decision.admission().is_some(),
         "{context} should be bounded executable: {:?}\n{plan}",
-        decision.rejection_projection()
+        decision.rejection()
     );
     // The keyless scalar-fanout cardinality proof survives as a node fact, not
     // a plan-family reason: q11's scalar threshold aggregate emits at most one

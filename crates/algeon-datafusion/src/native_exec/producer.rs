@@ -57,24 +57,28 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// the output occurrence to the evidence's last execution scope. The
     /// default error makes composed admission reject a producer that cannot
     /// describe its output.
-    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
-        Err(DataFusionError::Plan(format!(
-            "GPU-resident producer {} does not expose capability evidence for its output",
-            self.gpu_result_input_name()
-        )))
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
+        Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "algeon_datafusion.native_exec.gpu_result_capability_evidence",
+            format!(
+                "GPU-resident producer {} does not expose capability evidence for its output",
+                self.gpu_result_input_name()
+            ),
+        ))
     }
 
     /// Capability evidence for this function when its result crosses the
     /// ordinary Arrow boundary back into DataFusion. Most producers execute
     /// the same native fragment for resident and host results; frontends whose
     /// sink changes the executable plan override this method.
-    fn host_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn host_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         self.gpu_result_capability_evidence()
     }
 
     /// Exact native plan submitted when this frontend node materializes a host
     /// Arrow result. Resident-only internal producers return `None`.
-    fn host_result_query_plan(&self) -> DataFusionResult<Option<QueryPlan>> {
+    fn host_result_query_plan(&self) -> Result<Option<QueryPlan>> {
         Ok(None)
     }
 
@@ -116,10 +120,7 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     /// input. `Ok(Some(producer))` replaces this producer and reduces the
     /// consumer to passing the replacement's output to the host sink;
     /// `Ok(None)` leaves both unchanged.
-    fn rewrite_subsumed_composed_consumer(
-        &self,
-        _consumer_plan: &QueryPlan,
-    ) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+    fn rewrite_subsumed_composed_consumer(&self, _consumer_plan: &QueryPlan) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         Ok(None)
     }
 
@@ -383,7 +384,7 @@ impl GpuResidentProducer for AlgeonNativeGpuProducerExec {
         self.input_name()
     }
 
-    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         Ok(AttemptCapabilityEvidence::for_query_plan(self.native_plan()))
     }
 
@@ -455,7 +456,7 @@ pub(crate) fn gpu_resident_producer_unique_output_key(plan: &dyn ExecutionPlan) 
 pub(crate) fn rewrite_gpu_resident_producer_for_subsumed_composed_consumer(
     plan: &dyn ExecutionPlan,
     consumer_plan: &QueryPlan,
-) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
     gpu_resident_producer(plan)
         .map(|producer| producer.rewrite_subsumed_composed_consumer(consumer_plan))
         .unwrap_or(Ok(None))

@@ -6,7 +6,6 @@ use std::{path::PathBuf, sync::Arc};
 
 #[cfg(feature = "cuml")]
 use cuml::{ForestModelFormat, ForestOutput, ForestOutputKind, ForestPrecision};
-use datafusion::common::Result as DataFusionResult;
 use query_engine::plan::{MlForestModelFormat, MlForestModelSnapshot};
 #[cfg(feature = "cuml")]
 use query_engine::{
@@ -20,7 +19,7 @@ use super::{
     CumlModelStoreConfig, CumlOperation, CumlValidatedOptions,
     error::{feature_disabled, invalid_call},
 };
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 /// Output the SQL `output` option requests from a forest model.
 #[derive(Debug, Clone, Copy)]
@@ -69,20 +68,20 @@ impl PartialEq for CumlModelStore {
 impl Eq for CumlModelStore {}
 
 impl CumlModelStore {
-    pub(crate) fn try_new(config: CumlModelStoreConfig) -> DataFusionResult<Self> {
+    pub(crate) fn try_new(config: CumlModelStoreConfig) -> Result<Self> {
         let invalid = |message: &str| {
             Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.cuml_sql.install", message)
                 .with_log_safe_fact("reason", "invalid_model_store")
         };
         if config.max_model_bytes == 0 {
-            return Err(invalid("cuML max_model_bytes must be positive").into());
+            return Err(invalid("cuML max_model_bytes must be positive"));
         }
         let root = config
             .root
             .canonicalize()
             .map_err(|error| invalid("cuML models root cannot be resolved").with_source(error))?;
         if !root.is_dir() {
-            return Err(invalid("cuML models root is not a directory").into());
+            return Err(invalid("cuML models root is not a directory"));
         }
         Ok(Self {
             #[cfg(feature = "cuml")]
@@ -100,7 +99,7 @@ pub(super) fn bind_operation_model(
     operation: CumlOperation,
     store: Option<&CumlModelStore>,
     options: &CumlValidatedOptions,
-) -> DataFusionResult<Option<Arc<MlForestModelSnapshot>>> {
+) -> Result<Option<Arc<MlForestModelSnapshot>>> {
     let Some(reference) = options.forest_model_reference() else {
         return Ok(None);
     };
@@ -122,7 +121,7 @@ fn load_snapshot(
     _operation: CumlOperation,
     _store: &CumlModelStore,
     _reference: &ForestModelReference,
-) -> DataFusionResult<MlForestModelSnapshot> {
+) -> Result<MlForestModelSnapshot> {
     unreachable!("bind_operation_model rejects forest models without the cuml feature")
 }
 
@@ -131,7 +130,7 @@ fn load_snapshot(
     operation: CumlOperation,
     store: &CumlModelStore,
     reference: &ForestModelReference,
-) -> DataFusionResult<MlForestModelSnapshot> {
+) -> Result<MlForestModelSnapshot> {
     const INSPECT: &str = "algeon_datafusion.cuml_sql.inspect_forest_model";
     let bytes = open::read_model(operation, store, &reference.path)?;
     let format = match reference.format {
@@ -177,7 +176,7 @@ fn load_snapshot(
         },
     };
     MlForestModelSnapshot::new(&bytes, checkpoint, reference.format, facts, output).map_err(|error| {
-        Error::from_native(INSPECT, "forest model facts are inconsistent with the requested output", error).into()
+        Error::from_native(INSPECT, "forest model facts are inconsistent with the requested output", error)
     })
 }
 
@@ -195,12 +194,10 @@ mod open {
         path::{Component, Path},
     };
 
-    use datafusion::common::{DataFusionError, Result as DataFusionResult};
-
     use super::CumlModelStore;
     use crate::{
-        cuml_sql::{CumlOperation, error::invalid_call_error},
-        error::{Error, ErrorCode},
+        cuml_sql::{CumlOperation, error::invalid_call},
+        error::{Error, ErrorCode, Result},
     };
 
     const OPEN: &str = "algeon_datafusion.cuml_sql.model_store";
@@ -223,16 +220,11 @@ mod open {
     /// resolve normally. The resolved file is held as an `O_PATH` descriptor,
     /// which opens no device and never blocks on a FIFO; only a regular file
     /// within `max_model_bytes` is then reopened for reading.
-    pub(super) fn read_model(
-        operation: CumlOperation,
-        store: &CumlModelStore,
-        relative: &str,
-    ) -> DataFusionResult<Vec<u8>> {
-        let rejected = |rejection: &'static str, message: &str| -> DataFusionError {
-            invalid_call_error(operation, "model_path_rejected", message)
+    pub(super) fn read_model(operation: CumlOperation, store: &CumlModelStore, relative: &str) -> Result<Vec<u8>> {
+        let rejected = |rejection: &'static str, message: &str| -> Error {
+            invalid_call(operation, "model_path_rejected", message)
                 .with_log_safe_fact("rejection", rejection)
                 .with_fact("model", relative)
-                .into()
         };
         if relative.is_empty() || relative.contains('\0') {
             return Err(rejected("invalid_path", "model path must be a non-empty path without NUL bytes"));
@@ -267,8 +259,7 @@ mod open {
                 "openat2 is unavailable (ENOSYS/EPERM); model files require Linux 5.6+",
             )
             .with_log_safe_fact("reason", "openat2_unavailable")
-            .with_source(error)
-            .into(),
+            .with_source(error),
             _ => io_error("failed to resolve the model path", error),
         })?;
         let path = File::from(path);
@@ -291,7 +282,7 @@ mod open {
             })?;
         let opened = file.metadata().map_err(|error| io_error("failed to stat the model file", error))?;
         if (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
-            return Err(Error::new(ErrorCode::Internal, OPEN, "reopened model file is a different inode").into());
+            return Err(Error::new(ErrorCode::Internal, OPEN, "reopened model file is a different inode"));
         }
         read_bounded(operation, file, store.max_model_bytes)
     }
@@ -333,7 +324,7 @@ mod open {
         Err(error)
     }
 
-    fn read_bounded(operation: CumlOperation, file: File, max_model_bytes: u64) -> DataFusionResult<Vec<u8>> {
+    fn read_bounded(operation: CumlOperation, file: File, max_model_bytes: u64) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         file.take(max_model_bytes.saturating_add(1))
             .read_to_end(&mut bytes)
@@ -345,13 +336,12 @@ mod open {
         Ok(bytes)
     }
 
-    fn too_large(operation: CumlOperation, max_model_bytes: u64) -> DataFusionError {
-        invalid_call_error(operation, "model_too_large", "model file exceeds the configured max_model_bytes")
+    fn too_large(operation: CumlOperation, max_model_bytes: u64) -> Error {
+        invalid_call(operation, "model_too_large", "model file exceeds the configured max_model_bytes")
             .with_log_safe_fact("max_model_bytes", max_model_bytes)
-            .into()
     }
 
-    fn io_error(message: &'static str, error: io::Error) -> DataFusionError {
-        Error::new(ErrorCode::Internal, OPEN, message).with_source(error).into()
+    fn io_error(message: &'static str, error: io::Error) -> Error {
+        Error::new(ErrorCode::Internal, OPEN, message).with_source(error)
     }
 }

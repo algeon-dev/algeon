@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
+    capability::Reason,
     error::{QueryError, QueryErrorCode, Result},
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
@@ -27,12 +28,12 @@ const OPERATION: &str = "query_engine.pipeline.validate";
 /// error by its operation string.
 #[derive(Debug)]
 pub(super) struct ScheduleRejection {
-    reason: &'static str,
+    reason: Reason,
     error: QueryError,
 }
 
 impl ScheduleRejection {
-    pub(super) const fn reason(&self) -> &'static str {
+    pub(super) const fn reason(&self) -> Reason {
         self.reason
     }
 
@@ -50,25 +51,28 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> Result<()> {
 }
 
 pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> std::result::Result<(), ScheduleRejection> {
-    let task_ids = named("compiled_pipeline_task_identity_invalid", validate_tasks(pipeline))?;
-    named("compiled_pipeline_edge_identity_invalid", validate_edges(pipeline, &task_ids))?;
-    named("compiled_pipeline_barrier_identity_invalid", validate_barriers(pipeline, &task_ids))?;
-    let resource_ids = named("compiled_pipeline_resource_identity_invalid", validate_resources(pipeline, &task_ids))?;
+    let task_ids = named(Reason::CompiledPipelineTaskIdentityInvalid, validate_tasks(pipeline))?;
+    named(Reason::CompiledPipelineEdgeIdentityInvalid, validate_edges(pipeline, &task_ids))?;
+    named(Reason::CompiledPipelineBarrierIdentityInvalid, validate_barriers(pipeline, &task_ids))?;
+    let resource_ids = named(Reason::CompiledPipelineResourceIdentityInvalid, validate_resources(pipeline, &task_ids))?;
 
-    named("compiled_pipeline_task_dependency_missing", validate_task_dependencies(pipeline, &task_ids))?;
-    named("compiled_pipeline_dependency_cycle", validate_task_graph_is_acyclic(pipeline))?;
-    named("compiled_pipeline_resource_reference_missing", validate_task_resource_references(pipeline, &resource_ids))?;
-    named("compiled_pipeline_resource_flow_invalid", validate_resource_flow(pipeline))?;
-    named("compiled_pipeline_sink_output_lifetime_invalid", validate_sink_output_lifetimes(pipeline))?;
-    named("compiled_pipeline_barrier_dominance_invalid", validate_barrier_dominance(pipeline))?;
-    named("compiled_pipeline_task_resource_arity_invalid", validate_task_resource_arity(pipeline))?;
-    named("compiled_pipeline_stage_boundary_incomplete", validate_stage_boundary_coverage(pipeline))?;
-    named("compiled_pipeline_join_build_before_probe_missing", validate_join_build_before_probe(pipeline))?;
-    named("compiled_pipeline_fused_topk_limit_binding_invalid", validate_fused_topk_limit_binding(pipeline))?;
+    named(Reason::CompiledPipelineTaskDependencyMissing, validate_task_dependencies(pipeline, &task_ids))?;
+    named(Reason::CompiledPipelineDependencyCycle, validate_task_graph_is_acyclic(pipeline))?;
+    named(
+        Reason::CompiledPipelineResourceReferenceMissing,
+        validate_task_resource_references(pipeline, &resource_ids),
+    )?;
+    named(Reason::CompiledPipelineResourceFlowInvalid, validate_resource_flow(pipeline))?;
+    named(Reason::CompiledPipelineSinkOutputLifetimeInvalid, validate_sink_output_lifetimes(pipeline))?;
+    named(Reason::CompiledPipelineBarrierDominanceInvalid, validate_barrier_dominance(pipeline))?;
+    named(Reason::CompiledPipelineTaskResourceArityInvalid, validate_task_resource_arity(pipeline))?;
+    named(Reason::CompiledPipelineStageBoundaryIncomplete, validate_stage_boundary_coverage(pipeline))?;
+    named(Reason::CompiledPipelineJoinBuildBeforeProbeMissing, validate_join_build_before_probe(pipeline))?;
+    named(Reason::CompiledPipelineFusedTopkLimitBindingInvalid, validate_fused_topk_limit_binding(pipeline))?;
 
     if !task_ids.contains(&pipeline.sink().input()) {
         return Err(ScheduleRejection {
-            reason: "compiled_pipeline_sink_input_task_missing",
+            reason: Reason::CompiledPipelineSinkInputTaskMissing,
             error: invalid("pipeline sink input task does not exist").with_fact("task_id", pipeline.sink().input()),
         });
     }
@@ -76,7 +80,7 @@ pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> std::result::Res
     Ok(())
 }
 
-fn named<T>(reason: &'static str, result: Result<T>) -> std::result::Result<T, ScheduleRejection> {
+fn named<T>(reason: Reason, result: Result<T>) -> std::result::Result<T, ScheduleRejection> {
     result.map_err(|error| ScheduleRejection { reason, error })
 }
 

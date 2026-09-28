@@ -251,7 +251,7 @@ fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
         .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
             if ordinal == 0 {
                 Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
+                    QueryErrorCode::UnsupportedOperator,
                     "query_engine.test.sort_preflight",
                     "candidate sort owner preflight failed",
                 )
@@ -273,7 +273,7 @@ fn all_device_entry_resolution_failures_return_capability_reason_before_queueing
     let error = service
         .resolve_device_admission_entries_for_test(&[0, 1], |_ordinal| {
             Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::UnsupportedOperator,
                 "query_engine.test.sort_capability",
                 "sort capability is unavailable",
             )

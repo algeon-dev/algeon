@@ -33,7 +33,7 @@ use crate::{
     native_exec::{AlgeonNativeExec, AlgeonNativeExecutionConfig},
     native_report::FinalPlanDisposition,
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
-    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
+    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
     session::AlgeonSessionStateBuilderExt,
 };
 
@@ -321,6 +321,7 @@ fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
     let report = PlanningReport::from_outcomes([CandidateOutcome::NotSupported {
         candidate: GpuCandidate::new("UnsupportedNativePhysicalPlan", 1),
         capability_reason: CapabilityReason::UnsupportedExpression,
+        detail: NotSupportedDetail::default(),
     }]);
 
     let outcomes = candidate_outcomes_from_report(&report);

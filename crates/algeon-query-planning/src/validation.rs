@@ -38,14 +38,16 @@ pub use aggregate::{
     validate_aggregate_output_names, validate_avg_output_fields, validate_final_aggregate_capability,
     validate_global_aggregate_capability,
 };
-use expressions::{comma_separated, validate_expr, validate_projection_output_expr};
+pub(crate) use expressions::validate_expr;
+use expressions::{comma_separated, validate_projection_output_expr};
 #[doc(hidden)]
 pub use expressions::{substring_stop_position, target_integral_max};
 use join::validate_join_capability;
 pub(crate) use join::walk_join_residual_column_sides;
+pub(crate) use types::require_boolean;
 #[doc(hidden)]
 pub use types::{is_integral_type, is_string_type};
-use types::{require_boolean, require_scalar_operator_value, require_timezone_free_operator_key};
+use types::{require_scalar_operator_value, require_timezone_free_operator_key};
 
 #[doc(hidden)]
 pub fn validate_projection_capability(
@@ -100,7 +102,7 @@ pub fn projection_schema_mismatch_error(
 pub fn topk_candidate_rows(spec: LimitSpec) -> Result<usize> {
     let fetch = spec.fetch.ok_or_else(|| {
         QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.final_sort.topk_limit",
             "offset-only limit has no finite top-k candidate bound",
         )

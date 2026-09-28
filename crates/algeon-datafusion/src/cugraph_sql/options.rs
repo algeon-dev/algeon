@@ -1,13 +1,11 @@
-use datafusion::common::Result;
 use serde_json::{Map, Value};
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphBetweennessSeeds, CugraphBfsOutputMode, CugraphBfsSource,
     CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphKCoreDegreeType, CugraphPageRankParams,
-    CugraphSqlConfig, CugraphVertexSelector,
-    error::{unsupported_option, with_binding_fact},
-    plan,
+    CugraphSqlConfig, CugraphVertexSelector, error::unsupported_option, plan,
 };
+use crate::error::Result;
 
 pub(super) fn default_options(
     algorithm: CugraphAlgorithm,
@@ -74,8 +72,7 @@ pub(super) fn apply_options(
     params: &mut CugraphAlgorithmParams,
 ) -> Result<()> {
     for (key, value) in object {
-        apply_option(algorithm, key, value, graph_options, params)
-            .map_err(|error| with_binding_fact(error, "argument", key))?;
+        apply_option(algorithm, key, value, graph_options, params).map_err(|error| error.with_fact("argument", key))?;
     }
 
     if is_betweenness_algorithm(algorithm) {

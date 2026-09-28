@@ -74,7 +74,10 @@ pub(super) fn invalid_node_reference(id: NodeId, message: &'static str) -> Query
     QueryError::new(QueryErrorCode::InvalidPlan, "query_engine.plan.execute", message).with_fact("node", id)
 }
 
-pub(super) fn unsupported_bounded_shape(message: impl Into<String>, reason: &'static str) -> QueryError {
-    QueryError::new(QueryErrorCode::UnsupportedPlanShape, "query_engine.bounded.plan", message)
+/// A bounded execution precondition that admission proved no longer holds:
+/// the compiled strategy, input orientation, or native state the executor
+/// relies on is not what the admitted plan described.
+pub(super) fn bounded_invariant_violation(message: impl Into<String>, reason: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::InternalInvariantViolation, "query_engine.bounded.plan", message)
         .with_fact("reason", reason)
 }

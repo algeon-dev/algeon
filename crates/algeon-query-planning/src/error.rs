@@ -13,6 +13,7 @@ use std::{
     sync::Arc,
 };
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Value, json};
 
 pub use self::context::{AllocationSource, FailureContext, MemoryFailure, MemoryUsage, ResourceBoundary};
@@ -35,14 +36,14 @@ pub type Result<T> = std::result::Result<T, QueryError>;
 /// Codes describe the closest actionable cause. [`QueryErrorKind`] and
 /// [`QueryErrorStatus`] are derived from the code; consumers should not infer
 /// those policies from variant names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QueryErrorCode {
     /// Query execution was cancelled by the caller.
     Cancelled,
-    /// The requested IR shape is not implemented by the native executor.
+    /// A compiled pipeline contract refuses a plan that must execute natively.
     ///
     /// This is a capability rejection rather than a malformed-plan error.
-    UnsupportedPlanShape,
+    UnsupportedPipelineContract,
     /// A specific operator within an otherwise recognizable plan is unsupported.
     UnsupportedOperator,
     /// An expression or expression form is unsupported.
@@ -65,11 +66,6 @@ pub enum QueryErrorCode {
     CudfInvalidInput,
     /// cuDF reported a permanent unsupported capability.
     CudfUnsupported,
-    /// cuDF reported resource exhaustion.
-    ///
-    /// This is classified as temporary because reducing memory pressure or
-    /// retrying with a different admission decision can remediate it.
-    CudfResourceExhausted,
     /// A host materialization size computation overflowed the platform range.
     /// The same request cannot be retried safely without changing its shape.
     SizeOverflow,
@@ -134,7 +130,7 @@ impl QueryErrorCode {
     /// auditable when a new code is introduced.
     pub const ALL: &'static [Self] = &[
         Self::Cancelled,
-        Self::UnsupportedPlanShape,
+        Self::UnsupportedPipelineContract,
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
@@ -143,7 +139,6 @@ impl QueryErrorCode {
         Self::GraphInputInvalid,
         Self::CudfInvalidInput,
         Self::CudfUnsupported,
-        Self::CudfResourceExhausted,
         Self::SizeOverflow,
         Self::HostMaterializationLimitExceeded,
         Self::CudfTemporaryFailure,
@@ -171,7 +166,7 @@ impl QueryErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
-            Self::UnsupportedPlanShape => "unsupported_plan_shape",
+            Self::UnsupportedPipelineContract => "unsupported_pipeline_contract",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
             Self::UnsupportedType => "unsupported_type",
@@ -180,7 +175,6 @@ impl QueryErrorCode {
             Self::GraphInputInvalid => "graph_input_invalid",
             Self::CudfInvalidInput => "cudf_invalid_input",
             Self::CudfUnsupported => "cudf_unsupported",
-            Self::CudfResourceExhausted => "cudf_resource_exhausted",
             Self::SizeOverflow => "size_overflow",
             Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
@@ -311,7 +305,7 @@ impl fmt::Display for QueryErrorStatus {
 pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
     match code {
         QueryErrorCode::Cancelled => QueryErrorKind::Cancelled,
-        QueryErrorCode::UnsupportedPlanShape
+        QueryErrorCode::UnsupportedPipelineContract
         | QueryErrorCode::UnsupportedOperator
         | QueryErrorCode::UnsupportedExpression
         | QueryErrorCode::UnsupportedType => QueryErrorKind::Unsupported,
@@ -320,8 +314,7 @@ pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         QueryErrorCode::GraphInputInvalid => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
-        QueryErrorCode::CudfResourceExhausted
-        | QueryErrorCode::SizeOverflow
+        QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::MemoryReservationFailed
         | QueryErrorCode::ServiceOverloaded
@@ -356,8 +349,7 @@ pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
         QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
-        QueryErrorCode::CudfResourceExhausted
-        | QueryErrorCode::CudfTemporaryFailure
+        QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::SourceTemporaryFailure
         | QueryErrorCode::MemoryReservationFailed
         | QueryErrorCode::ServiceOverloaded
@@ -365,7 +357,7 @@ pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::DeviceOutOfMemory
         | QueryErrorCode::DeviceAllocationFailed => QueryErrorStatus::Temporary,
         QueryErrorCode::CudfPersistentFailure => QueryErrorStatus::Persistent,
-        QueryErrorCode::UnsupportedPlanShape
+        QueryErrorCode::UnsupportedPipelineContract
         | QueryErrorCode::UnsupportedOperator
         | QueryErrorCode::UnsupportedExpression
         | QueryErrorCode::UnsupportedType
@@ -392,7 +384,7 @@ pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
 pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageCode {
     match code {
         QueryErrorCode::Cancelled => TriageCode::Cancelled,
-        QueryErrorCode::UnsupportedPlanShape => TriageCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedPipelineContract => TriageCode::UnsupportedPlanShape,
         QueryErrorCode::UnsupportedOperator => TriageCode::UnsupportedOperator,
         QueryErrorCode::UnsupportedExpression => TriageCode::UnsupportedExpression,
         QueryErrorCode::UnsupportedType => TriageCode::UnsupportedType,
@@ -400,9 +392,8 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageC
         QueryErrorCode::InvalidAttemptCorrelation
         | QueryErrorCode::GraphInputInvalid
         | QueryErrorCode::CudfInvalidInput => TriageCode::InvalidInput,
-        QueryErrorCode::CudfUnsupported => TriageCode::UnsupportedPlanShape,
-        QueryErrorCode::CudfResourceExhausted
-        | QueryErrorCode::SizeOverflow
+        QueryErrorCode::CudfUnsupported => TriageCode::UnsupportedOperator,
+        QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::QueryMemoryLimitExceeded
         | QueryErrorCode::DeviceOutOfMemory
@@ -425,42 +416,15 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageC
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Failure code of a sealed attempt: a native error's own code, or one of the
+/// attempt lifecycle outcomes no `QueryError` carries.
+///
+/// The wire label is the native code's label and `Debug` prints the native
+/// code's name, so wrapping changes no report value.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[doc(hidden)]
 pub enum AttemptFailureCode {
-    Cancelled,
-    UnsupportedPlanShape,
-    UnsupportedOperator,
-    UnsupportedExpression,
-    UnsupportedType,
-    InvalidPlan,
-    InvalidAttemptCorrelation,
-    GraphInputInvalid,
-    CudfInvalidInput,
-    CudfUnsupported,
-    CudfResourceExhausted,
-    SizeOverflow,
-    HostMaterializationLimitExceeded,
-    CudfTemporaryFailure,
-    CudfPersistentFailure,
-    CudfDependencyFailure,
-    AlgorithmDidNotConverge,
-    SourceAccessDenied,
-    SourceUnauthenticated,
-    SourceObjectNotFound,
-    SourceTemporaryFailure,
-    CudfInvariantViolation,
-    MemoryReservationFailed,
-    ServiceOverloaded,
-    QueryBudgetUnavailable,
-    QueryMemoryLimitExceeded,
-    DeviceOutOfMemory,
-    DeviceAllocationFailed,
-    DeviceFault,
-    CleanupFailed,
-    InternalInvariantViolation,
-    Internal,
+    Query(QueryErrorCode),
     BackendClosing,
     DatafusionError,
     Dropped,
@@ -470,44 +434,22 @@ pub enum AttemptFailureCode {
 }
 
 impl AttemptFailureCode {
+    const LIFECYCLE: [Self; 6] = [
+        Self::BackendClosing,
+        Self::DatafusionError,
+        Self::Dropped,
+        Self::Panicked,
+        Self::StreamSynchronizationFailed,
+        Self::CleanupCallbackAbandoned,
+    ];
+
     pub const fn from_query_error_code(code: QueryErrorCode) -> Self {
-        attempt_failure_code_for_query_error(code)
+        Self::Query(code)
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Cancelled => "cancelled",
-            Self::UnsupportedPlanShape => "unsupported_plan_shape",
-            Self::UnsupportedOperator => "unsupported_operator",
-            Self::UnsupportedExpression => "unsupported_expression",
-            Self::UnsupportedType => "unsupported_type",
-            Self::InvalidPlan => "invalid_plan",
-            Self::InvalidAttemptCorrelation => "invalid_attempt_correlation",
-            Self::GraphInputInvalid => "graph_input_invalid",
-            Self::CudfInvalidInput => "cudf_invalid_input",
-            Self::CudfUnsupported => "cudf_unsupported",
-            Self::CudfResourceExhausted => "cudf_resource_exhausted",
-            Self::SizeOverflow => "size_overflow",
-            Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
-            Self::CudfTemporaryFailure => "cudf_temporary_failure",
-            Self::CudfPersistentFailure => "cudf_persistent_failure",
-            Self::CudfDependencyFailure => "cudf_dependency_failure",
-            Self::AlgorithmDidNotConverge => "algorithm_did_not_converge",
-            Self::SourceAccessDenied => "source_access_denied",
-            Self::SourceUnauthenticated => "source_unauthenticated",
-            Self::SourceObjectNotFound => "source_object_not_found",
-            Self::SourceTemporaryFailure => "source_temporary_failure",
-            Self::CudfInvariantViolation => "cudf_invariant_violation",
-            Self::MemoryReservationFailed => "memory_reservation_failed",
-            Self::ServiceOverloaded => "service_overloaded",
-            Self::QueryBudgetUnavailable => "query_budget_unavailable",
-            Self::QueryMemoryLimitExceeded => "query_memory_limit_exceeded",
-            Self::DeviceOutOfMemory => "device_out_of_memory",
-            Self::DeviceAllocationFailed => "device_allocation_failed",
-            Self::DeviceFault => "device_fault",
-            Self::CleanupFailed => "cleanup_failed",
-            Self::InternalInvariantViolation => "internal_invariant_violation",
-            Self::Internal => "internal",
+            Self::Query(code) => code.as_str(),
             Self::BackendClosing => "backend_closing",
             Self::DatafusionError => "datafusion_error",
             Self::Dropped => "dropped",
@@ -516,42 +458,40 @@ impl AttemptFailureCode {
             Self::CleanupCallbackAbandoned => "cleanup_callback_abandoned",
         }
     }
+
+    fn from_label(label: &str) -> Option<Self> {
+        QueryErrorCode::ALL
+            .iter()
+            .map(|code| Self::Query(*code))
+            .chain(Self::LIFECYCLE)
+            .find(|code| code.as_str() == label)
+    }
 }
 
-pub(crate) const fn attempt_failure_code_for_query_error(code: QueryErrorCode) -> AttemptFailureCode {
-    match code {
-        QueryErrorCode::Cancelled => AttemptFailureCode::Cancelled,
-        QueryErrorCode::UnsupportedPlanShape => AttemptFailureCode::UnsupportedPlanShape,
-        QueryErrorCode::UnsupportedOperator => AttemptFailureCode::UnsupportedOperator,
-        QueryErrorCode::UnsupportedExpression => AttemptFailureCode::UnsupportedExpression,
-        QueryErrorCode::UnsupportedType => AttemptFailureCode::UnsupportedType,
-        QueryErrorCode::InvalidPlan => AttemptFailureCode::InvalidPlan,
-        QueryErrorCode::InvalidAttemptCorrelation => AttemptFailureCode::InvalidAttemptCorrelation,
-        QueryErrorCode::GraphInputInvalid => AttemptFailureCode::GraphInputInvalid,
-        QueryErrorCode::CudfInvalidInput => AttemptFailureCode::CudfInvalidInput,
-        QueryErrorCode::CudfUnsupported => AttemptFailureCode::CudfUnsupported,
-        QueryErrorCode::CudfResourceExhausted => AttemptFailureCode::CudfResourceExhausted,
-        QueryErrorCode::SizeOverflow => AttemptFailureCode::SizeOverflow,
-        QueryErrorCode::HostMaterializationLimitExceeded => AttemptFailureCode::HostMaterializationLimitExceeded,
-        QueryErrorCode::CudfTemporaryFailure => AttemptFailureCode::CudfTemporaryFailure,
-        QueryErrorCode::CudfPersistentFailure => AttemptFailureCode::CudfPersistentFailure,
-        QueryErrorCode::CudfDependencyFailure => AttemptFailureCode::CudfDependencyFailure,
-        QueryErrorCode::AlgorithmDidNotConverge => AttemptFailureCode::AlgorithmDidNotConverge,
-        QueryErrorCode::SourceAccessDenied => AttemptFailureCode::SourceAccessDenied,
-        QueryErrorCode::SourceUnauthenticated => AttemptFailureCode::SourceUnauthenticated,
-        QueryErrorCode::SourceObjectNotFound => AttemptFailureCode::SourceObjectNotFound,
-        QueryErrorCode::SourceTemporaryFailure => AttemptFailureCode::SourceTemporaryFailure,
-        QueryErrorCode::CudfInvariantViolation => AttemptFailureCode::CudfInvariantViolation,
-        QueryErrorCode::MemoryReservationFailed => AttemptFailureCode::MemoryReservationFailed,
-        QueryErrorCode::ServiceOverloaded => AttemptFailureCode::ServiceOverloaded,
-        QueryErrorCode::QueryBudgetUnavailable => AttemptFailureCode::QueryBudgetUnavailable,
-        QueryErrorCode::QueryMemoryLimitExceeded => AttemptFailureCode::QueryMemoryLimitExceeded,
-        QueryErrorCode::DeviceOutOfMemory => AttemptFailureCode::DeviceOutOfMemory,
-        QueryErrorCode::DeviceAllocationFailed => AttemptFailureCode::DeviceAllocationFailed,
-        QueryErrorCode::DeviceFault => AttemptFailureCode::DeviceFault,
-        QueryErrorCode::CleanupFailed => AttemptFailureCode::CleanupFailed,
-        QueryErrorCode::InternalInvariantViolation => AttemptFailureCode::InternalInvariantViolation,
-        QueryErrorCode::Internal => AttemptFailureCode::Internal,
+impl fmt::Debug for AttemptFailureCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Query(code) => fmt::Debug::fmt(code, f),
+            Self::BackendClosing => f.write_str("BackendClosing"),
+            Self::DatafusionError => f.write_str("DatafusionError"),
+            Self::Dropped => f.write_str("Dropped"),
+            Self::Panicked => f.write_str("Panicked"),
+            Self::StreamSynchronizationFailed => f.write_str("StreamSynchronizationFailed"),
+            Self::CleanupCallbackAbandoned => f.write_str("CleanupCallbackAbandoned"),
+        }
+    }
+}
+
+impl Serialize for AttemptFailureCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AttemptFailureCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let label = <Cow<'de, str>>::deserialize(deserializer)?;
+        Self::from_label(&label).ok_or_else(|| D::Error::custom(format!("unknown attempt failure code `{label}`")))
     }
 }
 
@@ -990,7 +930,7 @@ mod tests {
     #[test]
     fn graph_cache_scope_peak_is_a_typed_sideband_not_an_error_fact() {
         let error = QueryError::new(
-            QueryErrorCode::CudfResourceExhausted,
+            QueryErrorCode::DeviceAllocationFailed,
             "query_engine.test.cache_scope",
             "cache scope failed",
         )
@@ -1038,6 +978,23 @@ mod tests {
         assert_eq!(wire[FACT_COLLISION_KEYS], "budget_boundary,budget_bytes,memory_boundary,stage");
         assert_eq!(error.wire_facts().collect::<Vec<_>>(), error.wire_facts().collect::<Vec<_>>());
         assert!(error.to_string().contains("budget_bytes=4096"), "{error}");
+    }
+
+    #[test]
+    fn attempt_failure_codes_round_trip_through_their_labels() {
+        let codes = QueryErrorCode::ALL
+            .iter()
+            .map(|code| AttemptFailureCode::Query(*code))
+            .chain(AttemptFailureCode::LIFECYCLE)
+            .collect::<Vec<_>>();
+        assert_eq!(codes.len(), 37);
+        for code in codes {
+            let json = serde_json::to_string(&code).unwrap();
+            assert_eq!(json, format!("\"{}\"", code.as_str()));
+            assert_eq!(serde_json::from_str::<AttemptFailureCode>(&json).unwrap(), code);
+        }
+        assert_eq!(AttemptFailureCode::Query(QueryErrorCode::Internal).as_str(), "internal");
+        assert!(serde_json::from_str::<AttemptFailureCode>("\"unsupported_plan_shape\"").is_err());
     }
 
     #[test]

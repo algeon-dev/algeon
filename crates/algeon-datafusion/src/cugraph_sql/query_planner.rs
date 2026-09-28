@@ -43,8 +43,8 @@ impl ExtensionPlanner for CugraphExtensionPlanner {
         #[cfg(not(feature = "cugraph"))]
         {
             let _ = (planner, logical_inputs, session);
-            return CugraphFeatureDisabledExec::new(node.spec().algorithm, node.output_schema(), None, None)
-                .map(|exec| Some(Arc::new(exec) as Arc<dyn ExecutionPlan>));
+            let exec = CugraphFeatureDisabledExec::new(node.spec().algorithm, node.output_schema(), None, None)?;
+            return Ok(Some(Arc::new(exec) as Arc<dyn ExecutionPlan>));
         }
 
         #[cfg(feature = "cugraph")]

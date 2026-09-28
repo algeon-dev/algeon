@@ -29,7 +29,7 @@ use super::*;
 use crate::{
     attempt::attempt_ticket_for_test,
     backend::InstalledTestGpuBackend,
-    error::{DataFusionErrorExt, Error, ErrorCode},
+    error::{Error, ErrorCode},
     native_exec::{
         AlgeonNativeGpuProducerExec, QueryAdmissionSource, SourceChunking,
         admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
@@ -102,15 +102,19 @@ impl ExecutionPlan for FakeHostOwnedGraphExec {
 }
 
 impl GraphExecutionPlan for FakeHostOwnedGraphExec {
-    fn graph_execution_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
-        Err(DataFusionError::Execution("fake host-owned graph does not issue a evidence".to_string()))
+    fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
+        Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "algeon_datafusion.test.host_owned_graph",
+            "fake host-owned graph does not issue a evidence",
+        ))
     }
 
     fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
         SealedAttemptMetricsTarget::new(&ExecutionPlanMetricsSet::new(), GraphClaimCalibrationCapture::default())
     }
 
-    fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
+    fn gpu_resident_output_rejection(&self) -> Option<Error> {
         Some(
             Error::new(
                 ErrorCode::RequiredGpuOperationUnsupported,
@@ -118,8 +122,7 @@ impl GraphExecutionPlan for FakeHostOwnedGraphExec {
                 "fake graph output is host-owned",
             )
             .with_fact("reason", "logical_bfs_gpu_result_unsupported")
-            .with_fact("output_boundary", "gpu_resident")
-            .into(),
+            .with_fact("output_boundary", "gpu_resident"),
         )
     }
 }
@@ -171,7 +174,7 @@ impl GpuResidentProducer for FakeGpuResidentProducer {
         &self.input_name
     }
 
-    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         Ok(self.capability_evidence.clone())
     }
 
@@ -195,7 +198,7 @@ impl GpuResidentProducer for FakeGpuResidentProducer {
 }
 
 impl GraphExecutionPlan for FakeGpuResidentProducer {
-    fn graph_execution_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn graph_execution_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         Ok(self.capability_evidence.clone())
     }
 
@@ -739,8 +742,7 @@ fn complete_composed_admission_evidence_rejects_backend_mismatch_before_rebind()
         Ok(_) => panic!("producer and root admission authorities must match"),
         Err(error) => error,
     };
-    let native = error.find_algeon_error().expect("backend mismatch remains structured");
-    assert_eq!(native.fact_value("reason"), Some("composed_producer_admission_backend_mismatch"));
+    assert_eq!(error.fact_value("reason"), Some("composed_producer_admission_backend_mismatch"));
 }
 
 #[tokio::test]

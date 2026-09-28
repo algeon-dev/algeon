@@ -38,7 +38,7 @@ use tokio::sync::Notify;
 
 use crate::{
     attempt::execute_in_internal_attempt,
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     native_exec::metrics::NativeExecutionMetricsCapture,
     planner::native::Invocation,
 };
@@ -315,7 +315,7 @@ impl QueryAdmissionTicket {
         occurrence_id: &str,
         producer_identity: &str,
         plan: &QueryPlan,
-    ) -> DataFusionResult<Option<AttemptHostOccurrence>> {
+    ) -> Result<Option<AttemptHostOccurrence>> {
         if !self.has_execution_manifest() {
             return Ok(None);
         }
@@ -325,31 +325,25 @@ impl QueryAdmissionTicket {
             .filter(|active| Arc::ptr_eq(&active.ticket, self))
             .map(|active| active.execution_round.clone())
             .ok_or_else(|| {
-                DataFusionError::from(
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        "algeon_datafusion.native_exec.host_occurrence",
-                        "a GPU function occurrence began outside its invocation execution round",
-                    )
-                    .with_log_safe_fact("reason", "host_occurrence_execution_round_missing")
-                    .with_log_safe_fact("occurrence_id", occurrence_id)
-                    .with_log_safe_fact("producer_identity", producer_identity),
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "algeon_datafusion.native_exec.host_occurrence",
+                    "a GPU function occurrence began outside its invocation execution round",
                 )
+                .with_log_safe_fact("reason", "host_occurrence_execution_round_missing")
+                .with_log_safe_fact("occurrence_id", occurrence_id)
+                .with_log_safe_fact("producer_identity", producer_identity)
             })?;
         execution_round.begin_host_occurrence(occurrence_id, producer_identity, plan).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.native_exec.host_occurrence",
                 "the GPU function cannot begin in its admitted execution schedule",
                 error,
-            ))
+            )
         })
     }
 
-    pub(crate) fn validate_host_occurrence(
-        &self,
-        producer_identity: &str,
-        plan: &QueryPlan,
-    ) -> DataFusionResult<Option<()>> {
+    pub(crate) fn validate_host_occurrence(&self, producer_identity: &str, plan: &QueryPlan) -> Result<Option<()>> {
         let Some(evidence) = self.current_capability_evidence() else {
             return Ok(None);
         };
@@ -357,11 +351,11 @@ impl QueryAdmissionTicket {
             return Ok(None);
         };
         manifest.validate_host_producer(producer_identity, plan).map(Some).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.native_exec.host_occurrence",
                 "the executing GPU function does not match an admitted host producer",
                 error,
-            ))
+            )
         })
     }
 

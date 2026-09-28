@@ -26,7 +26,7 @@ use query_engine::{
         compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
     },
     attempt::{AttemptOwner, BeginAttemptRequest},
-    capability::CapabilityRejectionProjection,
+    capability::Rejection,
     dynamic_filter::DynamicFilterProducer,
     error::{QueryErrorCode, Result},
     exec::{
@@ -75,14 +75,14 @@ fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Arc<AdmittedPla
     .cloned())
 }
 
-fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
+fn bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<Rejection>> {
     Ok(admit(
         plan,
         StatisticalAggregateExecutionMode::default(),
         PlanningPolicy::default(),
         rapids_analysis_context(PlanningPolicy::default()),
     )?
-    .rejection_projection()
+    .rejection()
     .cloned())
 }
 

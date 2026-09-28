@@ -58,7 +58,7 @@ fn native_query_rejects_cross_join_with_residual_before_source_read() {
         Expr::binary(Expr::input_column(0, "id", "left_id"), BinaryOp::Eq, Expr::input_column(1, "id", "right_id")),
     );
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.operation(), "query_engine.join.validate");
     assert_eq!(error.fact_value("join_type"), Some("cross"));
     assert!(error.fact_value("path").is_none());

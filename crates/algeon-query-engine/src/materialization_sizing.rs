@@ -84,7 +84,7 @@ pub fn join_output_upper_bound_bytes(
 fn materialization_preflight_error(error: cudf::Error) -> QueryError {
     let reason = error.detail_value("reason").map(str::to_owned);
     let code = match (error.code(), reason.as_deref()) {
-        (cudf::ErrorCode::UnsupportedDtype, _) => QueryErrorCode::UnsupportedPlanShape,
+        (cudf::ErrorCode::UnsupportedDtype, _) => QueryErrorCode::UnsupportedType,
         (cudf::ErrorCode::UnsupportedOperation, Some("string_payload_evidence_missing")) => QueryErrorCode::InvalidPlan,
         _ => {
             return cudf_query_error(
@@ -115,7 +115,7 @@ pub fn partial_aggregate_upper_bound_bytes(
 
 fn unsupported_dtype(column: &JoinOutputColumnUpperBoundInput) -> QueryError {
     QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedType,
         "query_engine.bounded.join.sizing",
         "materialized output column dtype is not supported by the cuDF owner preflight",
     )

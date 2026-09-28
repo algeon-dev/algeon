@@ -126,7 +126,7 @@ fn timestamp_no_timezone_uses_eight_bytes() {
 fn timestamp_with_timezone_is_rejected() {
     let column = fixed_column(ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())));
     let error = join_output_upper_bound_bytes(64, &[column]).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn unsupported_dtypes_are_rejected() {
         ArrowDataType::Struct(Fields::empty()),
     ] {
         let error = join_output_upper_bound_bytes(10, &[fixed_column(dtype.clone())]).unwrap_err();
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape, "dtype {dtype:?}");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "dtype {dtype:?}");
     }
 }
 

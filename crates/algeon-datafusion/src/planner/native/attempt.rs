@@ -4,7 +4,7 @@ use std::{
 };
 
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
+    common::Result as DataFusionResult,
     physical_expr::EquivalenceProperties,
     physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions},
 };
@@ -42,7 +42,7 @@ use crate::{
         AlgeonNativeGpuProducerExec, gpu_resident_producer, gpu_resident_producer_input_name,
         rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
-    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
+    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, NotSupportedDetail, PlanningReport},
 };
 
 /// Optimizer attempt output, including the replacement plan and all report evidence.
@@ -290,8 +290,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
         .single_selected_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
-    let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
-        .map_err(DataFusionError::from)?;
+    let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)?;
     let optimizer_result = optimize_query_plan(
         lowering.plans[0].clone(),
         &optimizer_options,
@@ -315,7 +314,12 @@ fn replace_lowered_root_or_keep_plan_for_sink(
             };
             return Ok(NativeOptimizationAttempt {
                 plan,
-                report: native_execution_rejection_report_for_candidate(candidate, reason, &lowering.report),
+                report: native_execution_rejection_report_for_candidate(
+                    candidate,
+                    reason,
+                    NotSupportedDetail::default(),
+                    &lowering.report,
+                ),
                 native_optimizer,
                 source_diagnostics: lowering.source_diagnostics,
                 capability_contract: NativeCapabilityContractDiagnostics::default(),
@@ -336,7 +340,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
                 &lowering.report,
                 reason,
                 NativeCandidateCostEvidence::from_cost_facts(facts),
-            )?,
+            ),
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
             capability_contract: NativeCapabilityContractDiagnostics::default(),
@@ -359,6 +363,7 @@ fn replace_lowered_root_or_keep_plan_for_sink(
             report: native_execution_rejection_report_for_candidate(
                 candidate,
                 CapabilityReason::NativeExactStatisticalInputPartitioned,
+                NotSupportedDetail::default(),
                 &lowering.report,
             ),
             native_optimizer,
@@ -438,6 +443,7 @@ fn rejected_attempt(
     let report = native_execution_rejection_report_for_candidate(
         candidate.clone(),
         rejection_capability_reason(rejected_plan, rejection),
+        NotSupportedDetail { admission: Some(rejection.rejection().clone()), ..NotSupportedDetail::default() },
         &lowering.report,
     );
     Ok(NativeOptimizationAttempt {
@@ -452,7 +458,7 @@ fn rejected_attempt(
 
 fn rejection_capability_reason(plan: &QueryPlan, rejection: &AdmissionRejection) -> CapabilityReason {
     if rejection.is_execution_mode_refusal() || rejection.validation_error().is_some() {
-        return match rejection.projection().category {
+        return match rejection.rejection().category() {
             CapabilityRejectionCategory::UnsupportedArrowDtype => CapabilityReason::UnsupportedType,
             CapabilityRejectionCategory::UnsupportedExpressionFamily => CapabilityReason::UnsupportedExpression,
             _ => CapabilityReason::UnsupportedOperator,
@@ -498,7 +504,7 @@ fn native_datafusion_exec_for_plan(
     eq_properties: EquivalenceProperties,
     shared_producers: Vec<(String, Arc<AdmittedPlan>)>,
     sink: NativeReplacementSink,
-) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+) -> Result<Arc<dyn ExecutionPlan>> {
     let native_execution_config =
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
     let gpu_input_names = native_plan_gpu_resident_source_names(admitted.plan());
@@ -517,8 +523,7 @@ fn native_datafusion_exec_for_plan(
                 )
                 .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
             },
-        }
-        .map_err(DataFusionError::from);
+        };
     }
 
     let shared_input_names = shared_producers.iter().map(|(input_name, _)| input_name.clone()).collect::<BTreeSet<_>>();
@@ -543,8 +548,7 @@ fn native_datafusion_exec_for_plan(
             native_execution_config,
             eq_properties,
         )
-        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-        .map_err(DataFusionError::from);
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>);
     }
     let (admitted, gpu_inputs) = remove_subsumed_composed_consumer(admitted, gpu_inputs, &native_execution_config)?;
     AlgeonNativeComposedExec::try_new_with_equivalence_properties(
@@ -554,7 +558,6 @@ fn native_datafusion_exec_for_plan(
         eq_properties,
     )
     .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-    .map_err(DataFusionError::from)
 }
 
 /// A composed consumer's admitted plan and the producers it reads.
@@ -564,7 +567,7 @@ fn remove_subsumed_composed_consumer(
     admitted: Arc<AdmittedPlan>,
     mut gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
     native_execution_config: &AlgeonNativeExecutionConfig,
-) -> DataFusionResult<ComposedConsumer> {
+) -> Result<ComposedConsumer> {
     let [producer] = gpu_inputs.as_slice() else {
         return Ok((admitted, gpu_inputs));
     };
@@ -583,11 +586,11 @@ fn remove_subsumed_composed_consumer(
             _ => None,
         })
         .ok_or_else(|| {
-            DataFusionError::from(Error::new(
+            Error::new(
                 ErrorCode::InvalidExecutionPlan,
                 "algeon_datafusion.native_optimizer.subsumed_consumer",
                 "a subsumed composed consumer is missing its GPU-resident source",
-            ))
+            )
         })?;
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(source);
@@ -596,11 +599,11 @@ fn remove_subsumed_composed_consumer(
     let pass_through = builder.finish_with_host_sink(source).clone_with_deferred_host_materialization_sink();
     match native_admission_decision(&pass_through, native_execution_config)? {
         AdmissionDecision::Admitted(pass_through) => Ok((pass_through, gpu_inputs)),
-        AdmissionDecision::Rejected(rejection) => Err(DataFusionError::from(Error::from_native(
+        AdmissionDecision::Rejected(rejection) => Err(Error::from_native(
             "algeon_datafusion.native_optimizer.subsumed_consumer",
             "the pass-through consumer of a subsumed composed plan is not admitted",
             rejection.execution_error(&pass_through),
-        ))),
+        )),
     }
 }
 
@@ -621,20 +624,18 @@ fn native_plan_gpu_resident_source_names(plan: &QueryPlan) -> BTreeSet<String> {
 fn gpu_resident_producer_children(
     plan: &Arc<dyn ExecutionPlan>,
     required_inputs: &BTreeSet<String>,
-) -> DataFusionResult<Vec<Arc<dyn ExecutionPlan>>> {
+) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
     let mut producers = BTreeMap::<String, Arc<dyn ExecutionPlan>>::new();
     collect_gpu_resident_producer_children(plan, required_inputs, &mut producers);
     let missing =
         required_inputs.iter().filter(|name| !producers.contains_key(*name)).map(String::as_str).collect::<Vec<_>>();
     if !missing.is_empty() {
-        return Err(DataFusionError::from(
-            Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.native.compose_gpu_resident",
-                "native plan requires GPU-resident inputs that were not produced by child execution plans",
-            )
-            .with_fact("missing_inputs", missing.join(",")),
-        ));
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "algeon_datafusion.native.compose_gpu_resident",
+            "native plan requires GPU-resident inputs that were not produced by child execution plans",
+        )
+        .with_fact("missing_inputs", missing.join(",")));
     }
     Ok(required_inputs.iter().filter_map(|name| producers.remove(name)).collect())
 }
@@ -659,15 +660,17 @@ fn native_execution_cost_selection_report(
     report: &PlanningReport,
     cost_reason: NativePlanCostReason,
     evidence: NativeCandidateCostEvidence,
-) -> Result<PlanningReport> {
+) -> PlanningReport {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
         CandidateOutcome::Selected { candidate } => CandidateOutcome::NotSelectedByCost {
             candidate: candidate.clone(),
             cost_reason,
             evidence: evidence.clone(),
         },
-        CandidateOutcome::NotSupported { candidate, capability_reason } => {
-            CandidateOutcome::NotSupported { candidate: candidate.clone(), capability_reason: *capability_reason }
+        CandidateOutcome::NotSupported { candidate, capability_reason, detail } => CandidateOutcome::NotSupported {
+            candidate: candidate.clone(),
+            capability_reason: *capability_reason,
+            detail: detail.clone(),
         },
         CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => {
             CandidateOutcome::NotSelectedByCost {
@@ -678,16 +681,20 @@ fn native_execution_cost_selection_report(
         },
     }))
     .with_correlation_from(report)
-    .with_not_supported_details_from(report)
 }
 
 fn native_execution_rejection_report_for_candidate(
     candidate: GpuCandidate,
     rejection_reason: CapabilityReason,
+    detail: NotSupportedDetail,
     source_report: &PlanningReport,
 ) -> PlanningReport {
-    PlanningReport::from_outcomes([CandidateOutcome::NotSupported { candidate, capability_reason: rejection_reason }])
-        .with_correlation_from(source_report)
+    PlanningReport::from_outcomes([CandidateOutcome::NotSupported {
+        candidate,
+        capability_reason: rejection_reason,
+        detail,
+    }])
+    .with_correlation_from(source_report)
 }
 
 fn stamp_planning_report_correlation(
@@ -715,9 +722,8 @@ fn stamp_native_error_correlation(
     error
 }
 
-fn native_candidate_error(message: &'static str) -> DataFusionError {
+fn native_candidate_error(message: &'static str) -> Error {
     Error::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.native.pipeline_candidate_diagnostics", message)
-        .into()
 }
 
 fn peel_output_requirement_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
@@ -748,7 +754,7 @@ mod tests {
         record_batch::RecordBatch,
     };
     use query_engine::{
-        capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+        capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions, Reason},
         chunk::SourceChunkPlanningOptions,
         dynamic_filter::DynamicFilterExecutionOptions,
         expr::{Expr, SortExpr},
@@ -792,7 +798,7 @@ mod tests {
             panic!("a row number over unordered input has no compiled contract");
         };
 
-        assert_eq!(rejection.projection().reason, "window_input_ordering_not_established");
+        assert_eq!(rejection.rejection().reason, Reason::WindowInputOrderingNotEstablished);
         assert_eq!(rejection_capability_reason(&plan, &rejection), CapabilityReason::NativeCompiledPipelineUnsupported);
     }
 
@@ -823,8 +829,7 @@ mod tests {
             &report,
             NativePlanCostReason::SmallSelectiveTopK,
             NativeCandidateCostEvidence::from_cost_facts(facts.clone()),
-        )
-        .expect("cost selection keeps the outcome count");
+        );
 
         assert!(matches!(
             report.outcomes(),

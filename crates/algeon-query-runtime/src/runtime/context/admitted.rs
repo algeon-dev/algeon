@@ -60,7 +60,7 @@ impl ExecutionContext {
         };
         let evidence = attempt.plan_identities.current().ok_or_else(|| {
             QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.context",
                 "a query-service context requires its admitted capability evidence",
             )
@@ -93,7 +93,7 @@ impl ExecutionContext {
                 return Ok(());
             }
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.context",
                 "the admitted capability evidence output schema differs from the native plan",
             )
@@ -132,7 +132,7 @@ impl ExecutionContext {
             Some(activated) if activated.consumer_execution_scope_fingerprint == plan.execution_fingerprint() => {
                 if activated.grant_identity != immutable_grant.identity() {
                     return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedPlanShape,
+                        QueryErrorCode::InternalInvariantViolation,
                         "query_engine.runtime.context",
                         "the activated deferred phase differs from the admitted plan or immutable grant",
                     )
@@ -180,7 +180,7 @@ impl ExecutionContext {
             && activated.grant_identity != immutable_grant.identity()
         {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.context",
                 "the activated deferred phase differs from the admitted immutable grant",
             )
@@ -225,7 +225,7 @@ impl ExecutionContext {
                 let input_name = expected.occurrence_id();
                 let input = gpu_inputs.get(input_name).ok_or_else(|| {
                     QueryError::new(
-                        QueryErrorCode::UnsupportedPlanShape,
+                        QueryErrorCode::InternalInvariantViolation,
                         "query_engine.runtime.context",
                         "the admitted deferred resident occurrence is missing",
                     )
@@ -234,7 +234,7 @@ impl ExecutionContext {
                 })?;
                 let actual_scope = input.producer_execution_scope().ok_or_else(|| {
                     QueryError::new(
-                        QueryErrorCode::UnsupportedPlanShape,
+                        QueryErrorCode::InternalInvariantViolation,
                         "query_engine.runtime.context",
                         "an admitted deferred resident occurrence has no producer scope",
                     )
@@ -247,7 +247,7 @@ impl ExecutionContext {
                     || actual_schema != expected.output_schema_fingerprint()
                 {
                     return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedPlanShape,
+                        QueryErrorCode::InternalInvariantViolation,
                         "query_engine.runtime.context",
                         "a deferred resident input differs from its admitted producer binding",
                     )
@@ -261,7 +261,7 @@ impl ExecutionContext {
                 let physical_bytes = input.device_allocated_size_bytes()?;
                 if physical_bytes > 0 && input.retained_owner_identity_for(&immutable_grant).is_none() {
                     return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedPlanShape,
+                        QueryErrorCode::InternalInvariantViolation,
                         "query_engine.runtime.context",
                         "a deferred resident input is not retained by the admitted grant",
                     )
@@ -314,7 +314,7 @@ impl ExecutionContext {
         };
         let immutable_grant = self.memory_grant()?.ok_or_else(|| {
             QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "query_engine.runtime.context",
                 "the activated deferred phase lost its immutable grant",
             )

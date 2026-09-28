@@ -7,12 +7,11 @@ use super::{
         QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCugraphCall, QueryGpuRuntimeCaveat,
         QueryGpuValidatedUnder,
     },
-    remedy::{capability_remedy, cost_remedy},
+    remedy::cost_remedy,
 };
 #[cfg(feature = "cugraph")]
 use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
-    capability::CapabilityReason,
     native_report::candidate_shape_family,
     planner::FinalPlanCoverage,
     report::{CandidateOutcome, PlanningReport},
@@ -59,14 +58,14 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 remedy: None,
                 cost_evidence: None,
             },
-            CandidateOutcome::NotSupported { candidate, capability_reason } => QueryGpuCandidateOutcome {
+            CandidateOutcome::NotSupported { candidate, capability_reason, .. } => QueryGpuCandidateOutcome {
                 selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(capability_reason.code().to_string()),
-                reason_kind: Some(capability_reason_kind(*capability_reason)),
+                reason_kind: Some(capability_reason.facts().kind),
                 detail: candidate.shape.clone(),
-                category: Some(capability_reason.triage_code().as_str().to_string()),
-                remedy: Some(capability_remedy(*capability_reason)),
+                category: Some(capability_reason.facts().triage.as_str().to_string()),
+                remedy: Some(capability_reason.facts().remedy),
                 cost_evidence: None,
             },
             CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => QueryGpuCandidateOutcome {
@@ -81,32 +80,6 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
             },
         })
         .collect()
-}
-
-fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKind {
-    match reason {
-        CapabilityReason::UnsupportedExpression => QueryGpuCandidateReasonKind::Expression,
-        CapabilityReason::UnsupportedType => QueryGpuCandidateReasonKind::ArrowType,
-        CapabilityReason::NativeSourceNonLocalObjectStore
-        | CapabilityReason::NativeSourceExprAdapter
-        | CapabilityReason::NativeSourceParquetFileReaderFactory
-        | CapabilityReason::NativeSourcePreserveOrder
-        | CapabilityReason::NativeSourceOutputOrdering
-        | CapabilityReason::NativeSourcePushedDownParquetPredicate
-        | CapabilityReason::NativeSourceEmpty
-        | CapabilityReason::NativeSourcePartitionValues
-        | CapabilityReason::NativeSourceByteRange
-        | CapabilityReason::NativeSourceRowSelection
-        | CapabilityReason::NativeSourceSchemaMapping => QueryGpuCandidateReasonKind::Source,
-        CapabilityReason::NativeSortPreservingMergeUnsupported
-        | CapabilityReason::NativeDistributedAggregateUnsupported
-        | CapabilityReason::NativePartitionPreservingSortUnsupported
-        | CapabilityReason::NativeExactStatisticalInputPartitioned
-        | CapabilityReason::NativeBoundedJoinUnsupported
-        | CapabilityReason::NativeCompiledPipelineUnsupported
-        | CapabilityReason::NativeOrderedOutputUnsupported => QueryGpuCandidateReasonKind::PlanShape,
-        CapabilityReason::UnsupportedOperator => QueryGpuCandidateReasonKind::Operator,
-    }
 }
 
 pub(super) fn runtime_caveats(

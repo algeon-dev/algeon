@@ -3,9 +3,9 @@ use std::time::Instant;
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result,
-    cudf_query_error, dataframe_cross_join_options, execution_overrides, materialize_compiled_indices_output,
-    observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output, side_metric,
-    unsupported_bounded_shape,
+    bounded_invariant_violation, cudf_query_error, dataframe_cross_join_options, execution_overrides,
+    materialize_compiled_indices_output, observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output,
+    side_metric,
 };
 use crate::metrics::{JoinOperatorMetrics, OperatorMetrics};
 
@@ -160,7 +160,7 @@ pub(super) fn execute_compiled_keyless_outer_cross_join_materialize(
             right,
             PreservedKeylessOuterSide::Right,
         ),
-        _ => Err(unsupported_bounded_shape(
+        _ => Err(bounded_invariant_violation(
             "compiled keyless outer cross join execution supports predicate-free left and full joins",
             "keyless_outer_cross_join_requires_left_or_full",
         )

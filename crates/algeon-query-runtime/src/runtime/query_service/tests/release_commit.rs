@@ -664,7 +664,7 @@ async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
     let first_release = std::thread::spawn(move || {
         first_owner
             .commit_terminal(RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::CudfTemporaryFailure,
+                error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
                 error_status: AttemptFailureStatus::Temporary,
             })
             .expect("failed first attempt commits its terminal outcome");
@@ -1422,12 +1422,12 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     assert!(matches!(
         report.outcome,
         RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::CudfTemporaryFailure,
+            error_code: AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure),
             error_status: AttemptFailureStatus::Temporary,
         }
     ));
     let primary_failure = report.primary_failure.as_ref().expect("primary failure remains authoritative");
-    assert_eq!(primary_failure.code(), AttemptFailureCode::CudfTemporaryFailure);
+    assert_eq!(primary_failure.code(), AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure));
     assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::CompletedWithFailures);
     assert_eq!(report.cleanup_failure_count, 1, "the abandoned callback is one cleanup failure");
     assert!(report.cleanup_failure_count_complete);
@@ -1509,7 +1509,7 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
     drop(first.acquire_context().expect("context"));
     attempt_owner
         .commit_terminal(RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::CudfResourceExhausted,
+            error_code: AttemptFailureCode::Query(QueryErrorCode::DeviceAllocationFailed),
             error_status: AttemptFailureStatus::Temporary,
         })
         .expect("OOM outcome commits");

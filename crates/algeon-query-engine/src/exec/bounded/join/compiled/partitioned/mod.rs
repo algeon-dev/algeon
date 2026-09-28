@@ -7,14 +7,15 @@ use super::{
     JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
     PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError,
     QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts, StreamedPartitionedJoinSummary,
-    VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs, cudf_query_error,
-    dataframe_mixed_join_options, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
-    lower_join_residual_predicate, materialize_bounded_join_leaf_local_parquet_source_stream,
+    VecDeque, bounded_invariant_violation, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
+    cudf_query_error, dataframe_mixed_join_options, execution_overrides, join_index_error,
+    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+    materialize_bounded_join_leaf_local_parquet_source_stream,
     materialize_compiled_keyed_equality_join_indices_with_preflight, observe_device_memory_bytes,
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
     record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame, residual_input_columns,
     side_metric, stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
-    unsupported_bounded_shape, validate_executable_join_subset,
+    validate_executable_join_subset,
 };
 use crate::{
     error::ResourceBoundary,
@@ -62,7 +63,7 @@ pub(super) fn validate_partitioned_hash_equi_join(node: &JoinNode) -> Result<()>
     {
         return Ok(());
     }
-    Err(unsupported_bounded_shape(
+    Err(bounded_invariant_violation(
         "compiled partitioned hash equi join execution supports keyed inner, left, and full equi joins without residual predicates",
         "compiled_join_strategy_unsupported",
     )
@@ -89,7 +90,7 @@ pub(super) fn validate_partitioned_mixed_keyed_residual_join(node: &JoinNode) ->
     {
         return Ok(());
     }
-    Err(unsupported_bounded_shape(
+    Err(bounded_invariant_violation(
         "compiled partitioned mixed keyed residual join execution supports keyed residual inner/left/full and left-only semi/anti joins",
         "compiled_join_strategy_unsupported",
     )
@@ -223,7 +224,7 @@ pub(super) fn slice_partition_join_side_range(
 ) -> Result<BoundedJoinSideFrame> {
     let (partition_frame, partition_start, partition_len) = partition_bounds(input, partition)?;
     if range.offset > partition_len || range.len > partition_len.saturating_sub(range.offset) {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "partitioned join retry range exceeds partition bounds",
             "partition_retry_range_invalid",
         )
@@ -270,13 +271,13 @@ fn partition_bounds(input: &PartitionedJoinSide, partition: usize) -> Result<(&D
     match input {
         PartitionedJoinSide::Contiguous { frame, offsets, .. } => {
             let start = *offsets.get(partition).ok_or_else(|| {
-                unsupported_bounded_shape(
+                bounded_invariant_violation(
                     "partitioned join side is missing a partition start offset",
                     "partition_offset_missing",
                 )
             })?;
             let end = *offsets.get(partition + 1).ok_or_else(|| {
-                unsupported_bounded_shape(
+                bounded_invariant_violation(
                     "partitioned join side is missing a partition end offset",
                     "partition_offset_missing",
                 )
@@ -285,7 +286,7 @@ fn partition_bounds(input: &PartitionedJoinSide, partition: usize) -> Result<(&D
         },
         PartitionedJoinSide::Split { partitions, .. } => {
             let frame = partitions.get(partition).ok_or_else(|| {
-                unsupported_bounded_shape(
+                bounded_invariant_violation(
                     "partitioned join side is missing a partition frame",
                     "partition_offset_missing",
                 )

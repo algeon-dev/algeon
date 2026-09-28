@@ -1,13 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use datafusion::{
-    common::{DataFusionError, Result},
-    sql::sqlparser::ast::{
-        Expr as SqlExpr, FunctionArg, FunctionArgExpr, FunctionArgOperator, Ident, Query as SqlQuery, TableFunctionArgs,
-    },
+use datafusion::sql::sqlparser::ast::{
+    Expr as SqlExpr, FunctionArg, FunctionArgExpr, FunctionArgOperator, Ident, Query as SqlQuery, TableFunctionArgs,
 };
 
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NamedArgumentKind {
@@ -135,9 +132,8 @@ pub(crate) fn bind_named_arguments(
     Ok(BoundNamedArguments { values })
 }
 
-fn binding_error(function_name: &str, reason: &'static str, message: impl Into<String>) -> DataFusionError {
+fn binding_error(function_name: &str, reason: &'static str, message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.bind", message)
         .with_log_safe_fact("function_name", function_name)
         .with_log_safe_fact("reason", reason)
-        .into()
 }

@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType;
 
+use super::rejection::Reason;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, Expr},
@@ -257,7 +258,7 @@ pub struct KeyedHashJoinStrategyInputFacts {
 #[doc(hidden)]
 pub enum KeyedHashJoinStrategyDecision {
     Selected { strategy: KeyedHashJoinStrategy, facts: BTreeMap<&'static str, String> },
-    Rejected { reason: &'static str, facts: BTreeMap<&'static str, String> },
+    Rejected { reason: Reason, facts: BTreeMap<&'static str, String> },
 }
 
 impl KeyedHashJoinStrategyDecision {
@@ -441,7 +442,7 @@ pub(crate) fn keyed_hash_join_strategy_decision_with_options(
         }
 
         return KeyedHashJoinStrategyDecision::Rejected {
-            reason: "post_join_residual_filter_requires_one_shot_equi_join",
+            reason: Reason::PostJoinResidualFilterRequiresOneShotEquiJoin,
             facts: strategy_facts(
                 join,
                 input,
@@ -591,7 +592,7 @@ pub(crate) fn keyed_hash_join_strategy_decision_with_options(
     }
 
     KeyedHashJoinStrategyDecision::Rejected {
-        reason: "large_keyed_hash_join_strategy_unsupported",
+        reason: Reason::LargeKeyedHashJoinStrategyUnsupported,
         facts: strategy_facts(
             join,
             input,

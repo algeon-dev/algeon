@@ -4,7 +4,6 @@
 //! deliberately keeps native parameter defaults behind typed resolvers so the
 //! metadata and binder surfaces do not copy numbers from the native defaults.
 
-use datafusion::common::Result;
 use serde_json::{Value, json};
 
 use super::{
@@ -20,6 +19,7 @@ use super::{
     CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgorithm,
     types::{CugraphAlgorithmParams, CugraphGraphOptions},
 };
+use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CugraphArgumentType {

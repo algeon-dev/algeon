@@ -674,11 +674,11 @@ fn bounded_vector_rejection_reports_the_contract_it_misses() {
         rapids_analysis_context(PlanningPolicy::default()),
     )
     .expect("the plan is decidable");
-    let expected = decision.rejection_projection().expect("no compiled contract covers the plan").reason;
+    let expected = decision.rejection().expect("no compiled contract covers the plan").reason;
 
     let error = backend_context().admit_plan(&plan).err().expect("a rejected vector plan fails before any work");
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some(expected));
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPipelineContract);
+    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some(expected.as_str()));
 }
 
 #[cfg(not(feature = "cuvs"))]

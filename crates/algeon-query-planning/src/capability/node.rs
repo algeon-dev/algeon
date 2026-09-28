@@ -21,7 +21,9 @@ use super::{
         AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty,
         ResidualRequirement, SourceFormatCapability,
     },
-    one_shot_equi_join_supported, validate_local_parquet_source,
+    one_shot_equi_join_supported,
+    rejection::{Reason, UnsupportedPart},
+    validate_local_parquet_source,
 };
 use crate::{
     backend::AnalysisContext,
@@ -138,20 +140,20 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCon
         PlanNode::Source(source) => source_node_executable_decision(source, ctx),
         PlanNode::Filter(filter) => expression_node_decision(
             node.id,
-            "unsupported_filter_expression_capability",
+            Reason::UnsupportedFilterExpressionCapability,
             std::iter::once(&filter.predicate),
         ),
         PlanNode::Projection(projection) => {
             let mut decision = expression_node_decision(
                 node.id,
-                "unsupported_projection_expression_capability",
+                Reason::UnsupportedProjectionExpressionCapability,
                 projection.expressions(),
             );
             if matches!(decision, CapabilityDecision::Satisfied)
                 && projection.outputs.len() != node.output_schema().fields().len()
             {
                 decision = CapabilityDecision::rejected(
-                    "unsupported_projection_node_capability",
+                    Reason::UnsupportedProjectionNodeCapability,
                     [
                         ("node_id", node.id.to_string()),
                         ("projection_output_count", projection.outputs.len().to_string()),
@@ -181,7 +183,10 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisCon
                 facts.entry("algorithm").or_insert_with(|| ml.spec.algorithm.as_str().to_string());
                 facts.insert("validation_code", error.code().to_string());
                 facts.insert("validation_operation", error.operation().to_string());
-                CapabilityDecision::Rejected { reason: "unsupported_ml_algorithm_node_capability", facts }
+                CapabilityDecision::Rejected {
+                    reason: Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())),
+                    facts,
+                }
             },
         },
     }
@@ -201,7 +206,10 @@ fn vector_algorithm_node_executable_decision(
             facts.entry("algorithm").or_insert_with(|| vector.spec.algorithm.as_str().to_string());
             facts.insert("validation_code", error.code().to_string());
             facts.insert("validation_operation", error.operation().to_string());
-            CapabilityDecision::Rejected { reason: "unsupported_vector_algorithm_node_capability", facts }
+            CapabilityDecision::Rejected {
+                reason: Reason::UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())),
+                facts,
+            }
         },
     }
 }
@@ -210,17 +218,17 @@ pub(super) fn source_node_executable_decision(source: &SourceNode, ctx: Analysis
     match source {
         SourceNode::LocalParquet(source) => validation_result_decision(
             validate_local_parquet_source(source, ctx),
-            "unsupported_local_parquet_source_capability",
+            Reason::UnsupportedLocalParquetSourceCapability,
             [("source_format", "local_parquet".to_string())],
         ),
         SourceNode::GpuResident(source) if source.input_name.is_empty() => CapabilityDecision::rejected(
-            "unsupported_gpu_resident_source_capability",
+            Reason::UnsupportedGpuResidentSourceCapability,
             [("reason", "empty_input_name".to_string()), ("source_format", "gpu_resident".to_string())],
         ),
         SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
         SourceNode::LiteralBatch(source) => validation_result_decision(
             validate_literal_batch_source(source, ctx),
-            "unsupported_literal_batch_source_capability",
+            Reason::UnsupportedLiteralBatchSourceCapability,
             [("source_format", "literal_batch".to_string())],
         ),
     }
@@ -228,7 +236,7 @@ pub(super) fn source_node_executable_decision(source: &SourceNode, ctx: Analysis
 
 fn expression_node_decision<'a>(
     node_id: NodeId,
-    reason: &'static str,
+    reason: Reason,
     expressions: impl IntoIterator<Item = &'a Expr>,
 ) -> CapabilityDecision {
     for expression in expressions {
@@ -248,7 +256,7 @@ fn aggregate_node_executable_decision(
         && let Err(reason) = validate_grouping_sets_capability(&aggregate.spec, grouping_sets)
     {
         return CapabilityDecision::rejected(
-            "unsupported_aggregate_grouping_sets_capability",
+            Reason::UnsupportedAggregateGroupingSetsCapability,
             [
                 ("node_id", node_id.to_string()),
                 ("reason", reason.to_string()),
@@ -261,7 +269,7 @@ fn aggregate_node_executable_decision(
         && aggregate.spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
     {
         return CapabilityDecision::rejected(
-            "unsupported_aggregate_expression_capability",
+            Reason::UnsupportedAggregateExpressionCapability,
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "median_floating_statistical_mixed_unsupported".to_string()),
@@ -272,7 +280,7 @@ fn aggregate_node_executable_decision(
     }
     let Some(input) = plan.node(aggregate.input) else {
         return CapabilityDecision::rejected(
-            "unsupported_aggregate_node_capability",
+            Reason::UnsupportedAggregateNodeCapability,
             [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
         );
     };
@@ -280,7 +288,7 @@ fn aggregate_node_executable_decision(
         if let Err(rejection) = validate_named_column_expr_capability(expr) {
             return expression_rejection_decision(
                 node_id,
-                "unsupported_aggregate_group_expression_capability",
+                Reason::UnsupportedAggregateGroupExpressionCapability,
                 expr,
                 rejection,
             );
@@ -292,7 +300,7 @@ fn aggregate_node_executable_decision(
         {
             return expression_rejection_decision(
                 node_id,
-                "unsupported_aggregate_expression_capability",
+                Reason::UnsupportedAggregateExpressionCapability,
                 &aggregate_expr.expr,
                 rejection,
             );
@@ -301,7 +309,7 @@ fn aggregate_node_executable_decision(
             let Some(data_type) = aggregate_expr_input_data_type(&aggregate_expr.expr, input.output_schema().as_ref())
             else {
                 return CapabilityDecision::rejected(
-                    "unsupported_aggregate_expression_capability",
+                    Reason::UnsupportedAggregateExpressionCapability,
                     [
                         ("node_id", node_id.to_string()),
                         ("reason", "median_requires_column_input".to_string()),
@@ -312,7 +320,7 @@ fn aggregate_node_executable_decision(
             };
             if !is_cudf_median_input_type(data_type) {
                 return CapabilityDecision::rejected(
-                    "unsupported_aggregate_expression_capability",
+                    Reason::UnsupportedAggregateExpressionCapability,
                     [
                         ("node_id", node_id.to_string()),
                         ("reason", "unsupported_median_input_type".to_string()),
@@ -355,7 +363,7 @@ pub fn is_cudf_median_input_type(data_type: &ArrowDataType) -> bool {
 fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> CapabilityDecision {
     if window.spec.functions.is_empty() {
         return CapabilityDecision::rejected(
-            "unsupported_window_node_capability",
+            Reason::UnsupportedWindowNodeCapability,
             [("node_id", node_id.to_string()), ("reason", "empty_functions".to_string())],
         );
     }
@@ -363,7 +371,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
         if let Err(rejection) = validate_column_expr_capability(expr) {
             return expression_rejection_decision(
                 node_id,
-                "unsupported_window_partition_expression_capability",
+                Reason::UnsupportedWindowPartitionExpressionCapability,
                 expr,
                 rejection,
             );
@@ -373,7 +381,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
         if let Err(rejection) = validate_column_expr_capability(&sort_expr.expr) {
             return expression_rejection_decision(
                 node_id,
-                "unsupported_window_order_expression_capability",
+                Reason::UnsupportedWindowOrderExpressionCapability,
                 &sort_expr.expr,
                 rejection,
             );
@@ -386,7 +394,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
                     WindowFrame::WholePartition => {
                         if window.spec.partition_by.is_empty() {
                             return CapabilityDecision::rejected(
-                                "unsupported_window_node_capability",
+                                Reason::UnsupportedWindowNodeCapability,
                                 [
                                     ("node_id", node_id.to_string()),
                                     ("reason", "whole_partition_aggregate_window_requires_partition_by".to_string()),
@@ -395,7 +403,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
                         }
                         if !window.spec.order_by.is_empty() {
                             return CapabilityDecision::rejected(
-                                "unsupported_window_node_capability",
+                                Reason::UnsupportedWindowNodeCapability,
                                 [
                                     ("node_id", node_id.to_string()),
                                     ("reason", "whole_partition_aggregate_window_requires_no_order_by".to_string()),
@@ -406,7 +414,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
                     WindowFrame::RowsUnboundedPrecedingToCurrent => {
                         if window.spec.order_by.is_empty() {
                             return CapabilityDecision::rejected(
-                                "unsupported_window_node_capability",
+                                Reason::UnsupportedWindowNodeCapability,
                                 [
                                     ("node_id", node_id.to_string()),
                                     ("reason", "cumulative_aggregate_window_requires_order_by".to_string()),
@@ -416,7 +424,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
                         if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
                         {
                             return CapabilityDecision::rejected(
-                                "unsupported_window_node_capability",
+                                Reason::UnsupportedWindowNodeCapability,
                                 [
                                     ("node_id", node_id.to_string()),
                                     ("reason", "cumulative_aggregate_window_function_unsupported".to_string()),
@@ -430,7 +438,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
                 if let Err(rejection) = validate_aggregate_expr_capability(&aggregate_expr, false) {
                     return expression_rejection_decision(
                         node_id,
-                        "unsupported_window_aggregate_expression_capability",
+                        Reason::UnsupportedWindowAggregateExpressionCapability,
                         expr,
                         rejection,
                     );
@@ -438,7 +446,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
             },
             WindowFunction::Rank { .. } if window.spec.order_by.is_empty() => {
                 return CapabilityDecision::rejected(
-                    "unsupported_window_node_capability",
+                    Reason::UnsupportedWindowNodeCapability,
                     [("node_id", node_id.to_string()), ("reason", "rank_requires_order_by".to_string())],
                 );
             },
@@ -446,7 +454,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
             WindowFunction::RowNumber { .. } => {},
             WindowFunction::LagLead { expr, .. } if window.spec.order_by.is_empty() => {
                 return CapabilityDecision::rejected(
-                    "unsupported_window_node_capability",
+                    Reason::UnsupportedWindowNodeCapability,
                     [
                         ("node_id", node_id.to_string()),
                         ("reason", "lag_lead_requires_order_by".to_string()),
@@ -458,7 +466,7 @@ fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> Capa
                 if let Err(rejection) = validate_column_expr_capability(expr) {
                     return expression_rejection_decision(
                         node_id,
-                        "unsupported_window_lag_lead_expression_capability",
+                        Reason::UnsupportedWindowLagLeadExpressionCapability,
                         expr,
                         rejection,
                     );
@@ -497,7 +505,7 @@ fn validate_grouping_sets_capability(
 fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> CapabilityDecision {
     if sort.spec.expressions.is_empty() {
         return CapabilityDecision::rejected(
-            "unsupported_sort_node_capability",
+            Reason::UnsupportedSortNodeCapability,
             [("node_id", node_id.to_string()), ("reason", "empty_sort_expressions".to_string())],
         );
     }
@@ -505,7 +513,7 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> Capability
         if let Err(rejection) = validate_column_expr_capability(&sort_expr.expr) {
             return expression_rejection_decision(
                 node_id,
-                "unsupported_sort_expression_capability",
+                Reason::UnsupportedSortExpressionCapability,
                 &sort_expr.expr,
                 rejection,
             );
@@ -519,7 +527,7 @@ fn limit_node_executable_decision(node_id: NodeId, limit: &LimitNode) -> Capabil
         && limit.spec.skip.checked_add(fetch).is_none()
     {
         return CapabilityDecision::rejected(
-            "unsupported_limit_node_capability",
+            Reason::UnsupportedLimitNodeCapability,
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "skip_fetch_overflow".to_string()),
@@ -539,13 +547,13 @@ fn join_node_executable_decision(
 ) -> CapabilityDecision {
     let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
         return CapabilityDecision::rejected(
-            "unsupported_join_node_capability",
+            Reason::UnsupportedJoinNodeCapability,
             [("node_id", node_id.to_string()), ("reason", "missing_join_node".to_string())],
         );
     };
     let Some(capability) = join_node_execution_capability(join) else {
         return CapabilityDecision::rejected(
-            "unsupported_join_node_capability",
+            Reason::UnsupportedJoinNodeCapability,
             [
                 ("node_id", node_id.to_string()),
                 ("join_type", join.spec.join_type.to_string()),
@@ -558,7 +566,7 @@ fn join_node_executable_decision(
     for (field_index, field) in output_schema.fields().iter().enumerate() {
         if !ctx.backend().supports_type(field.data_type()) {
             return CapabilityDecision::rejected(
-                "unsupported_join_output_dtype",
+                Reason::UnsupportedJoinOutputDtype,
                 [
                     ("node_id", node_id.to_string()),
                     ("field_index", field_index.to_string()),
@@ -579,7 +587,7 @@ fn join_node_executable_decision(
         if let Err(rejection) = residual_capability {
             return expression_rejection_decision(
                 node_id,
-                "unsupported_join_residual_expression_capability",
+                Reason::UnsupportedJoinResidualExpressionCapability,
                 predicate,
                 rejection,
             );
@@ -589,7 +597,7 @@ fn join_node_executable_decision(
         && join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
     {
         return CapabilityDecision::rejected(
-            "unsupported_join_node_capability",
+            Reason::UnsupportedJoinNodeCapability,
             [
                 ("node_id", node_id.to_string()),
                 ("join_type", join.spec.join_type.to_string()),
@@ -615,20 +623,20 @@ fn join_node_executable_decision(
 fn union_node_executable_decision(plan: &QueryPlan, node_id: NodeId, union: &UnionNode) -> CapabilityDecision {
     if union.inputs.is_empty() {
         return CapabilityDecision::rejected(
-            "unsupported_union_node_capability",
+            Reason::UnsupportedUnionNodeCapability,
             [("node_id", node_id.to_string()), ("reason", "empty_inputs".to_string())],
         );
     }
     let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
         return CapabilityDecision::rejected(
-            "unsupported_union_node_capability",
+            Reason::UnsupportedUnionNodeCapability,
             [("node_id", node_id.to_string()), ("reason", "missing_union_node".to_string())],
         );
     };
     for (input_index, input) in union.inputs.iter().enumerate() {
         let Some(input_schema) = plan.node(*input).map(|node| node.output_schema()) else {
             return CapabilityDecision::rejected(
-                "unsupported_union_node_capability",
+                Reason::UnsupportedUnionNodeCapability,
                 [
                     ("node_id", node_id.to_string()),
                     ("input_index", input_index.to_string()),
@@ -638,7 +646,7 @@ fn union_node_executable_decision(plan: &QueryPlan, node_id: NodeId, union: &Uni
         };
         if input_schema.as_ref() != output_schema.as_ref() {
             return CapabilityDecision::rejected(
-                "unsupported_union_node_capability",
+                Reason::UnsupportedUnionNodeCapability,
                 [
                     ("node_id", node_id.to_string()),
                     ("input_index", input_index.to_string()),
@@ -660,7 +668,7 @@ fn graph_algorithm_node_executable_decision(
         && graph.spec.graph_options.directed != required
     {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "unsupported_graph_directedness".to_string()),
@@ -672,7 +680,7 @@ fn graph_algorithm_node_executable_decision(
     }
     let Some(input) = plan.node(graph.input) else {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
         );
     };
@@ -682,7 +690,7 @@ fn graph_algorithm_node_executable_decision(
     ] {
         let Some(field) = input.output_schema().field_with_name(column).ok() else {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "missing_edge_column".to_string()),
@@ -693,7 +701,7 @@ fn graph_algorithm_node_executable_decision(
         };
         if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "unsupported_vertex_type".to_string()),
@@ -706,7 +714,7 @@ fn graph_algorithm_node_executable_decision(
         let vertex_id_type_support = graph.spec.algorithm.vertex_id_type_support();
         if !vertex_id_type_support.accepts_arrow_data_type(field.data_type()) {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "unsupported_vertex_dtype".to_string()),
@@ -724,7 +732,7 @@ fn graph_algorithm_node_executable_decision(
     if let Some(weight_col) = graph.spec.edge_columns.weight.as_deref() {
         let Some(field) = input.output_schema().field_with_name(weight_col).ok() else {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "missing_edge_column".to_string()),
@@ -735,7 +743,7 @@ fn graph_algorithm_node_executable_decision(
         };
         if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "unsupported_weight_type".to_string()),
@@ -750,7 +758,7 @@ fn graph_algorithm_node_executable_decision(
     if let Some(edge_id_col) = graph.spec.edge_columns.edge_id.as_deref() {
         let Some(field) = input.output_schema().field_with_name(edge_id_col).ok() else {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "missing_edge_column".to_string()),
@@ -766,7 +774,7 @@ fn graph_algorithm_node_executable_decision(
             .data_type();
         if field.data_type() != source_type {
             return CapabilityDecision::rejected(
-                "unsupported_graph_algorithm_node_capability",
+                Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "edge_id_dtype_mismatch".to_string()),
@@ -784,7 +792,7 @@ fn graph_algorithm_node_executable_decision(
         && graph.spec.edge_columns.edge_id.is_none()
     {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "missing_edge_id_binding".to_string()),
@@ -816,7 +824,7 @@ fn graph_algorithm_node_executable_decision(
         != graph_result_schema_for_vertex_type(graph.spec.algorithm, &graph.spec.params, vertex_type).as_ref()
     {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "unexpected_output_schema".to_string()),
@@ -838,7 +846,7 @@ fn graph_similarity_pair_input_decision(
 ) -> CapabilityDecision {
     let Some(input) = plan.node(pair_input.input) else {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "missing_vertex_pair_input_node".to_string()),
@@ -848,7 +856,7 @@ fn graph_similarity_pair_input_decision(
     };
     let Some(first) = input.output_schema().field_with_name(&pair_input.first_column).ok() else {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "missing_vertex_pair_column".to_string()),
@@ -859,7 +867,7 @@ fn graph_similarity_pair_input_decision(
     };
     let Some(second) = input.output_schema().field_with_name(&pair_input.second_column).ok() else {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "missing_vertex_pair_column".to_string()),
@@ -870,7 +878,7 @@ fn graph_similarity_pair_input_decision(
     };
     if first.data_type() != second.data_type() {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "vertex_pair_dtype_mismatch".to_string()),
@@ -883,7 +891,7 @@ fn graph_similarity_pair_input_decision(
     }
     if !matches!(first.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::DataType),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "unsupported_vertex_pair_type".to_string()),
@@ -895,7 +903,7 @@ fn graph_similarity_pair_input_decision(
     }
     if first.data_type() != vertex_type {
         return CapabilityDecision::rejected(
-            "unsupported_graph_algorithm_node_capability",
+            Reason::UnsupportedGraphAlgorithmNodeCapability(UnsupportedPart::Operator),
             [
                 ("node_id", node_id.to_string()),
                 ("reason", "vertex_pair_graph_vertex_dtype_mismatch".to_string()),
@@ -915,7 +923,7 @@ fn edge_normalize_node_executable_decision(
 ) -> CapabilityDecision {
     let Some(input) = plan.node(edge_normalize.input) else {
         return CapabilityDecision::rejected(
-            "unsupported_edge_normalize_node_capability",
+            Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
             [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
         );
     };
@@ -925,7 +933,7 @@ fn edge_normalize_node_executable_decision(
     ] {
         let Some(field) = input.output_schema().field_with_name(column).ok() else {
             return CapabilityDecision::rejected(
-                "unsupported_edge_normalize_node_capability",
+                Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "missing_edge_column".to_string()),
@@ -936,7 +944,7 @@ fn edge_normalize_node_executable_decision(
         };
         if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
             return CapabilityDecision::rejected(
-                "unsupported_edge_normalize_node_capability",
+                Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "unsupported_vertex_type".to_string()),
@@ -954,7 +962,7 @@ fn edge_normalize_node_executable_decision(
     ) && edge_normalize.spec.edge_columns.weight.is_none()
     {
         return CapabilityDecision::rejected(
-            "unsupported_edge_normalize_node_capability",
+            Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
             [("node_id", node_id.to_string()), ("reason", "weight_combiner_without_weight_column".to_string())],
         );
     }
@@ -962,7 +970,7 @@ fn edge_normalize_node_executable_decision(
     if let Some(weight_col) = edge_normalize.spec.edge_columns.weight.as_deref() {
         let Some(field) = input.output_schema().field_with_name(weight_col).ok() else {
             return CapabilityDecision::rejected(
-                "unsupported_edge_normalize_node_capability",
+                Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "missing_edge_column".to_string()),
@@ -973,7 +981,7 @@ fn edge_normalize_node_executable_decision(
         };
         if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
             return CapabilityDecision::rejected(
-                "unsupported_edge_normalize_node_capability",
+                Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "unsupported_weight_type".to_string()),
@@ -988,7 +996,7 @@ fn edge_normalize_node_executable_decision(
     if let Some(edge_id_col) = edge_normalize.spec.edge_columns.edge_id.as_deref() {
         let Some(field) = input.output_schema().field_with_name(edge_id_col).ok() else {
             return CapabilityDecision::rejected(
-                "unsupported_edge_normalize_node_capability",
+                Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::Operator),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "missing_edge_column".to_string()),
@@ -999,7 +1007,7 @@ fn edge_normalize_node_executable_decision(
         };
         if !matches!(field.data_type(), ArrowDataType::Int32 | ArrowDataType::Int64) {
             return CapabilityDecision::rejected(
-                "unsupported_edge_normalize_node_capability",
+                Reason::UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart::DataType),
                 [
                     ("node_id", node_id.to_string()),
                     ("reason", "unsupported_edge_id_type".to_string()),

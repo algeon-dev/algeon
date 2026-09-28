@@ -20,7 +20,7 @@ fn reason(value: AttemptFailureFactValue) -> AttemptFailureFact {
 #[test]
 fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_order() {
     let error = QueryError::new(
-        QueryErrorCode::CudfResourceExhausted,
+        QueryErrorCode::DeviceAllocationFailed,
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
@@ -44,7 +44,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         (AllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
     ] {
         let error = QueryError::new(
-            QueryErrorCode::CudfResourceExhausted,
+            QueryErrorCode::DeviceAllocationFailed,
             "query_engine.test.allocation_source",
             "cuGraph allocation failed",
         )
@@ -56,7 +56,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     }
 
     let unknown = QueryError::new(
-        QueryErrorCode::CudfResourceExhausted,
+        QueryErrorCode::DeviceAllocationFailed,
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
@@ -64,7 +64,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     assert!(AttemptFailureSummary::from_native_error(&unknown, AttemptFailureOperation::Execution).facts().is_empty());
 
     let untyped_fact = QueryError::new(
-        QueryErrorCode::CudfResourceExhausted,
+        QueryErrorCode::DeviceAllocationFailed,
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
@@ -265,7 +265,7 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         AttemptRetryAdvice::do_not_retry()
     );
 
-    let unsupported = failure(AttemptFailureCode::UnsupportedOperator, Vec::new());
+    let unsupported = failure(AttemptFailureCode::Query(QueryErrorCode::UnsupportedOperator), Vec::new());
     assert_eq!(
         advice_for(
             &RuntimeTerminalOutcome::failed(&unsupported),
@@ -279,7 +279,7 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         AttemptRetryAdvice::change_configuration()
     );
 
-    let query_cap_exceeded = failure(AttemptFailureCode::QueryMemoryLimitExceeded, Vec::new());
+    let query_cap_exceeded = failure(AttemptFailureCode::Query(QueryErrorCode::QueryMemoryLimitExceeded), Vec::new());
     assert_eq!(
         advice_for(
             &RuntimeTerminalOutcome::failed(&query_cap_exceeded),
@@ -293,8 +293,10 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         AttemptRetryAdvice::change_configuration()
     );
 
-    let queue =
-        failure(AttemptFailureCode::ServiceOverloaded, vec![reason(AttemptFailureFactValue::AdmissionQueueFull)]);
+    let queue = failure(
+        AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded),
+        vec![reason(AttemptFailureFactValue::AdmissionQueueFull)],
+    );
     assert_eq!(
         advice_for(
             &RuntimeTerminalOutcome::failed(&queue),
@@ -308,7 +310,7 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         AttemptRetryAdvice::backoff()
     );
     let impossible_floor = failure(
-        AttemptFailureCode::ServiceOverloaded,
+        AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded),
         vec![reason(AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity)],
     );
     assert_eq!(
@@ -324,7 +326,7 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         AttemptRetryAdvice::change_configuration()
     );
 
-    let resource_exhausted = failure(AttemptFailureCode::CudfResourceExhausted, Vec::new());
+    let resource_exhausted = failure(AttemptFailureCode::Query(QueryErrorCode::MemoryReservationFailed), Vec::new());
     assert_eq!(
         advice_for(
             &RuntimeTerminalOutcome::failed(&resource_exhausted),
@@ -377,7 +379,7 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         "OOM status without exact allocator evidence cannot recommend a retry"
     );
 
-    let temporary = failure(AttemptFailureCode::CudfTemporaryFailure, Vec::new());
+    let temporary = failure(AttemptFailureCode::Query(QueryErrorCode::CudfTemporaryFailure), Vec::new());
     assert_eq!(
         advice_for(
             &RuntimeTerminalOutcome::failed(&temporary),

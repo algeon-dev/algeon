@@ -5,7 +5,7 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
-    common::{DataFusionError, Result, tree_node::TreeNodeRecursion},
+    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::context::TaskContext,
     physical_expr::{EquivalenceProperties, LexOrdering, OrderingRequirements, Partitioning, PhysicalExpr},
     physical_plan::{
@@ -31,7 +31,7 @@ use query_engine::{
 };
 
 use crate::{
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     native_exec::{
         AlgeonNativeExecutionConfig, AlgeonNativeMetrics, GpuResidentProducer, NativeExecutionMetricsCapture,
         NativeHostOutputCursor,
@@ -92,8 +92,8 @@ pub(crate) trait RelationFunctionSpec: Clone + std::fmt::Debug + Send + Sync + '
     /// other sink is derived from that plan.
     fn lower(&self, bindings: &[NativeChildBinding], schema: SchemaRef) -> Result<QueryPlan>;
     fn feature_available(&self) -> bool;
-    fn feature_disabled(&self) -> DataFusionError;
-    fn invalid_child_count(&self) -> DataFusionError;
+    fn feature_disabled(&self) -> Error;
+    fn invalid_child_count(&self) -> Error;
     const TEXT: RelationFunctionText;
 }
 
@@ -126,12 +126,12 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         input_names: Vec<String>,
         input_orderings: Vec<Option<LexOrdering>>,
         gpu_result_input_name: String,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         if inputs.len() != spec.binding_count()
             || input_names.len() != inputs.len()
             || input_orderings.len() != inputs.len()
         {
-            return Err(spec.invalid_child_count());
+            return Err(spec.invalid_child_count().into());
         }
         let input_projections = inputs
             .iter()
@@ -141,11 +141,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         let bindings = planned_bindings(&spec, &inputs, &input_names, &input_projections)?;
         let native_host_plan = spec.lower(&bindings, Arc::clone(&output_schema))?;
         preflight_query_plan(&native_host_plan).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                S::TEXT.operations.preflight,
-                S::TEXT.messages.preflight_failed,
-                error,
-            ))
+            Error::from_native(S::TEXT.operations.preflight, S::TEXT.messages.preflight_failed, error)
         })?;
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&output_schema)),
@@ -190,11 +186,11 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             .filter(|(_, input)| gpu_resident_producer(input.as_ref()).is_some())
             .map(|(input_name, input)| (input_name.clone(), input.as_ref()));
         producer_bound_capability_evidence(&plan, producer_inputs).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.relation_function.admission_evidence",
                 "failed to derive capability evidence for a relation function and its GPU-resident inputs",
                 error,
-            ))
+            )
         })
     }
 
@@ -222,36 +218,30 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
 
     fn take_prepared_staged_inputs(&self) -> Result<StagedNativeChildren> {
         let slot = self.prepared_staged_inputs.as_ref().ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    S::TEXT.operations.execute_gpu,
-                    S::TEXT.messages.staged_inputs_missing,
-                )
-                .with_log_safe_fact("staged_input_state", "not_prepared"),
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                S::TEXT.operations.execute_gpu,
+                S::TEXT.messages.staged_inputs_missing,
             )
+            .with_log_safe_fact("staged_input_state", "not_prepared")
         })?;
         slot.lock()
             .map_err(|_| {
-                DataFusionError::from(
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        S::TEXT.operations.execute_gpu,
-                        S::TEXT.messages.staged_inputs_poisoned,
-                    )
-                    .with_log_safe_fact("staged_input_state", "poisoned"),
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    S::TEXT.operations.execute_gpu,
+                    S::TEXT.messages.staged_inputs_poisoned,
                 )
+                .with_log_safe_fact("staged_input_state", "poisoned")
             })?
             .take()
             .ok_or_else(|| {
-                DataFusionError::from(
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        S::TEXT.operations.execute_gpu,
-                        S::TEXT.messages.staged_inputs_consumed,
-                    )
-                    .with_log_safe_fact("staged_input_state", "already_consumed"),
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    S::TEXT.operations.execute_gpu,
+                    S::TEXT.messages.staged_inputs_consumed,
                 )
+                .with_log_safe_fact("staged_input_state", "already_consumed")
             })
     }
 
@@ -264,7 +254,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         task_context: Arc<TaskContext>,
         staged: StagedNativeChildren,
         sink: RelationFunctionSink,
-    ) -> Result<QueryExecutionOutcome> {
+    ) -> DataFusionResult<QueryExecutionOutcome> {
         self.reject_unavailable_execution()?;
         let uploaded = staged.upload(native_context, task_context).await?;
         let host_to_device_uploads = uploaded.host_to_device_uploads.clone();
@@ -276,13 +266,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
             native_context.statistical_aggregate_execution_mode(),
             native_context.planning_policy(),
         )
-        .map_err(|error| {
-            DataFusionError::from(Error::from_native_with_blocking_diagnostics(
-                S::TEXT.operations.execute,
-                S::TEXT.messages.execution_failed,
-                error,
-            ))
-        })?;
+        .map_err(relation_execution_error::<S>)?;
         let outcome = execute_query_plan(
             native_context,
             QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&uploaded.inputs),
@@ -299,7 +283,7 @@ impl<S: RelationFunctionSpec> RelationFunctionExec<S> {
         native_context: &ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
-    ) -> Result<(String, GpuResultHandle)> {
+    ) -> DataFusionResult<(String, GpuResultHandle)> {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -369,7 +353,7 @@ impl<S: RelationFunctionSpec> GpuResidentProducer for RelationFunctionExec<S> {
         &'a self,
         _plan: Arc<dyn ExecutionPlan>,
         task_context: Arc<TaskContext>,
-    ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
+    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
             self.reject_unavailable_execution()?;
             let cancellation =
@@ -392,7 +376,7 @@ impl<S: RelationFunctionSpec> GpuResidentProducer for RelationFunctionExec<S> {
         native_context: &'a ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
-    ) -> BoxFuture<'a, Result<(String, GpuResultHandle)>> {
+    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
         Box::pin(
             async move { self.execute_gpu_result_with_context_impl(native_context, partition, task_context).await },
         )
@@ -432,8 +416,8 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
         Ok(TreeNodeRecursion::Continue)
     }
 
@@ -465,7 +449,10 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
         )
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if children.len() != self.inputs.len() {
             return Err(Error::new(
                 ErrorCode::InvalidChildCount,
@@ -487,7 +474,7 @@ impl<S: RelationFunctionSpec> ExecutionPlan for RelationFunctionExec<S> {
         )?))
     }
 
-    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -617,7 +604,7 @@ fn planned_bindings<S: RelationFunctionSpec>(
     inputs: &[Arc<dyn ExecutionPlan>],
     input_names: &[String],
     input_projections: &[Vec<usize>],
-) -> Result<Vec<NativeChildBinding>> {
+) -> DataFusionResult<Vec<NativeChildBinding>> {
     inputs
         .iter()
         .zip(input_names)
@@ -673,12 +660,8 @@ pub(crate) fn add_projected_relation_source(builder: &mut QueryPlanBuilder, chil
     }
 }
 
-fn relation_execution_error<S: RelationFunctionSpec>(error: QueryError) -> DataFusionError {
-    DataFusionError::from(Error::from_native_with_blocking_diagnostics(
-        S::TEXT.operations.execute,
-        S::TEXT.messages.execution_failed,
-        error,
-    ))
+fn relation_execution_error<S: RelationFunctionSpec>(error: QueryError) -> Error {
+    Error::from_native_with_blocking_diagnostics(S::TEXT.operations.execute, S::TEXT.messages.execution_failed, error)
 }
 
 #[cfg(test)]
@@ -751,12 +734,12 @@ mod tests {
             true
         }
 
-        fn feature_disabled(&self) -> DataFusionError {
-            DataFusionError::Internal("feature disabled".to_string())
+        fn feature_disabled(&self) -> Error {
+            Error::new(ErrorCode::Internal, "test.feature_disabled", "feature disabled")
         }
 
-        fn invalid_child_count(&self) -> DataFusionError {
-            DataFusionError::Internal("invalid child count".to_string())
+        fn invalid_child_count(&self) -> Error {
+            Error::new(ErrorCode::Internal, "test.invalid_child_count", "invalid child count")
         }
     }
 

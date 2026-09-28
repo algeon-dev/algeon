@@ -2,7 +2,7 @@ use std::{cmp::Ordering, fmt, hash::Hash, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    common::{DFSchema, DFSchemaRef, Result},
+    common::{DFSchema, DFSchemaRef, Result as DataFusionResult},
     logical_expr::{Expr, LogicalPlan, UserDefinedLogicalNodeCore},
 };
 use serde_json::{Map, Value};
@@ -14,11 +14,11 @@ use super::{
     CugraphForceAtlas2InitialPositionsTable, CugraphForceAtlas2VertexAttributesTable, CugraphGraphEdgePredicateTable,
     CugraphGraphPredicateTable, CugraphSqlConfig,
     definitions::{CugraphArgumentKind, arguments_for_algorithm},
-    error::with_binding_fact,
     options, plan,
     planning::{validate_edge_source_schema, validate_predicate_source_schema},
     result_schema_for_params, result_schema_for_vertex_domain,
 };
+use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CugraphRelationRole {
@@ -71,43 +71,8 @@ impl CugraphLogicalNode {
         values: Map<String, Value>,
         source: Option<CugraphBfsSource>,
         config: &CugraphSqlConfig,
-    ) -> Result<Self> {
-        if roles.first() != Some(&CugraphRelationRole::Edges) || roles.len() != inputs.len() {
-            return Err(plan("cuGraph logical relation roles must begin with edges and match the child count"));
-        }
-        if algorithm == CugraphAlgorithm::Bfs {
-            let selector_count =
-                usize::from(source.is_some()) + usize::from(roles.contains(&CugraphRelationRole::Sources));
-            if selector_count != 1 {
-                return Err(plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources"));
-            }
-        }
-        validate_contract_column_uniqueness(algorithm, &inputs, &roles)?;
-        let (mut graph_options, mut params) = options::default_options(algorithm, config, source)?;
-        let edge_schema = inputs[0].schema();
-        let has_weight = edge_schema.field_with_unqualified_name("weight").is_ok();
-        let has_edge_id = edge_schema.field_with_unqualified_name("edge_id").is_ok();
-        options::apply_options(algorithm, &values, &mut graph_options, &mut params)?;
-        apply_relation_roles(&roles, &inputs, &mut params, has_edge_id)?;
-        options::validate_graph_directedness(algorithm, &graph_options)
-            .map_err(|error| with_binding_fact(error, "argument", "directed"))?;
-        if algorithm.native_algorithm().weight_policy().requires_weight() && !has_weight {
-            return Err(with_binding_fact(
-                plan(format!("{} requires the edges relation to contain a weight field", algorithm.function_name())),
-                "relation_role",
-                CugraphRelationRole::Edges.as_str(),
-            ));
-        }
-        let mut spec = CugraphAlgorithmSpec {
-            algorithm,
-            has_weight,
-            has_edge_id,
-            graph_options,
-            output_schema: result_schema_for_params(algorithm, &params),
-            params,
-        };
-        let vertex_domain = validate_inputs(&spec, &inputs, &roles)?;
-        spec.output_schema = result_schema_for_vertex_domain(algorithm, &spec.params, Some(&vertex_domain));
+    ) -> DataFusionResult<Self> {
+        let spec = validated_spec(algorithm, &inputs, &roles, &values, source, config)?;
         let schema = Arc::new(DFSchema::try_from(spec.output_schema.as_ref().clone())?);
         let binding_key = serde_json::to_string(&values).expect("cuGraph named values are JSON serializable");
         #[cfg(feature = "cugraph")]
@@ -131,6 +96,52 @@ impl CugraphLogicalNode {
     }
 }
 
+fn validated_spec(
+    algorithm: CugraphAlgorithm,
+    inputs: &[LogicalPlan],
+    roles: &[CugraphRelationRole],
+    values: &Map<String, Value>,
+    source: Option<CugraphBfsSource>,
+    config: &CugraphSqlConfig,
+) -> Result<CugraphAlgorithmSpec> {
+    if roles.first() != Some(&CugraphRelationRole::Edges) || roles.len() != inputs.len() {
+        return Err(plan("cuGraph logical relation roles must begin with edges and match the child count"));
+    }
+    if algorithm == CugraphAlgorithm::Bfs {
+        let selector_count = usize::from(source.is_some()) + usize::from(roles.contains(&CugraphRelationRole::Sources));
+        if selector_count != 1 {
+            return Err(plan("cugraph_bfs requires exactly one of source_vertex, source_vertices, or sources"));
+        }
+    }
+    validate_contract_column_uniqueness(algorithm, inputs, roles)?;
+    let (mut graph_options, mut params) = options::default_options(algorithm, config, source)?;
+    let edge_schema = inputs[0].schema();
+    let has_weight = edge_schema.field_with_unqualified_name("weight").is_ok();
+    let has_edge_id = edge_schema.field_with_unqualified_name("edge_id").is_ok();
+    options::apply_options(algorithm, values, &mut graph_options, &mut params)?;
+    apply_relation_roles(roles, inputs, &mut params, has_edge_id)?;
+    options::validate_graph_directedness(algorithm, &graph_options)
+        .map_err(|error| error.with_fact("argument", "directed"))?;
+    if algorithm.native_algorithm().weight_policy().requires_weight() && !has_weight {
+        return Err(plan(format!(
+            "{} requires the edges relation to contain a weight field",
+            algorithm.function_name()
+        ))
+        .with_fact("relation_role", CugraphRelationRole::Edges.as_str()));
+    }
+    let mut spec = CugraphAlgorithmSpec {
+        algorithm,
+        has_weight,
+        has_edge_id,
+        graph_options,
+        output_schema: result_schema_for_params(algorithm, &params),
+        params,
+    };
+    let vertex_domain = validate_inputs(&spec, inputs, roles)?;
+    spec.output_schema = result_schema_for_vertex_domain(algorithm, &spec.params, Some(&vertex_domain));
+    Ok(spec)
+}
+
 fn validate_inputs(
     spec: &CugraphAlgorithmSpec,
     inputs: &[LogicalPlan],
@@ -139,7 +150,7 @@ fn validate_inputs(
     validate_contract_column_uniqueness(spec.algorithm, inputs, roles)?;
     let edge_schema = Arc::new(inputs[0].schema().as_arrow().clone());
     let vertex_domain = validate_edge_source_schema(spec, &edge_schema)
-        .map_err(|error| with_binding_fact(error, "relation_role", CugraphRelationRole::Edges.as_str()))?;
+        .map_err(|error| error.with_fact("relation_role", CugraphRelationRole::Edges.as_str()))?;
     let source_specs = spec.predicate_source_specs();
     if source_specs.len() != inputs.len() - 1 {
         return Err(plan(format!(
@@ -152,7 +163,7 @@ fn validate_inputs(
     for ((source, input), role) in source_specs.iter().zip(&inputs[1..]).zip(&roles[1..]) {
         let schema = Arc::new(input.schema().as_arrow().clone());
         validate_predicate_source_schema(spec, source, &schema, &vertex_domain)
-            .map_err(|error| with_binding_fact(error, "relation_role", role.as_str()))?;
+            .map_err(|error| error.with_fact("relation_role", role.as_str()))?;
     }
     Ok(vertex_domain)
 }
@@ -181,15 +192,12 @@ fn validate_contract_column_uniqueness(
                     .map(|(qualifier, _)| qualifier.map_or_else(|| "<unqualified>".to_string(), ToString::to_string))
                     .collect::<Vec<_>>()
                     .join(", ");
-                return Err(with_binding_fact(
-                    plan(format!(
-                        "cuGraph {} relation column '{}' is ambiguous across qualifiers [{qualifiers}]; project one column",
-                        role.as_str(),
-                        column.name
-                    )),
-                    "relation_role",
+                return Err(plan(format!(
+                    "cuGraph {} relation column '{}' is ambiguous across qualifiers [{qualifiers}]; project one column",
                     role.as_str(),
-                ));
+                    column.name
+                ))
+                .with_fact("relation_role", role.as_str()));
             }
         }
     }
@@ -204,7 +212,7 @@ fn apply_relation_roles(
 ) -> Result<()> {
     for (role, input) in roles.iter().copied().zip(inputs).skip(1) {
         apply_relation_role(role, input, params, has_edge_id)
-            .map_err(|error| with_binding_fact(error, "relation_role", role.as_str()))?;
+            .map_err(|error| error.with_fact("relation_role", role.as_str()))?;
     }
     validate_relation_combinations(params)
 }
@@ -376,14 +384,14 @@ impl UserDefinedLogicalNodeCore for CugraphLogicalNode {
         )
     }
 
-    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> Result<Self> {
+    fn with_exprs_and_inputs(&self, exprs: Vec<Expr>, inputs: Vec<LogicalPlan>) -> DataFusionResult<Self> {
         if !exprs.is_empty() {
-            return Err(plan("cuGraph logical nodes do not expose optimizer expressions"));
+            return Err(plan("cuGraph logical nodes do not expose optimizer expressions").into());
         }
         #[cfg(not(feature = "cugraph"))]
         {
             if !inputs.is_empty() {
-                return Err(plan("feature-disabled cuGraph logical nodes must not receive input children"));
+                return Err(plan("feature-disabled cuGraph logical nodes must not receive input children").into());
             }
             return Ok(self.clone());
         }

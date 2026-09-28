@@ -4,14 +4,10 @@ use std::{collections::BTreeMap, fmt};
 
 use crate::{
     admission::AdmittedPlan,
-    capability::{
-        CapabilityRejectionCategory, CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
-        EdgeConsumer, InvariantId, ResultSinkKind,
-    },
+    capability::{CapabilityRejectionCategory, CapabilityScope, Rejection, RejectionOwner},
     correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
     mode::CapabilityEnvelopeStatus,
-    plan::NodeId,
 };
 
 /// Query-level capability admission report.
@@ -92,7 +88,7 @@ pub struct CapabilityDecisionRow {
     pub execution_mode: CapabilityEnvelopeStatus,
     pub scope: CapabilityScope,
     pub decision_id: CapabilityDecisionId,
-    pub owner: CapabilityDecisionOwner,
+    pub owner: RejectionOwner,
     pub category: Option<CapabilityRejectionCategory>,
     pub boundary: &'static str,
     pub reason: &'static str,
@@ -101,18 +97,18 @@ pub struct CapabilityDecisionRow {
 }
 
 impl CapabilityDecisionRow {
-    /// Builds a row from a rejected capability projection.
-    pub fn from_rejection_projection(index: usize, projection: &CapabilityRejectionProjection) -> Result<Self> {
+    /// Builds a row from a rejection.
+    pub fn from_rejection(index: usize, rejection: &Rejection) -> Result<Self> {
         let row = Self {
             execution_mode: CapabilityEnvelopeStatus::Rejected,
-            scope: projection.contract_scope,
-            decision_id: CapabilityDecisionId { scope: projection.contract_scope, index },
-            owner: CapabilityDecisionOwner::from_rejection_owner(&projection.owner),
-            category: Some(projection.category),
-            boundary: projection.boundary,
-            reason: projection.reason,
+            scope: rejection.contract_scope(),
+            decision_id: CapabilityDecisionId { scope: rejection.contract_scope(), index },
+            owner: rejection.owner,
+            category: Some(rejection.category()),
+            boundary: rejection.boundary(),
+            reason: rejection.reason.as_str(),
             status: CapabilityDecisionStatus::Rejected,
-            facts: projection.facts.clone(),
+            facts: rejection.facts.clone(),
         };
         validate_decision_row(&row)?;
         Ok(row)
@@ -164,50 +160,6 @@ impl CapabilityDecisionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum CapabilityDecisionOwner {
-    Node(NodeId),
-    Edge { producer: NodeId, consumer: EdgeConsumer },
-    Subgraph(InvariantId),
-    Admission(&'static str),
-}
-
-impl CapabilityDecisionOwner {
-    fn from_rejection_owner(owner: &CapabilityRejectionOwner) -> Self {
-        match owner {
-            CapabilityRejectionOwner::Node(node) => Self::Node(*node),
-            CapabilityRejectionOwner::Edge { producer, consumer } => {
-                Self::Edge { producer: *producer, consumer: *consumer }
-            },
-            CapabilityRejectionOwner::Invariant(invariant) => Self::Subgraph(*invariant),
-            CapabilityRejectionOwner::Admission(admission) => Self::Admission(admission),
-        }
-    }
-}
-
-impl fmt::Display for CapabilityDecisionOwner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Node(node) => write!(f, "node:{node}"),
-            Self::Edge { producer, consumer } => write!(f, "edge:{producer}->{}", DisplayEdgeConsumer(*consumer)),
-            Self::Subgraph(invariant) => write!(f, "subgraph:i{}", invariant.index()),
-            Self::Admission(admission) => write!(f, "admission:{admission}"),
-        }
-    }
-}
-
-struct DisplayEdgeConsumer(EdgeConsumer);
-
-impl fmt::Display for DisplayEdgeConsumer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            EdgeConsumer::Node(node) => write!(f, "node:{node}"),
-            EdgeConsumer::Sink(ResultSinkKind::HostArrow) => f.write_str("sink:host_arrow"),
-            EdgeConsumer::Sink(ResultSinkKind::GpuResident) => f.write_str("sink:gpu_resident"),
-        }
-    }
-}
-
 fn validate_decision_row(row: &CapabilityDecisionRow) -> Result<()> {
     if row.boundary.is_empty() || row.reason.is_empty() {
         return Err(capability_report_error("capability decision requires a boundary and reason")
@@ -215,10 +167,9 @@ fn validate_decision_row(row: &CapabilityDecisionRow) -> Result<()> {
     }
     let owner_scope_matches = matches!(
         (&row.owner, row.scope),
-        (CapabilityDecisionOwner::Node(_), CapabilityScope::Node)
-            | (CapabilityDecisionOwner::Edge { .. }, CapabilityScope::Edge)
-            | (CapabilityDecisionOwner::Subgraph(_), CapabilityScope::Subgraph)
-            | (CapabilityDecisionOwner::Admission(_), CapabilityScope::Subgraph)
+        (RejectionOwner::Node(_), CapabilityScope::Node)
+            | (RejectionOwner::Edge { .. }, CapabilityScope::Edge)
+            | (RejectionOwner::Invariant(_) | RejectionOwner::Plan, CapabilityScope::Subgraph)
     );
     if !owner_scope_matches {
         return Err(capability_report_error("capability decision owner does not match its scope")

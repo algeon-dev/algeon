@@ -138,10 +138,7 @@ impl AlgeonNativeComposedExec {
                 if let Some(rejection) =
                     graph_execution_plan(child.as_ref()).and_then(|graph| graph.gpu_resident_output_rejection())
                 {
-                    return Err(adapter_error_from_graph_rejection(
-                        rejection,
-                        "algeon_datafusion.native_composed.try_new",
-                    ));
+                    return Err(rejection);
                 }
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
@@ -269,26 +266,6 @@ impl AlgeonNativeComposedExec {
     }
 }
 
-fn adapter_error_from_graph_rejection(rejection: DataFusionError, operation: &'static str) -> Error {
-    match rejection {
-        DataFusionError::External(source) => match source.downcast::<Error>() {
-            Ok(error) => *error,
-            Err(source) => Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                operation,
-                "graph execution rejected the GPU-resident output boundary",
-            )
-            .with_boxed_source(source),
-        },
-        rejection => Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            operation,
-            "graph execution rejected the GPU-resident output boundary",
-        )
-        .with_source(rejection),
-    }
-}
-
 struct CompletedComposedAdmissionEvidence {
     execution_config: AlgeonNativeExecutionConfig,
 }
@@ -305,7 +282,7 @@ fn prepared_producer_capability_evidence(
 ) -> QueryEngineResult<PreparedProducerCapabilityEvidence> {
     let producer = gpu_resident_producer(input).ok_or_else(|| {
         QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::InternalInvariantViolation,
             "algeon_datafusion.native_composed.admission_evidence",
             "a prepared composed input is not a GPU-resident producer",
         )
@@ -313,7 +290,7 @@ fn prepared_producer_capability_evidence(
     })?;
     let output_evidence = producer.gpu_result_capability_evidence().map_err(|error| {
         QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::InternalInvariantViolation,
             "algeon_datafusion.native_composed.admission_evidence",
             "a prepared composed producer did not expose its output capability evidence",
         )
@@ -322,7 +299,7 @@ fn prepared_producer_capability_evidence(
     })?;
     let output_scope = output_evidence.execution_scopes().last().cloned().ok_or_else(|| {
         QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::InternalInvariantViolation,
             "algeon_datafusion.native_composed.admission_evidence",
             "a prepared composed producer's evidence has no execution scope to bind an occurrence to",
         )
@@ -353,7 +330,7 @@ fn prepared_producer_capability_evidence(
 pub(crate) fn composed_admission_capability_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
-) -> DataFusionResult<AttemptCapabilityEvidence> {
+) -> Result<AttemptCapabilityEvidence> {
     resolve_composed_admission_capability_evidence(consumer_plan, prepared_gpu_inputs)
         .map_err(|error| prepared_composed_admission_error(error, consumer_plan, None))
 }
@@ -366,7 +343,7 @@ fn resolve_composed_admission_capability_evidence(
     for input in prepared_gpu_inputs {
         let input_name = gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
             QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::InternalInvariantViolation,
                 "algeon_datafusion.native_composed.admission_evidence",
                 "a prepared composed producer is missing its stable runtime occurrence identity",
             )
@@ -410,7 +387,7 @@ fn prepared_composed_admission_error(
     mut error: QueryError,
     consumer_plan: &QueryPlan,
     execution_config: Option<&AlgeonNativeExecutionConfig>,
-) -> DataFusionError {
+) -> Error {
     error = error
         .with_fact("stage", "prepared_composed_admission")
         .with_fact("candidate_plan_node_id", consumer_plan.root_id());
@@ -425,11 +402,11 @@ fn prepared_composed_admission_error(
             error = error.with_trace_id(trace_id.clone());
         }
     }
-    DataFusionError::from(Error::from_native_with_blocking_diagnostics(
+    Error::from_native_with_blocking_diagnostics(
         "algeon_datafusion.native_composed.admission_evidence",
         "failed to derive the complete engine-owned composed admission bound",
         error,
-    ))
+    )
 }
 
 /// Replaces provisional producer tickets with the one evidence for the complete
@@ -441,7 +418,7 @@ fn complete_composed_admission_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
     task_context: &TaskContext,
-) -> DataFusionResult<CompletedComposedAdmissionEvidence> {
+) -> Result<CompletedComposedAdmissionEvidence> {
     let mut producer_tickets = Vec::new();
     for input in prepared_gpu_inputs {
         for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
@@ -469,8 +446,7 @@ fn complete_composed_admission_evidence(
             "algeon_datafusion.native_composed.admission_evidence",
             "prepared GPU producers belong to different admission backends",
         )
-        .with_fact("reason", "composed_producer_admission_backend_mismatch")
-        .into());
+        .with_fact("reason", "composed_producer_admission_backend_mismatch"));
     }
 
     if let Some(active_ticket) = canonical_ticket.as_ref()
@@ -481,8 +457,7 @@ fn complete_composed_admission_evidence(
             "algeon_datafusion.native_composed.admission_evidence",
             "the composed root and its active admission ticket belong to different backends",
         )
-        .with_fact("reason", "composed_active_admission_backend_mismatch")
-        .into());
+        .with_fact("reason", "composed_active_admission_backend_mismatch"));
     }
 
     if let Some((active_ticket, active_evidence)) = canonical_ticket
@@ -513,11 +488,11 @@ fn complete_composed_admission_evidence(
     // still-unadmitted ambient ticket in place.
     if let Some(active_ticket) = canonical_ticket {
         active_ticket.bind_fragment_evidence([complete_evidence]).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.native_composed.admission_evidence",
                 "failed to bind the composed fragment to the active admission ticket",
                 error,
-            ))
+            )
         })?;
         return Ok(CompletedComposedAdmissionEvidence {
             execution_config: execution_config.with_existing_query_admission_ticket(active_ticket),
@@ -534,16 +509,16 @@ fn complete_composed_admission_evidence(
         // Another fragment of this invocation minted the ticket first.
         Some((ticket, false)) => {
             ticket.bind_fragment_evidence([complete_evidence]).map_err(|error| {
-                DataFusionError::from(Error::from_native(
+                Error::from_native(
                     "algeon_datafusion.native_composed.admission_evidence",
                     "failed to bind the composed fragment to the invocation admission ticket",
                     error,
-                ))
+                )
             })?;
             ticket
         },
         None => {
-            return Err(attempt_execution_required_error("algeon_datafusion.native_composed.admission_evidence").into());
+            return Err(attempt_execution_required_error("algeon_datafusion.native_composed.admission_evidence"));
         },
     };
     Ok(CompletedComposedAdmissionEvidence {
@@ -961,13 +936,13 @@ impl GpuResidentProducer for AlgeonNativeComposedGpuProducerExec {
         &self.input_name
     }
 
-    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+    fn gpu_result_capability_evidence(&self) -> Result<AttemptCapabilityEvidence> {
         resolve_composed_admission_capability_evidence(self.native_plan(), &self.gpu_inputs).map_err(|error| {
-            DataFusionError::from(Error::from_native(
+            Error::from_native(
                 "algeon_datafusion.native_composed_gpu_producer.admission_evidence",
                 "failed to derive capability evidence for a composed GPU-resident output",
                 error,
-            ))
+            )
         })
     }
 
@@ -1194,7 +1169,7 @@ fn validate_composed_gpu_inputs(
             if let Some(rejection) =
                 graph_execution_plan(child.as_ref()).and_then(|graph| graph.gpu_resident_output_rejection())
             {
-                return Err(adapter_error_from_graph_rejection(rejection, operation));
+                return Err(rejection);
             }
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,

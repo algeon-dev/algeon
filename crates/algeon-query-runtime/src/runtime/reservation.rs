@@ -125,7 +125,7 @@ mod tests {
             .with_merge_level(1)
             .with_merge_fan_in(2)
             .attach_to_error(QueryError::new(
-                QueryErrorCode::CudfResourceExhausted,
+                QueryErrorCode::DeviceAllocationFailed,
                 "query_engine.test",
                 "allocation failed",
             ));

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::AdmissionDecision;
 use crate::{
     backend::AnalysisContext,
-    capability::{CapabilityRejectionOwner, CapabilityRejectionProjection, keyed_hash_join_strategy_decision_for_plan},
+    capability::{Rejection, keyed_hash_join_strategy_decision_for_plan},
     plan::{PlanNode, QueryPlan},
 };
 
@@ -19,9 +19,7 @@ pub fn bounded_join_unsupported_shape_facts(
     if !plan.contains_join() {
         return None;
     }
-    decision
-        .rejection_projection()
-        .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, projection, ctx))
+    decision.rejection().map(|rejection| bounded_join_unsupported_shape_facts_with_rejection(plan, rejection, ctx))
 }
 
 /// Returns modeled bounded-join facts for a join plan `decision` admitted.
@@ -33,9 +31,9 @@ pub fn bounded_join_modeled_facts(
     (plan.contains_join() && decision.admission().is_some()).then(|| bounded_join_modeled_facts_unchecked(plan, ctx))
 }
 
-fn bounded_join_unsupported_shape_facts_with_projection(
+fn bounded_join_unsupported_shape_facts_with_rejection(
     plan: &QueryPlan,
-    rejection: &CapabilityRejectionProjection,
+    rejection: &Rejection,
     ctx: AnalysisContext<'_>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::new();
@@ -128,22 +126,13 @@ fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str
     }
 }
 
-fn insert_local_rejection_facts(facts: &mut BTreeMap<&'static str, String>, rejection: &CapabilityRejectionProjection) {
-    facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
-    facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));
-    facts.insert("bounded_join_rejection_boundary", rejection.boundary.to_string());
-    facts.insert("bounded_join_rejection_category", rejection.category.as_str().to_string());
+fn insert_local_rejection_facts(facts: &mut BTreeMap<&'static str, String>, rejection: &Rejection) {
+    facts.insert("bounded_join_rejection_scope", rejection.contract_scope().as_str().to_string());
+    facts.insert("bounded_join_rejection_owner", rejection.owner.to_string());
+    facts.insert("bounded_join_rejection_boundary", rejection.boundary().to_string());
+    facts.insert("bounded_join_rejection_category", rejection.category().as_str().to_string());
     facts.insert("bounded_join_rejection_reason", rejection.reason.to_string());
     facts.insert("bounded_join_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
-}
-
-fn rejection_owner_fact(owner: &CapabilityRejectionOwner) -> String {
-    match owner {
-        CapabilityRejectionOwner::Node(node_id) => format!("node:{node_id}"),
-        CapabilityRejectionOwner::Edge { producer, consumer } => format!("edge:{producer}->{consumer:?}"),
-        CapabilityRejectionOwner::Invariant(invariant_id) => format!("invariant:i{}", invariant_id.index()),
-        CapabilityRejectionOwner::Admission(admission) => format!("admission:{admission}"),
-    }
 }
 
 fn capability_rejection_facts_csv(facts: &BTreeMap<&'static str, String>) -> String {

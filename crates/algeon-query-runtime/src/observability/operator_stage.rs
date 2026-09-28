@@ -482,11 +482,11 @@ mod tests {
             RuntimeOperatorStageKind::LibcudfGroupby,
             RuntimeOperatorStageIdentity::new(),
             || -> Result<(), QueryError> {
-                Err(QueryError::new(QueryErrorCode::CudfResourceExhausted, "test.operator_stage", "boom"))
+                Err(QueryError::new(QueryErrorCode::DeviceAllocationFailed, "test.operator_stage", "boom"))
             },
         )
         .expect_err("body fails");
-        assert_eq!(err.code(), QueryErrorCode::CudfResourceExhausted);
+        assert_eq!(err.code(), QueryErrorCode::DeviceAllocationFailed);
         let snapshot = session.seal(RuntimeTerminalOutcome::from_query_error(&err)).expect("seal");
         let states: Vec<_> = snapshot
             .events()
@@ -499,7 +499,7 @@ mod tests {
         assert!(matches!(states[0], RuntimeOperatorStageState::Started));
         assert!(matches!(
             states[1],
-            RuntimeOperatorStageState::Failed { ref error_code } if error_code == "cudf_resource_exhausted"
+            RuntimeOperatorStageState::Failed { ref error_code } if error_code == "device_allocation_failed"
         ));
     }
 

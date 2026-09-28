@@ -722,6 +722,8 @@ impl AttemptLifecycle {
 
 #[cfg(test)]
 mod tests {
+    use query_planning::error::QueryErrorCode;
+
     use super::*;
 
     fn fact() -> AttemptAdmissionFact {
@@ -734,7 +736,7 @@ mod tests {
 
     fn failed() -> RuntimeTerminalOutcome {
         RuntimeTerminalOutcome::Failed {
-            error_code: AttemptFailureCode::Internal,
+            error_code: AttemptFailureCode::Query(QueryErrorCode::Internal),
             error_status: AttemptFailureStatus::Permanent,
         }
     }
@@ -1205,7 +1207,7 @@ mod tests {
         lifecycle
             .terminalize_admission_rejection(
                 RuntimeTerminalOutcome::Failed {
-                    error_code: AttemptFailureCode::Internal,
+                    error_code: AttemptFailureCode::Query(QueryErrorCode::Internal),
                     error_status: AttemptFailureStatus::Permanent,
                 },
                 None,

@@ -188,15 +188,13 @@ impl QueryAdmissionOutcome {
                 requested_cap_bytes: fact_u64(error, "requested_cap_bytes"),
                 largest_eligible_cap_bytes: fact_u64(error, "largest_eligible_cap_bytes"),
             },
-            QueryErrorCode::ServiceOverloaded
-            | QueryErrorCode::MemoryReservationFailed
-            | QueryErrorCode::CudfResourceExhausted => Self::Capacity {
+            QueryErrorCode::ServiceOverloaded | QueryErrorCode::MemoryReservationFailed => Self::Capacity {
                 queued_queries: fact_usize(error, "queued_queries"),
                 queue_capacity: fact_usize(error, "max_waiters")
                     .or_else(|| queue_bounds.map(|bounds| bounds.max_waiters)),
                 max_queue_wait: queue_bounds.map(|bounds| bounds.max_wait),
             },
-            QueryErrorCode::UnsupportedPlanShape
+            QueryErrorCode::UnsupportedPipelineContract
             | QueryErrorCode::UnsupportedOperator
             | QueryErrorCode::UnsupportedExpression
             | QueryErrorCode::UnsupportedType
@@ -296,7 +294,7 @@ mod outcome_tests {
             // An impossible cap is not queue pressure: the caller must change
             // the cap or release resident owners, never simply back off.
             (QueryErrorCode::QueryBudgetUnavailable, "budget_unavailable"),
-            (QueryErrorCode::UnsupportedPlanShape, "capability"),
+            (QueryErrorCode::UnsupportedPipelineContract, "capability"),
             (QueryErrorCode::InvalidPlan, "invalid"),
             (QueryErrorCode::Cancelled, "cancelled"),
             (QueryErrorCode::CudfInvariantViolation, "execution"),
@@ -327,15 +325,17 @@ mod outcome_tests {
 
     #[test]
     fn capacity_projection_leaves_unknown_queue_metrics_unknown() {
-        let outcome = QueryAdmissionOutcome::from_error(&error(QueryErrorCode::CudfResourceExhausted));
+        let outcome = QueryAdmissionOutcome::from_error(&error(QueryErrorCode::MemoryReservationFailed));
         assert!(matches!(
             outcome,
             QueryAdmissionOutcome::Capacity { queued_queries: None, queue_capacity: None, max_queue_wait: None }
         ));
 
         let bounds = QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(3) };
-        let outcome =
-            QueryAdmissionOutcome::from_error_with_queue_bounds(&error(QueryErrorCode::CudfResourceExhausted), &bounds);
+        let outcome = QueryAdmissionOutcome::from_error_with_queue_bounds(
+            &error(QueryErrorCode::MemoryReservationFailed),
+            &bounds,
+        );
         assert_eq!(outcome.queued_queries(), None);
         assert_eq!(outcome.queue_capacity(), Some(4));
         assert_eq!(outcome.max_queue_wait(), Some(Duration::from_secs(3)));
@@ -343,7 +343,7 @@ mod outcome_tests {
 
     #[test]
     fn execution_projection_does_not_reclassify_post_admission_resource_errors() {
-        for code in [QueryErrorCode::MemoryReservationFailed, QueryErrorCode::CudfResourceExhausted] {
+        for code in [QueryErrorCode::MemoryReservationFailed, QueryErrorCode::DeviceAllocationFailed] {
             assert_eq!(
                 QueryAdmissionOutcome::from_execution_error(&error(code)),
                 QueryAdmissionOutcome::ExecutionFailure,

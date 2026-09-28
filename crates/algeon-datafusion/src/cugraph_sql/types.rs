@@ -1,7 +1,7 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::Result as DataFusionResult;
 use query_engine::plan::{
     DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, GraphAlgorithmParams as NativeGraphAlgorithmParams,
     GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphConstructionOptions as NativeGraphConstructionOptions,
@@ -10,7 +10,7 @@ use query_engine::plan::{
 };
 
 use super::{plan, registry::CugraphAlgorithm};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 pub(crate) const CUGRAPH_EDGE_SOURCE_COLUMN: &str = "src";
 pub(crate) const CUGRAPH_EDGE_DESTINATION_COLUMN: &str = "dst";
@@ -44,7 +44,7 @@ impl GpuIslandHostBoundaryConfig {
     pub const DEFAULT_MAX_OUTPUT_STAGING_BYTES: usize = 1024 * 1024 * 1024;
 
     /// Creates finite non-zero cumulative input and output staging limits.
-    pub fn try_new(max_input_staging_bytes: usize, max_output_staging_bytes: usize) -> Result<Self> {
+    pub fn try_new(max_input_staging_bytes: usize, max_output_staging_bytes: usize) -> DataFusionResult<Self> {
         let max_input_staging_bytes = NonZeroUsize::new(max_input_staging_bytes)
             .ok_or_else(|| plan("cuGraph GPU-island input staging limit must be non-zero"))?;
         let max_output_staging_bytes = NonZeroUsize::new(max_output_staging_bytes)
@@ -121,8 +121,7 @@ impl CugraphAlgorithmSpec {
         )
         .with_fact("edge_id_col", self.has_edge_id)
         .with_fact("include_edge_ids", include_edge_ids)
-        .with_fact("include_edge_id_col", include_edge_id_col)
-        .into())
+        .with_fact("include_edge_id_col", include_edge_id_col))
     }
 
     pub(crate) fn predicate_source_specs(&self) -> Vec<Vec<PredicateSourceColumnRole>> {
@@ -827,8 +826,7 @@ pub(crate) fn validate_vertex_id_domain_support_for_call(
     )
     .with_fact("algorithm", algorithm.function_name())
     .with_fact("vertex_dtype", format!("{data_type:?}"))
-    .with_fact("supported_vertex_dtypes", support.supported_dtypes_label())
-    .into())
+    .with_fact("supported_vertex_dtypes", support.supported_dtypes_label()))
 }
 
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
@@ -874,20 +872,18 @@ pub(crate) fn validate_similarity_pair_table_schema(
     Ok(())
 }
 
-fn unsupported_vertex_dtype_error(message: impl Into<String>) -> DataFusionError {
+fn unsupported_vertex_dtype_error(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::UnsupportedType, "algeon_datafusion.cugraph_sql.vertex_id_type", message)
         .with_fact("reason", "unsupported_vertex_dtype")
-        .into()
 }
 
-fn missing_column_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::FieldNotFound, "algeon_datafusion.cugraph_sql.vertex_pair_schema", message).into()
+fn missing_column_error(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::FieldNotFound, "algeon_datafusion.cugraph_sql.vertex_pair_schema", message)
 }
 
-fn vertex_dtype_mismatch_error(message: impl Into<String>) -> DataFusionError {
+fn vertex_dtype_mismatch_error(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidExecutionPlan, "algeon_datafusion.cugraph_sql.vertex_id_type", message)
         .with_fact("reason", "vertex_dtype_mismatch")
-        .into()
 }
 
 pub(crate) fn is_string_vertex_dtype(data_type: &DataType) -> bool {

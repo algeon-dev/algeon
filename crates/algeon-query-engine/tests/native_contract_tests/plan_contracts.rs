@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use query_engine::{policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
+use query_engine::{capability::Reason, policy::PlanningPolicy, rapids_backend::rapids_analysis_context};
 
 use super::*;
 
@@ -266,7 +266,7 @@ fn aggregate_node_capability_rejects_mixed_median_and_floating_statistical_funct
     let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
         panic!("mixed median/statistical aggregate should reject, got {:?}", node.executable);
     };
-    assert_eq!(*reason, "unsupported_aggregate_expression_capability");
+    assert_eq!(*reason, Reason::UnsupportedAggregateExpressionCapability);
     assert_eq!(facts.get("reason").map(String::as_str), Some("median_floating_statistical_mixed_unsupported"));
     assert_eq!(facts.get("expression_family").map(String::as_str), Some("aggregate"));
 }
@@ -290,7 +290,7 @@ fn aggregate_node_capability_rejects_decimal_median_input_type() {
     let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
         panic!("Decimal median aggregate should reject, got {:?}", node.executable);
     };
-    assert_eq!(*reason, "unsupported_aggregate_expression_capability");
+    assert_eq!(*reason, Reason::UnsupportedAggregateExpressionCapability);
     assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_median_input_type"));
     assert_eq!(facts.get("data_type").map(String::as_str), Some("Decimal128(15, 2)"));
 }

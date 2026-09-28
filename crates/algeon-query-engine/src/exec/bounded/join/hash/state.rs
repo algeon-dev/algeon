@@ -1,8 +1,8 @@
 use super::{
-    BoundedJoinSideFrame, GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, Result, keyed_hash_join_capable,
-    release_bounded_join_side_frame,
+    BoundedJoinSideFrame, GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, Result, bounded_invariant_violation,
+    keyed_hash_join_capable, release_bounded_join_side_frame,
     stream::{proportional_join_stream_bytes, reusable_hash_join_stream_chunk_rows},
-    unsupported_bounded_shape, validate_executable_join_subset,
+    validate_executable_join_subset,
 };
 
 // Reusable build artifact plus its observed native allocation.
@@ -69,7 +69,7 @@ pub(in crate::exec::bounded) fn release_bounded_root_hash_join_probe_state(probe
 pub(in crate::exec::bounded::join::hash) fn validate_root_hash_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
     if !keyed_hash_join_capable(node) {
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "compiled hash join execution requires keyed inner, left, or full equi join capability",
             "compiled_join_strategy_unsupported",
         )

@@ -9,7 +9,7 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
-    common::{DataFusionError, Result, ScalarValue},
+    common::{Result as DataFusionResult, ScalarValue},
     datasource::{MemTable, TableType, source_as_provider},
     logical_expr::{Expr, TableSource},
     physical_plan::ExecutionPlan,
@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 
 use super::{GpuCallRequest, GpuCallValidation, GpuFunctionCatalog, GpuFunctionDescriptor};
 use crate::{
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, Result},
     physical_plan::cpu_physical_boundary,
 };
 
@@ -50,9 +50,9 @@ struct GpuListFunctions {
 }
 
 impl TableFunctionImpl for GpuListFunctions {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+    fn call(&self, args: &[Expr]) -> DataFusionResult<Arc<dyn TableProvider>> {
         if !args.is_empty() {
-            return Err(plan_error(format!("{GPU_LIST_FUNCTIONS_FUNCTION} does not accept arguments")));
+            return Err(plan_error(format!("{GPU_LIST_FUNCTIONS_FUNCTION} does not accept arguments")).into());
         }
         Ok(Arc::new(GpuMetadataProvider { catalog: Arc::clone(&self.catalog), kind: MetadataKind::List }))
     }
@@ -64,13 +64,13 @@ struct GpuDescribeFunction {
 }
 
 impl TableFunctionImpl for GpuDescribeFunction {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+    fn call(&self, args: &[Expr]) -> DataFusionResult<Arc<dyn TableProvider>> {
         if args.len() != 1 {
-            return Err(plan_error(format!("{GPU_DESCRIBE_FUNCTION_FUNCTION} expects function_name")));
+            return Err(plan_error(format!("{GPU_DESCRIBE_FUNCTION_FUNCTION} expects function_name")).into());
         }
         let function_name = literal_string(args, 0, "function_name")?;
         if self.catalog.get(&function_name).is_none() {
-            return Err(plan_error(format!("unknown GPU function '{function_name}'")));
+            return Err(plan_error(format!("unknown GPU function '{function_name}'")).into());
         }
         Ok(Arc::new(GpuMetadataProvider {
             catalog: Arc::clone(&self.catalog),
@@ -85,9 +85,9 @@ struct GpuValidateCall {
 }
 
 impl TableFunctionImpl for GpuValidateCall {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+    fn call(&self, args: &[Expr]) -> DataFusionResult<Arc<dyn TableProvider>> {
         if args.len() != 2 {
-            return Err(plan_error(format!("{GPU_VALIDATE_CALL_FUNCTION} expects function_name, call_json")));
+            return Err(plan_error(format!("{GPU_VALIDATE_CALL_FUNCTION} expects function_name, call_json")).into());
         }
         Ok(Arc::new(GpuMetadataProvider {
             catalog: Arc::clone(&self.catalog),
@@ -138,7 +138,7 @@ impl TableProvider for GpuMetadataProvider {
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         let batch = match &self.kind {
             MetadataKind::List => list_batch(&self.catalog)?,
             MetadataKind::Describe { function_name } => describe_batch(&self.catalog, function_name)?,
@@ -199,7 +199,7 @@ pub(crate) fn validation_schema() -> SchemaRef {
     ]))
 }
 
-fn list_batch(catalog: &GpuFunctionCatalog) -> Result<RecordBatch> {
+fn list_batch(catalog: &GpuFunctionCatalog) -> DataFusionResult<RecordBatch> {
     RecordBatch::try_new(
         list_schema(),
         vec![
@@ -215,7 +215,7 @@ fn list_batch(catalog: &GpuFunctionCatalog) -> Result<RecordBatch> {
     .map_err(Into::into)
 }
 
-fn describe_batch(catalog: &GpuFunctionCatalog, function_name: &str) -> Result<RecordBatch> {
+fn describe_batch(catalog: &GpuFunctionCatalog, function_name: &str) -> DataFusionResult<RecordBatch> {
     let descriptor =
         &catalog.get(function_name).expect("describe function existence checked when the UDTF is planned").descriptor;
     RecordBatch::try_new(
@@ -244,7 +244,7 @@ async fn validate_batch(
     state: &dyn Session,
     function_name: &str,
     call_json: &str,
-) -> Result<RecordBatch> {
+) -> DataFusionResult<RecordBatch> {
     let row = match catalog.get(function_name) {
         None => GpuCallValidation::invalid(
             "unknown_function",
@@ -295,7 +295,7 @@ fn common_request_error(
         .map(|role| ("missing_relation", format!("missing required relation role '{role}'")))
 }
 
-fn validation_record_batch(row: GpuCallValidation) -> Result<RecordBatch> {
+fn validation_record_batch(row: GpuCallValidation) -> DataFusionResult<RecordBatch> {
     RecordBatch::try_new(
         validation_schema(),
         vec![
@@ -340,8 +340,8 @@ fn json(value: &Value) -> String {
     serde_json::to_string(value).expect("serde_json::Value always serializes")
 }
 
-fn plan_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.table_functions", message).into()
+fn plan_error(message: impl Into<String>) -> Error {
+    Error::new(ErrorCode::InvalidRequest, "algeon_datafusion.gpu_functions.table_functions", message)
 }
 
 #[cfg(test)]

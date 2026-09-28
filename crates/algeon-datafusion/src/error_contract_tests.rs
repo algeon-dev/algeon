@@ -32,7 +32,6 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::InvalidChildCount, ErrorStatus::Permanent),
     (ErrorCode::CudfInvalidInput, ErrorStatus::Permanent),
     (ErrorCode::CudfUnsupported, ErrorStatus::Permanent),
-    (ErrorCode::CudfResourceExhausted, ErrorStatus::Temporary),
     (ErrorCode::SizeOverflow, ErrorStatus::Permanent),
     (ErrorCode::HostMaterializationLimitExceeded, ErrorStatus::Permanent),
     (ErrorCode::HostStagingLimitExceeded, ErrorStatus::Permanent),
@@ -58,7 +57,7 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
 
 const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatus)] = &[
     (QueryErrorCode::Cancelled, ErrorCode::Cancelled, QueryErrorStatus::Permanent),
-    (QueryErrorCode::UnsupportedPlanShape, ErrorCode::UnsupportedOperator, QueryErrorStatus::Permanent),
+    (QueryErrorCode::UnsupportedPipelineContract, ErrorCode::UnsupportedOperator, QueryErrorStatus::Permanent),
     (QueryErrorCode::UnsupportedOperator, ErrorCode::UnsupportedOperator, QueryErrorStatus::Permanent),
     (QueryErrorCode::UnsupportedExpression, ErrorCode::UnsupportedExpression, QueryErrorStatus::Permanent),
     (QueryErrorCode::UnsupportedType, ErrorCode::UnsupportedType, QueryErrorStatus::Permanent),
@@ -67,7 +66,6 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::GraphInputInvalid, ErrorCode::GraphInputInvalid, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfInvalidInput, ErrorCode::CudfInvalidInput, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfUnsupported, ErrorCode::CudfUnsupported, QueryErrorStatus::Permanent),
-    (QueryErrorCode::CudfResourceExhausted, ErrorCode::CudfResourceExhausted, QueryErrorStatus::Temporary),
     (QueryErrorCode::SizeOverflow, ErrorCode::SizeOverflow, QueryErrorStatus::Permanent),
     (
         QueryErrorCode::HostMaterializationLimitExceeded,
@@ -185,10 +183,6 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::UnsupportedExpression.as_str(), "unsupported_expression");
     assert_eq!(ErrorCode::UnsupportedExpression.kind(), ErrorKind::Unsupported);
     assert_eq!(ErrorCode::UnsupportedExpression.status(), ErrorStatus::Permanent);
-
-    assert_eq!(ErrorCode::CudfResourceExhausted.as_str(), "cudf_resource_exhausted");
-    assert_eq!(ErrorCode::CudfResourceExhausted.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(ErrorCode::CudfResourceExhausted.status(), ErrorStatus::Temporary);
 
     assert_eq!(ErrorCode::SizeOverflow.as_str(), "size_overflow");
     assert_eq!(ErrorCode::SizeOverflow.kind(), ErrorKind::ResourceExhausted);
@@ -366,7 +360,7 @@ fn native_query_error_json_uses_fact_only_correlation_ids() {
 #[test]
 fn native_query_error_triage_codes_preserve_invalid_input_and_unsupported_capability() {
     assert_eq!(TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
-    assert_eq!(TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedPlanShape);
+    assert_eq!(TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedOperator);
 }
 
 #[test]
@@ -411,7 +405,7 @@ fn native_correlation_facts_follow_stamped_query_error() {
 #[test]
 fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
     let native_error = QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedPipelineContract,
         "query_engine.plan.lower",
         "native plan shape is not supported",
     )
@@ -424,7 +418,7 @@ fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
         Error::from_native("algeon_datafusion.native.lower", "algeon native lowering failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
+    assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_pipeline_contract"));
     assert_eq!(adapter_error.fact_value("native_operation"), Some("query_engine.plan.lower"));
     assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_shape"));
     assert_eq!(

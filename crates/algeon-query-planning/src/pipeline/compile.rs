@@ -8,9 +8,8 @@ use super::{
 };
 use crate::{
     capability::{
-        AggregateExecutionStage, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory,
-        CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope, EdgeConsumer, EdgeContract,
-        EdgeContractKind, InputRole, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
+        AggregateExecutionStage, CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind,
+        InputRole, Reason, Rejection, RejectionOwner, ResultSinkKind, SubgraphInvariantKind, VectorInputRole,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer},
     error::{QueryError, QueryErrorCode, Result},
@@ -35,7 +34,7 @@ pub(crate) enum PipelineCompilation {
     /// The plan compiled into a schedule that satisfies every pipeline contract.
     Compiled(CompiledPipeline),
     /// A compiler or schedule contract rejects the plan.
-    Rejected(CapabilityRejectionProjection),
+    Rejected(Rejection),
 }
 
 /// Compile a native plan and matching capability analysis into a symbolic pipeline.
@@ -47,7 +46,7 @@ pub(crate) enum PipelineCompilation {
 pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<CompiledPipeline> {
     let pipeline = match compile_pipeline_graph(plan, analysis)? {
         GraphCompilation::Graph(pipeline) => pipeline,
-        GraphCompilation::Rejected(projection) => return Err(contract_rejection_error(&projection)),
+        GraphCompilation::Rejected(rejection) => return Err(contract_rejection_error(&rejection)),
     };
     validate_schedule(&pipeline).map_err(ScheduleRejection::into_error)?;
     Ok(pipeline)
@@ -57,10 +56,10 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Resu
 pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Result<PipelineCompilation> {
     let pipeline = match compile_pipeline_graph(plan, analysis) {
         Ok(GraphCompilation::Graph(pipeline)) => pipeline,
-        Ok(GraphCompilation::Rejected(projection)) => return Ok(PipelineCompilation::Rejected(projection)),
+        Ok(GraphCompilation::Rejected(rejection)) => return Ok(PipelineCompilation::Rejected(rejection)),
         Err(error) if error.code() == QueryErrorCode::InvalidPlan => {
-            return Ok(PipelineCompilation::Rejected(compile_rejection_projection(
-                COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE,
+            return Ok(PipelineCompilation::Rejected(compile_rejection(
+                Reason::CompiledPipelineGraphNotConstructible,
                 &error,
             )));
         },
@@ -68,40 +67,30 @@ pub(crate) fn compile_pipeline_outcome(plan: &QueryPlan, analysis: &CapabilityAn
     };
     match validate_schedule(&pipeline) {
         Ok(()) => Ok(PipelineCompilation::Compiled(pipeline)),
-        Err(rejection) => {
-            Ok(PipelineCompilation::Rejected(compile_rejection_projection(rejection.reason(), rejection.error())))
-        },
+        Err(rejection) => Ok(PipelineCompilation::Rejected(compile_rejection(rejection.reason(), rejection.error()))),
     }
 }
 
-/// Reason reported when the pipeline graph cannot be constructed at all.
-///
-/// The error facts preserve the failed construction contract.
-pub(crate) const COMPILED_PIPELINE_GRAPH_NOT_CONSTRUCTIBLE: &str = "compiled_pipeline_graph_not_constructible";
-
-fn compile_rejection_projection(reason: &'static str, error: &QueryError) -> CapabilityRejectionProjection {
+fn compile_rejection(reason: Reason, error: &QueryError) -> Rejection {
     let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
     facts.insert("pipeline_compile_error", error.message().to_string());
-    CapabilityRejectionProjection {
-        owner: CapabilityRejectionOwner::Admission(reason),
-        category: CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
-        contract_scope: CapabilityScope::Subgraph,
-        boundary: "compiled_pipeline",
-        reason,
-        facts,
-    }
+    Rejection { owner: RejectionOwner::Plan, reason, facts }
 }
 
 /// A constructed graph, or the execution contract that refuses to connect it.
 enum GraphCompilation {
     Graph(CompiledPipeline),
-    Rejected(CapabilityRejectionProjection),
+    Rejected(Rejection),
 }
 
-fn contract_rejection_error(projection: &CapabilityRejectionProjection) -> QueryError {
-    projection.facts.iter().fold(
-        QueryError::new(QueryErrorCode::UnsupportedPlanShape, OPERATION, "compiled pipeline contract refuses an edge")
-            .with_fact("capability_reason", projection.reason),
+fn contract_rejection_error(rejection: &Rejection) -> QueryError {
+    rejection.facts.iter().fold(
+        QueryError::new(
+            QueryErrorCode::UnsupportedPipelineContract,
+            OPERATION,
+            "compiled pipeline contract refuses an edge",
+        )
+        .with_fact("capability_reason", rejection.reason),
         |error, (key, value)| error.with_fact(key, value.as_str()),
     )
 }
@@ -125,7 +114,7 @@ fn compile_pipeline_graph(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> Re
     let (tasks, resources) =
         match resolve_task_and_resource_contracts(plan, &analysis.policy.keyed_hash_join, tasks, resources, &edges) {
             Ok(resolved) => resolved,
-            Err(projection) => return Ok(GraphCompilation::Rejected(projection)),
+            Err(rejection) => return Ok(GraphCompilation::Rejected(rejection)),
         };
     let barriers = build_barriers(plan, &node_order, &dependencies, &task_ids, sink_task)?;
     let sink = build_sink_boundary(plan, &task_ids, sink_task)?;
@@ -144,7 +133,7 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<(
         .find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &node.executable
     {
-        return Err(capability_rejection_error("node", reason).with_fact("node_id", node.node_id));
+        return Err(capability_rejection_error("node", *reason).with_fact("node_id", node.node_id));
     }
 
     if let Some(edge) = analysis
@@ -160,7 +149,7 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<(
         .find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &edge.decision
     {
-        return Err(capability_rejection_error("edge", reason)
+        return Err(capability_rejection_error("edge", *reason)
             .with_fact("producer", edge.producer)
             .with_fact("consumer", edge_consumer_label(edge.consumer)));
     }
@@ -172,7 +161,7 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<(
         .find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &invariant.decision
     {
-        return Err(capability_rejection_error("invariant", reason)
+        return Err(capability_rejection_error("invariant", *reason)
             .with_fact("invariant_id", invariant.invariant_id.index())
             .with_fact("invariant_kind", invariant_kind_label(&invariant.kind)));
     }
@@ -180,9 +169,9 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> Result<(
     Ok(())
 }
 
-fn capability_rejection_error(scope: &'static str, reason: &'static str) -> QueryError {
+fn capability_rejection_error(scope: &'static str, reason: Reason) -> QueryError {
     QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedPipelineContract,
         OPERATION,
         "pipeline compiler cannot compile a rejected capability analysis",
     )

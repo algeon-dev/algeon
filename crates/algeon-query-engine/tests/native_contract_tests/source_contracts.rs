@@ -892,6 +892,20 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
     let expected_row_group = usize::MAX.to_string();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("row_group"), Some(expected_row_group.as_str()));
+
+    let text_schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, false)]));
+    let text_source = LocalParquetSource::new("/tmp/source-contract.parquet", text_schema, vec!["name".to_string()]);
+    // LIKE is legal SQL the cuDF reader AST cannot express: a backend gap.
+    let unreadable = text_source.clone().with_reader_predicate(Expr::like(Expr::column("name"), "%x%"));
+    let error =
+        validate_local_parquet_source(&unreadable, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.fact_value("reason"), Some("unsupported_reader_predicate"));
+    // A predicate over a column the source does not have is malformed.
+    let unknown_column = text_source.with_reader_predicate(Expr::like(Expr::column("missing"), "%x%"));
+    let error =
+        validate_local_parquet_source(&unknown_column, rapids_analysis_context(PlanningPolicy::default())).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
 }
 
 #[test]
@@ -966,7 +980,10 @@ fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execu
     rejected_byte_range.diagnostics.byte_range_disposition = ByteRangeDisposition::Rejected;
     let error = validate_local_parquet_source(&rejected_byte_range, rapids_analysis_context(PlanningPolicy::default()))
         .unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    // A byte range the reader cannot honor is a legal scan the backend lacks;
+    // admission rejects it so the plan can stay on DataFusion.
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
+    assert_eq!(error.kind(), QueryErrorKind::Unsupported);
     assert_eq!(error.fact_value("reason"), Some("unsupported_source_contract_fact"));
     assert_eq!(error.fact_value("field"), Some("byte_range"));
     assert_eq!(error.fact_value("disposition"), Some("rejected"));
@@ -993,6 +1010,9 @@ fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execu
     let error =
         validate_local_parquet_source(&rejected_schema_mapping, rapids_analysis_context(PlanningPolicy::default()))
             .unwrap_err();
+    // Diagnostics that contradict their own source are a malformed plan.
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("inconsistent_source_contract_fact"));
     assert_eq!(error.fact_value("field"), Some("schema_mapping"));
     assert_eq!(error.fact_value("disposition"), Some("rejected"));
 
@@ -1000,6 +1020,7 @@ fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execu
     rejected_feature.diagnostics.rejected_features.push(RejectedSourceFeature::RowSelection);
     let error = validate_local_parquet_source(&rejected_feature, rapids_analysis_context(PlanningPolicy::default()))
         .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("reason"), Some("rejected_source_features"));
     assert_eq!(error.fact_value("rejected_features"), Some("row_selection"));
 }
@@ -1041,6 +1062,7 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     let error =
         validate_local_parquet_source(&missing_schema_mapping, rapids_analysis_context(PlanningPolicy::default()))
             .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("rejected_source_features"));
     assert_eq!(error.fact_value("rejected_features"), Some("schema_mapping"));
 

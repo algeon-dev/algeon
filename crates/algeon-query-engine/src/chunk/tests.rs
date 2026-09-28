@@ -296,7 +296,7 @@ fn remote_direct_decimal_reader_predicate_requires_footer_type_metadata() {
     )
     .expect_err("remote decimal reader predicates need proven footer dtype metadata");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
     assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
     assert_eq!(error.fact_value("remote_read_mode"), Some("require_kvikio"));
@@ -337,7 +337,7 @@ fn remote_direct_decimal_reader_predicate_rejects_supplied_footer_type_mismatch(
     )
     .expect_err("pre-attached reader decimal types must match footer metadata");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_mismatch"));
     assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
     assert_eq!(error.fact_value("remote_read_mode"), Some("require_kvikio"));

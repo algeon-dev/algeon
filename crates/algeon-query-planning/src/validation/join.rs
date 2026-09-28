@@ -57,7 +57,7 @@ pub(crate) fn validate_join_capability(
     }
     if join.spec.join_type == JoinType::Cross && join.spec.residual_predicate.is_some() {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.join.validate",
             "native cross join execution does not support residual predicates; use conditional join IR instead",
         )
@@ -65,7 +65,7 @@ pub(crate) fn validate_join_capability(
     }
     if join.spec.join_type == JoinType::Left && join.spec.build_side != JoinSide::Right {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.join.validate",
             "native reusable hash left join execution requires the right side to be the build side",
         )
@@ -74,7 +74,7 @@ pub(crate) fn validate_join_capability(
     }
     if join.spec.join_type == JoinType::LeftMark && join.spec.build_side != JoinSide::Right {
         return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
+            QueryErrorCode::UnsupportedOperator,
             "query_engine.join.validate",
             "native left mark join execution requires the right side to be the build side",
         )
@@ -113,7 +113,7 @@ pub(crate) fn validate_join_capability(
         }
         if join.spec.keys.is_empty() {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::UnsupportedOperator,
                 "query_engine.join.validate",
                 "native reusable hash-join build artifacts require equality keys",
             )
@@ -122,7 +122,7 @@ pub(crate) fn validate_join_capability(
         }
         if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full) {
             return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
+                QueryErrorCode::UnsupportedOperator,
                 "query_engine.join.validate",
                 "native durable hash-join build artifacts are supported only for reusable hash-join probe types",
             )
@@ -378,8 +378,9 @@ fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
 
 /// Visits every column of a join residual predicate with its input index.
 ///
-/// Returns `UnsupportedExpression` for a column that is not qualified with
-/// input 0 or 1, so `on_input` only ever sees those two indices.
+/// A column that is not qualified with input 0 or 1 names no input of a
+/// binary join, so the plan is malformed (`InvalidPlan`); `on_input` only ever
+/// sees those two indices.
 pub(crate) fn walk_join_residual_column_sides(
     expr: &Expr,
     operation: &'static str,
@@ -392,7 +393,7 @@ pub(crate) fn walk_join_residual_column_sides(
                 on_input(*index, column.name());
                 Ok(())
             },
-            qualifier => Err(QueryError::new(QueryErrorCode::UnsupportedExpression, operation, bad_qualifier_message)
+            qualifier => Err(QueryError::new(QueryErrorCode::InvalidPlan, operation, bad_qualifier_message)
                 .with_fact("column", column.name())
                 .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
         },
@@ -468,7 +469,7 @@ fn validate_join_residual_expr(
                 validate_column(column.name(), right_schema, right_available, ctx)
             },
             qualifier => Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
+                QueryErrorCode::InvalidPlan,
                 "query_engine.join.validate_residual",
                 "join residual column must be input-qualified",
             )
@@ -635,7 +636,7 @@ fn validate_post_join_residual_expr(
                 validate_column(column.name(), right_schema, right_available, ctx)
             },
             qualifier => Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
+                QueryErrorCode::InvalidPlan,
                 "query_engine.join.validate_residual",
                 "post-join residual column must be input-qualified",
             )
@@ -1228,7 +1229,8 @@ mod tests {
 
         let error = validate_join_residual_column_sides(&expr).expect_err("input2 should be rejected");
 
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+        // A binary join has no input 2: the plan is malformed, not a backend gap.
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.operation(), "query_engine.join.validate_residual");
         assert_eq!(error.fact_value("column"), Some("name"));
         assert_eq!(error.fact_value("qualifier"), Some("input2"));

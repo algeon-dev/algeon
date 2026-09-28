@@ -5,12 +5,12 @@ pub query_planning::admission::AdmissionDecision::Admitted(alloc::sync::Arc<quer
 pub query_planning::admission::AdmissionDecision::Rejected(query_planning::admission::AdmissionRejection)
 impl query_planning::admission::AdmissionDecision
 pub fn query_planning::admission::AdmissionDecision::admission(&self) -> core::option::Option<&alloc::sync::Arc<query_planning::admission::AdmittedPlan>>
-pub fn query_planning::admission::AdmissionDecision::rejection_projection(&self) -> core::option::Option<&query_planning::capability::CapabilityRejectionProjection>
+pub fn query_planning::admission::AdmissionDecision::rejection(&self) -> core::option::Option<&query_planning::capability::Rejection>
 pub struct query_planning::admission::AdmissionRejection
 impl query_planning::admission::AdmissionRejection
 pub fn query_planning::admission::AdmissionRejection::execution_error(&self, &query_planning::plan::QueryPlan) -> query_planning::error::QueryError
 pub fn query_planning::admission::AdmissionRejection::is_execution_mode_refusal(&self) -> bool
-pub fn query_planning::admission::AdmissionRejection::projection(&self) -> &query_planning::capability::CapabilityRejectionProjection
+pub fn query_planning::admission::AdmissionRejection::rejection(&self) -> &query_planning::capability::Rejection
 pub fn query_planning::admission::AdmissionRejection::validation_error(&self) -> core::option::Option<&query_planning::error::QueryError>
 pub struct query_planning::admission::AdmittedPlan
 impl query_planning::admission::AdmittedPlan
@@ -66,7 +66,7 @@ pub query_planning::capability::AggregateStateContract::Plain
 pub enum query_planning::capability::CapabilityDecision
 pub query_planning::capability::CapabilityDecision::Rejected
 pub query_planning::capability::CapabilityDecision::Rejected::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
-pub query_planning::capability::CapabilityDecision::Rejected::reason: &'static str
+pub query_planning::capability::CapabilityDecision::Rejected::reason: query_planning::capability::Reason
 pub query_planning::capability::CapabilityDecision::Satisfied
 pub enum query_planning::capability::CapabilityRejectionCategory
 pub query_planning::capability::CapabilityRejectionCategory::MissingEdgeContract
@@ -76,13 +76,6 @@ pub query_planning::capability::CapabilityRejectionCategory::UnsupportedCompiled
 pub query_planning::capability::CapabilityRejectionCategory::UnsupportedExpressionFamily
 pub query_planning::capability::CapabilityRejectionCategory::UnsupportedNodeOperator
 pub query_planning::capability::CapabilityRejectionCategory::UnsupportedSinkBoundary
-pub enum query_planning::capability::CapabilityRejectionOwner
-pub query_planning::capability::CapabilityRejectionOwner::Admission(&'static str)
-pub query_planning::capability::CapabilityRejectionOwner::Edge
-pub query_planning::capability::CapabilityRejectionOwner::Edge::consumer: query_planning::capability::EdgeConsumer
-pub query_planning::capability::CapabilityRejectionOwner::Edge::producer: query_planning::plan::NodeId
-pub query_planning::capability::CapabilityRejectionOwner::Invariant(query_planning::capability::InvariantId)
-pub query_planning::capability::CapabilityRejectionOwner::Node(query_planning::plan::NodeId)
 pub enum query_planning::capability::CapabilityScope
 pub query_planning::capability::CapabilityScope::Edge
 pub query_planning::capability::CapabilityScope::Node
@@ -162,6 +155,124 @@ pub query_planning::capability::NodeOperator::Window::function_count: usize
 pub enum query_planning::capability::OrderingRequirement
 pub query_planning::capability::OrderingRequirement::None
 pub query_planning::capability::OrderingRequirement::Required
+pub enum query_planning::capability::Reason
+pub query_planning::capability::Reason::AggregateSharedProducerConsumerNotAggregate
+pub query_planning::capability::Reason::AggregateSharedProducerInputLineageUnresolved
+pub query_planning::capability::Reason::AggregateSharedProducerMissingAggregate
+pub query_planning::capability::Reason::AggregateSharedProducerMissingNode
+pub query_planning::capability::Reason::AggregateSharedProducerRequiresDataflowIdentity
+pub query_planning::capability::Reason::AggregateSharedProducerRequiresInputLineage
+pub query_planning::capability::Reason::AggregateSharedProducerRequiresResidentFrame
+pub query_planning::capability::Reason::BuildBeforeProbeCycle
+pub query_planning::capability::Reason::CompiledPipelineBarrierDominanceInvalid
+pub query_planning::capability::Reason::CompiledPipelineBarrierIdentityInvalid
+pub query_planning::capability::Reason::CompiledPipelineDependencyCycle
+pub query_planning::capability::Reason::CompiledPipelineEdgeIdentityInvalid
+pub query_planning::capability::Reason::CompiledPipelineFusedTopkLimitBindingInvalid
+pub query_planning::capability::Reason::CompiledPipelineGraphNotConstructible
+pub query_planning::capability::Reason::CompiledPipelineJoinBuildBeforeProbeMissing
+pub query_planning::capability::Reason::CompiledPipelineJoinExecutionStrategyUnavailable
+pub query_planning::capability::Reason::CompiledPipelineJoinTaskGroupIncomplete
+pub query_planning::capability::Reason::CompiledPipelineJoinTaskGroupPlanNodeMismatch
+pub query_planning::capability::Reason::CompiledPipelineRequiresJoinTaskGroup
+pub query_planning::capability::Reason::CompiledPipelineResourceFlowInvalid
+pub query_planning::capability::Reason::CompiledPipelineResourceIdentityInvalid
+pub query_planning::capability::Reason::CompiledPipelineResourceReferenceMissing
+pub query_planning::capability::Reason::CompiledPipelineSharedProducerLineageUnproven
+pub query_planning::capability::Reason::CompiledPipelineSharedProducerTaskKindUnsupported
+pub query_planning::capability::Reason::CompiledPipelineSinkInputTaskMissing
+pub query_planning::capability::Reason::CompiledPipelineSinkOutputLifetimeInvalid
+pub query_planning::capability::Reason::CompiledPipelineStageBoundaryIncomplete
+pub query_planning::capability::Reason::CompiledPipelineStageTaskPositionUnsupported
+pub query_planning::capability::Reason::CompiledPipelineTaskDependencyMissing
+pub query_planning::capability::Reason::CompiledPipelineTaskIdentityInvalid
+pub query_planning::capability::Reason::CompiledPipelineTaskResourceArityInvalid
+pub query_planning::capability::Reason::CompiledTaskKindOutsideContract
+pub query_planning::capability::Reason::ConsumerRequiresExclusiveInput
+pub query_planning::capability::Reason::DatafusionExactStatisticalAggregateUnsupported(query_planning::capability::UnsupportedPart)
+pub query_planning::capability::Reason::DatafusionExactStatisticalGroupKeyUnsupported
+pub query_planning::capability::Reason::DatafusionExactUngroupedFloatSumUnsupported
+pub query_planning::capability::Reason::ExpressionLineageRequiresResolvedInputColumn
+pub query_planning::capability::Reason::LargeKeyedHashJoinStrategyUnsupported
+pub query_planning::capability::Reason::LeftAntiBuildRequiresDedupAggregate
+pub query_planning::capability::Reason::LeftAntiProbeRequiresDedupProvenInput
+pub query_planning::capability::Reason::MissingEdgeProducer
+pub query_planning::capability::Reason::MissingEdgeRequiredProperty
+pub query_planning::capability::Reason::OutputLineageAggregateFieldIndexOutOfRange
+pub query_planning::capability::Reason::OutputLineageFieldIndexOutOfRange
+pub query_planning::capability::Reason::OutputLineageJoinOutputColumnResolution
+pub query_planning::capability::Reason::OutputLineageJoinProjectionIndexOutOfRange
+pub query_planning::capability::Reason::OutputLineageMissingNode
+pub query_planning::capability::Reason::OutputLineageProjectionColumnResolution
+pub query_planning::capability::Reason::OutputLineageProjectionFieldIndexOutOfRange
+pub query_planning::capability::Reason::OutputLineageWindowMissingInput
+pub query_planning::capability::Reason::PlanValidation(query_planning::capability::UnsupportedPart)
+pub query_planning::capability::Reason::PostJoinResidualFilterRequiresOneShotEquiJoin
+pub query_planning::capability::Reason::ProjectionTransparentResidencyConsumerNotProjection
+pub query_planning::capability::Reason::ProjectionTransparentResidencyMissingProducer
+pub query_planning::capability::Reason::ProjectionTransparentResidencyMissingProjection
+pub query_planning::capability::Reason::ProjectionTransparentResidencyRequiresResidentFrames
+pub query_planning::capability::Reason::ReachableSubgraphCycle
+pub query_planning::capability::Reason::ReachableSubgraphMissingNode
+pub query_planning::capability::Reason::ResidentLifetimeEdgeRejected
+pub query_planning::capability::Reason::ResidentLifetimeMissingNode
+pub query_planning::capability::Reason::ResidentLifetimeRequiresResidentFrame
+pub query_planning::capability::Reason::ResidentUnaryChainMissingNode
+pub query_planning::capability::Reason::ResidentUnaryChainMissingProducer
+pub query_planning::capability::Reason::ResidentUnaryChainRequiresConnectedNodes
+pub query_planning::capability::Reason::ResidentUnaryChainRequiresFilterProjectionNodes
+pub query_planning::capability::Reason::ResidentUnaryChainRequiresResidentNodes
+pub query_planning::capability::Reason::ResidentUnaryChainRequiresResidentProducer
+pub query_planning::capability::Reason::ResidualDoesNotReferenceBothInputs
+pub query_planning::capability::Reason::SharedResidentSubplanEdgeRejected
+pub query_planning::capability::Reason::SharedResidentSubplanMissingEdge
+pub query_planning::capability::Reason::SharedResidentSubplanMissingNode
+pub query_planning::capability::Reason::SharedResidentSubplanRequiresResidentFrame
+pub query_planning::capability::Reason::TopologicalScheduleCycle
+pub query_planning::capability::Reason::TopologicalScheduleMissingNode
+pub query_planning::capability::Reason::UnsupportedAggregateExpressionCapability
+pub query_planning::capability::Reason::UnsupportedAggregateGroupExpressionCapability
+pub query_planning::capability::Reason::UnsupportedAggregateGroupingSetsCapability
+pub query_planning::capability::Reason::UnsupportedAggregateNodeCapability
+pub query_planning::capability::Reason::UnsupportedEdgeNormalizeNodeCapability(query_planning::capability::UnsupportedPart)
+pub query_planning::capability::Reason::UnsupportedFilterExpressionCapability
+pub query_planning::capability::Reason::UnsupportedGpuResidentSourceCapability
+pub query_planning::capability::Reason::UnsupportedGraphAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
+pub query_planning::capability::Reason::UnsupportedJoinNodeCapability
+pub query_planning::capability::Reason::UnsupportedJoinOutputDtype
+pub query_planning::capability::Reason::UnsupportedJoinResidualExpressionCapability
+pub query_planning::capability::Reason::UnsupportedLimitNodeCapability
+pub query_planning::capability::Reason::UnsupportedLiteralBatchSourceCapability
+pub query_planning::capability::Reason::UnsupportedLocalParquetSourceCapability
+pub query_planning::capability::Reason::UnsupportedMlAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
+pub query_planning::capability::Reason::UnsupportedProjectionExpressionCapability
+pub query_planning::capability::Reason::UnsupportedProjectionNodeCapability
+pub query_planning::capability::Reason::UnsupportedSortExpressionCapability
+pub query_planning::capability::Reason::UnsupportedSortNodeCapability
+pub query_planning::capability::Reason::UnsupportedUnionNodeCapability
+pub query_planning::capability::Reason::UnsupportedVectorAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
+pub query_planning::capability::Reason::UnsupportedWindowAggregateExpressionCapability
+pub query_planning::capability::Reason::UnsupportedWindowLagLeadExpressionCapability
+pub query_planning::capability::Reason::UnsupportedWindowNodeCapability
+pub query_planning::capability::Reason::UnsupportedWindowOrderExpressionCapability
+pub query_planning::capability::Reason::UnsupportedWindowPartitionExpressionCapability
+pub query_planning::capability::Reason::WindowInputOrderingNotEstablished
+impl query_planning::capability::Reason
+pub const fn query_planning::capability::Reason::as_str(self) -> &'static str
+pub const fn query_planning::capability::Reason::category(self) -> query_planning::capability::CapabilityRejectionCategory
+impl core::fmt::Display for query_planning::capability::Reason
+pub fn query_planning::capability::Reason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum query_planning::capability::RejectionOwner
+pub query_planning::capability::RejectionOwner::Edge
+pub query_planning::capability::RejectionOwner::Edge::consumer: query_planning::capability::EdgeConsumer
+pub query_planning::capability::RejectionOwner::Edge::producer: query_planning::plan::NodeId
+pub query_planning::capability::RejectionOwner::Invariant(query_planning::capability::InvariantId)
+pub query_planning::capability::RejectionOwner::Node(query_planning::plan::NodeId)
+pub query_planning::capability::RejectionOwner::Plan
+impl query_planning::capability::RejectionOwner
+pub const fn query_planning::capability::RejectionOwner::scope(self) -> query_planning::capability::CapabilityScope
+impl core::fmt::Display for query_planning::capability::RejectionOwner
+pub fn query_planning::capability::RejectionOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::capability::ResidentResource
 pub query_planning::capability::ResidentResource::JoinBuildInput
 pub query_planning::capability::ResidentResource::JoinBuildInput::input: query_planning::plan::NodeId
@@ -192,6 +303,12 @@ pub query_planning::capability::SubgraphInvariantKind::ResidualUsesBothInputs
 pub query_planning::capability::SubgraphInvariantKind::ResidualUsesBothInputs::join_id: query_planning::plan::NodeId
 pub query_planning::capability::SubgraphInvariantKind::SharedResidentSubplan
 pub query_planning::capability::SubgraphInvariantKind::TopologicalBuildProbeSchedule
+pub enum query_planning::capability::UnsupportedPart
+pub query_planning::capability::UnsupportedPart::DataType
+pub query_planning::capability::UnsupportedPart::Expression
+pub query_planning::capability::UnsupportedPart::Operator
+impl query_planning::capability::UnsupportedPart
+pub const fn query_planning::capability::UnsupportedPart::from_code(query_planning::error::QueryErrorCode) -> Self
 pub enum query_planning::capability::VectorInputRole
 pub query_planning::capability::VectorInputRole::Dataset
 pub query_planning::capability::VectorInputRole::InitialCentroids
@@ -238,14 +355,8 @@ pub query_planning::capability::CapabilityAnalysis::edges: alloc::vec::Vec<query
 pub query_planning::capability::CapabilityAnalysis::invariants: alloc::vec::Vec<query_planning::capability::SubgraphInvariant>
 pub query_planning::capability::CapabilityAnalysis::nodes: alloc::vec::Vec<query_planning::capability::NodeCapability>
 impl query_planning::capability::CapabilityAnalysis
-pub fn query_planning::capability::CapabilityAnalysis::first_rejection_projection(&self) -> core::option::Option<query_planning::capability::CapabilityRejectionProjection>
+pub fn query_planning::capability::CapabilityAnalysis::first_rejection(&self) -> core::option::Option<query_planning::capability::Rejection>
 pub fn query_planning::capability::CapabilityAnalysis::has_rejections(&self) -> bool
-pub struct query_planning::capability::CapabilityRejectionProjection
-pub query_planning::capability::CapabilityRejectionProjection::boundary: &'static str
-pub query_planning::capability::CapabilityRejectionProjection::category: query_planning::capability::CapabilityRejectionCategory
-pub query_planning::capability::CapabilityRejectionProjection::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
-pub query_planning::capability::CapabilityRejectionProjection::owner: query_planning::capability::CapabilityRejectionOwner
-pub query_planning::capability::CapabilityRejectionProjection::reason: &'static str
 pub struct query_planning::capability::EdgeContract
 pub query_planning::capability::EdgeContract::consumer: query_planning::capability::EdgeConsumer
 pub query_planning::capability::EdgeContract::contract_kinds: alloc::vec::Vec<query_planning::capability::EdgeContractKind>
@@ -276,6 +387,15 @@ pub query_planning::capability::NodeCapability::executable: query_planning::capa
 pub query_planning::capability::NodeCapability::max_output_rows: core::option::Option<u64>
 pub query_planning::capability::NodeCapability::node_id: query_planning::plan::NodeId
 pub query_planning::capability::NodeCapability::operator: query_planning::capability::NodeOperator
+pub struct query_planning::capability::Rejection
+pub query_planning::capability::Rejection::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
+pub query_planning::capability::Rejection::owner: query_planning::capability::RejectionOwner
+pub query_planning::capability::Rejection::reason: query_planning::capability::Reason
+impl query_planning::capability::Rejection
+pub const fn query_planning::capability::Rejection::boundary(&self) -> &'static str
+pub const fn query_planning::capability::Rejection::category(&self) -> query_planning::capability::CapabilityRejectionCategory
+pub const fn query_planning::capability::Rejection::contract_scope(&self) -> query_planning::capability::CapabilityScope
+pub fn query_planning::capability::Rejection::new(query_planning::capability::RejectionOwner, query_planning::capability::Reason, impl core::iter::traits::collect::IntoIterator<Item = (&'static str, alloc::string::String)>) -> Self
 pub struct query_planning::capability::SubgraphInvariant
 pub query_planning::capability::SubgraphInvariant::decision: query_planning::capability::CapabilityDecision
 pub query_planning::capability::SubgraphInvariant::kind: query_planning::capability::SubgraphInvariantKind
@@ -385,15 +505,6 @@ pub fn query_planning::chunk::annotate_source_chunk_batching_reasons(&mut [query
 pub fn query_planning::chunk::plan_source_chunk_batches(&[query_planning::chunk::SourceChunk], core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>
 pub fn query_planning::chunk::plan_source_chunk_batches_with_row_cap(&[query_planning::chunk::SourceChunk], core::option::Option<u64>, core::option::Option<u64>) -> alloc::vec::Vec<query_planning::chunk::SourceChunkBatch>
 pub mod query_planning::contract_report
-pub enum query_planning::contract_report::CapabilityDecisionOwner
-pub query_planning::contract_report::CapabilityDecisionOwner::Admission(&'static str)
-pub query_planning::contract_report::CapabilityDecisionOwner::Edge
-pub query_planning::contract_report::CapabilityDecisionOwner::Edge::consumer: query_planning::capability::EdgeConsumer
-pub query_planning::contract_report::CapabilityDecisionOwner::Edge::producer: query_planning::plan::NodeId
-pub query_planning::contract_report::CapabilityDecisionOwner::Node(query_planning::plan::NodeId)
-pub query_planning::contract_report::CapabilityDecisionOwner::Subgraph(query_planning::capability::InvariantId)
-impl core::fmt::Display for query_planning::contract_report::CapabilityDecisionOwner
-pub fn query_planning::contract_report::CapabilityDecisionOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::contract_report::CapabilityDecisionStatus
 pub query_planning::contract_report::CapabilityDecisionStatus::Rejected
 pub struct query_planning::contract_report::CapabilityContractReport
@@ -416,12 +527,12 @@ pub query_planning::contract_report::CapabilityDecisionRow::category: core::opti
 pub query_planning::contract_report::CapabilityDecisionRow::decision_id: query_planning::contract_report::CapabilityDecisionId
 pub query_planning::contract_report::CapabilityDecisionRow::execution_mode: query_planning::mode::CapabilityEnvelopeStatus
 pub query_planning::contract_report::CapabilityDecisionRow::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
-pub query_planning::contract_report::CapabilityDecisionRow::owner: query_planning::contract_report::CapabilityDecisionOwner
+pub query_planning::contract_report::CapabilityDecisionRow::owner: query_planning::capability::RejectionOwner
 pub query_planning::contract_report::CapabilityDecisionRow::reason: &'static str
 pub query_planning::contract_report::CapabilityDecisionRow::scope: query_planning::capability::CapabilityScope
 pub query_planning::contract_report::CapabilityDecisionRow::status: query_planning::contract_report::CapabilityDecisionStatus
 impl query_planning::contract_report::CapabilityDecisionRow
-pub fn query_planning::contract_report::CapabilityDecisionRow::from_rejection_projection(usize, &query_planning::capability::CapabilityRejectionProjection) -> query_planning::error::Result<Self>
+pub fn query_planning::contract_report::CapabilityDecisionRow::from_rejection(usize, &query_planning::capability::Rejection) -> query_planning::error::Result<Self>
 pub fn query_planning::contract_report::CapabilityDecisionRow::to_stable_kv_row(&self) -> alloc::string::String
 impl core::fmt::Display for query_planning::contract_report::CapabilityDecisionRow
 pub fn query_planning::contract_report::CapabilityDecisionRow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -559,7 +670,6 @@ pub query_planning::error::QueryErrorCode::CudfDependencyFailure
 pub query_planning::error::QueryErrorCode::CudfInvalidInput
 pub query_planning::error::QueryErrorCode::CudfInvariantViolation
 pub query_planning::error::QueryErrorCode::CudfPersistentFailure
-pub query_planning::error::QueryErrorCode::CudfResourceExhausted
 pub query_planning::error::QueryErrorCode::CudfTemporaryFailure
 pub query_planning::error::QueryErrorCode::CudfUnsupported
 pub query_planning::error::QueryErrorCode::DeviceAllocationFailed
@@ -582,7 +692,7 @@ pub query_planning::error::QueryErrorCode::SourceTemporaryFailure
 pub query_planning::error::QueryErrorCode::SourceUnauthenticated
 pub query_planning::error::QueryErrorCode::UnsupportedExpression
 pub query_planning::error::QueryErrorCode::UnsupportedOperator
-pub query_planning::error::QueryErrorCode::UnsupportedPlanShape
+pub query_planning::error::QueryErrorCode::UnsupportedPipelineContract
 pub query_planning::error::QueryErrorCode::UnsupportedType
 impl query_planning::error::QueryErrorCode
 pub const query_planning::error::QueryErrorCode::ALL: &'static [Self]

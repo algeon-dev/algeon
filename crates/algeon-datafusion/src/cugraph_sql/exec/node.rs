@@ -15,7 +15,7 @@ use super::{
     AlgeonNativeExecutionConfig, AlgeonNativeMetrics, Boundedness, BoxFuture, CUGRAPH_EDGE_DESTINATION_COLUMN,
     CUGRAPH_EDGE_ID_COLUMN, CUGRAPH_EDGE_SOURCE_COLUMN, CUGRAPH_EDGE_WEIGHT_COLUMN, Column, CugraphAlgorithmParams,
     CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphEdgeCanonicalFacts, CugraphInputRowBounds,
-    CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionError, DisplayAs, DisplayFormatType,
+    CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionError, DataFusionResult, DisplayAs, DisplayFormatType,
     EagerCugraphHostOutput, EmissionType, EquivalenceProperties, Error, ErrorCode, ExecutionContext, ExecutionPlan,
     ExecutionPlanMetricsSet, GpuIslandHostBoundaryConfig, GpuResidentProducer, GpuResultHandle,
     GraphAlgorithmRuntimeMetrics, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
@@ -70,7 +70,7 @@ impl CugraphAlgoExec {
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
         native_execution_config: AlgeonNativeExecutionConfig,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         Self::try_new_with_gpu_result_input_name(
             spec,
             edge_source,
@@ -91,7 +91,7 @@ impl CugraphAlgoExec {
         limit: Option<usize>,
         native_execution_config: AlgeonNativeExecutionConfig,
         gpu_result_input_name: String,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         Self::try_new_with_gpu_result_input_name(
             spec,
             edge_source,
@@ -118,7 +118,7 @@ impl CugraphAlgoExec {
         limit: Option<usize>,
         native_execution_config: AlgeonNativeExecutionConfig,
         host_boundary_config: GpuIslandHostBoundaryConfig,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         Self::try_new_with_gpu_result_input_name(
             spec,
             edge_source,
@@ -141,7 +141,7 @@ impl CugraphAlgoExec {
         native_execution_config: AlgeonNativeExecutionConfig,
         host_boundary_config: GpuIslandHostBoundaryConfig,
         gpu_result_input_name: String,
-    ) -> Result<Self> {
+    ) -> DataFusionResult<Self> {
         let result_options = CugraphResultPlanOptions::new(projection, limit);
         Self::try_new_with_result_options(
             spec,
@@ -162,11 +162,38 @@ impl CugraphAlgoExec {
         native_execution_config: AlgeonNativeExecutionConfig,
         host_boundary_config: GpuIslandHostBoundaryConfig,
         gpu_result_input_name: String,
+    ) -> DataFusionResult<Self> {
+        let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
+        Self::with_input_row_bounds(
+            spec,
+            edge_source,
+            predicate_sources,
+            input_row_bounds,
+            result_options,
+            native_execution_config,
+            host_boundary_config,
+            gpu_result_input_name,
+        )
+        .map_err(DataFusionError::from)
+    }
+
+    /// Builds the node from row bounds already computed for these sources, so
+    /// only adapter errors remain. Recomputing them would add DataFusion
+    /// statistics errors.
+    #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
+    fn with_input_row_bounds(
+        spec: CugraphAlgorithmSpec,
+        edge_source: Arc<dyn ExecutionPlan>,
+        predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
+        input_row_bounds: CugraphInputRowBounds,
+        result_options: CugraphResultPlanOptions,
+        native_execution_config: AlgeonNativeExecutionConfig,
+        host_boundary_config: GpuIslandHostBoundaryConfig,
+        gpu_result_input_name: String,
     ) -> Result<Self> {
         let schema = projected_schema(&spec.output_schema, result_options.projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
-        let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
         let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source.as_ref());
         preflight_cugraph_query_plan(&CugraphPlanDefinition {
             spec: spec.clone(),
@@ -247,7 +274,10 @@ impl CugraphAlgoExec {
         )
     }
 
-    pub(crate) async fn prepare_lakehouse_source_metadata(mut self, task_context: Arc<TaskContext>) -> Result<Self> {
+    pub(crate) async fn prepare_lakehouse_source_metadata(
+        mut self,
+        task_context: Arc<TaskContext>,
+    ) -> DataFusionResult<Self> {
         self.edge_source =
             prepare_cugraph_source_metadata(Arc::clone(&self.edge_source), Arc::clone(&task_context)).await?;
         let mut predicate_sources = Vec::with_capacity(self.predicate_sources.len());
@@ -291,7 +321,7 @@ impl CugraphAlgoExec {
     pub(super) async fn prepare_staged_attempt(
         self,
         task_context: Arc<TaskContext>,
-    ) -> Result<(Self, StagedCugraphInputs)> {
+    ) -> DataFusionResult<(Self, StagedCugraphInputs)> {
         let prepared = self.prepare_lakehouse_source_metadata(Arc::clone(&task_context)).await?;
         let cancellation = prepared
             .native_execution_config
@@ -339,34 +369,28 @@ impl CugraphAlgoExec {
 
     pub(super) fn take_prepared_staged_inputs(&self) -> Result<StagedCugraphInputs> {
         let slot = self.prepared_staged_inputs.as_ref().ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.cugraph_sql.execute_gpu",
-                    "cuGraph GPU-resident producer inputs were not staged before native context acquisition",
-                )
-                .with_fact("staged_input_state", "not_prepared"),
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.cugraph_sql.execute_gpu",
+                "cuGraph GPU-resident producer inputs were not staged before native context acquisition",
             )
+            .with_fact("staged_input_state", "not_prepared")
         })?;
         let mut staged_inputs = slot.lock().map_err(|_| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.cugraph_sql.execute_gpu",
-                    "cuGraph GPU-resident producer staged-input ownership was poisoned",
-                )
-                .with_fact("staged_input_state", "poisoned"),
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.cugraph_sql.execute_gpu",
+                "cuGraph GPU-resident producer staged-input ownership was poisoned",
             )
+            .with_fact("staged_input_state", "poisoned")
         })?;
         staged_inputs.take().ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.cugraph_sql.execute_gpu",
-                    "cuGraph GPU-resident producer staged inputs were already consumed",
-                )
-                .with_fact("staged_input_state", "already_consumed"),
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "algeon_datafusion.cugraph_sql.execute_gpu",
+                "cuGraph GPU-resident producer staged inputs were already consumed",
             )
+            .with_fact("staged_input_state", "already_consumed")
         })
     }
 
@@ -414,7 +438,7 @@ impl CugraphAlgoExec {
         native_context: &ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
-    ) -> Result<(String, GpuResultHandle)> {
+    ) -> DataFusionResult<(String, GpuResultHandle)> {
         let mut staged_inputs = Some(self.take_prepared_staged_inputs()?);
         let runtime = counted_cudf_runtime(
             native_context,
@@ -472,7 +496,7 @@ impl CugraphAlgoExec {
                             .await;
                             if let Err(error) = publication {
                                 leader.fail();
-                                return Err(error);
+                                return Err(error.into());
                             }
                             return Ok((input_name, handle));
                         },
@@ -497,7 +521,7 @@ impl CugraphAlgoExec {
                             )
                             .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
                             let mut graph_metrics = GraphExecutionMetrics::new(&metrics, native_context);
-                            let routed: Result<GpuResultHandle> = async {
+                            let routed: DataFusionResult<GpuResultHandle> = async {
                                 match GraphBfsFollowerRoute::for_gpu_follower(result.kind()) {
                                     GraphBfsFollowerRoute::HandoffGpu => {
                                         let published =
@@ -577,25 +601,25 @@ impl CugraphAlgoExec {
         &self,
         native_context: &ExecutionContext,
         batches: &[RecordBatch],
-    ) -> Result<(GpuResultHandle, Option<u64>)> {
+    ) -> DataFusionResult<(GpuResultHandle, Option<u64>)> {
         let schema = self.schema();
         let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), batches)?;
         let output_device_bytes = frame.device_allocated_size_bytes().ok();
         let resident_owner =
             native_context.retain_resident_output_owner(output_device_bytes.unwrap_or(0)).map_err(|error| {
-                DataFusionError::from(Error::from_native(
+                Error::from_native(
                     "algeon_datafusion.cugraph_sql.bfs_singleflight_follower",
                     "failed to retain the BFS follower output copy",
                     error,
-                ))
+                )
             })?;
         let handle = GpuResultHandle::new_with_resident_owner(native_context, frame, schema, resident_owner).map_err(
             |error| {
-                DataFusionError::from(Error::from_native(
+                Error::from_native(
                     "algeon_datafusion.cugraph_sql.bfs_singleflight_follower",
                     "failed to bind the BFS follower output copy",
                     error,
-                ))
+                )
             },
         )?;
         Ok((handle, output_device_bytes))
@@ -672,7 +696,7 @@ impl CugraphAlgoExec {
         task_context: Arc<TaskContext>,
         metrics: &AlgeonNativeMetrics,
         staged_inputs: StagedCugraphInputs,
-    ) -> Result<EagerCugraphHostOutput> {
+    ) -> DataFusionResult<EagerCugraphHostOutput> {
         let runtime = counted_cudf_runtime(
             native_context,
             "algeon_datafusion.cugraph_sql.bfs_singleflight.runtime",
@@ -731,7 +755,7 @@ impl CugraphAlgoExec {
                             self.graph_claim_calibration_capture
                                 .record_bfs_singleflight_follower(follower.leader_attempt_id());
                             let mut graph_metrics = GraphExecutionMetrics::new(metrics, native_context);
-                            let routed: Result<EagerCugraphHostOutput> = async {
+                            let routed: DataFusionResult<EagerCugraphHostOutput> = async {
                                 match GraphBfsFollowerRoute::for_host_follower(result.kind()) {
                                     GraphBfsFollowerRoute::ReuseHost => {
                                         let batches =
@@ -791,7 +815,7 @@ impl CugraphAlgoExec {
         metrics: &AlgeonNativeMetrics,
         staged_inputs: StagedCugraphInputs,
         singleflight_leader: Option<&mut GraphBfsLeader>,
-    ) -> Result<EagerCugraphHostOutput> {
+    ) -> DataFusionResult<EagerCugraphHostOutput> {
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let mut graph_metrics = GraphExecutionMetrics::new(metrics, native_context);
         let result = async {
@@ -882,7 +906,7 @@ impl CugraphAlgoExec {
         task_context: Arc<TaskContext>,
         staged_inputs: StagedCugraphInputs,
         singleflight_leader: Option<&mut GraphBfsLeader>,
-    ) -> Result<(String, GpuResultHandle)> {
+    ) -> DataFusionResult<(String, GpuResultHandle)> {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -962,10 +986,11 @@ impl GpuResidentProducer for CugraphAlgoExec {
         let Some(result_options) = pushed_logical_consumer_options(self, consumer_plan)? else {
             return Ok(None);
         };
-        Self::try_new_with_result_options(
+        Self::with_input_row_bounds(
             self.spec.clone(),
             Arc::clone(&self.edge_source),
             self.predicate_sources.clone(),
+            self.input_row_bounds.clone(),
             result_options,
             self.native_execution_config.clone(),
             self.host_boundary_config,
@@ -982,7 +1007,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
         &'a self,
         _plan: Arc<dyn ExecutionPlan>,
         task_context: Arc<TaskContext>,
-    ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
+    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
             let (mut prepared, staged_inputs) = self.clone().prepare_staged_attempt(Arc::clone(&task_context)).await?;
             prepared.prepared_staged_inputs = Some(Arc::new(Mutex::new(Some(staged_inputs))));
@@ -995,7 +1020,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
         native_context: &'a ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
-    ) -> BoxFuture<'a, Result<(String, GpuResultHandle)>> {
+    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
         Box::pin(
             async move { self.execute_gpu_result_with_context_impl(native_context, partition, task_context).await },
         )
@@ -1101,7 +1126,7 @@ impl GraphExecutionPlan for CugraphAlgoExec {
         self.sealed_attempt_metrics_target()
     }
 
-    fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
+    fn gpu_resident_output_rejection(&self) -> Option<Error> {
         let logical_mapping = match graph_uses_logical_mapping(&self.spec, &self.edge_source.schema()) {
             Ok(logical_mapping) => logical_mapping,
             Err(error) => return Some(error),
@@ -1166,8 +1191,8 @@ impl ExecutionPlan for CugraphAlgoExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
         Ok(TreeNodeRecursion::Continue)
     }
 
@@ -1182,7 +1207,10 @@ impl ExecutionPlan for CugraphAlgoExec {
         vec![false; 1 + self.predicate_sources.len()]
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         let expected = 1 + self.predicate_sources.len();
         if children.len() != expected {
             return Err(Error::new(
@@ -1208,7 +1236,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         )?))
     }
 
-    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,

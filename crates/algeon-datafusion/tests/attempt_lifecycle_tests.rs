@@ -21,9 +21,12 @@ use datafusion::{
     prelude::SessionContext,
 };
 use futures::{StreamExt, stream::once};
-use query_engine::observability::{
-    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureCode,
-    AttemptFailureFactValue, AttemptHealthTransition, QueryAttemptReport, RuntimeTerminalOutcome,
+use query_engine::{
+    error::QueryErrorCode,
+    observability::{
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureCode,
+        AttemptFailureFactValue, AttemptHealthTransition, QueryAttemptReport, RuntimeTerminalOutcome,
+    },
 };
 use tokio::{sync::OwnedSemaphorePermit, time::sleep};
 
@@ -702,7 +705,7 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     assert!(
         matches!(
             &report.outcome,
-            RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::ServiceOverloaded
+            RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::Query(QueryErrorCode::ServiceOverloaded)
         ),
         "the report carries the typed rejection, not a synthetic drop: {:?}",
         report.outcome

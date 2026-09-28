@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use arrow::datatypes::{DataType as ArrowDataType, Field};
 
 use crate::{
@@ -7,10 +9,11 @@ use crate::{
     expr::LiteralValue,
     source::{
         ByteRangeDisposition, LocalParquetSource, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
-        ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN,
-        ZeroColumnCountDisposition, local_parquet_file_row_group_metadata_count, parquet_file_path_fact,
-        parquet_file_stable_id_fact,
+        RejectedSourceFeature, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
+        ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, local_parquet_file_row_group_metadata_count,
+        parquet_file_path_fact, parquet_file_stable_id_fact,
     },
+    validation::{require_boolean, validate_expr},
 };
 
 /// Validate local Parquet source invariants before native reads.
@@ -97,16 +100,22 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource, ctx: AnalysisC
             }
         }
     }
-    if let Some(predicate) = &source.reader_predicate
-        && !source.reader_predicate_is_supported(predicate, ctx)
-    {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.local_parquet_source.validate",
-            "local parquet reader predicate cannot be represented by the cudf reader contract",
-        )
-        .with_fact("reason", "unsupported_reader_predicate")
-        .with_fact("predicate", predicate));
+    if let Some(predicate) = &source.reader_predicate {
+        // A malformed predicate (unknown column, non-boolean result) fails
+        // here; only a legal predicate outside the reader contract is a
+        // backend gap that may stay on DataFusion.
+        let available = source.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
+        let data_type = validate_expr(predicate, &source.schema, &available, ctx)?;
+        require_boolean(&data_type, "local parquet reader predicate")?;
+        if !source.reader_predicate_is_supported(predicate, ctx) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "query_engine.local_parquet_source.validate",
+                "local parquet reader predicate cannot be represented by the cudf reader contract",
+            )
+            .with_fact("reason", "unsupported_reader_predicate")
+            .with_fact("predicate", predicate));
+        }
     }
 
     validate_local_parquet_source_contract(source, ctx)?;
@@ -320,8 +329,16 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
     if !diagnostics.rejected_features.is_empty() {
         let features =
             diagnostics.rejected_features.iter().map(|feature| feature.as_str()).collect::<Vec<_>>().join(",");
+        // An invalid logical-to-source column mapping contradicts the source
+        // itself; every other rejected feature is a legal DataFusion scan
+        // feature the native reader cannot execute.
+        let code = if diagnostics.rejected_features.contains(&RejectedSourceFeature::SchemaMapping) {
+            QueryErrorCode::InvalidPlan
+        } else {
+            QueryErrorCode::UnsupportedOperator
+        };
         return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
+            code,
             "query_engine.local_parquet_source.validate",
             "local parquet source contains rejected source features",
         )
@@ -334,7 +351,7 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
     match diagnostics.partition_column_disposition {
         PartitionColumnDisposition::Absent => {
             if !source.partition_columns.is_empty() {
-                return Err(unsupported_source_contract_fact("partition_columns", "diagnostic_absent_but_present"));
+                return Err(inconsistent_source_contract_fact("partition_columns", "diagnostic_absent_but_present"));
             }
         },
         PartitionColumnDisposition::Represented => validate_represented_partition_columns(source)?,
@@ -358,12 +375,12 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
     match diagnostics.scan_limit_disposition {
         ScanLimitDisposition::Absent => {
             if source.scan_limit.is_some() {
-                return Err(unsupported_source_contract_fact("scan_limit", "diagnostic_absent_but_present"));
+                return Err(inconsistent_source_contract_fact("scan_limit", "diagnostic_absent_but_present"));
             }
         },
         ScanLimitDisposition::Represented => {
             if source.scan_limit.is_none() {
-                return Err(unsupported_source_contract_fact("scan_limit", "diagnostic_represented_but_absent"));
+                return Err(inconsistent_source_contract_fact("scan_limit", "diagnostic_represented_but_absent"));
             }
         },
         ScanLimitDisposition::Rejected => {
@@ -373,12 +390,12 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
     match diagnostics.schema_mapping_disposition {
         SchemaMappingDisposition::DirectByName => {
             if !source.missing_columns.is_empty() {
-                return Err(unsupported_source_contract_fact("schema_mapping", "diagnostic_direct_but_missing"));
+                return Err(inconsistent_source_contract_fact("schema_mapping", "diagnostic_direct_but_missing"));
             }
         },
         SchemaMappingDisposition::MissingNullableColumns => validate_represented_missing_columns(source, ctx)?,
         SchemaMappingDisposition::Rejected => {
-            return Err(unsupported_source_contract_fact(
+            return Err(inconsistent_source_contract_fact(
                 "schema_mapping",
                 diagnostics.schema_mapping_disposition.as_str(),
             ));
@@ -387,7 +404,7 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
     match diagnostics.predicate_disposition {
         PredicateDisposition::ReaderPushdown => {
             if source.reader_predicate.is_none() {
-                return Err(unsupported_source_contract_fact("predicate", "reader_pushdown_but_absent"));
+                return Err(inconsistent_source_contract_fact("predicate", "reader_pushdown_but_absent"));
             }
         },
         PredicateDisposition::Absent
@@ -395,7 +412,7 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
         | PredicateDisposition::NativePostScanOnly
         | PredicateDisposition::Rejected => {
             if source.reader_predicate.is_some() {
-                return Err(unsupported_source_contract_fact("predicate", "reader_predicate_without_diagnostic"));
+                return Err(inconsistent_source_contract_fact("predicate", "reader_predicate_without_diagnostic"));
             }
         },
     }
@@ -638,13 +655,26 @@ fn validate_represented_zero_column_count_source(source: &LocalParquetSource) ->
     Ok(())
 }
 
+/// A legal source property the native reader cannot execute.
 fn unsupported_source_contract_fact(field: &'static str, disposition: &'static str) -> QueryError {
     QueryError::new(
-        QueryErrorCode::InvalidPlan,
+        QueryErrorCode::UnsupportedOperator,
         "query_engine.local_parquet_source.validate",
         "local parquet source contract contains a source fact this executor cannot honor",
     )
     .with_fact("reason", "unsupported_source_contract_fact")
+    .with_fact("field", field)
+    .with_fact("disposition", disposition)
+}
+
+/// Source diagnostics that contradict the source payload they describe.
+fn inconsistent_source_contract_fact(field: &'static str, disposition: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "query_engine.local_parquet_source.validate",
+        "local parquet source diagnostics contradict the source contract",
+    )
+    .with_fact("reason", "inconsistent_source_contract_fact")
     .with_fact("field", field)
     .with_fact("disposition", disposition)
 }

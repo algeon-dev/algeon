@@ -11,6 +11,7 @@ use arrow::{
 use datafusion::catalog::Session;
 #[cfg(feature = "cugraph")]
 use datafusion::datasource::{MemTable, TableProvider};
+use datafusion::{common::Result as DataFusionResult, physical_plan::ExecutionPlan};
 #[cfg(not(feature = "cugraph"))]
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
@@ -22,10 +23,6 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
     },
 };
-use datafusion::{
-    common::{DataFusionError, Result},
-    physical_plan::ExecutionPlan,
-};
 
 #[cfg(not(feature = "cugraph"))]
 use super::CugraphAlgorithm;
@@ -36,7 +33,7 @@ use super::{
 };
 #[cfg(feature = "cugraph")]
 use super::{CugraphBfsSource, CugraphBfsSourceVertex};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
 
 #[cfg(not(feature = "cugraph"))]
 #[derive(Debug)]
@@ -120,8 +117,8 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
         Ok(TreeNodeRecursion::Continue)
     }
 
@@ -129,22 +126,29 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
         Vec::new()
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if children.is_empty() {
             Ok(self)
         } else {
-            Err(plan("feature-disabled cuGraph SQL execution must not have input children"))
+            Err(plan("feature-disabled cuGraph SQL execution must not have input children").into())
         }
     }
 
-    fn execute(&self, _partition: usize, _task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        _partition: usize,
+        _task_context: Arc<TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
         // Flight SQL has already issued a ticket when physical execution
         // starts. Keep the feature-gate error on that ticket's result stream
         // rather than rejecting stream construction, while still performing
         // no source scan, staging, or GPU work.
         let schema = self.schema();
         let error = super::feature_disabled(self.algorithm);
-        let stream = futures::stream::once(async move { Err(error) });
+        let stream = futures::stream::once(async move { Err(error.into()) });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
@@ -154,7 +158,7 @@ pub(super) async fn literal_bfs_source_plan(
     state: &dyn Session,
     spec: &CugraphAlgorithmSpec,
     vertex_domain: &CugraphVertexIdDomain,
-) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+) -> DataFusionResult<Option<Arc<dyn ExecutionPlan>>> {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Ok(None);
     };
@@ -196,18 +200,18 @@ pub(super) fn validate_edge_source_schema(
     schema: &SchemaRef,
 ) -> Result<CugraphVertexIdDomain> {
     let src = schema.field_with_name(CUGRAPH_EDGE_SOURCE_COLUMN).map_err(|_| {
-        DataFusionError::from(Error::new(
+        Error::new(
             ErrorCode::FieldNotFound,
             "algeon_datafusion.cugraph_sql.edge_source_schema",
             "cuGraph edge child is missing canonical source column 'src'",
-        ))
+        )
     })?;
     let dst = schema.field_with_name(CUGRAPH_EDGE_DESTINATION_COLUMN).map_err(|_| {
-        DataFusionError::from(Error::new(
+        Error::new(
             ErrorCode::FieldNotFound,
             "algeon_datafusion.cugraph_sql.edge_source_schema",
             "cuGraph edge child is missing canonical destination column 'dst'",
-        ))
+        )
     })?;
     let domain = vertex_id_domain_for_call(spec.algorithm, &spec.params, src.data_type(), dst.data_type())?;
     validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
@@ -224,16 +228,15 @@ pub(super) fn validate_edge_source_schema(
                 weight.data_type()
             ),
         )
-        .with_fact("reason", "unsupported_weight_dtype")
-        .into());
+        .with_fact("reason", "unsupported_weight_dtype"));
     }
     if spec.has_edge_id {
         let edge_id = schema.field_with_name(CUGRAPH_EDGE_ID_COLUMN).map_err(|_| {
-            DataFusionError::from(Error::new(
+            Error::new(
                 ErrorCode::FieldNotFound,
                 "algeon_datafusion.cugraph_sql.edge_source_schema",
                 "cuGraph edge child is missing canonical edge-id column 'edge_id'",
-            ))
+            )
         })?;
         if !domain.accepts(edge_id.data_type()) {
             return Err(plan(format!("cuGraph edge-id column 'edge_id' must have dtype {}", domain.label())));

@@ -186,7 +186,7 @@ fn lower_physical_plan_to_native_with_mode(
                 let column = (reason == CapabilityReason::UnsupportedType)
                     .then(|| unsupported_column_for_normalized_plan(&normalized, plan.schema()))
                     .flatten();
-                let detail = NotSupportedDetail { column, expression: rejection.into_expression() };
+                let detail = NotSupportedDetail { column, expression: rejection.into_expression(), admission: None };
                 let mut report = PlanningReport::new();
                 report.push_not_supported_with_detail(normalized.candidate.clone(), reason, detail);
                 NativeLoweringResult {
@@ -275,7 +275,7 @@ fn lower_physical_plan_to_native_with_mode(
             report.push_not_supported_with_detail(
                 rejection.candidate,
                 rejection.reason,
-                NotSupportedDetail { column, expression: None },
+                NotSupportedDetail { column, expression: None, admission: None },
             );
             NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },

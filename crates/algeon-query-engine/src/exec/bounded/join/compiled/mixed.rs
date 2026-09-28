@@ -6,11 +6,11 @@ pub(super) use left_state::*;
 use super::{
     BoundedCompiledJoinProbeState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, CompiledJoinMaterializationRequest,
-    CompiledMixedSizeData, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, compiled_join_input_columns,
-    dataframe_mixed_join_options, execution_overrides, join_index_error, lower_join_residual_predicate,
-    materialize_compiled_indices_output, orient_prepared_inputs, prepare_bounded_join_side_input_from_resident_frame,
-    probe_side, release_bounded_join_side_frame, residual_input_columns,
-    stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
+    CompiledMixedSizeData, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, bounded_invariant_violation,
+    compiled_join_input_columns, dataframe_mixed_join_options, execution_overrides, join_index_error,
+    lower_join_residual_predicate, materialize_compiled_indices_output, orient_prepared_inputs,
+    prepare_bounded_join_side_input_from_resident_frame, probe_side, release_bounded_join_side_frame,
+    residual_input_columns, stream_bounded_join_leaf_local_parquet_source_serial,
 };
 
 pub(super) fn execute_compiled_mixed_join_materialize(
@@ -94,7 +94,7 @@ pub(super) fn execute_compiled_mixed_join_probe_from_stream(
 ) -> Result<BoundedCompiledJoinProbeState> {
     if node.spec.join_type != JoinType::Inner {
         release_bounded_join_side_frame(build.input);
-        return Err(unsupported_bounded_shape(
+        return Err(bounded_invariant_violation(
             "streamed compiled mixed keyed residual join probe supports inner joins only",
             "compiled_join_strategy_unsupported",
         )

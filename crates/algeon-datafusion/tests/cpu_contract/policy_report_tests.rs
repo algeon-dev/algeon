@@ -1,6 +1,6 @@
 use algeon_datafusion::{
     capability::CapabilityReason,
-    report::{CandidateOutcome, CandidateOutcomeKind, GpuCandidate, PlanningReport},
+    report::{CandidateOutcome, CandidateOutcomeKind, GpuCandidate, NotSupportedDetail, PlanningReport},
 };
 use query_engine::{
     plan::NativePlanCostReason,
@@ -56,9 +56,9 @@ fn cost_decision_has_a_shared_triage_code() {
 
 #[test]
 fn capability_reasons_map_to_shared_triage_codes() {
-    assert_eq!(CapabilityReason::UnsupportedExpression.triage_code(), TriageCode::UnsupportedExpression);
-    assert_eq!(CapabilityReason::NativeBoundedJoinUnsupported.triage_code(), TriageCode::CapabilityEnvelopeRejected);
-    assert_eq!(CapabilityReason::NativeSourceNonLocalObjectStore.triage_code(), TriageCode::UnsupportedSource);
+    assert_eq!(CapabilityReason::UnsupportedExpression.facts().triage, TriageCode::UnsupportedExpression);
+    assert_eq!(CapabilityReason::NativeBoundedJoinUnsupported.facts().triage, TriageCode::CapabilityEnvelopeRejected);
+    assert_eq!(CapabilityReason::NativeSourceNonLocalObjectStore.facts().triage, TriageCode::UnsupportedSource);
 }
 
 #[test]
@@ -77,7 +77,8 @@ fn planning_report_keeps_selected_and_not_supported_candidates_in_order() {
         &[
             CandidateOutcome::NotSupported {
                 candidate: filter,
-                capability_reason: CapabilityReason::UnsupportedExpression
+                capability_reason: CapabilityReason::UnsupportedExpression,
+                detail: NotSupportedDetail::default(),
             },
             CandidateOutcome::Selected { candidate: projection_filter },
         ],
@@ -97,6 +98,7 @@ fn planning_report_carries_optional_correlation_ids() {
     let report = PlanningReport::from_outcomes([CandidateOutcome::NotSupported {
         candidate: GpuCandidate::new("FilterExec", 2).with_plan_node_id("n12"),
         capability_reason: CapabilityReason::UnsupportedExpression,
+        detail: NotSupportedDetail::default(),
     }])
     .with_query_id("query-42")
     .with_trace_id("trace-7");
@@ -110,6 +112,7 @@ fn planning_report_json_includes_triage_summary() {
     let report = PlanningReport::from_outcomes([CandidateOutcome::NotSupported {
         candidate: GpuCandidate::new("FilterExec", 2).with_plan_node_id("n12"),
         capability_reason: CapabilityReason::UnsupportedExpression,
+        detail: NotSupportedDetail::default(),
     }])
     .with_query_id("query-42");
 
@@ -130,6 +133,7 @@ fn planning_report_json_includes_data_layout_fixable_headline_fact() {
     let report = PlanningReport::from_outcomes([CandidateOutcome::NotSupported {
         candidate: GpuCandidate::new("AggregateExec(LocalParquetScan)", 2),
         capability_reason: CapabilityReason::NativeOrderedOutputUnsupported,
+        detail: NotSupportedDetail::default(),
     }]);
 
     let json = report.to_json();

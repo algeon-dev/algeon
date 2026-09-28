@@ -147,7 +147,7 @@ fn filtered_global_strategy_rejects_large_distinct_state() {
     )
     .expect_err("large unsupported filtered state should be rejected");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
     assert_eq!(
@@ -180,7 +180,7 @@ fn filtered_global_strategy_rejects_large_statistical_state() {
     )
     .expect_err("large unsupported statistical filtered state should be rejected");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("global"));
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
@@ -208,7 +208,7 @@ fn filtered_global_strategy_rejects_large_median_state() {
     )
     .expect_err("large filtered median state should be rejected instead of segmented");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("global"));
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
@@ -349,7 +349,7 @@ fn filtered_grouped_strategy_rejects_large_nunique_state() {
     )
     .expect_err("large unsupported filtered grouped state should be rejected");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("grouped"));
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
@@ -378,7 +378,7 @@ fn filtered_grouped_strategy_rejects_large_median_state() {
     )
     .expect_err("large filtered grouped median state should be rejected instead of segmented");
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("grouped"));
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));

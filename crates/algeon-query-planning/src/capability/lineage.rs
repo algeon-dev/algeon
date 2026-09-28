@@ -2,7 +2,7 @@
 
 use super::{
     AggregateFunction, Expr, NodeId, PlanNode, QueryPlan, expr::expr_family, graph::join_side_index,
-    model::CapabilityDecision,
+    model::CapabilityDecision, rejection::Reason,
 };
 use crate::expr::ColumnRef;
 
@@ -37,7 +37,7 @@ fn column_expr_lineage(
     plan: &QueryPlan,
     input_id: NodeId,
     expr: &Expr,
-    reason: &'static str,
+    reason: Reason,
 ) -> Result<OutputLineage, CapabilityDecision> {
     match expr {
         Expr::Column(column) => {
@@ -54,7 +54,7 @@ pub(super) fn expression_lineage_for_input(
     input_id: NodeId,
     expr: &Expr,
 ) -> Result<OutputLineage, CapabilityDecision> {
-    column_expr_lineage(plan, input_id, expr, "expression_lineage_requires_resolved_input_column")
+    column_expr_lineage(plan, input_id, expr, Reason::ExpressionLineageRequiresResolvedInputColumn)
 }
 
 /// Resolves the identity of one output field of `node_id`.
@@ -83,13 +83,13 @@ pub(super) fn output_lineage(
 ) -> Result<OutputLineage, CapabilityDecision> {
     let Some(node) = plan.node(node_id) else {
         return Err(CapabilityDecision::rejected(
-            "output_lineage_missing_node",
+            Reason::OutputLineageMissingNode,
             [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
         ));
     };
     if field_index >= node.output_schema().fields().len() {
         return Err(CapabilityDecision::rejected(
-            "output_lineage_field_index_out_of_range",
+            Reason::OutputLineageFieldIndexOutOfRange,
             [
                 ("node_id", node_id.to_string()),
                 ("field_index", field_index.to_string()),
@@ -105,7 +105,7 @@ pub(super) fn output_lineage(
         PlanNode::Projection(projection) => {
             let Some(output) = projection.outputs.get(field_index) else {
                 return Err(CapabilityDecision::rejected(
-                    "output_lineage_projection_field_index_out_of_range",
+                    Reason::OutputLineageProjectionFieldIndexOutOfRange,
                     [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
                 ));
             };
@@ -115,7 +115,7 @@ pub(super) fn output_lineage(
                         plan,
                         projection.input,
                         column,
-                        "output_lineage_projection_column_resolution",
+                        Reason::OutputLineageProjectionColumnResolution,
                     )?;
                     output_lineage(plan, projection.input, input_field)
                 },
@@ -131,7 +131,7 @@ pub(super) fn output_lineage(
             let aggr_index = field_index - group_count;
             let Some(aggregate_expr) = aggregate.spec.aggr_exprs.get(aggr_index) else {
                 return Err(CapabilityDecision::rejected(
-                    "output_lineage_aggregate_field_index_out_of_range",
+                    Reason::OutputLineageAggregateFieldIndexOutOfRange,
                     [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
                 ));
             };
@@ -154,7 +154,7 @@ pub(super) fn output_lineage(
         PlanNode::Join(join) => {
             let Some(output) = join.spec.output_projection.get(field_index) else {
                 return Err(CapabilityDecision::rejected(
-                    "output_lineage_join_projection_index_out_of_range",
+                    Reason::OutputLineageJoinProjectionIndexOutOfRange,
                     [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
                 ));
             };
@@ -163,7 +163,7 @@ pub(super) fn output_lineage(
                 plan,
                 input_id,
                 &output.column,
-                "output_lineage_join_output_column_resolution",
+                Reason::OutputLineageJoinOutputColumnResolution,
             )?;
             output_lineage(plan, input_id, input_field)
         },
@@ -171,7 +171,7 @@ pub(super) fn output_lineage(
             let input_field_count =
                 plan.node(window.input).map(|input| input.output_schema().fields().len()).ok_or_else(|| {
                     CapabilityDecision::rejected(
-                        "output_lineage_window_missing_input",
+                        Reason::OutputLineageWindowMissingInput,
                         [("node_id", node_id.to_string()), ("input_id", window.input.to_string())],
                     )
                 })?;
@@ -193,7 +193,7 @@ fn resolve_column_field_index(
     plan: &QueryPlan,
     input_id: NodeId,
     column: &ColumnRef,
-    reason: &'static str,
+    reason: Reason,
 ) -> Result<usize, CapabilityDecision> {
     let Some(node) = plan.node(input_id) else {
         return Err(CapabilityDecision::rejected(reason, [("input_id", input_id.to_string())]));

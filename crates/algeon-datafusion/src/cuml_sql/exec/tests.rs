@@ -150,10 +150,9 @@ async fn unlowerable_relation_input_stays_host_staged_with_a_structured_reason()
     let detail = report
         .outcomes()
         .iter()
-        .enumerate()
-        .find_map(|(index, outcome)| match outcome {
-            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. } => {
-                report.unsupported_column(index)
+        .find_map(|outcome| match outcome {
+            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, detail, .. } => {
+                detail.column.as_ref()
             },
             _ => None,
         })

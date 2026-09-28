@@ -3,7 +3,7 @@
 use super::support::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
 use crate::{
     backend::AnalysisContext,
-    capability::CapabilityRejectionProjection,
+    capability::Rejection,
     error::Result,
     pipeline::{CompiledPipeline, PipelineCompilation, compile_pipeline_outcome},
     plan::QueryPlan,
@@ -18,7 +18,7 @@ pub(super) enum CapabilityFirstCandidateStatus {
 #[derive(Debug, Clone)]
 pub(super) struct CapabilityFirstPipelineAdmission {
     pipeline: Option<CompiledPipeline>,
-    rejection_projection: Option<CapabilityRejectionProjection>,
+    rejection: Option<Rejection>,
     candidate_status: CapabilityFirstCandidateStatus,
 }
 
@@ -27,8 +27,8 @@ impl CapabilityFirstPipelineAdmission {
         self.candidate_status
     }
 
-    pub(super) fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
-        self.rejection_projection.as_ref()
+    pub(super) fn rejection(&self) -> Option<&Rejection> {
+        self.rejection.as_ref()
     }
 
     pub(super) fn into_pipeline(self) -> Option<CompiledPipeline> {
@@ -36,19 +36,11 @@ impl CapabilityFirstPipelineAdmission {
     }
 
     fn admitted(pipeline: CompiledPipeline) -> Self {
-        Self {
-            pipeline: Some(pipeline),
-            rejection_projection: None,
-            candidate_status: CapabilityFirstCandidateStatus::Admitted,
-        }
+        Self { pipeline: Some(pipeline), rejection: None, candidate_status: CapabilityFirstCandidateStatus::Admitted }
     }
 
-    fn rejected(pipeline: Option<CompiledPipeline>, projection: CapabilityRejectionProjection) -> Self {
-        Self {
-            pipeline,
-            rejection_projection: Some(projection),
-            candidate_status: CapabilityFirstCandidateStatus::Rejected,
-        }
+    fn rejected(pipeline: Option<CompiledPipeline>, rejection: Rejection) -> Self {
+        Self { pipeline, rejection: Some(rejection), candidate_status: CapabilityFirstCandidateStatus::Rejected }
     }
 }
 
@@ -62,22 +54,22 @@ pub(super) fn capability_first_bounded_pipeline_admission(
     // never on which plan shape surrounds them. A plan outside every contract
     // is rejected with the first contract it misses.
     let analysis = plan.capability_analysis(ctx);
-    if let Some(projection) = analysis.first_rejection_projection() {
-        return Ok(CapabilityFirstPipelineAdmission::rejected(None, projection));
+    if let Some(rejection) = analysis.first_rejection() {
+        return Ok(CapabilityFirstPipelineAdmission::rejected(None, rejection));
     }
     let pipeline = match compile_pipeline_outcome(plan, &analysis)? {
         PipelineCompilation::Compiled(pipeline) => pipeline,
         // The compiler is the authority on constructability: when it cannot
         // build a pipeline, its structural reason (e.g. a dependency cycle)
         // reports the failure.
-        PipelineCompilation::Rejected(projection) => {
-            return Ok(CapabilityFirstPipelineAdmission::rejected(None, projection));
+        PipelineCompilation::Rejected(rejection) => {
+            return Ok(CapabilityFirstPipelineAdmission::rejected(None, rejection));
         },
     };
     match compiled_bounded_query_plan_support(plan, &analysis, &pipeline)? {
         CompiledBoundedPipelineSupport::Supported => Ok(CapabilityFirstPipelineAdmission::admitted(pipeline)),
-        CompiledBoundedPipelineSupport::Unsupported(projection) => {
-            Ok(CapabilityFirstPipelineAdmission::rejected(Some(pipeline), projection))
+        CompiledBoundedPipelineSupport::Unsupported(rejection) => {
+            Ok(CapabilityFirstPipelineAdmission::rejected(Some(pipeline), rejection))
         },
     }
 }

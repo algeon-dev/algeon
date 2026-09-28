@@ -305,7 +305,7 @@ impl AttemptExecutionScope {
 
 fn manifest_error(reason: &'static str, occurrence_id: Option<&str>) -> QueryError {
     let error = QueryError::new(
-        QueryErrorCode::UnsupportedPlanShape,
+        QueryErrorCode::InternalInvariantViolation,
         "query_engine.admission.execution_scope",
         "an admitted attempt lacks complete plan-scope identity",
     )

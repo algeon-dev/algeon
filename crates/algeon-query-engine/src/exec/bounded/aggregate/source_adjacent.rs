@@ -1293,13 +1293,13 @@ fn slice_source_adjacent_aggregate_partition(
     token: &ExecutionBudgetToken,
 ) -> Result<Option<CommittedPartial>> {
     let start = *offsets.get(partition).ok_or_else(|| {
-        unsupported_bounded_shape(
+        bounded_invariant_violation(
             "source-adjacent aggregate partition is missing a partition start offset",
             "partition_offset_missing",
         )
     })?;
     let end = *offsets.get(partition + 1).ok_or_else(|| {
-        unsupported_bounded_shape(
+        bounded_invariant_violation(
             "source-adjacent aggregate partition is missing a partition end offset",
             "partition_offset_missing",
         )
@@ -1525,7 +1525,7 @@ fn split_source_adjacent_partition_aggregate_input(
     let split_at = input_rows / 2;
     if split_at == 0 || split_at == input_rows {
         return Err(source_adjacent_partition_aggregate_error(
-            unsupported_bounded_shape(
+            bounded_invariant_violation(
                 "source-adjacent partitioned aggregate input cannot be split further",
                 "source_adjacent_partitioned_partial_aggregate_retry_unsplittable",
             )
