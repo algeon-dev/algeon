@@ -3,14 +3,17 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use query_planning::{
-    admission::AttemptCapabilityEvidence,
+    admission::{AttemptCapabilityEvidence, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result},
     plan::{QueryPlan, SchemaFingerprint},
 };
 
 use super::{
-    super::{MemoryGrant, resident::GpuResidentInputMap},
-    ActivatedDeferredResidentInput, ActivatedDeferredResidentPhase, ExecutionContext,
+    super::{
+        MemoryGrant,
+        resident::{GpuResidentInputMap, GpuResultHandle},
+    },
+    ActivatedDeferredResidentInput, ActivatedDeferredResidentPhase, DeferredResidentFacts, ExecutionContext,
 };
 use crate::observability::AttemptComposedScheduleProjection;
 
@@ -203,16 +206,10 @@ impl ExecutionContext {
             .copied()
             .find(|scope| {
                 scope.producer_occurrences().iter().all(|expected| {
-                    let Some(input) = gpu_inputs.get(expected.occurrence_id()) else {
-                        return false;
-                    };
-                    let Some(actual_scope) = input.producer_execution_scope() else {
-                        return false;
-                    };
-                    let actual_schema = SchemaFingerprint::of(input.schema());
-                    (actual_scope == expected.execution_scope_fingerprint()
-                        || input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan)))
-                        && actual_schema == expected.output_schema_fingerprint()
+                    gpu_inputs.get(expected.occurrence_id()).is_some_and(|input| {
+                        DeferredResidentFacts::read(expected.occurrence_id(), input)
+                            .is_ok_and(|facts| facts_match_occurrence(&facts, input, expected))
+                    })
                 })
             })
             .unwrap_or(expected_scopes[0]);
@@ -232,20 +229,8 @@ impl ExecutionContext {
                     .with_fact("reason", "deferred_resident_input_missing")
                     .with_fact("input_name", input_name)
                 })?;
-                let actual_scope = input.producer_execution_scope().ok_or_else(|| {
-                    QueryError::new(
-                        QueryErrorCode::InternalInvariantViolation,
-                        "query_engine.runtime.context",
-                        "an admitted deferred resident occurrence has no producer scope",
-                    )
-                    .with_fact("reason", "deferred_resident_input_scope_missing")
-                    .with_fact("input_name", input_name)
-                })?;
-                let actual_schema = SchemaFingerprint::of(input.schema());
-                if actual_scope != expected.execution_scope_fingerprint()
-                    && !input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan))
-                    || actual_schema != expected.output_schema_fingerprint()
-                {
+                let facts = DeferredResidentFacts::read(input_name, input)?;
+                if !facts_match_occurrence(&facts, input, expected) {
                     return Err(QueryError::new(
                         QueryErrorCode::InternalInvariantViolation,
                         "query_engine.runtime.context",
@@ -254,37 +239,11 @@ impl ExecutionContext {
                     .with_fact("reason", "deferred_resident_producer_binding_mismatch")
                     .with_fact("input_name", input_name)
                     .with_fact("expected_producer_scope", expected.execution_scope_fingerprint())
-                    .with_fact("actual_producer_scope", actual_scope)
+                    .with_fact("actual_producer_scope", facts.producer_execution_scope_fingerprint())
                     .with_fact("expected_schema", expected.output_schema_fingerprint())
-                    .with_fact("actual_schema", actual_schema));
+                    .with_fact("actual_schema", SchemaFingerprint::of(facts.schema())));
                 }
-                let physical_bytes = input.device_allocated_size_bytes()?;
-                if physical_bytes > 0 && input.retained_owner_identity_for(&immutable_grant).is_none() {
-                    return Err(QueryError::new(
-                        QueryErrorCode::InternalInvariantViolation,
-                        "query_engine.runtime.context",
-                        "a deferred resident input is not retained by the admitted grant",
-                    )
-                    .with_fact("reason", "deferred_resident_grant_owner_mismatch")
-                    .with_fact("input_name", input_name)
-                    .with_fact("input_device_bytes", physical_bytes));
-                }
-                let input_row_count = u64::try_from(input.frame().num_rows()).map_err(|_| {
-                    QueryError::new(
-                        QueryErrorCode::SizeOverflow,
-                        "query_engine.runtime.context",
-                        "the resident input row count exceeds the admission integer range",
-                    )
-                    .with_fact("reason", "deferred_resident_input_row_count_overflow")
-                    .with_fact("input_name", input_name)
-                })?;
-                Ok(ActivatedDeferredResidentInput {
-                    producer_execution_scope_fingerprint: actual_scope,
-                    input_name: input_name.to_owned(),
-                    input_schema: Arc::clone(input.schema()),
-                    input_memory_identity: input.frame().memory_identity(),
-                    input_row_count,
-                })
+                ActivatedDeferredResidentInput::bind(input_name.to_owned(), facts, input, &immutable_grant)
             })
             .collect::<Result<Vec<_>>>()?;
         let activated = ActivatedDeferredResidentPhase {
@@ -333,4 +292,17 @@ impl ExecutionContext {
     ) -> Result<Option<AttemptComposedScheduleProjection>> {
         self.validate_admitted_evidence(consumer_plan, Some(occurrence_ids))
     }
+}
+
+/// Whether an input's facts are those of the producer occurrence the attempt
+/// admitted: written by the admitted producer scope, or by a plan equivalent
+/// to it, with the admitted output schema.
+fn facts_match_occurrence(
+    facts: &DeferredResidentFacts,
+    input: &GpuResultHandle,
+    expected: &AttemptProducerOccurrence,
+) -> bool {
+    (facts.producer_execution_scope_fingerprint() == expected.execution_scope_fingerprint()
+        || input.producer_execution_plan().is_some_and(|plan| expected.matches_execution_plan(plan)))
+        && SchemaFingerprint::of(facts.schema()) == expected.output_schema_fingerprint()
 }

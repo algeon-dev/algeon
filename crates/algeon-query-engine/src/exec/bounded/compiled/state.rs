@@ -21,9 +21,43 @@ pub struct CompiledPipelineState<T> {
 #[derive(Debug)]
 struct ResidentResourceSlot<T> {
     definition: ResidentResource,
-    payload: Option<T>,
-    released: bool,
-    consumed_by: Option<PipelineTaskId>,
+    state: SlotState<T>,
+}
+
+/// Where one resident resource payload is in its produce, read, and release
+/// protocol.
+#[derive(Debug)]
+enum SlotState<T> {
+    /// The producer has not committed the payload.
+    Unproduced,
+    /// The payload is stored and its consumers read it from the state.
+    Live(T),
+    /// The resource's sole consumer took the payload out of the state.
+    Consumed { by: PipelineTaskId },
+    /// The payload left the state when its lifetime ended.
+    Released,
+}
+
+impl<T> SlotState<T> {
+    fn is_live(&self) -> bool {
+        matches!(self, Self::Live(_))
+    }
+
+    fn is_released(&self) -> bool {
+        matches!(self, Self::Consumed { .. } | Self::Released)
+    }
+
+    /// Moves a live payload out and leaves `next` behind; any other state is
+    /// left unchanged.
+    fn take_live(&mut self, next: Self) -> Option<T> {
+        if !self.is_live() {
+            return None;
+        }
+        match std::mem::replace(self, next) {
+            Self::Live(payload) => Some(payload),
+            Self::Unproduced | Self::Consumed { .. } | Self::Released => None,
+        }
+    }
 }
 
 /// A resident resource payload released after its last compiled consumer.
@@ -49,12 +83,7 @@ impl<T> CompiledPipelineState<T> {
         for resource in pipeline.resources() {
             let previous = resources.insert(
                 resource.id(),
-                ResidentResourceSlot {
-                    definition: resource.clone(),
-                    payload: None,
-                    released: false,
-                    consumed_by: None,
-                },
+                ResidentResourceSlot { definition: resource.clone(), state: SlotState::Unproduced },
             );
             if previous.is_some() {
                 return Err(invalid("compiled resource table contains a duplicate resource")
@@ -79,26 +108,22 @@ impl<T> CompiledPipelineState<T> {
     }
 
     pub(crate) fn is_resource_live(&self, resource: ResidentResourceId) -> bool {
-        self.resources.get(&resource).is_some_and(|slot| slot.payload.is_some() && !slot.released)
+        self.resources.get(&resource).is_some_and(|slot| slot.state.is_live())
     }
 
     #[cfg(feature = "test-hooks")]
     pub fn is_resource_released(&self, resource: ResidentResourceId) -> bool {
-        self.resources.get(&resource).is_some_and(|slot| slot.released)
+        self.resources.get(&resource).is_some_and(|slot| slot.state.is_released())
     }
 
     pub fn live_resource_count(&self) -> usize {
-        self.resources.values().filter(|slot| slot.payload.is_some() && !slot.released).count()
+        self.resources.values().filter(|slot| slot.state.is_live()).count()
     }
 
     pub(in crate::exec::bounded) fn drain_live_resources(&mut self) -> Vec<ReleasedCompiledResource<T>> {
         let mut released = Vec::new();
         for (id, slot) in &mut self.resources {
-            if slot.released {
-                continue;
-            }
-            if let Some(payload) = slot.payload.take() {
-                slot.released = true;
+            if let Some(payload) = slot.state.take_live(SlotState::Released) {
                 released.push(ReleasedCompiledResource { id: *id, payload });
             }
         }
@@ -106,27 +131,27 @@ impl<T> CompiledPipelineState<T> {
     }
 
     pub(crate) fn resource_payload(&self, resource: ResidentResourceId) -> Result<&T> {
-        let slot = self.resource_slot(resource)?;
-        if slot.released {
-            return Err(invalid("compiled task requested a released resident resource")
-                .with_fact("resident_resource_id", resource));
+        match &self.resource_slot(resource)?.state {
+            SlotState::Live(payload) => Ok(payload),
+            SlotState::Consumed { .. } | SlotState::Released => {
+                Err(invalid("compiled task requested a released resident resource")
+                    .with_fact("resident_resource_id", resource))
+            },
+            SlotState::Unproduced => Err(invalid("compiled task requested an unproduced resident resource")
+                .with_fact("resident_resource_id", resource)),
         }
-        slot.payload.as_ref().ok_or_else(|| {
-            invalid("compiled task requested an unproduced resident resource")
-                .with_fact("resident_resource_id", resource)
-        })
     }
 
     pub(crate) fn replace_resource_payload(&mut self, resource: ResidentResourceId, payload: T) -> Result<T> {
-        let slot = self.resource_slot_mut(resource)?;
-        if slot.released {
-            return Err(invalid("compiled task tried to replace a released resident resource")
-                .with_fact("resident_resource_id", resource));
+        match &mut self.resource_slot_mut(resource)?.state {
+            SlotState::Live(stored) => Ok(std::mem::replace(stored, payload)),
+            SlotState::Consumed { .. } | SlotState::Released => {
+                Err(invalid("compiled task tried to replace a released resident resource")
+                    .with_fact("resident_resource_id", resource))
+            },
+            SlotState::Unproduced => Err(invalid("compiled task tried to replace an unproduced resident resource")
+                .with_fact("resident_resource_id", resource)),
         }
-        slot.payload.replace(payload).ok_or_else(|| {
-            invalid("compiled task tried to replace an unproduced resident resource")
-                .with_fact("resident_resource_id", resource)
-        })
     }
 
     pub(crate) fn prepare_task(&self, task: &PipelineTask) -> Result<()> {
@@ -144,18 +169,7 @@ impl<T> CompiledPipelineState<T> {
                     .with_fact("resident_resource_id", resource)
                     .with_fact("pipeline_task_kind", task.kind().as_str()));
             }
-            if slot.released {
-                return Err(invalid("compiled task input resource was already released")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("resident_resource_id", resource)
-                    .with_fact("pipeline_task_kind", task.kind().as_str()));
-            }
-            if slot.payload.is_none() {
-                return Err(invalid("compiled task input resource is not produced")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("resident_resource_id", resource)
-                    .with_fact("pipeline_task_kind", task.kind().as_str()));
-            }
+            ensure_live_input(task, *resource, &slot.state)?;
         }
 
         Ok(())
@@ -164,8 +178,7 @@ impl<T> CompiledPipelineState<T> {
     pub(crate) fn can_consume_task_input_resource(&self, task: &PipelineTask, resource: ResidentResourceId) -> bool {
         self.resource_slot(resource).is_ok_and(|slot| {
             task.input_resources().contains(&resource)
-                && !slot.released
-                && slot.payload.is_some()
+                && slot.state.is_live()
                 && matches!(slot.definition.lifetime(), ResidentLifetime::BetweenTasks { .. })
                 && slot.definition.consumers() == [task.id()]
         })
@@ -209,22 +222,8 @@ impl<T> CompiledPipelineState<T> {
                 .with_fact("resident_resource_id", resource)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
-        if slot.released {
-            return Err(invalid("compiled task input resource was already released")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("resident_resource_id", resource)
-                .with_fact("pipeline_task_kind", task.kind().as_str()));
-        }
-        let payload = slot.payload.take().ok_or_else(|| {
-            invalid("compiled task input resource is not produced")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("resident_resource_id", resource)
-                .with_fact("pipeline_task_kind", task.kind().as_str())
-        })?;
-        slot.released = true;
-        slot.consumed_by = Some(task.id());
-
-        Ok(payload)
+        ensure_live_input(task, resource, &slot.state)?;
+        Ok(slot.state.take_live(SlotState::Consumed { by: task.id() }).expect("live input resource has a payload"))
     }
 
     pub(in crate::exec::bounded) fn complete_task(
@@ -269,7 +268,7 @@ impl<T> CompiledPipelineState<T> {
         for slot in self.resources.values() {
             match slot.definition.lifetime() {
                 ResidentLifetime::TaskLocal { .. } | ResidentLifetime::BetweenTasks { .. } => {
-                    if !slot.released {
+                    if !slot.state.is_released() {
                         return Err(invalid("compiled pipeline finished with an unreleased resident resource")
                             .with_fact("resident_resource_id", slot.definition.id()));
                     }
@@ -307,17 +306,16 @@ impl<T> CompiledPipelineState<T> {
         }
 
         let slot = self.resource_slot_mut(*resource)?;
-        if slot.released {
+        if slot.state.is_released() {
             return Err(invalid("compiled GPU sink output resource was already released")
                 .with_fact("sink_boundary_task_id", sink_task)
                 .with_fact("resident_resource_id", *resource));
         }
-        let payload = slot.payload.take().ok_or_else(|| {
+        let payload = slot.state.take_live(SlotState::Released).ok_or_else(|| {
             invalid("compiled GPU sink output resource has no resident payload")
                 .with_fact("sink_boundary_task_id", sink_task)
                 .with_fact("resident_resource_id", *resource)
         })?;
-        slot.released = true;
         Ok(ReleasedCompiledResource { id: *resource, payload })
     }
 
@@ -352,14 +350,14 @@ impl<T> CompiledPipelineState<T> {
                     .with_fact("recorded_producer_task", slot.definition.producer())
                     .with_fact("pipeline_task_kind", task.kind().as_str()));
             }
-            if slot.payload.is_some() || slot.released {
+            if !matches!(slot.state, SlotState::Unproduced) {
                 return Err(invalid("compiled resident resource has already been produced")
                     .with_fact("compiled_task_id", task.id())
                     .with_fact("resident_resource_id", resource)
                     .with_fact("pipeline_task_kind", task.kind().as_str()));
             }
 
-            slot.payload = Some(payload);
+            slot.state = SlotState::Live(payload);
             produced_ids.push(resource);
         }
 
@@ -379,7 +377,7 @@ impl<T> CompiledPipelineState<T> {
         consumer: PipelineTaskId,
     ) -> Result<bool> {
         let slot = self.resource_slot(resource)?;
-        if slot.released {
+        if slot.state.is_released() {
             return Ok(false);
         }
         match slot.definition.lifetime() {
@@ -411,7 +409,7 @@ impl<T> CompiledPipelineState<T> {
 
         for resource in task.input_resources() {
             let slot = self.resource_slot(*resource)?;
-            if slot.consumed_by == Some(task.id()) {
+            if matches!(slot.state, SlotState::Consumed { by } if by == task.id()) {
                 continue;
             }
             if !slot.definition.consumers().contains(&task.id()) {
@@ -420,18 +418,7 @@ impl<T> CompiledPipelineState<T> {
                     .with_fact("resident_resource_id", resource)
                     .with_fact("pipeline_task_kind", task.kind().as_str()));
             }
-            if slot.released {
-                return Err(invalid("compiled task input resource was already released")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("resident_resource_id", resource)
-                    .with_fact("pipeline_task_kind", task.kind().as_str()));
-            }
-            if slot.payload.is_none() {
-                return Err(invalid("compiled task input resource is not produced")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("resident_resource_id", resource)
-                    .with_fact("pipeline_task_kind", task.kind().as_str()));
-            }
+            ensure_live_input(task, *resource, &slot.state)?;
         }
 
         Ok(())
@@ -454,17 +441,16 @@ impl<T> CompiledPipelineState<T> {
         }
 
         let slot = self.resource_slot_mut(resource)?;
-        if slot.released {
+        if slot.state.is_released() {
             return Err(invalid("compiled resident resource was released more than once")
                 .with_fact("resident_resource_id", resource)
                 .with_fact("compiled_task_id", consumer));
         }
-        let payload = slot.payload.take().ok_or_else(|| {
+        let payload = slot.state.take_live(SlotState::Released).ok_or_else(|| {
             invalid("compiled resident resource release found no resident payload")
                 .with_fact("resident_resource_id", resource)
                 .with_fact("compiled_task_id", consumer)
         })?;
-        slot.released = true;
         Ok(ReleasedCompiledResource { id: resource, payload })
     }
 
@@ -485,6 +471,18 @@ impl<T> CompiledPipelineState<T> {
                 .with_fact("resident_resource_id", resource)
         })
     }
+}
+
+fn ensure_live_input<T>(task: &PipelineTask, resource: ResidentResourceId, state: &SlotState<T>) -> Result<()> {
+    let message = match state {
+        SlotState::Live(_) => return Ok(()),
+        SlotState::Consumed { .. } | SlotState::Released => "compiled task input resource was already released",
+        SlotState::Unproduced => "compiled task input resource is not produced",
+    };
+    Err(invalid(message)
+        .with_fact("compiled_task_id", task.id())
+        .with_fact("resident_resource_id", resource)
+        .with_fact("pipeline_task_kind", task.kind().as_str()))
 }
 
 fn invalid(message: &'static str) -> QueryError {

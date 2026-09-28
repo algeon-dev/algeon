@@ -138,15 +138,14 @@ pub(in crate::exec::bounded) fn consume_bounded_join_build_input_stream(
             },
             BoundedJoinBuildInputStream::Frames(mut inputs) => {
                 let mut result = Ok(());
-                while let Some(input) = inputs.next_yielded_frame(execution) {
-                    let mut input = match input {
+                while let Some(input) = inputs.next_frame(execution) {
+                    let input = match input {
                         Ok(input) => input,
                         Err(error) => {
                             result = Err(error);
                             break;
                         },
                     };
-                    let input = input.take_for_release();
                     if let Err(error) = consume(input, execution) {
                         result = Err(error);
                         break;

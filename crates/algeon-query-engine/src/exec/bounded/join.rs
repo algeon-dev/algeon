@@ -32,19 +32,18 @@ pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
     BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
     PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream,
-    execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
-    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
-    execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
+    execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
+    execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame_stream,
     execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
     partitioned_join_build_commitment, release_bounded_compiled_join_probe_state, stateless_streaming_probe_supported,
 };
 use hash::{
-    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join_build_from_frame,
+    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
     execute_bounded_root_hash_join_build_from_resident_frame, execute_bounded_root_hash_join_materialize,
     execute_bounded_root_hash_join_materialize_preserving_stream,
     execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame,
-    execute_bounded_root_hash_join_probe_from_frame, execute_bounded_root_hash_join_probe_from_resident_frame,
-    release_bounded_root_hash_join_build_state, release_bounded_root_hash_join_probe_state,
+    execute_bounded_root_hash_join_probe_from_resident_frame, release_bounded_root_hash_join_build_state,
+    release_bounded_root_hash_join_probe_state,
 };
 pub(super) use leaf::{
     BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,

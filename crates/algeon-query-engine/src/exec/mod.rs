@@ -51,8 +51,6 @@ mod source;
 mod util;
 mod vector_algorithm;
 
-#[cfg(test)]
-pub(crate) use bounded::pipeline::YieldedFrameCounterTestHarness;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use bounded::pipeline::{

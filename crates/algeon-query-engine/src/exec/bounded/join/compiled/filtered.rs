@@ -8,33 +8,13 @@ use super::{
     execution_budget_token_for_boundary, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
     keyed_filtered_semi_anti_join_capable, lower_null_equality, materialize_left_only_join_output_projection,
     materialize_mark_join_output_projection, null_aware_anti_probe, null_aware_anti_probe_input,
-    observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
-    prepare_bounded_join_side_input_from_shared_frame, projected_input_columns,
+    observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame, projected_input_columns,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, validate_executable_join_subset,
 };
 use crate::{
     exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe},
     metrics::{JoinOperatorMetrics, OperatorMetrics},
 };
-
-pub(super) fn execute_compiled_filtered_join_build_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    node: &JoinNode,
-    input: GpuDataFrame,
-) -> Result<BoundedCompiledFilteredJoinBuildState> {
-    validate_executable_join_subset(node)?;
-    if !keyed_filtered_semi_anti_join_capable(node) {
-        return Err(bounded_invariant_violation(
-            "compiled filtered join build requires a filtered semi/anti/mark join node",
-            "compiled_join_strategy_unsupported",
-        ));
-    }
-    let setup = filtered_join_build_setup(node);
-    let build =
-        prepare_bounded_join_side_input_from_shared_frame(execution, input, &setup.right_columns, JoinSide::Right)?;
-    build_filtered_join_artifact(execution, node_id, node, setup, build)
-}
 
 pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -185,28 +165,6 @@ fn deduplicate_filtered_join_build_keys(
     let output_rows = output.num_rows() as u64;
     release_bounded_join_side_frame(build);
     Ok(BoundedJoinSideFrame { frame: output, rows: output_rows, bytes: output_bytes })
-}
-
-pub(super) fn execute_compiled_filtered_join_probe_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node: &JoinNode,
-    build: BoundedCompiledFilteredJoinBuildState,
-    input: GpuDataFrame,
-) -> Result<BoundedCompiledFilteredJoinProbeState> {
-    let probe =
-        prepare_bounded_join_side_input_from_shared_frame(execution, input, &build.left_columns, JoinSide::Left)?;
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let probe = null_aware_anti_probe_side(execution, &build, probe, &overrides)?;
-    let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
-        execution,
-        node,
-        &build,
-        &probe,
-        &overrides,
-        "failed to observe compiled bounded filtered join probe-state memory",
-    )?;
-    Ok(BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_bytes })
 }
 
 pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(

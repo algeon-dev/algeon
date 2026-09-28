@@ -208,9 +208,9 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 
     // A chain that ends in a resource shared by several join inputs still
-    // feeds joins: every consumer re-streams the leaf with the chain's stages
-    // (the scheduler never hands a multi-consumer resource to one owner), so
-    // no frame carrying the whole staged leaf has to stay resident for them.
+    // feeds joins: the leaf carries the chain's stages, and the compiled
+    // contract decides whether the chain's last stage reads it once into the
+    // frame those joins share or each join replays it with its own cursor.
     pub(super) fn task_feeds_join_input_through_unary_chain(
         &self,
         task: PipelineTaskId,

@@ -255,9 +255,8 @@ impl FinalSortExecutor<'_, '_, '_> {
         dispatch.execute_work(
             self.execution,
             &mut state,
-            |state, execution| match state.payload.next_yielded_frame(execution) {
-                Some(Ok(mut yielded)) => {
-                    let input = yielded.take_for_release();
+            |state, execution| match state.payload.next_frame(execution) {
+                Some(Ok(input)) => {
                     Ok(Some(SortLaneCandidate { input, slice: None, boundary: "final_sort_topk_stream_chunk" }))
                 },
                 Some(Err(error)) => Err(error),
@@ -328,15 +327,14 @@ impl FinalSortExecutor<'_, '_, '_> {
             self.lane_stream_candidates(dispatch, inputs, keep_rows, initial_attempt)
         } else {
             let mut candidates = Vec::with_capacity(inputs.len());
-            while let Some(input) = inputs.next_yielded_frame(self.execution) {
-                let mut input = match input {
+            while let Some(input) = inputs.next_frame(self.execution) {
+                let input = match input {
                     Ok(input) => input,
                     Err(error) => {
                         inputs.release_remaining_frames();
                         return Err(error);
                     },
                 };
-                let input = input.take_for_release();
                 match self.topk_stream_frame_candidate_attempt(input, keep_rows, initial_attempt) {
                     Ok(candidate) => candidates.push(candidate),
                     Err(error) => {
@@ -419,7 +417,7 @@ impl FinalSortExecutor<'_, '_, '_> {
         inputs: &mut ResidentFrameStreamPayload,
         attempt: usize,
     ) -> Result<CommittedPartial> {
-        let mut first = match inputs.next_yielded_frame(self.execution) {
+        let first = match inputs.next_frame(self.execution) {
             Some(Ok(input)) => input,
             Some(Err(error)) => {
                 inputs.release_remaining_frames();
@@ -434,7 +432,6 @@ impl FinalSortExecutor<'_, '_, '_> {
                 .with_fact("node_id", self.node_id));
             },
         };
-        let first = first.take_for_release();
         let token = match self.final_sort_budget_token("final_sort_limit", attempt) {
             Ok(token) => token,
             Err(error) => {

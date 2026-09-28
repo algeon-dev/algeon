@@ -603,10 +603,6 @@ impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
         )
     }
 
-    fn retained_device_bytes(&self) -> u64 {
-        self.partitions.iter().map(CommittedPartial::device_bytes).sum()
-    }
-
     /// Every merged partition state, taken before the lazy final projection.
     /// The final merge groups by the aggregate's output key names, so these
     /// states already carry the complete distinct group-key set; only the

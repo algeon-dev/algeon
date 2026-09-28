@@ -3,19 +3,16 @@ use std::collections::BTreeMap;
 
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 #[cfg(feature = "cugraph")]
-use crate::exec::bounded::compiled::{
-    helpers::{attach_task_facts, plan_node, single_output_resource},
-    resource::CompiledGpuResourcePayload,
-};
+use crate::exec::bounded::compiled::helpers::{attach_task_facts, plan_node, single_output_resource};
 #[cfg(feature = "cugraph")]
 use crate::exec::bounded::execute_bounded_graph_algorithm_from_inputs;
+#[cfg(feature = "cugraph")]
+use crate::plan::PlanNode;
 use crate::{
     error::Result,
     exec::bounded::compiled::helpers::invalid,
     pipeline::{PipelineTask, ResidentResourceId},
 };
-#[cfg(feature = "cugraph")]
-use crate::{exec::bounded::ResidentGpuFrame, plan::PlanNode};
 
 impl CompiledGpuTaskExecutor<'_> {
     #[cfg(feature = "cugraph")]
@@ -47,31 +44,9 @@ impl CompiledGpuTaskExecutor<'_> {
 
         let mut inputs = BTreeMap::new();
         for (ordinal, resource) in task.input_resources().iter().copied().enumerate() {
-            let frame = if state.can_consume_task_input_resource(task, resource) {
-                let payload = state.consume_task_input_resource(task, resource)?;
-                let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = payload.payload else {
-                    self.release_graph_task_inputs(inputs);
-                    return Err(invalid("compiled graph task requires resident frame inputs")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", resource));
-                };
-                *frame
-            } else {
-                let payload = state.resource_payload(resource)?;
-                let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = &payload.payload else {
-                    self.release_graph_task_inputs(inputs);
-                    return Err(invalid("shared compiled graph input must be a resident frame")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", resource));
-                };
-                ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() }
-            };
-            inputs.insert(ordinal, frame);
+            inputs.insert(ordinal, self.take_frame_input(task, state, resource)?);
         }
         let Some(edge) = inputs.remove(&0) else {
-            self.release_graph_task_inputs(inputs);
             return Err(invalid("compiled graph task is missing its edge input")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
@@ -92,7 +67,4 @@ impl CompiledGpuTaskExecutor<'_> {
             .with_fact("compiled_task_id", task.id())
             .with_fact("operator", "graph_algorithm"))
     }
-
-    #[cfg(feature = "cugraph")]
-    fn release_graph_task_inputs(&mut self, _inputs: BTreeMap<usize, ResidentGpuFrame>) {}
 }

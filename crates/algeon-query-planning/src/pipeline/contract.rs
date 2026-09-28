@@ -93,6 +93,15 @@ impl ContractGraph<'_> {
         for index in 0..self.resources.len() {
             let data_form = self.resource_data_form(&self.resources[index]);
             let sharing = self.resource_sharing(&self.resources[index], data_form);
+            // Consumers of a shared immutable resource read one copy, so the
+            // producer materializes a deferred source read instead of handing
+            // each consumer a source it would read again.
+            let data_form =
+                if sharing == ResourceSharing::SharedImmutableFrame && data_form == ResidentDataForm::SourceStream {
+                    ResidentDataForm::Frame
+                } else {
+                    data_form
+                };
             let ordering = self.resource_ordering(&self.resources[index]);
             let resolved = self.resources[index].clone().with_consumption(data_form, sharing).with_ordering(ordering);
             self.resources[index] = resolved;
@@ -228,12 +237,18 @@ impl ContractGraph<'_> {
         }
     }
 
+    /// How several consumers read one resource. Replaying the producer is
+    /// legal when its payload opens independent cursors and every consumer
+    /// takes its own cursor; it is chosen when a consumer feeds an aggregate,
+    /// whose chunked input is the reason to keep the producer deferred.
+    /// Otherwise the consumers share one materialized copy.
     fn resource_sharing(&self, resource: &ResidentResource, data_form: ResidentDataForm) -> ResourceSharing {
         if resource.consumers().len() <= 1 {
             return ResourceSharing::SingleConsume;
         }
         if self.payload_opens_independent_cursors(resource, data_form)
-            && self.consumers_can_take_independent_cursors(resource)
+            && self.consumers_take_own_cursors(resource)
+            && self.consumers_feed_aggregate(resource)
         {
             ResourceSharing::IndependentCursorStream
         } else {
@@ -317,39 +332,48 @@ impl ContractGraph<'_> {
         }
     }
 
-    /// A shared producer only stays deferred when every consumer re-streams it
-    /// from the producer with its own cursor, and at least one of them is an
-    /// aggregate whose chunked input is the reason to defer at all.
-    fn consumers_can_take_independent_cursors(&self, resource: &ResidentResource) -> bool {
-        let mut feeds_aggregate = false;
-        let all_consumers_can_clone = resource.consumers().iter().all(|consumer| {
-            let Some(edge) = self.edges.iter().find(|edge| {
-                edge.from() == resource.producer()
-                    && edge.to() == *consumer
-                    && edge.resources().contains(&resource.id())
-            }) else {
-                return false;
-            };
-            match edge.kind() {
-                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => true,
-                PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer => {
-                    self.task(*consumer).is_some_and(|consumer| match consumer.kind() {
-                        PipelineTaskKind::Aggregate => {
-                            feeds_aggregate = true;
-                            true
-                        },
-                        PipelineTaskKind::Unary => {
-                            let unary_feeds_aggregate = self.task_feeds_aggregate_input(consumer.id());
-                            feeds_aggregate |= unary_feeds_aggregate;
-                            self.task_feeds_join_input(consumer.id()) || unary_feeds_aggregate
-                        },
-                        _ => false,
-                    })
-                },
-                PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => false,
-            }
-        });
-        all_consumers_can_clone && feeds_aggregate
+    /// Whether every consumer re-streams the resource from the producer with
+    /// its own cursor: join inputs do, as do aggregates and unary maps whose
+    /// output reaches a join or an aggregate.
+    fn consumers_take_own_cursors(&self, resource: &ResidentResource) -> bool {
+        resource.consumers().iter().all(|consumer| match self.consumer_edge_kind(resource, *consumer) {
+            Some(PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput) => true,
+            Some(PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer) => {
+                self.task(*consumer).is_some_and(|consumer| match consumer.kind() {
+                    PipelineTaskKind::Aggregate => true,
+                    PipelineTaskKind::Unary => {
+                        self.task_feeds_join_input(consumer.id()) || self.task_feeds_aggregate_input(consumer.id())
+                    },
+                    _ => false,
+                })
+            },
+            Some(PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput) | None => {
+                false
+            },
+        })
+    }
+
+    /// Whether some consumer, directly or through unary maps, is an aggregate.
+    fn consumers_feed_aggregate(&self, resource: &ResidentResource) -> bool {
+        resource.consumers().iter().any(|consumer| {
+            matches!(
+                self.consumer_edge_kind(resource, *consumer),
+                Some(PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer)
+            ) && self.task(*consumer).is_some_and(|consumer| match consumer.kind() {
+                PipelineTaskKind::Aggregate => true,
+                PipelineTaskKind::Unary => self.task_feeds_aggregate_input(consumer.id()),
+                _ => false,
+            })
+        })
+    }
+
+    fn consumer_edge_kind(&self, resource: &ResidentResource, consumer: PipelineTaskId) -> Option<PipelineEdgeKind> {
+        self.edges
+            .iter()
+            .find(|edge| {
+                edge.from() == resource.producer() && edge.to() == consumer && edge.resources().contains(&resource.id())
+            })
+            .map(|edge| edge.kind())
     }
 
     fn task_feeds_join_input(&self, task: PipelineTaskId) -> bool {

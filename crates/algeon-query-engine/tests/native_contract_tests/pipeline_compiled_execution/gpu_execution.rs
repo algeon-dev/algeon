@@ -520,7 +520,78 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         metrics.partial_aggregate_count, 2,
         "the shared aggregate branch should clone the deferred source stream and reduce both row-group chunks"
     );
+    let fact = pipeline
+        .resources()
+        .iter()
+        .find(|resource| resource.consumers().len() == 2)
+        .expect("the fact source feeds the join build and the aggregate");
+    assert_eq!(
+        (fact.data_form(), fact.sharing()),
+        (ResidentDataForm::SourceStream, ResourceSharing::IndependentCursorStream)
+    );
+    assert_eq!(
+        source_row_groups_read(&plan, metrics, &fact_path),
+        4,
+        "each consumer replays the fact source's two row groups through its own cursor, as declared"
+    );
     assert_compiled_final_merge_uses_partitioned_strategy(metrics);
+}
+
+/// Row groups read during one run by the plan's source of the Parquet file at
+/// `path`.
+fn source_row_groups_read(plan: &QueryPlan, metrics: &QueryMetrics, path: &Path) -> u64 {
+    let source = plan
+        .nodes()
+        .iter()
+        .find(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => source.files.iter().any(|file| file.path == path),
+                _ => false,
+            },
+            _ => false,
+        })
+        .expect("the plan reads the Parquet file")
+        .id
+        .to_string();
+    metrics
+        .source_read_runtime_rows
+        .iter()
+        .filter(|row| row.source_node_id == source)
+        .map(|row| row.row_group_count)
+        .sum()
+}
+
+#[test]
+fn compiled_gpu_executor_reads_a_filtered_source_shared_by_two_joins_once() {
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("query-engine-compiled-shared-filtered-source");
+    let dimension_path = dir.join("dimension.parquet");
+    let fact_paths = [dir.join("fact_a.parquet"), dir.join("fact_b.parquet")];
+    write_shared_filtered_dimension_parquets(&dimension_path, [&fact_paths[0], &fact_paths[1]]);
+
+    let plan = shared_filtered_dimension_fan_out_plan(&dimension_path, [&fact_paths[0], &fact_paths[1]]);
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
+    let pipeline = compile_pipeline(&plan, &analysis).expect("shared filtered dimension plan should compile");
+    let filtered = pipeline
+        .resources()
+        .iter()
+        .find(|resource| resource.consumers().len() == 2)
+        .expect("the filtered dimension feeds both joins");
+    assert_eq!(
+        (filtered.data_form(), filtered.sharing()),
+        (ResidentDataForm::Frame, ResourceSharing::SharedImmutableFrame),
+        "two join builds share one materialized copy of the filtered dimension"
+    );
+    let context = bounded_context(shared_runtime(runtime), &plan);
+    let result = execute_query_plan(&context, &plan).expect("shared filtered dimension plan should execute");
+    let batch = result.output().as_host_arrow().expect("shared filtered dimension host sink materializes");
+
+    assert_eq!(int32_int64_pairs_sorted(batch, 0, 1), vec![(Some(1), Some(10)), (Some(3), Some(30))]);
+    assert_eq!(
+        source_row_groups_read(&plan, result.metrics(), &dimension_path),
+        2,
+        "the filter reads the dimension's two row groups once for both joins"
+    );
 }
 
 #[test]

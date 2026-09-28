@@ -47,145 +47,54 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
         let topk = compiled_aggregate_topk(self.plan, self.pipeline, task);
-        let input_is_stream =
-            matches!(state.resource_payload(input)?.payload, CompiledGpuResourcePayload::ResidentFrameStream(_));
-        let can_consume_join_leaf_source = state.can_consume_task_input_resource(task, input)
-            && matches!(
-                state.resource_payload(input)?.payload,
-                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
-            );
-        let frame = if input_is_stream {
-            let stream = if state.can_consume_task_input_resource(task, input) {
-                let input_payload = state.consume_task_input_resource(task, input)?;
-                let CompiledGpuResourcePayload::ResidentFrameStream(stream) = input_payload.payload else {
-                    unreachable!("aggregate stream input was checked");
-                };
-                stream
-            } else {
-                let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &state.resource_payload(input)?.payload
-                else {
-                    unreachable!("aggregate stream input was checked");
-                };
-                stream.alias(node_id, "compiled_aggregate_stream_alias")?
-            };
-            execute_compiled_bounded_aggregate_from_stream(
+        let input_schema = self
+            .plan
+            .node(aggregate.input)
+            .ok_or_else(|| {
+                invalid("compiled aggregate task references a missing aggregate input node")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", aggregate.input)
+            })?
+            .output_schema();
+        let frame = match self.take_task_input(task, state, input)? {
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => execute_compiled_bounded_aggregate_from_stream(
                 &mut self.execution,
                 node_id,
                 aggregate,
-                self.plan
-                    .node(aggregate.input)
-                    .ok_or_else(|| {
-                        invalid("compiled aggregate task references a missing aggregate input node")
-                            .with_fact("compiled_task_id", task.id())
-                            .with_fact("plan_node_id", aggregate.input)
-                    })?
-                    .output_schema(),
+                input_schema,
                 node.output_schema(),
                 stream,
                 preserve_output_stream,
-            )
-        } else if can_consume_join_leaf_source {
-            let input_payload = state.consume_task_input_resource(task, input)?;
-            let CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) = input_payload.payload else {
-                unreachable!("join leaf source payload was checked above")
-            };
-            let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
-            execute_compiled_bounded_aggregate_from_source_stream(
-                &mut self.execution,
-                node_id,
-                aggregate,
-                self.plan
-                    .node(aggregate.input)
-                    .ok_or_else(|| {
-                        invalid("compiled aggregate task references a missing aggregate input node")
-                            .with_fact("compiled_task_id", task.id())
-                            .with_fact("plan_node_id", aggregate.input)
-                    })?
-                    .output_schema(),
-                node.output_schema(),
-                stream,
-                preserve_output_stream,
-                self.aggregate_dispatch.as_ref(),
-                topk.as_ref(),
-            )
-        } else if state.can_consume_task_input_resource(task, input) {
-            let input_payload = state.consume_task_input_resource(task, input)?;
-            let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
-                return Err(invalid("compiled aggregate task expected a resident frame input")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id)
-                    .with_fact("pipeline_task_kind", task.kind().as_str()));
-            };
-            let ResidentGpuFrame { frame: input_frame, device_bytes: input_device_bytes } = *frame;
-            let result = execute_compiled_bounded_aggregate_from_frame(
-                &mut self.execution,
-                node_id,
-                aggregate,
-                self.plan
-                    .node(aggregate.input)
-                    .ok_or_else(|| {
-                        invalid("compiled aggregate task references a missing aggregate input node")
-                            .with_fact("compiled_task_id", task.id())
-                            .with_fact("plan_node_id", aggregate.input)
-                    })?
-                    .output_schema(),
-                node.output_schema(),
-                input_frame,
-                input_device_bytes,
-            );
-            match result.map(CompiledGpuResource::new) {
-                Ok(output) => Ok(output),
-                Err(error) => Err(error),
-            }
-        } else {
-            let input_payload = state.resource_payload(input)?;
-            if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
-                let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
-                execute_compiled_bounded_aggregate_from_source_stream(
-                    &mut self.execution,
-                    node_id,
-                    aggregate,
-                    self.plan
-                        .node(aggregate.input)
-                        .ok_or_else(|| {
-                            invalid("compiled aggregate task references a missing aggregate input node")
-                                .with_fact("compiled_task_id", task.id())
-                                .with_fact("plan_node_id", aggregate.input)
-                        })?
-                        .output_schema(),
-                    node.output_schema(),
-                    stream,
-                    preserve_output_stream,
-                    self.aggregate_dispatch.as_ref(),
-                    topk.as_ref(),
-                )
-            } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
-            {
-                Err(invalid("compiled aggregate task cannot share a pending source read")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("plan_node_id", node_id)
-                    .with_fact("resident_resource_id", input))
-            } else {
-                self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
-                let input_payload = state.resource_payload(input)?;
+            ),
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                self.apply_dynamic_filters_to_source_stream(*stream).and_then(|stream| {
+                    execute_compiled_bounded_aggregate_from_source_stream(
+                        &mut self.execution,
+                        node_id,
+                        aggregate,
+                        input_schema,
+                        node.output_schema(),
+                        stream,
+                        preserve_output_stream,
+                        self.aggregate_dispatch.as_ref(),
+                        topk.as_ref(),
+                    )
+                })
+            },
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
+                let ResidentGpuFrame { frame: input_frame, device_bytes: input_device_bytes } = *frame;
                 execute_compiled_bounded_aggregate_from_frame(
                     &mut self.execution,
                     node_id,
                     aggregate,
-                    self.plan
-                        .node(aggregate.input)
-                        .ok_or_else(|| {
-                            invalid("compiled aggregate task references a missing aggregate input node")
-                                .with_fact("compiled_task_id", task.id())
-                                .with_fact("plan_node_id", aggregate.input)
-                        })?
-                        .output_schema(),
+                    input_schema,
                     node.output_schema(),
-                    input_payload.clone_frame(),
-                    input_payload.observed_device_bytes(),
+                    input_frame,
+                    input_device_bytes,
                 )
                 .map(CompiledGpuResource::new)
-            }
+            },
+            payload => Err(self.reject_task_input(task, input, payload)?),
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         let group_key_state = match &frame.payload {
@@ -217,7 +126,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
-        let input_payload = state.resource_payload(input)?;
+        let input_frame = self.take_frame_input(task, state, input)?;
         let input_schema = Arc::clone(
             self.plan
                 .node(window.input)
@@ -229,13 +138,11 @@ impl CompiledGpuTaskExecutor<'_> {
                 .output_schema(),
         );
         let output_schema = Arc::clone(node.output_schema());
-        let frame = execute_bounded_unary(
-            &mut self.execution,
-            node_id,
-            input_payload.clone_frame(),
-            |context, input, metrics| execute_window(context, window, &input_schema, input, &output_schema, metrics),
-        )
-        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        let frame =
+            execute_bounded_unary(&mut self.execution, node_id, input_frame.frame, |context, input, metrics| {
+                execute_window(context, window, &input_schema, input, &output_schema, metrics)
+            })
+            .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 
@@ -248,21 +155,9 @@ impl CompiledGpuTaskExecutor<'_> {
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
         let sort = sort_node(self.plan, task, node_id)?.clone();
-        if let Some(SortStrategy::FusedTopK { limit_node: limit_node_id, .. }) = task.sort_strategy()
-            && (state.can_consume_task_input_resource(task, input)
-                || matches!(state.resource_payload(input)?.payload, CompiledGpuResourcePayload::ResidentFrameStream(_)))
-        {
+        if let Some(SortStrategy::FusedTopK { limit_node: limit_node_id, .. }) = task.sort_strategy() {
             let limit = limit_node(self.plan, task, limit_node_id)?.clone();
-            let input_payload = if state.can_consume_task_input_resource(task, input) {
-                state.consume_task_input_resource(task, input)?
-            } else {
-                let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &state.resource_payload(input)?.payload
-                else {
-                    unreachable!("shared sort input is a stream");
-                };
-                CompiledGpuResource::frame_stream_payload(stream.alias(node_id, "compiled_final_sort_stream_alias")?)
-            };
-            let frame = match input_payload.payload {
+            let frame = match self.take_task_input(task, state, input)? {
                 CompiledGpuResourcePayload::ResidentFrame { frame: input_frame, .. } => {
                     execute_final_sort_node_from_committed_with_retry(
                         &mut self.execution,
@@ -283,29 +178,16 @@ impl CompiledGpuTaskExecutor<'_> {
                         self.aggregate_dispatch.as_ref(),
                     )
                 },
-                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
-                    Err(invalid("compiled final sort cannot consume a deferred join leaf source")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id))
-                },
-                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
-                    Err(invalid("compiled final sort cannot consume a pending source read")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id))
-                },
+                payload => Err(self.reject_task_input(task, input, payload)?),
             }
             .map_err(|error| attach_task_facts(error, task, node_id))?;
             return Ok(vec![(output, CompiledGpuResource::frame_with_applied_limit(frame, limit_node_id))]);
         }
 
-        let input_payload = state.resource_payload(input)?;
-        let frame = execute_final_sort_node_from_frame_with_retry(
-            &mut self.execution,
-            node_id,
-            &sort,
-            input_payload.clone_frame(),
-        )
-        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        let input_frame = self.take_frame_input(task, state, input)?;
+        let frame =
+            execute_final_sort_node_from_frame_with_retry(&mut self.execution, node_id, &sort, input_frame.frame)
+                .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(vec![(output, CompiledGpuResource::new(frame))])
     }
 }

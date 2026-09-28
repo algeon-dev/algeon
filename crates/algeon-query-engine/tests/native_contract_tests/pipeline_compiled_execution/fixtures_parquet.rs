@@ -122,6 +122,33 @@ pub(super) fn write_self_join_parquet(path: &Path) {
     write_parquet(path, Arc::clone(&schema), &batch);
 }
 
+/// A dimension of two row groups whose `year = 2000` rows are `d` 1, 3, and
+/// 4, and two facts that both match `d` 1 and 3 against it.
+pub(super) fn write_shared_filtered_dimension_parquets(dimension_path: &Path, fact_paths: [&Path; 2]) {
+    let dimension_schema = Arc::new(Schema::new(vec![
+        Field::new("d", DataType::Int32, false),
+        Field::new("year", DataType::Int32, false),
+    ]));
+    let dimension = RecordBatch::try_new(
+        Arc::clone(&dimension_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![2000, 2001, 2000, 2000]))],
+    )
+    .unwrap();
+    write_parquet(dimension_path, dimension_schema, &dimension);
+    let fact_schema =
+        Arc::new(Schema::new(vec![Field::new("d", DataType::Int32, false), Field::new("v", DataType::Int32, true)]));
+    for (path, keys, values) in
+        [(fact_paths[0], vec![1, 2, 3], vec![10, 20, 30]), (fact_paths[1], vec![3, 4, 1], vec![300, 400, 100])]
+    {
+        let fact = RecordBatch::try_new(
+            Arc::clone(&fact_schema),
+            vec![Arc::new(Int32Array::from(keys)), Arc::new(Int32Array::from(values))],
+        )
+        .unwrap();
+        write_parquet(path, Arc::clone(&fact_schema), &fact);
+    }
+}
+
 pub(super) fn write_multi_join_parquets(a_path: &Path, b_path: &Path, c_path: &Path) {
     let a_schema = Arc::new(Schema::new(vec![
         Field::new("a_id", DataType::Int32, false),

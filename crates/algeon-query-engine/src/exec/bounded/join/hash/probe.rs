@@ -1,53 +1,11 @@
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
-    ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
-    cudf_query_error, execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
-    prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, state::validate_root_hash_join,
+    ExecutionOverrides, Instant, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, cudf_query_error,
+    execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
+    prepare_bounded_join_side_input_from_resident_frame, projected_output_columns_for_retained_sizing,
+    release_bounded_join_side_frame, state::validate_root_hash_join,
     stream::materialize_bounded_root_hash_join_probe_stream,
 };
-
-pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    node: &JoinNode,
-    build: BoundedRootHashJoinBuildState,
-    input: GpuDataFrame,
-) -> Result<BoundedRootHashJoinProbeState> {
-    validate_root_hash_join(node)?;
-    let probe_columns = match build.probe_side {
-        JoinSide::Left => &build.left_columns,
-        JoinSide::Right => &build.right_columns,
-    };
-    let probe = prepare_bounded_join_side_input_from_shared_frame(execution, input, probe_columns, build.probe_side)?;
-    let probe_keys = match build.probe_side {
-        JoinSide::Left => &build.left_keys,
-        JoinSide::Right => &build.right_keys,
-    };
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let (probe, indices, gather_map_bytes) = if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
-        execute_bounded_root_hash_join_single_pass_inner_probe_indices(node, &build, probe, probe_keys, &overrides)?
-    } else {
-        execute_bounded_root_hash_join_multi_pass_probe_indices(node, &build, probe, probe_keys, &overrides)?
-    };
-    let output_reservation_bounds =
-        match root_hash_join_output_reservation_bounds(execution, node_id, node, &build, &probe, &indices) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                release_bounded_join_side_frame(probe);
-                return Err(error);
-            },
-        };
-    Ok(BoundedRootHashJoinProbeState {
-        build,
-        probe,
-        indices,
-        gather_map_bytes,
-        output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
-        minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
-    })
-}
 
 pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_single_pass_inner_probe_indices(
     node: &JoinNode,

@@ -124,8 +124,9 @@ const SHARED_LEAF_ROW_GROUP_ROWS: usize = 62_500;
 const SHARED_LEAF_SUPPLIERS: i32 = 1_000;
 const SHARED_LEAF_MATCHED_SUPPLIERS: i32 = 900;
 const SHARED_LEAF_NATIONS: i32 = 7;
-// Between the peak of streaming the leaf into each join consumer and the peak
-// of materializing all four source columns once for both; see the plan doc.
+// Above the peak of reading the staged two-column leaf once for both join
+// consumers (about 19 MiB) and below the peak of materializing all four
+// source columns before the stages run; see the plan doc.
 const SHARED_LEAF_GRANT_BYTES: u64 = 40 * 1024 * 1024;
 
 struct SharedLeafDetail {
@@ -310,7 +311,7 @@ fn shared_leaf_inner_probe_anti_build_plan(
 }
 
 #[test]
-fn bounded_native_query_streams_a_shared_staged_leaf_into_each_join_consumer() {
+fn bounded_native_query_reads_a_shared_staged_leaf_once_for_both_join_consumers() {
     let dir = unique_temp_dir("query-engine-shared-staged-leaf-join-consumers");
     let detail_path = dir.join("detail.parquet");
     let supplier_path = dir.join("supplier.parquet");
@@ -342,10 +343,10 @@ fn bounded_native_query_streams_a_shared_staged_leaf_into_each_join_consumer() {
     assert!(expected.iter().all(|(_, count)| *count > 0));
     assert!(peak_bytes < SHARED_LEAF_GRANT_BYTES, "peak={peak_bytes}");
     let detail_chunks = (SHARED_LEAF_ROWS as usize).div_ceil(SHARED_LEAF_ROW_GROUP_ROWS) as u64;
-    assert!(
-        metrics.source_chunks_committed >= 2 * detail_chunks,
-        "both join consumers re-stream the leaf instead of sharing one frame: {}",
-        metrics.source_chunks_committed
+    assert_eq!(
+        metrics.source_chunks_committed,
+        detail_chunks + 1,
+        "the staged leaf is read once into the frame both join consumers share; the supplier is one chunk"
     );
     assert_eq!(metrics.source_chunks_retried, 0);
 

@@ -1,54 +1,9 @@
 use super::{
-    BoundedExecutionAttempt, BoundedRootHashJoinBuildState, DataFrame, ExecutionOverrides, GpuDataFrame,
-    GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, ResidentGpuFrame, Result, cudf_query_error,
-    execution_overrides, lower_null_equality, prepare_bounded_join_side_input_from_resident_frame,
-    prepare_bounded_join_side_input_from_shared_frame, probe_side, projected_input_columns,
+    BoundedExecutionAttempt, BoundedRootHashJoinBuildState, DataFrame, ExecutionOverrides, GpuHashJoinBuildHandle,
+    Instant, JoinNode, JoinSide, ResidentGpuFrame, Result, cudf_query_error, execution_overrides, lower_null_equality,
+    prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_input_columns,
     state::validate_root_hash_join,
 };
-
-pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node: &JoinNode,
-    input: GpuDataFrame,
-) -> Result<BoundedRootHashJoinBuildState> {
-    validate_root_hash_join(node)?;
-    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
-    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let left_columns = projected_input_columns(&left_keys, &node.spec.output_projection, [], JoinSide::Left);
-    let right_columns = projected_input_columns(&right_keys, &node.spec.output_projection, [], JoinSide::Right);
-    let build_side = node.spec.build_side;
-    let build_columns = match build_side {
-        JoinSide::Left => &left_columns,
-        JoinSide::Right => &right_columns,
-    };
-    let build_keys = match build_side {
-        JoinSide::Left => &left_keys,
-        JoinSide::Right => &right_keys,
-    };
-    let overrides_lease = execution_overrides(execution.context())?;
-    let overrides = overrides_lease.overrides();
-    let timer = Instant::now();
-    let build = prepare_bounded_join_side_input_from_shared_frame(execution, input, build_columns, build_side)?;
-    let build_keys_unique = single_key_build_is_unique(&build.frame, build_keys, &overrides);
-    let hash_options =
-        cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
-    let (hash_join, hash_table_bytes) =
-        build_bounded_hash_join(execution, node, &build.frame, build_keys, hash_options, build_side, &overrides, true)?;
-    Ok(BoundedRootHashJoinBuildState {
-        build_side,
-        probe_side: probe_side(build_side),
-        left_keys,
-        right_keys,
-        left_columns,
-        right_columns,
-        build,
-        hash_join,
-        hash_table_bytes,
-        left_indices_from_probe: build_side == JoinSide::Right,
-        build_keys_unique,
-        timer,
-    })
-}
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_resident_frame(
     execution: &mut BoundedExecutionAttempt<'_>,

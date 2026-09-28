@@ -236,7 +236,7 @@ impl OneShotEquiJoinProbeStreamSource {
 impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         let inputs = self.inputs.as_mut()?;
-        let mut input = match inputs.next_yielded_frame(execution) {
+        let input = match inputs.next_frame(execution) {
             Some(Ok(input)) => input,
             Some(Err(error)) => return Some(Err(error)),
             None => {
@@ -245,7 +245,6 @@ impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
                 return None;
             },
         };
-        let input = input.take_for_release();
         let build = self.build.as_ref().expect("one-shot join build side released before stream end");
         let probe_side = probe_side(build.side);
         let probe = match prepare_bounded_join_side_input_from_resident_frame(

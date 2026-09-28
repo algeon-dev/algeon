@@ -117,14 +117,13 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             inputs.len(),
             Some(inputs.num_rows()),
         )?;
-        while let Some(input) = inputs.next_yielded_frame(execution) {
-            let mut input = match input {
+        while let Some(input) = inputs.next_frame(execution) {
+            let input = match input {
                 Ok(input) => input,
                 Err(error) => {
                     return Err(error);
                 },
             };
-            let input = input.take_for_release();
             let chunk_partials = match execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
                 execution,
                 node_id,
@@ -502,14 +501,13 @@ fn execute_compiled_bounded_statistical_aggregate_from_stream(
     inputs: &mut ResidentFrameStreamPayload,
 ) -> Result<ResidentGpuFrame> {
     let mut partials = Vec::with_capacity(inputs.len());
-    while let Some(input) = inputs.next_yielded_frame(execution) {
-        let mut input = match input {
+    while let Some(input) = inputs.next_frame(execution) {
+        let input = match input {
             Ok(input) => input,
             Err(error) => {
                 return Err(error);
             },
         };
-        let input = input.take_for_release();
         match execute_compiled_bounded_statistical_partial_from_frame(
             execution,
             node_id,

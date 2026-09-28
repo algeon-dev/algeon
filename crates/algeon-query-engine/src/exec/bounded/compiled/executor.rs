@@ -35,6 +35,7 @@ mod aggregate;
 mod dynamic_filters;
 mod edge_normalize;
 mod graph;
+mod input;
 mod join;
 mod ml;
 mod routing;
@@ -96,7 +97,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
 
     #[cfg(any(feature = "cuvs", feature = "cuml"))]
     fn collect_dense_relation_inputs(
-        &self,
+        &mut self,
         task: &PipelineTask,
         state: &mut CompiledPipelineState<CompiledGpuResource>,
         node_id: NodeId,
@@ -114,29 +115,31 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             if inputs.contains_key(&input_id) {
                 continue;
             }
-            let frame = if state.can_consume_task_input_resource(task, resource) {
-                let payload = state.consume_task_input_resource(task, resource)?;
-                let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = payload.payload else {
-                    return Err(invalid("compiled dense relation task requires resident frame inputs")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", resource));
-                };
-                let ResidentGpuFrame { frame, .. } = *frame;
-                frame
-            } else {
-                let payload = state.resource_payload(resource)?;
-                let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = &payload.payload else {
-                    return Err(invalid("shared compiled dense relation input must be a resident frame")
-                        .with_fact("compiled_task_id", task.id())
-                        .with_fact("plan_node_id", node_id)
-                        .with_fact("resident_resource_id", resource));
-                };
-                frame.frame.clone()
-            };
+            let ResidentGpuFrame { frame, .. } = self.take_frame_input(task, state, resource)?;
             inputs.insert(input_id, frame);
         }
         Ok(inputs)
+    }
+
+    fn settle_task_outputs(
+        &mut self,
+        task: &PipelineTask,
+        outputs: Vec<(ResidentResourceId, CompiledGpuResource)>,
+    ) -> Result<Vec<(ResidentResourceId, CompiledGpuResource)>> {
+        let mut settled = Vec::with_capacity(outputs.len());
+        let mut outputs = outputs.into_iter();
+        while let Some((resource, output)) = outputs.next() {
+            match self.settle_task_output(task, resource, output) {
+                Ok(output) => settled.push((resource, output)),
+                Err(error) => {
+                    for (resource, output) in settled.into_iter().chain(outputs) {
+                        <Self as CompiledTaskExecutor>::release_resource(self, resource, output)?;
+                    }
+                    return Err(error);
+                },
+            }
+        }
+        Ok(settled)
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {
@@ -254,6 +257,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::MlAlgorithm => self.execute_ml_algorithm_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
+        let result = result.and_then(|outputs| self.settle_task_outputs(task, outputs));
         self.execution.metrics().close_budget_window(task.id(), budget_window);
         self.execution.metrics().record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
         result

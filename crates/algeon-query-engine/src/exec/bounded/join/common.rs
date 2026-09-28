@@ -29,14 +29,6 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_resident_fr
 ) -> Result<BoundedJoinSideFrame> {
     prepare_bounded_join_side_input(execution, input.frame, columns, input_side)
 }
-pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_shared_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    input: GpuDataFrame,
-    columns: &[String],
-    input_side: JoinSide,
-) -> Result<BoundedJoinSideFrame> {
-    prepare_bounded_join_side_input(execution, input, columns, input_side)
-}
 fn prepare_bounded_join_side_input(
     execution: &mut BoundedExecutionAttempt<'_>,
     input: GpuDataFrame,

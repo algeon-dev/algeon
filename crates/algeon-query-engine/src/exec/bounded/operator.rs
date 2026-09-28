@@ -367,21 +367,6 @@ pub(in crate::exec::bounded) fn execute_bounded_projection(
     execute_bounded_regexp_projection(execution, node_id, stage, projection, input.frame)
 }
 
-pub(in crate::exec::bounded) fn execute_bounded_projection_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    stage: &'static str,
-    projection: &ProjectionNode,
-    input: GpuDataFrame,
-) -> Result<ResidentGpuFrame> {
-    if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
-        return run_budgeted(execution, node_id, stage, input, |context, input, token, metrics| {
-            execute_projection_with_budget(context, projection, input, token, metrics)
-        });
-    }
-    execute_bounded_regexp_projection(execution, node_id, stage, projection, input)
-}
-
 fn execute_bounded_regexp_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

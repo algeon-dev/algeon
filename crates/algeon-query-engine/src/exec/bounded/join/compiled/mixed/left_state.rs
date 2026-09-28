@@ -45,8 +45,8 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
             state.device_allocated_size_bytes().map_err(|error| join_index_error(error, node))? as u64;
         let mut probe_rows = 0_u64;
         let mut probe_bytes = 0_u64;
-        while let Some(input) = inputs.next_yielded_frame(execution) {
-            let input = input?.take_for_release();
+        while let Some(input) = inputs.next_frame(execution) {
+            let input = input?;
             execution.context().check_cancellation("query_engine.bounded.join.mixed_left_probe")?;
             let probe =
                 prepare_bounded_join_side_input_from_resident_frame(execution, input, &probe_columns, JoinSide::Right)?;
