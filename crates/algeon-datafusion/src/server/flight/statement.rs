@@ -395,7 +395,19 @@ impl DatafusionAlgeonFlightSqlService {
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
-        let schema = flight_info_result_schema(&logical_plan);
+        let schema = match flight_result_schema(&query_state, &logical_plan) {
+            Ok(schema) => schema,
+            Err(error) => {
+                if let Some(attempt) = attempt.as_ref() {
+                    attempt.planning_failed(&error);
+                }
+                let (status, captured) =
+                    datafusion_error_to_status_and_capture(error, ticket_kind.create_logical_plan_operation());
+                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
+        };
 
         // Both ticket variants carry the per-execution `query_id` bytes. For
         // prepared statements this reuses `prepared_statement_handle`; the

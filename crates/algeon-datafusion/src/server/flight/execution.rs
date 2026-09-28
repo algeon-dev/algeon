@@ -610,20 +610,22 @@ impl DatafusionAlgeonFlightSqlService {
             drop(guard);
             return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
-        let schema = df.schema().as_arrow().clone();
         let logical_plan_tables = referenced_table_names(df.logical_plan());
         // Physical planning runs the retained native optimizer rule. Capture
         // the post-optimizer plan and retained diagnostics before execution so
         // query_stats can report both native rewrites and retained DataFusion baselines.
-        let plan = tokio::select! {
-            result = df.create_physical_plan()
+        let (schema, plan) = tokio::select! {
+            result = async {
+                let schema = flight_result_schema(&query_state, df.logical_plan())?;
+                Ok::<_, DataFusionError>((schema, df.create_physical_plan().await?))
+            }
                 .instrument(Self::query_stage_span(
                     Some(&query_span),
                     &query_id,
                     correlation_id.as_deref(),
                     "planning",
                 )) => match result {
-                Ok(plan) => plan,
+                Ok(planned) => planned,
                 Err(error) => {
                     if let Some(attempt) = attempt.as_ref() {
                         attempt.planning_failed(&error);

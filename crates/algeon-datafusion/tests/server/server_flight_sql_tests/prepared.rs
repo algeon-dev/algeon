@@ -24,6 +24,64 @@ async fn prepared_statement_round_trip_executes_select() {
     server.abort();
 }
 
+// SQL planning types a UNION from its first branch until the analyzer's type
+// coercion widens it. FlightInfo, prepared metadata, and the DoGet encoder
+// must all declare the widened type; the encoder casts every batch to the
+// schema it is given, so a narrower schema silently rounds the DOUBLE branch
+// to Float32 and fails on an Int64 value outside Int32.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn union_result_schema_uses_coerced_branch_types() {
+    let (listener, addr) = free_local_addr();
+    let mut config = test_server_config();
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let double_value = 0.0046746978023455826_f64;
+    let cases = [
+        (
+            "SELECT CAST(0.0046746978023455826 AS REAL) AS v UNION ALL SELECT CAST(0.0046746978023455826 AS DOUBLE) AS v",
+            DataType::Float64,
+        ),
+        ("SELECT CAST(1 AS INT) AS v UNION ALL SELECT CAST(3000000000 AS BIGINT) AS v", DataType::Int64),
+    ];
+    for (sql, expected_type) in cases {
+        let statement_info = client.execute(sql.to_string(), None).await.unwrap();
+        let mut prepared = client.prepare(sql.to_string(), None).await.unwrap();
+        assert_eq!(prepared.dataset_schema().unwrap().field(0).data_type(), &expected_type, "{sql}");
+        let prepared_info = prepared.execute().await.unwrap();
+        for flight_info in [statement_info, prepared_info] {
+            assert_eq!(flight_info.clone().try_decode_schema().unwrap().field(0).data_type(), &expected_type, "{sql}");
+            let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+            let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+            let columns = batches.iter().map(|batch| batch.column(0)).collect::<Vec<_>>();
+            assert!(columns.iter().all(|column| column.data_type() == &expected_type), "{sql}");
+            match expected_type {
+                DataType::Float64 => assert!(
+                    columns
+                        .iter()
+                        .flat_map(|column| column.as_any().downcast_ref::<Float64Array>().unwrap().values().to_vec())
+                        .any(|value| value == double_value),
+                    "{sql}: DOUBLE branch must keep full precision"
+                ),
+                _ => {
+                    let mut values = columns
+                        .iter()
+                        .flat_map(|column| column.as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec())
+                        .collect::<Vec<_>>();
+                    values.sort_unstable();
+                    assert_eq!(values, [1, 3_000_000_000], "{sql}");
+                },
+            }
+        }
+        prepared.close().await.unwrap();
+    }
+
+    server.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_update_rejects_select_and_preserves_handle() {
     let (listener, addr) = free_local_addr();

@@ -202,22 +202,19 @@ impl PreparedStatementLimit {
 }
 
 impl DatafusionAlgeonFlightSqlService {
-    pub(super) fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> Result<Schema> {
+    pub(super) fn verify_prepared_statement_plan(&self, plan: &LogicalPlan) -> Result<()> {
         match plan {
-            LogicalPlan::Ddl(ddl) => {
-                verify_update_ddl(
-                    ddl,
-                    "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
-                )?;
-                Ok(Schema::empty())
-            },
+            LogicalPlan::Ddl(ddl) => verify_update_ddl(
+                ddl,
+                "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
+            ),
             LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
                 ErrorCode::UnsupportedOperator,
                 "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
                 "Flight SQL prepared DML and COPY statements are not supported",
             )),
             LogicalPlan::Statement(statement) => match statement {
-                Statement::SetVariable(_) | Statement::ResetVariable(_) => Ok(Schema::empty()),
+                Statement::SetVariable(_) | Statement::ResetVariable(_) => Ok(()),
                 Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(Error::new(
                     ErrorCode::UnsupportedOperator,
                     "algeon_datafusion.server.flight.do_action_create_prepared_statement.verify_plan",
@@ -229,7 +226,7 @@ impl DatafusionAlgeonFlightSqlService {
                     "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL prepared statements",
                 )),
             },
-            _ => Ok(plan.schema().as_arrow().clone()),
+            _ => Ok(()),
         }
     }
 

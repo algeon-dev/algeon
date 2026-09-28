@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use arrow::error::ArrowError;
 use arrow_flight::error::FlightError;
+use datafusion::{common::Result as DataFusionResult, execution::SessionState};
 use prost::bytes::Bytes;
 
 use super::*;
@@ -71,12 +72,20 @@ pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: Statement
     }
 }
 
-pub(super) fn flight_info_result_schema(plan: &LogicalPlan) -> Schema {
+/// Result-set schema declared by FlightInfo and prepared-statement metadata,
+/// and applied by the DoGet encoder to every batch. SQL planning leaves some
+/// output types provisional until the analyzer's `TypeCoercion` pass (a
+/// `UNION` keeps its first branch's types), so the schema comes from the
+/// analyzed plan; the encoder casts batches to whatever schema it receives.
+pub(super) fn flight_result_schema(state: &SessionState, plan: &LogicalPlan) -> DataFusionResult<Schema> {
     match plan {
         LogicalPlan::Ddl(_) | LogicalPlan::Statement(Statement::SetVariable(_) | Statement::ResetVariable(_)) => {
-            Schema::empty()
+            Ok(Schema::empty())
         },
-        _ => plan.schema().as_arrow().clone(),
+        _ => {
+            let analyzed = state.analyzer().execute_and_check(plan.clone(), state.config_options(), |_, _| {})?;
+            Ok(analyzed.schema().as_arrow().clone())
+        },
     }
 }
 
@@ -107,7 +116,7 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<()> {
         // prepared statement and call `execute()`, never `execute_update()`, so
         // rejecting DDL here made `CREATE EXTERNAL TABLE` / `DROP` unrunnable
         // from those clients. We still reject query-producing DDL (CTAS / CREATE
-        // INDEX) to match `dataset_schema_for_prepared_statement`.
+        // INDEX) to match `verify_prepared_statement_plan`.
         LogicalPlan::Ddl(ddl) => {
             verify_update_ddl(ddl, "algeon_datafusion.server.flight.get_flight_info_prepared_statement.verify_plan")
         },
