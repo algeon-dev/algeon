@@ -107,7 +107,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
                     metrics,
                     node_id,
                     node.spec.algorithm,
-                    error.graph_cache_scope_peak_bytes(),
+                    error.context().graph_cache_scope_peak_bytes,
                 );
                 return Err(error);
             },

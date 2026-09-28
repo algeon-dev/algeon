@@ -8,9 +8,9 @@ use super::{
     aggregate_spec_has_avg, aggregate_spec_has_floating_statistical_aggregate, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, cudf_unsupported_type_error, execute_groupby_aggregate,
-    execute_groupby_aggregate_with_budget_observed, execution_overrides, finalize_avg_output_columns,
-    finalize_avg_output_columns_with_budget, lit, lit_null, lower_partial_aggregate_spec, validate_avg_output_fields,
+    cudf_unsupported_type_error, execute_groupby_aggregate, execute_groupby_aggregate_with_budget_observed,
+    execution_overrides, finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lit, lit_null,
+    lower_partial_aggregate_spec, validate_avg_output_fields,
 };
 
 pub(super) fn execute_grouping_sets_aggregate(
@@ -588,13 +588,8 @@ fn empty_grouping_set_null_series_with_type(
             .runtime()?
             .nulls_with_budget(dtype, 1, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
-                    operation,
-                    "failed to construct bounded empty grand-total null column",
-                    error,
-                )
-                .with_fact("column", column)
-                .with_fact_if_absent("budget_operation", "runtime::nulls_with_budget")
+                cudf_query_error(operation, "failed to construct bounded empty grand-total null column", error)
+                    .with_fact("column", column)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
@@ -647,13 +642,8 @@ where
             .runtime()?
             .series_from_value_with_budget(value, 1, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
-                    operation,
-                    "failed to construct bounded empty grand-total zero column",
-                    error,
-                )
-                .with_fact("column", column)
-                .with_fact_if_absent("budget_operation", "runtime::series_from_value_with_budget")
+                cudf_query_error(operation, "failed to construct bounded empty grand-total zero column", error)
+                    .with_fact("column", column)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
@@ -788,11 +778,7 @@ fn complete_grouping_set_output(
         Some(token) => output
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
-                    operation,
-                    "failed to complete bounded grouping-set aggregate output columns",
-                    error,
-                )
+                cudf_query_error(operation, "failed to complete bounded grouping-set aggregate output columns", error)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
@@ -836,11 +822,7 @@ fn with_grouping_id_column(
         Some(token) => frame
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
-                    operation,
-                    "failed to set bounded prefix-rollup grouping-id column",
-                    error,
-                )
+                cudf_query_error(operation, "failed to set bounded prefix-rollup grouping-id column", error)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
@@ -996,11 +978,7 @@ fn prepare_grouping_set_frame(
         Some(token) => frame
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
-                    operation,
-                    "failed to prepare bounded grouping-set aggregate columns",
-                    error,
-                )
+                cudf_query_error(operation, "failed to prepare bounded grouping-set aggregate columns", error)
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {

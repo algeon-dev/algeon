@@ -2,8 +2,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateFunction, AggregateSpec, DataFrame, ExecutionBudgetToken, ExecutionMetrics, QueryError, QueryErrorCode,
-    Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
-    cudf_unsupported_type_error,
+    Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_unsupported_type_error,
 };
 
 pub(in crate::exec) fn cast_count_output_columns(
@@ -66,7 +65,7 @@ fn cast_count_output_columns_impl(
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
-                    cudf_query_error_with_budget_details(
+                    cudf_query_error(
                         "query_engine.aggregate.cast_count",
                         "failed to cast bounded native count aggregate output column",
                         error,
@@ -151,7 +150,7 @@ fn cast_reduction_output_columns_impl(
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
-                    cudf_query_error_with_budget_details(
+                    cudf_query_error(
                         "query_engine.aggregate.cast_reduction",
                         "failed to cast bounded native reduction output column",
                         error,

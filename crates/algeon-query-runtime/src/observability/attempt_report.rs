@@ -3,7 +3,7 @@
 use std::fmt;
 
 use query_planning::{
-    error::{AttemptFailureCode, CugraphAllocationSource, QueryError, QueryErrorCode, QueryErrorStatus, Result},
+    error::{AllocationSource, AttemptFailureCode, QueryError, QueryErrorCode, QueryErrorStatus, Result},
     schedule_projection::{AttemptComposedScheduleProjection, AttemptId},
 };
 use serde::{
@@ -462,11 +462,11 @@ impl AttemptFailureSummary {
         if let Some(value) = reason {
             facts.push(AttemptFailureFact { key: AttemptFailureFactKey::Reason, value });
         }
-        let allocation_source = match error.cugraph_allocation_source() {
-            Some(CugraphAllocationSource::RmmOutOfMemory) => Some(AttemptFailureFactValue::CugraphRmmOutOfMemory),
-            Some(CugraphAllocationSource::RmmBadAlloc) => Some(AttemptFailureFactValue::CugraphRmmBadAlloc),
-            Some(CugraphAllocationSource::StdBadAlloc) => Some(AttemptFailureFactValue::CugraphStdBadAlloc),
-            Some(CugraphAllocationSource::Unknown) | None => None,
+        let allocation_source = match error.context().allocation_source {
+            Some(AllocationSource::RmmOutOfMemory) => Some(AttemptFailureFactValue::CugraphRmmOutOfMemory),
+            Some(AllocationSource::RmmBadAlloc) => Some(AttemptFailureFactValue::CugraphRmmBadAlloc),
+            Some(AllocationSource::StdBadAlloc) => Some(AttemptFailureFactValue::CugraphStdBadAlloc),
+            Some(AllocationSource::Unknown) | None => None,
         };
         if let Some(value) = allocation_source {
             facts.push(AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value });

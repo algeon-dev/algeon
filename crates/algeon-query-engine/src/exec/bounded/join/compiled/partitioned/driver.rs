@@ -5,6 +5,7 @@ use super::{
     RetryFacts, VecDeque, cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side,
     observe_device_memory_bytes, partition_row_range, partitioned_join_reusable_rejected_reason, probe_side,
     release_bounded_join_side_frame, release_partitioned_join_side, side_metric, slice_partition_join_side_range,
+    with_partition_side,
 };
 use crate::{
     exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error},
@@ -169,12 +170,15 @@ impl PartitionedJoinProbeChunk {
             self.input.frame.clone()
         } else {
             self.input.frame.with_execution(&overrides).slice(range.offset, range.len).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.bounded.join.hash_partition_probe_slice",
-                    "failed to slice the hash-partition probe retry input",
-                    error,
+                with_partition_side(
+                    cudf_query_error(
+                        "query_engine.bounded.join.hash_partition_probe_slice",
+                        "failed to slice the hash-partition probe retry input",
+                        error,
+                    ),
+                    side,
+                    "join_probe_retry_slice",
                 )
-                .with_fact("side", side)
             })?
         };
         let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;
@@ -655,21 +659,10 @@ fn partitioned_join_probe_split_supported(node: &JoinNode) -> bool {
             && matches!(node.spec.join_type, JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti))
 }
 
+/// A failure in the build side's working set needs smaller partitions; a
+/// probe-side failure can split the probe rows instead.
 fn partitioned_join_retry_failure_requires_repartition(node: &JoinNode, error: &QueryError) -> bool {
-    let build_boundary = match node.spec.build_side {
-        JoinSide::Left => "join_partition_left_side",
-        JoinSide::Right => "join_partition_right_side",
-    };
-    error.fact_value("memory_boundary") == Some(build_boundary)
-        || error.fact_value("budget_boundary") == Some(build_boundary)
-        || error.fact_value("side") == Some(partitioned_join_side_label(node.spec.build_side))
-}
-
-fn partitioned_join_side_label(side: JoinSide) -> &'static str {
-    match side {
-        JoinSide::Left => "left",
-        JoinSide::Right => "right",
-    }
+    error.context().boundary.is_some_and(|boundary| boundary.side == Some(node.spec.build_side))
 }
 
 fn split_partitioned_join_probe_work(
@@ -908,8 +901,10 @@ pub(super) fn record_partitioned_join_operator_metrics(
 
 #[cfg(test)]
 mod tests {
+    use cudf::{CudfErrorDetail, CudfErrorFailureSource, testing::error as cudf_error};
+
     use super::*;
-    use crate::{error::QueryErrorCode, plan::JoinSpec};
+    use crate::plan::JoinSpec;
 
     fn retry_join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {
@@ -928,13 +923,28 @@ mod tests {
         }
     }
 
-    fn retryable_error_with_fact(key: &'static str, value: &'static str) -> QueryError {
-        QueryError::new(
-            QueryErrorCode::QueryMemoryLimitExceeded,
-            "query_engine.bounded.join.partitioned_retry_test",
-            "injected retryable partitioned join retry test error",
+    /// A hash-partition allocation failure on `side`, converted and decorated
+    /// the way the production partition step does it.
+    fn partition_failure(failure_source: CudfErrorFailureSource, side: JoinSide) -> QueryError {
+        let source = cudf_error::with_ffi_detail_for_test(
+            cudf_error::new_with_for_test(cudf::ErrorCode::OutOfMemory, "cudf.test.hash_partition", "synthetic"),
+            CudfErrorDetail {
+                status: 0,
+                failure_source,
+                domain_id: 0,
+                member_id: 0,
+                generation: 0,
+                requested_bytes: 4096,
+                alignment: 256,
+                cuda_error: -1,
+                message: "synthetic allocation failure".to_string(),
+            },
+        );
+        with_partition_side(
+            cudf_query_error("query_engine.bounded.join.hash_partition", "partition failed", source),
+            side,
+            "join_hash_partition",
         )
-        .with_fact(key, value)
     }
 
     #[test]
@@ -981,25 +991,27 @@ mod tests {
 
     #[test]
     fn build_side_retry_failures_go_to_repartition_before_probe_split() {
-        let left_build = retry_join_node(JoinType::Inner, JoinSide::Left);
-        assert!(partitioned_join_retry_failure_requires_repartition(
-            &left_build,
-            &retryable_error_with_fact("memory_boundary", "join_partition_left_side")
-        ));
-        assert!(!partitioned_join_retry_failure_requires_repartition(
-            &left_build,
-            &retryable_error_with_fact("memory_boundary", "join_partition_right_side")
-        ));
+        for build_side in [JoinSide::Left, JoinSide::Right] {
+            let node = retry_join_node(JoinType::Inner, build_side);
+            let build = partition_failure(CudfErrorFailureSource::ReservationLimit, build_side);
+            let probe = partition_failure(CudfErrorFailureSource::ReservationLimit, probe_side(build_side));
+            assert!(is_retryable_resource_error(&build) && is_retryable_resource_error(&probe));
+            assert!(partitioned_join_retry_failure_requires_repartition(&node, &build));
+            assert!(!partitioned_join_retry_failure_requires_repartition(&node, &probe));
+            // A label naming the build side is diagnostic and decides nothing.
+            let labelled = partition_failure(CudfErrorFailureSource::ReservationLimit, probe_side(build_side))
+                .with_fact("budget_boundary", "join_partition_left_side");
+            assert!(!partitioned_join_retry_failure_requires_repartition(&node, &labelled));
+        }
+    }
 
-        let right_build = retry_join_node(JoinType::Inner, JoinSide::Right);
-        assert!(partitioned_join_retry_failure_requires_repartition(
-            &right_build,
-            &retryable_error_with_fact("side", "right")
-        ));
-        assert!(!partitioned_join_retry_failure_requires_repartition(
-            &right_build,
-            &retryable_error_with_fact("side", "left")
-        ));
+    #[test]
+    fn terminal_partition_failures_keep_their_side_but_never_retry_locally() {
+        for failure_source in [CudfErrorFailureSource::Physical, CudfErrorFailureSource::Unknown] {
+            let error = partition_failure(failure_source, JoinSide::Right);
+            assert_eq!(error.context().boundary.and_then(|boundary| boundary.side), Some(JoinSide::Right));
+            assert!(!is_retryable_resource_error(&error));
+        }
     }
 
     #[test]
@@ -1011,7 +1023,7 @@ mod tests {
 
     #[test]
     fn retry_error_evidence_records_resource_exhaustion() {
-        let error = retryable_error_with_fact("memory_boundary", "join_partition_right_side");
+        let error = partition_failure(CudfErrorFailureSource::ReservationLimit, JoinSide::Right);
         let metrics = ExecutionMetrics::detached("partitioned-join-retry");
 
         record_partitioned_join_retry_error(&error, &metrics);

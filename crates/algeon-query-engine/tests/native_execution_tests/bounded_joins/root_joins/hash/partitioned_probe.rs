@@ -123,7 +123,7 @@ fn bounded_native_partitioned_probe_reports_indivisible_cap_failure_and_cleans_u
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.operation(), "query_engine.bounded.join.hash_partition", "{error:?}");
     assert_eq!(error.fact_value("retry_action"), Some("probe_partition_min_rows_reached"), "{error:?}");
-    assert_eq!(error.fact_value("resume_boundary"), Some("partitioned_join_probe"));
+    assert_eq!(error.wire_fact("resume_boundary").as_deref(), Some("partitioned_join_probe"));
     assert_eq!(metrics.source_chunks_retried, 0);
     assert_eq!(metrics.retry_resource_exhausted_count, 1);
     let usage = admitted.attempt_allocation_domain_usage().unwrap().unwrap();

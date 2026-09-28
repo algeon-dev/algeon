@@ -117,9 +117,9 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
     // chunks first; the terminal cause is the single chunk that still cannot fit.
     assert_eq!(error.operation(), "query_engine.local_parquet_chunk.read");
     assert_eq!(error.fact_value("retry_action"), Some("fail_min_chunk"));
-    assert_eq!(error.fact_value("budget_boundary"), Some("join_source_read"));
-    assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.wire_fact("budget_boundary").as_deref(), Some("join_source_read"));
+    assert_eq!(error.wire_fact("budget_bytes").as_deref(), Some(admitted_budget.as_str()));
+    assert_eq!(error.wire_fact("budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
     assert!(error.fact_value("requested_allocation_bytes").is_some());
     assert_eq!(error.fact_value("chunk_index"), Some("0"));

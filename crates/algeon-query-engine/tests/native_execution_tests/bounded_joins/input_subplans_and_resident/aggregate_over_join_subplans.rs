@@ -93,13 +93,13 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     };
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
-    assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
-    assert_eq!(error.fact_value("budget_bytes"), Some("1"));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.wire_fact("memory_boundary").as_deref(), Some("join_source_read"));
+    assert_eq!(error.wire_fact("budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error.wire_fact("budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
     assert!(error.fact_value("requested_allocation_bytes").is_some());
-    assert!(error.fact_value("node_id").is_some());
-    assert_eq!(error.fact_value("stage"), Some("join_source_read"));
+    assert!(error.wire_fact("node_id").as_deref().is_some());
+    assert_eq!(error.wire_fact("stage").as_deref(), Some("join_source_read"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
     assert!(error.fact_value("compiled_task_id").is_some());

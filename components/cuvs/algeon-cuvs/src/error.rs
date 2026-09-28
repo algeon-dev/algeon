@@ -250,7 +250,6 @@ pub(crate) fn from_cudf(operation: &'static str, error: cudf::Error) -> Error {
         | ErrorCode::FatalCuda
         | ErrorCode::IoFailure
         | ErrorCode::IoBusy
-        | ErrorCode::TransientIoFailure
         | ErrorCode::ForeignTransientDependencyFailure
         | ErrorCode::ForeignPersistentDependencyFailure => ErrorKind::Unexpected,
         _ => ErrorKind::InvalidInput,

@@ -4,8 +4,10 @@
 //!
 //! - Each `FactKeyName` binds to exactly one `FactValue` variant; the pairing
 //!   is enforced at the writer-API type layer via `FactKey<T>`.
-//! - Duplicate insertion is a programmer error and is rejected in all build
-//!   profiles; `debug_assert!` is explicitly *not* acceptable.
+//! - A key keeps its first value. The leaf error that observed a failure
+//!   writes first, so a wrapper that inserts the same key later cannot
+//!   overwrite the original failure location; wrappers add context through
+//!   the call chain and details instead.
 //! - Public downstream API is read-only. Internal writers use the typed
 //!   `with_fact(FactKey<T>, T)` shape.
 

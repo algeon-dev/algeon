@@ -16,7 +16,13 @@ use super::{
     side_metric, stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
     unsupported_bounded_shape, validate_executable_join_subset,
 };
-use crate::exec::bounded::compiled::ResidentFrameStreamSource;
+use crate::{
+    error::ResourceBoundary,
+    exec::{
+        bounded::compiled::ResidentFrameStreamSource,
+        retry::{ResourceFailureRecovery, resource_failure_recovery},
+    },
+};
 
 mod build;
 mod driver;
@@ -160,12 +166,15 @@ pub(super) fn hash_partition_join_side(
         .with_execution(overrides)
         .hash_partition_by(keys.iter().map(String::as_str), partition_count)
         .map_err(|error| {
-            cudf_query_error(
-                "query_engine.bounded.join.hash_partition",
-                "failed to hash-partition compiled bounded join input",
-                error,
+            with_partition_side(
+                cudf_query_error(
+                    "query_engine.bounded.join.hash_partition",
+                    "failed to hash-partition compiled bounded join input",
+                    error,
+                ),
+                side,
+                "join_hash_partition",
             )
-            .with_fact("side", side)
             .with_fact("key_count", keys.len())
             .with_fact("partition_count", partition_count)
         }) {
@@ -183,6 +192,21 @@ pub(super) fn hash_partition_join_side(
         },
     };
     Ok(PartitionedJoinSide::Contiguous { frame: partitioned, device_bytes: partitioned_bytes, offsets })
+}
+
+/// Records which join input's working set failed. A resource failure carries
+/// it as its typed boundary, which the repartition decision reads.
+pub(super) fn with_partition_side(error: QueryError, side: JoinSide, memory_boundary: &'static str) -> QueryError {
+    if resource_failure_recovery(&error) == ResourceFailureRecovery::NotResource {
+        return error.with_fact("side", side);
+    }
+    error.with_resource_boundary(ResourceBoundary {
+        memory_boundary,
+        stage: "partitioned_join",
+        node_id: None,
+        side: Some(side),
+        resume: None,
+    })
 }
 
 pub(super) fn release_partitioned_join_side(side: PartitionedJoinSide) {
@@ -220,12 +244,15 @@ pub(super) fn slice_partition_join_side_range(
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let frame = partition_frame.with_execution(&overrides).slice(start, len).map_err(|error| {
-        cudf_query_error(
-            "query_engine.bounded.join.hash_partition_slice",
-            "failed to slice compiled bounded hash-partitioned join input",
-            error,
+        with_partition_side(
+            cudf_query_error(
+                "query_engine.bounded.join.hash_partition_slice",
+                "failed to slice compiled bounded hash-partitioned join input",
+                error,
+            ),
+            side,
+            "join_partition_slice",
         )
-        .with_fact("side", side)
         .with_fact("partition", partition)
         .with_fact("partition_rows", len)
     })?;

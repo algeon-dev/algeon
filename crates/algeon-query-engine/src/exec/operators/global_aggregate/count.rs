@@ -1,7 +1,7 @@
 use super::{
     AggregateExpr, AggregateFunction, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, QueryError,
-    QueryErrorCode, Result, aggregate_expr_is_exact_nunique, budgeted_value, cudf_query_error,
-    cudf_query_error_with_budget_details, global_count_star_expr, lower_column_expr,
+    QueryErrorCode, Result, aggregate_expr_is_exact_nunique, budgeted_value, cudf_query_error, global_count_star_expr,
+    lower_column_expr,
 };
 
 pub(in crate::exec) fn global_count_series(
@@ -110,13 +110,12 @@ fn global_count_series_impl(
             .runtime()?
             .series_from_value_with_budget(count, 1, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.global_aggregate.count_output",
                     "failed to construct bounded native global count output column",
                     error,
                 )
                 .with_fact("alias", expr.alias.as_str())
-                .with_fact_if_absent("budget_operation", "runtime::series_from_value_with_budget")
             })
             .map(|outcome| budgeted_value(outcome, metrics, "query_engine.global_aggregate.count_output")),
         None => {

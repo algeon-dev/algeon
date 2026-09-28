@@ -142,6 +142,7 @@ void cudf_test_query_domain_route_pause_release(void);
 cudf_status_t cudf_test_throw_runtime_error(void);
 cudf_status_t cudf_test_throw_bad_alloc(void);
 cudf_status_t cudf_test_throw_invalid_argument(void);
+cudf_status_t cudf_test_throw_invariant_error(void);
 
 #ifdef __cplusplus
 }

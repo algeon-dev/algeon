@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
-    error::{QueryError, QueryErrorCode},
+    error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode},
     observability::{PlanExecutionId, RuntimeObservationConfig, RuntimeObservationSession},
     runtime::{MemoryControlPolicy, StandaloneConfig},
 };

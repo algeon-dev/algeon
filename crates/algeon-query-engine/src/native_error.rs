@@ -10,11 +10,12 @@ use std::collections::BTreeMap;
 use std::error::Error as StdError;
 
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
+use cudf::core::error::FactKeyName;
+#[cfg(any(feature = "cuvs", feature = "cuml"))]
 use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
 pub use query_runtime::native_error::{cudf_message_fact, cudf_query_error, query_error_code_for_cudf_error};
 pub(crate) use query_runtime::native_error::{
-    cudf_query_error_with_budget_details, cudf_query_error_without_source,
-    cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
+    cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure,
 };
 
 /// Wraps a `cuvs::Error` at the native vector-execution boundary.
@@ -189,44 +190,28 @@ pub fn cuml_query_error(operation: &'static str, message: impl Into<String>, sou
     with_cudf_cause_facts(error, source.source()).with_source(source)
 }
 
-/// Projects budget and input-validation diagnostics from every `cudf::Error`
-/// in a cuVS or cuML source chain.
+/// Projects the budget scope and input-validation diagnostics of every
+/// `cudf::Error` in a cuVS or cuML source chain.
 ///
-/// Both libraries wrap the cuDF error that rejected an input or exhausted a
+/// Both libraries wrap the cuDF error that rejected an input or ran under a
 /// budget, so its details are otherwise reachable only by walking the chain.
-/// Projected values are counts, typed reasons, and static remedies; cuDF
-/// messages stay in the source chain.
+/// The innermost budget scope wins. Projected values are counts, typed
+/// reasons, and static remedies; cuDF messages stay in the source chain.
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 fn with_cudf_cause_facts(mut error: QueryError, first_cause: Option<&(dyn StdError + 'static)>) -> QueryError {
     let mut current = first_cause;
     while let Some(cause) = current {
         if let Some(cudf_error) = cause.downcast_ref::<cudf::Error>() {
             for (key, value) in cudf_error.details() {
-                if matches!(
-                    *key,
-                    "budget_enforcement"
-                        | "budget_status"
-                        | "budget_current_aligned_bytes"
-                        | "non_finite_count"
-                        | "remedy"
-                ) {
+                if matches!(*key, "non_finite_count" | "remedy") {
                     error = error.with_fact(key, value);
                 }
             }
-            if let Some((key, value)) =
-                cudf_error.facts().iter().find(|(key, _)| key.as_snake_case() == "validation_reason")
-            {
-                error = error.with_fact(key.as_snake_case(), value);
+            if let Some(value) = cudf_error.fact_value(FactKeyName::ValidationReason) {
+                error = error.with_fact(FactKeyName::ValidationReason.as_snake_case(), value);
             }
             if let Some(detail) = cudf_error.budget_exhaustion() {
-                error = error
-                    .with_fact("budget_boundary", detail.boundary())
-                    .with_fact("budget_bytes", detail.hard_budget_bytes())
-                    .with_fact("budget_peak_bytes", detail.peak_bytes())
-                    .with_fact("budget_peak_aligned_bytes", detail.peak_aligned_bytes())
-                    .with_fact("budget_current_bytes", detail.current_bytes())
-                    .with_fact("budget_failed_allocation_count", detail.failed_allocation_count())
-                    .with_fact("budget_largest_failed_allocation_bytes", detail.largest_failed_allocation_bytes());
+                error = error.with_memory_failure(memory_failure(detail));
             }
         }
         current = cause.source();

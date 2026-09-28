@@ -436,10 +436,11 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "dataframe::with_columns_with_budget");
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_with_columns"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "shape_with_columns");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
+    );
 }
 
 fn test_cast_column_with_budget_reports_exceeded_budget_details() {
@@ -459,10 +460,11 @@ fn test_cast_column_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "shape_cast");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
+    );
 }
 
 fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts() {
@@ -479,10 +481,11 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast_decimal_scale"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "shape_cast_decimal_scale");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
+    );
 }
 
 #[test]

@@ -8,8 +8,7 @@ use crate::{
                 helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
                 resource::CompiledGpuResourcePayload,
             },
-            execute_bounded_projection, execute_bounded_projection_from_frame, execute_bounded_unary,
-            execute_bounded_unary_from_frame,
+            execute_bounded_projection, execute_bounded_projection_from_frame, run_budgeted,
         },
         operators::execute_filter_with_budget,
     },
@@ -47,20 +46,13 @@ impl CompiledGpuTaskExecutor<'_> {
                         },
                         CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
                             let frame = self.apply_dynamic_filters_to_filter_frame(node_id, filter, *frame)?;
-                            execute_bounded_unary(
+                            run_budgeted(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
-                                frame,
-                                true,
+                                frame.frame,
                                 |context, input, token, metrics| {
-                                    execute_filter_with_budget(
-                                        context,
-                                        filter,
-                                        input,
-                                        token.expect("budget token is created for compiled bounded filter stages"),
-                                        metrics,
-                                    )
+                                    execute_filter_with_budget(context, filter, input, token, metrics)
                                 },
                             )
                             .map(CompiledGpuResource::new)
@@ -113,38 +105,24 @@ impl CompiledGpuTaskExecutor<'_> {
                             filter,
                             input_payload.clone_frame(),
                         )? {
-                            execute_bounded_unary(
+                            run_budgeted(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
-                                frame,
-                                true,
+                                frame.frame,
                                 |context, input, token, metrics| {
-                                    execute_filter_with_budget(
-                                        context,
-                                        filter,
-                                        input,
-                                        token.expect("budget token is created for compiled bounded filter stages"),
-                                        metrics,
-                                    )
+                                    execute_filter_with_budget(context, filter, input, token, metrics)
                                 },
                             )
                             .map(CompiledGpuResource::new)
                         } else {
-                            execute_bounded_unary_from_frame(
+                            run_budgeted(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
                                 input_payload.clone_frame(),
-                                true,
                                 |context, input, token, metrics| {
-                                    execute_filter_with_budget(
-                                        context,
-                                        filter,
-                                        input,
-                                        token.expect("budget token is created for compiled bounded filter stages"),
-                                        metrics,
-                                    )
+                                    execute_filter_with_budget(context, filter, input, token, metrics)
                                 },
                             )
                             .map(CompiledGpuResource::new)

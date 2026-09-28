@@ -328,14 +328,13 @@ pub cudf::core::error::code::ErrorCode::PathIsDirectory
 pub cudf::core::error::code::ErrorCode::ReadinessUnavailable
 pub cudf::core::error::code::ErrorCode::RuntimeBindingMismatch
 pub cudf::core::error::code::ErrorCode::SizeOverflow
-pub cudf::core::error::code::ErrorCode::TransientIoFailure
 pub cudf::core::error::code::ErrorCode::TypeMismatch
 pub cudf::core::error::code::ErrorCode::UnsupportedDtype
 pub cudf::core::error::code::ErrorCode::UnsupportedLayout
 pub cudf::core::error::code::ErrorCode::UnsupportedOperation
 pub cudf::core::error::code::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::error::code::ErrorKind
@@ -454,14 +453,13 @@ pub cudf::core::error::ErrorCode::PathIsDirectory
 pub cudf::core::error::ErrorCode::ReadinessUnavailable
 pub cudf::core::error::ErrorCode::RuntimeBindingMismatch
 pub cudf::core::error::ErrorCode::SizeOverflow
-pub cudf::core::error::ErrorCode::TransientIoFailure
 pub cudf::core::error::ErrorCode::TypeMismatch
 pub cudf::core::error::ErrorCode::UnsupportedDtype
 pub cudf::core::error::ErrorCode::UnsupportedLayout
 pub cudf::core::error::ErrorCode::UnsupportedOperation
 pub cudf::core::error::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::error::ErrorKind
@@ -518,13 +516,8 @@ pub fn cudf::core::error::facts::FactValue::fmt(&self, &mut core::fmt::Formatter
 pub struct cudf::core::error::BudgetExhaustionDetail
 impl cudf::core::error::BudgetExhaustionDetail
 pub fn cudf::core::error::BudgetExhaustionDetail::boundary(&self) -> &str
-pub fn cudf::core::error::BudgetExhaustionDetail::current_bytes(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::failed_allocation_count(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::hard_budget_bytes(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::largest_failed_allocation_bytes(&self) -> usize
 pub fn cudf::core::error::BudgetExhaustionDetail::operation(&self) -> &'static str
-pub fn cudf::core::error::BudgetExhaustionDetail::peak_aligned_bytes(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::peak_bytes(&self) -> usize
+pub fn cudf::core::error::BudgetExhaustionDetail::usage(&self) -> core::option::Option<&cudf::ReservationUsage>
 pub struct cudf::core::error::CudfErrorDetail
 pub cudf::core::error::CudfErrorDetail::alignment: u64
 pub cudf::core::error::CudfErrorDetail::cuda_error: i32
@@ -1067,14 +1060,13 @@ pub cudf::core::ErrorCode::PathIsDirectory
 pub cudf::core::ErrorCode::ReadinessUnavailable
 pub cudf::core::ErrorCode::RuntimeBindingMismatch
 pub cudf::core::ErrorCode::SizeOverflow
-pub cudf::core::ErrorCode::TransientIoFailure
 pub cudf::core::ErrorCode::TypeMismatch
 pub cudf::core::ErrorCode::UnsupportedDtype
 pub cudf::core::ErrorCode::UnsupportedLayout
 pub cudf::core::ErrorCode::UnsupportedOperation
 pub cudf::core::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::core::ErrorKind
@@ -6423,6 +6415,7 @@ pub fn cudf::ExecutionBudgetRequest::new(usize) -> Self
 pub fn cudf::ExecutionBudgetRequest::with_boundary(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> Self
 pub struct cudf::runtime::ExecutionBudgetToken
 impl cudf::ExecutionBudgetToken
+pub fn cudf::ExecutionBudgetToken::budget_detail(&self, &'static str) -> cudf::core::error::BudgetExhaustionDetail
 pub fn cudf::ExecutionBudgetToken::enforcement(&self) -> cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetToken::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
 pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease) -> Self
@@ -6724,14 +6717,13 @@ pub cudf::ErrorCode::PathIsDirectory
 pub cudf::ErrorCode::ReadinessUnavailable
 pub cudf::ErrorCode::RuntimeBindingMismatch
 pub cudf::ErrorCode::SizeOverflow
-pub cudf::ErrorCode::TransientIoFailure
 pub cudf::ErrorCode::TypeMismatch
 pub cudf::ErrorCode::UnsupportedDtype
 pub cudf::ErrorCode::UnsupportedLayout
 pub cudf::ErrorCode::UnsupportedOperation
 pub cudf::ErrorCode::ValueOutOfRange
 impl cudf::core::error::code::ErrorCode
-pub const cudf::core::error::code::ErrorCode::ALL: [Self; 33]
+pub const cudf::core::error::code::ErrorCode::ALL: [Self; 32]
 impl core::fmt::Display for cudf::core::error::code::ErrorCode
 pub fn cudf::core::error::code::ErrorCode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum cudf::ErrorKind
@@ -7218,13 +7210,8 @@ pub fn cudf::runtime::stream::AttemptStreamProviderRegistration::drop(&mut self)
 pub struct cudf::BudgetExhaustionDetail
 impl cudf::core::error::BudgetExhaustionDetail
 pub fn cudf::core::error::BudgetExhaustionDetail::boundary(&self) -> &str
-pub fn cudf::core::error::BudgetExhaustionDetail::current_bytes(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::failed_allocation_count(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::hard_budget_bytes(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::largest_failed_allocation_bytes(&self) -> usize
 pub fn cudf::core::error::BudgetExhaustionDetail::operation(&self) -> &'static str
-pub fn cudf::core::error::BudgetExhaustionDetail::peak_aligned_bytes(&self) -> usize
-pub fn cudf::core::error::BudgetExhaustionDetail::peak_bytes(&self) -> usize
+pub fn cudf::core::error::BudgetExhaustionDetail::usage(&self) -> core::option::Option<&cudf::ReservationUsage>
 pub struct cudf::BudgetedExecutionOutcome<T>
 impl<T> cudf::BudgetedExecutionOutcome<T>
 pub fn cudf::BudgetedExecutionOutcome<T>::into_parts(self) -> (T, cudf::ExecutionBudgetReport)
@@ -7865,6 +7852,7 @@ pub fn cudf::ExecutionBudgetRequest::new(usize) -> Self
 pub fn cudf::ExecutionBudgetRequest::with_boundary(self, impl core::convert::Into<alloc::borrow::Cow<'static, str>>) -> Self
 pub struct cudf::ExecutionBudgetToken
 impl cudf::ExecutionBudgetToken
+pub fn cudf::ExecutionBudgetToken::budget_detail(&self, &'static str) -> cudf::core::error::BudgetExhaustionDetail
 pub fn cudf::ExecutionBudgetToken::enforcement(&self) -> cudf::ExecutionBudgetEnforcement
 pub fn cudf::ExecutionBudgetToken::execution_overrides(&self) -> cudf::runtime::execution_context::ExecutionOverrides<'_>
 pub fn cudf::ExecutionBudgetToken::from_shared_lease(&cudf::Runtime, cudf::ExecutionBudgetRequest, cudf::StreamReservationLease) -> Self

@@ -73,13 +73,13 @@ void query_domain_allocation_registry::throw_if_invariant_violated() const
   switch (invariant_violation_.load(std::memory_order_acquire)) {
     case invariant_violation::none: return;
     case invariant_violation::unknown_query_pointer:
-      throw cudf::logic_error{
+      throw cudf::rust::invariant_error{
         "allocator invariant violation: unknown or already-freed query memory domain pointer"};
     case invariant_violation::unknown_device_pointer:
-      throw cudf::logic_error{
+      throw cudf::rust::invariant_error{
         "allocator invariant violation: unknown or already-freed device allocation pointer"};
   }
-  throw cudf::logic_error{"allocator invariant violation"};
+  throw cudf::rust::invariant_error{"allocator invariant violation"};
 }
 
 query_domain_resource::query_domain_resource(
@@ -286,7 +286,7 @@ void* query_domain_resource::allocate_impl(
     // A frozen domain rejecting new work is a routing/lifetime invariant
     // violation, not caller input: the attempt was supposed to stop
     // allocating before its output was published.
-    throw cudf::logic_error{
+    throw cudf::rust::invariant_error{
       "allocator invariant violation: query memory domain is frozen to new allocations"};
   }
   auto const aligned_bytes          = cudf::rust::reservation::allocation_charge(bytes, alignment);
@@ -544,7 +544,7 @@ void query_domain_member_resource::do_deallocate(void* ptr,
   if (!record.has_value()) {
     allocations_->record_invariant_violation(
       query_domain_allocation_registry::invariant_violation::unknown_query_pointer);
-    set_error("unknown or already-freed query memory domain pointer");
+    set_error(CUDF_ERROR_INVARIANT_VIOLATION, "unknown or already-freed query memory domain pointer");
     return;
   }
   record->domain->resource->deallocate_from_adaptor(

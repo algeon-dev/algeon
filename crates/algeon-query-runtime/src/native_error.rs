@@ -11,7 +11,9 @@
 //! not this status alone, governs retry; `Persistent` requires escalation or
 //! intervention.
 
-use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
+use std::borrow::Cow;
+
+use query_planning::error::{MemoryFailure, MemoryUsage, QueryError, QueryErrorCode, redact_uri_tokens};
 
 /// Wraps a `cudf::Error` at the native-engine boundary.
 ///
@@ -21,21 +23,6 @@ use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
 pub fn cudf_query_error(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> QueryError {
     let error = cudf_query_error_without_source(operation, message, &source);
     error.with_source(source)
-}
-
-/// Wraps a `cudf::Error` and preserves budget-token diagnostics when the lower
-/// layer attached them.
-pub fn cudf_query_error_with_budget_details(
-    operation: &'static str,
-    message: impl Into<String>,
-    source: cudf::Error,
-) -> QueryError {
-    let budget_details = cudf_budget_details(&source);
-    let mut error = cudf_query_error(operation, message, source);
-    for (key, value) in budget_details {
-        error = error.with_fact(key, value);
-    }
-    error
 }
 
 /// Wraps a `cudf::Error` without attaching its display text as a source.
@@ -82,25 +69,13 @@ fn cudf_query_error_with_code(
         .with_fact("cudf_status", source.status())
         .with_fact("cudf_operation", source.operation());
     error = with_cudf_ffi_detail_facts(error, source);
+    if let Some(detail) = source.budget_exhaustion() {
+        error = error.with_memory_failure(memory_failure(detail));
+    }
     match cudf_message_fact(source) {
         Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
         None => error,
     }
-}
-
-/// Wraps a `cudf::Error` without its source chain, preserving budget-token
-/// diagnostics when the lower layer attached them.
-pub fn cudf_query_error_without_source_with_budget_details(
-    operation: &'static str,
-    message: impl Into<String>,
-    source: &cudf::Error,
-) -> QueryError {
-    let budget_details = cudf_budget_details(source);
-    let mut error = cudf_query_error_without_source(operation, message, source);
-    for (key, value) in budget_details {
-        error = error.with_fact(key, value);
-    }
-    error
 }
 
 /// Classifies a `cudf::Error` into the native-engine error taxonomy.
@@ -134,6 +109,24 @@ pub fn query_error_code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
     }
 }
 
+/// Converts the budget scope a cuDF error passed through into planning's
+/// backend-neutral memory context.
+pub fn memory_failure(detail: &cudf::BudgetExhaustionDetail) -> MemoryFailure {
+    MemoryFailure {
+        boundary: Cow::Owned(detail.boundary().to_owned()),
+        operation: Cow::Borrowed(detail.operation()),
+        usage: detail.usage().map(|usage| MemoryUsage {
+            limit_bytes: usage.allocation_limit_bytes,
+            peak_bytes: usage.peak_bytes,
+            peak_aligned_bytes: usage.peak_aligned_bytes,
+            current_bytes: usage.current_bytes,
+            current_aligned_bytes: usage.current_aligned_bytes,
+            failed_allocation_count: usage.failed_allocation_count,
+            largest_failed_allocation_bytes: usage.largest_failed_allocation_bytes,
+        }),
+    }
+}
+
 /// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
 pub fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     let message = source.message().trim();
@@ -141,29 +134,6 @@ pub fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
         return None;
     }
     Some(redact_uri_tokens(message))
-}
-
-fn cudf_budget_details(source: &cudf::Error) -> Vec<(&'static str, String)> {
-    source
-        .details()
-        .iter()
-        .filter(|(key, _)| {
-            matches!(
-                *key,
-                "budget_boundary"
-                    | "budget_bytes"
-                    | "budget_enforcement"
-                    | "budget_status"
-                    | "budget_peak_bytes"
-                    | "budget_current_bytes"
-                    | "budget_peak_aligned_bytes"
-                    | "budget_current_aligned_bytes"
-                    | "budget_failed_allocation_count"
-                    | "budget_largest_failed_allocation_bytes"
-            )
-        })
-        .map(|(key, value)| (*key, value.clone()))
-        .collect()
 }
 
 fn with_cudf_ffi_detail_facts(mut error: QueryError, source: &cudf::Error) -> QueryError {

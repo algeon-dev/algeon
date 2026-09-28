@@ -5,9 +5,8 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::{
     DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, Result, SourceReadFact,
-    SourceReadMode, cudf_query_error_with_budget_details, cudf_query_error_without_source_with_budget_details,
-    local_parquet_file_row_group_metadata_count, parquet_file_path_fact, record_source_file_read_runtime,
-    record_source_read,
+    SourceReadMode, cudf_query_error, cudf_query_error_without_source, local_parquet_file_row_group_metadata_count,
+    parquet_file_path_fact, record_source_file_read_runtime, record_source_read,
 };
 
 #[expect(
@@ -81,9 +80,9 @@ fn read_cudf_error_for_file(
     file: &LocalParquetFile,
 ) -> QueryError {
     if file.location.is_local_path() {
-        cudf_query_error_with_budget_details(operation, message, error)
+        cudf_query_error(operation, message, error)
     } else {
-        cudf_query_error_without_source_with_budget_details(operation, message, &error)
+        cudf_query_error_without_source(operation, message, &error)
     }
 }
 

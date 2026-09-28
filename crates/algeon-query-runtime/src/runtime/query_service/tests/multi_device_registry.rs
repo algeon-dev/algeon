@@ -251,18 +251,15 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     assert_eq!(member_before.allocation_limit_bytes, GRANT_BYTES);
     let error = execution.runtime().unwrap().series_from_value_with_budget(1i32, 1024 * 1024, &token).unwrap_err();
     assert_eq!(error.kind(), cudf::ErrorKind::ResourceExhausted);
-    assert_eq!(error.detail_value("budget_enforcement"), Some("query_domain_member"));
-    let grant_bytes_text = GRANT_BYTES.to_string();
-    assert_eq!(error.detail_value("budget_bytes"), Some(grant_bytes_text.as_str()));
+    let budget_usage = *error.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage");
+    assert_eq!(budget_usage.allocation_limit_bytes, GRANT_BYTES);
 
     let member_after = token.reservation_usage().unwrap();
     assert_eq!(member_after.allocation_limit_bytes, GRANT_BYTES, "the member limit is immutable");
     assert!(member_after.failed_allocation_count > member_before.failed_allocation_count);
     assert!(member_after.largest_failed_allocation_bytes > 0);
-    let failed_count_text = member_after.failed_allocation_count.to_string();
     assert_eq!(
-        error.detail_value("budget_failed_allocation_count"),
-        Some(failed_count_text.as_str()),
+        budget_usage.failed_allocation_count, member_after.failed_allocation_count,
         "the structured failure reports the same member counter"
     );
 

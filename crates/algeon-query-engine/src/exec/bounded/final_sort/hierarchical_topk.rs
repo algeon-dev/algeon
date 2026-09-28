@@ -1,7 +1,7 @@
 use super::{
     AggregateLaneDispatch, CommittedPartial, ExecutionBudgetToken, FinalSortExecutor, GpuDataFrame, LimitNode,
     LimitSpec, QueryError, QueryErrorCode, ResidentFrameStreamPayload, ResidentGpuFrame, Result, SortLaneCandidate,
-    TopKLevelItem, commit_topk_merge_level, concat_committed_frames_with_token, cudf_query_error_with_budget_details,
+    TopKLevelItem, commit_topk_merge_level, concat_committed_frames_with_token, cudf_query_error,
     estimated_bytes_per_row, execute_limit_on_frame_with_token, execute_limit_spec_with_token,
     execute_limit_with_token, execute_sort_lane_candidate, final_sort_retry_facts, final_sort_rows_per_chunk,
     final_sort_runtime_facts, final_sort_topk_retry_facts, is_retryable_final_sort_error,
@@ -476,14 +476,13 @@ impl FinalSortExecutor<'_, '_, '_> {
                     .map(GpuDataFrame::new)
                     .map_err(|error| {
                         attach_budget_token_failure_facts(
-                            cudf_query_error_with_budget_details(
+                            cudf_query_error(
                                 "query_engine.final_sort.topk_slice",
                                 "failed to slice bounded native final sort input",
                                 error,
                             ),
                             work_token,
                         )
-                        .with_fact_if_absent("budget_operation", "dataframe::slice")
                     })
             },
         )

@@ -35,14 +35,9 @@ pub(in crate::exec::bounded) fn execute_bounded_edge_normalize_from_input(
     edge_normalize: &EdgeNormalizeNode,
     input: ResidentGpuFrame,
 ) -> Result<ResidentGpuFrame> {
-    execute_bounded_unary(
-        execution,
-        node_id,
-        "bounded_generic_edge_normalize",
-        input,
-        false,
-        |context, input, _token, metrics| execute_edge_normalize(context, node_id, edge_normalize, input, metrics),
-    )
+    execute_bounded_unary(execution, node_id, input.frame, |context, input, metrics| {
+        execute_edge_normalize(context, node_id, edge_normalize, input, metrics)
+    })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_union(
@@ -287,41 +282,39 @@ pub(in crate::exec::bounded) fn execute_bounded_literal_batch_source(
     Ok(ResidentGpuFrame { frame, device_bytes: requested_bytes })
 }
 
+/// Runs a unary operator that takes no budget token and observes its output.
 pub(in crate::exec::bounded) fn execute_bounded_unary(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
-    stage: &'static str,
-    input: ResidentGpuFrame,
-    use_budget_token: bool,
-    execute: impl FnOnce(
-        &ExecutionContext,
-        GpuDataFrame,
-        Option<&ExecutionBudgetToken>,
-        &ExecutionMetrics,
-    ) -> Result<GpuDataFrame>,
+    input: GpuDataFrame,
+    execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionMetrics) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
-    let input_frame = input.frame;
-    let token = if use_budget_token {
-        match execution_budget_token_for_boundary(
-            execution.context(),
-            execution.device_budget_bytes(),
-            stage,
-            "query_engine.bounded_generic.budget_token",
-            "failed to create bounded native generic operator budget token",
-        ) {
-            Ok(token) => Some(token),
-            Err(error) => {
-                return Err(error.with_fact_if_absent("node_id", node_id));
-            },
-        }
-    } else {
-        None
-    };
-    let frame = execute(execution.context(), input_frame, token.as_ref(), execution.metrics())
+    let frame = execute(execution.context(), input, execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     Ok(ResidentGpuFrame { frame, device_bytes: output_bytes })
+}
+
+/// Runs a unary operator under a `stage` budget token. The token shares the
+/// context's allocator member: it labels the stage in diagnostics and never
+/// reserves or resizes memory.
+pub(in crate::exec::bounded) fn run_budgeted(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    node_id: NodeId,
+    stage: &'static str,
+    input: GpuDataFrame,
+    execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionBudgetToken, &ExecutionMetrics) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
+    let token = execution_budget_token_for_boundary(
+        execution.context(),
+        execution.device_budget_bytes(),
+        stage,
+        "query_engine.bounded_generic.budget_token",
+        "failed to create bounded native generic operator budget token",
+    )
+    .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
+    execute_bounded_unary(execution, node_id, input, |context, input, metrics| execute(context, input, &token, metrics))
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_projection(
@@ -332,14 +325,8 @@ pub(in crate::exec::bounded) fn execute_bounded_projection(
     input: ResidentGpuFrame,
 ) -> Result<ResidentGpuFrame> {
     if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
-        return execute_bounded_unary(execution, node_id, stage, input, true, |context, input, token, metrics| {
-            execute_projection_with_budget(
-                context,
-                projection,
-                input,
-                token.expect("budget token is created for bounded generic projection stages"),
-                metrics,
-            )
+        return run_budgeted(execution, node_id, stage, input.frame, |context, input, token, metrics| {
+            execute_projection_with_budget(context, projection, input, token, metrics)
         });
     }
     execute_bounded_regexp_projection(execution, node_id, stage, projection, input.frame)
@@ -353,22 +340,9 @@ pub(in crate::exec::bounded) fn execute_bounded_projection_from_frame(
     input: GpuDataFrame,
 ) -> Result<ResidentGpuFrame> {
     if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
-        return execute_bounded_unary_from_frame(
-            execution,
-            node_id,
-            stage,
-            input,
-            true,
-            |context, input, token, metrics| {
-                execute_projection_with_budget(
-                    context,
-                    projection,
-                    input,
-                    token.expect("budget token is created for bounded generic projection stages"),
-                    metrics,
-                )
-            },
-        );
+        return run_budgeted(execution, node_id, stage, input, |context, input, token, metrics| {
+            execute_projection_with_budget(context, projection, input, token, metrics)
+        });
     }
     execute_bounded_regexp_projection(execution, node_id, stage, projection, input)
 }
@@ -459,39 +433,5 @@ fn execute_bounded_regexp_projection(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    Ok(ResidentGpuFrame { frame, device_bytes: output_bytes })
-}
-
-pub(in crate::exec::bounded) fn execute_bounded_unary_from_frame(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    stage: &'static str,
-    input: GpuDataFrame,
-    use_budget_token: bool,
-    execute: impl FnOnce(
-        &ExecutionContext,
-        GpuDataFrame,
-        Option<&ExecutionBudgetToken>,
-        &ExecutionMetrics,
-    ) -> Result<GpuDataFrame>,
-) -> Result<ResidentGpuFrame> {
-    let token = if use_budget_token {
-        match execution_budget_token_for_boundary(
-            execution.context(),
-            execution.device_budget_bytes(),
-            stage,
-            "query_engine.bounded_generic.budget_token",
-            "failed to create bounded native generic operator budget token",
-        ) {
-            Ok(token) => Some(token),
-            Err(error) => return Err(error.with_fact_if_absent("node_id", node_id)),
-        }
-    } else {
-        None
-    };
-    let frame = execute(execution.context(), input, token.as_ref(), execution.metrics())
-        .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())
-        .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     Ok(ResidentGpuFrame { frame, device_bytes: output_bytes })
 }

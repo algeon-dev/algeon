@@ -11,11 +11,11 @@ use super::{
     QueryErrorCode, RecordBatch, ReduceAgg, Result, ScanAgg, Schema, WindowFrame, WindowNode,
     aggregate_expr_is_exact_nunique, aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, col, cudf_dtype_from_arrow_type, cudf_query_error,
-    cudf_query_error_with_budget_details, cudf_unsupported_type_error, datafusion_order_columns, execution_overrides,
-    global_count_star_expr, global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit,
-    lit_null, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr,
-    lower_filter_predicate_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec,
-    lower_projection_output_expr, lower_single_stage_grouped_aggregate_spec, projection_schema_mismatch_error,
+    cudf_unsupported_type_error, datafusion_order_columns, execution_overrides, global_count_star_expr,
+    global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit, lit_null,
+    lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_filter_predicate_expr,
+    lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec, lower_projection_output_expr,
+    lower_single_stage_grouped_aggregate_spec, memory_failure, projection_schema_mismatch_error,
     schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
     validate_global_aggregate_capability, when,
 };
@@ -71,15 +71,11 @@ pub(super) fn execution_budget_token_for_boundary(
     )
 }
 
+/// Records the token's budget scope on a failure from work that ran under its
+/// overrides; a scope the cuDF call already attached wins.
 pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &ExecutionBudgetToken) -> QueryError {
-    let error = error
-        .with_fact_if_absent("budget_boundary", token.request().boundary())
-        .with_fact_if_absent("budget_enforcement", token.enforcement().as_str())
-        .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
-    match token.member_limit_bytes() {
-        Ok(member_limit_bytes) => error.with_fact_if_absent("budget_bytes", member_limit_bytes),
-        Err(_) => error,
-    }
+    let detail = token.budget_detail(error.operation());
+    error.with_memory_failure(memory_failure(&detail))
 }
 
 pub(super) fn budgeted_value<T>(

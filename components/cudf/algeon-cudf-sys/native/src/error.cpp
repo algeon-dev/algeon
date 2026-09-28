@@ -140,6 +140,11 @@ void set_error(char const* msg)
   g_error.has_error = true;
 }
 
+void set_error(cudf_status_t status, char const* msg) noexcept
+{
+  set_exception_detail(status, msg);
+}
+
 extern "C" {
 cudf_error_detail_t const* cudf_last_error_detail(void)
 {
@@ -165,6 +170,9 @@ cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
   } catch (cudf::rust::memory::attributed_out_of_memory const& e) {
     set_attributed_exception_detail(e);
     return CUDF_ERROR_OUT_OF_MEMORY;
+  } catch (cudf::rust::invariant_error const& e) {
+    set_exception_detail(CUDF_ERROR_INVARIANT_VIOLATION, e.what());
+    return CUDF_ERROR_INVARIANT_VIOLATION;
   } catch (rmm::out_of_memory const& e) {
     // A generic RMM exception does not identify which limiting resource
     // failed. Only an owner-attributed exception may claim physical or

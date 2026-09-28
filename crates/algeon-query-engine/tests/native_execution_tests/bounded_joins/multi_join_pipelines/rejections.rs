@@ -96,5 +96,5 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
         error.fact_value("expression")
     );
     assert_eq!(error.fact_value("path"), None);
-    assert_eq!(error.fact_value("memory_boundary"), None);
+    assert_eq!(error.wire_fact("memory_boundary").as_deref(), None);
 }

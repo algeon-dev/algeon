@@ -108,10 +108,7 @@ use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue},
     metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
     mode::StatisticalAggregateExecutionMode,
-    native_error::{
-        cudf_query_error, cudf_query_error_with_budget_details, cudf_query_error_without_source,
-        cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
-    },
+    native_error::{cudf_query_error, cudf_query_error_without_source, cudf_unsupported_type_error, memory_failure},
     observability::{
         PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
         RuntimePlanNodeId, RuntimeTerminalOutcome, RuntimeTopologyRecord,

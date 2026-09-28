@@ -15,10 +15,10 @@ use cudf::{
 use tempfile::TempDir;
 
 use crate::common::{
-    dataframe_device_ptr, dependency_wait_call_count_for_stream, error_context_value, execution_budget_token,
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
-    observed_exec_mr_overflowed, observed_exec_mr_values, reset_dependency_observation, reset_exec_observation,
-    reset_sync_observation, run_named_cases, sample_runtime, series, series_device_ptr,
+    dataframe_device_ptr, dependency_wait_call_count_for_stream, execution_budget_token, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, observed_exec_mr_overflowed,
+    observed_exec_mr_values, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
+    run_named_cases, sample_runtime, series, series_device_ptr,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -797,25 +797,18 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "runtime::series_from_scalar_with_budget");
-    assert_eq!(
-        error_context_value(&err, "budget_operation").as_deref(),
-        Some("runtime::series_from_scalar_with_budget")
-    );
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("scalar_series"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
-    let peak_bytes = error_context_value(&err, "budget_peak_bytes")
-        .expect("budget_peak_bytes detail")
-        .parse::<usize>()
-        .expect("numeric budget_peak_bytes");
+    let budget = err.budget_exhaustion().expect("budgeted scalar series exposes its budget scope");
+    assert_eq!(budget.operation(), "runtime::series_from_scalar_with_budget");
+    assert_eq!(budget.boundary(), "scalar_series");
+    let usage = budget.usage().expect("the member was sampled");
+    assert_eq!(usage.allocation_limit_bytes, 1);
     assert!(
-        peak_bytes <= 1,
+        usage.peak_bytes <= 1,
         "failed scalar-to-series budget path may only retain peak usage within the one-byte budget before rejection"
     );
-    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
-    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
-    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
+    assert_eq!(usage.current_bytes, 0);
+    assert_eq!(usage.failed_allocation_count, 1);
+    assert!(usage.largest_failed_allocation_bytes > 0);
 }
 
 fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
@@ -829,14 +822,12 @@ fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "runtime::series_from_value_with_budget");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::series_from_value_with_budget");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "value_series");
     assert_eq!(
-        error_context_value(&err, "budget_operation").as_deref(),
-        Some("runtime::series_from_value_with_budget")
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
     );
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("value_series"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
 fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
@@ -850,11 +841,12 @@ fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "runtime::nulls_with_budget");
-    assert_eq!(error_context_value(&err, "budget_operation").as_deref(), Some("runtime::nulls_with_budget"));
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("null_series"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::nulls_with_budget");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "null_series");
+    assert_eq!(
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
+    );
 }
 
 fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
@@ -870,14 +862,12 @@ fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.operation(), "runtime::column_from_scalar_with_budget");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").operation(), "runtime::column_from_scalar_with_budget");
+    assert_eq!(err.budget_exhaustion().expect("budget scope").boundary(), "scalar_column");
     assert_eq!(
-        error_context_value(&err, "budget_operation").as_deref(),
-        Some("runtime::column_from_scalar_with_budget")
+        err.budget_exhaustion().and_then(|budget| budget.usage()).expect("member usage").allocation_limit_bytes,
+        1
     );
-    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("scalar_column"));
-    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
-    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
 #[test]

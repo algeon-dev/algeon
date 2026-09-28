@@ -10,7 +10,7 @@ use crate::{
                 },
                 resource::CompiledGpuResourcePayload,
             },
-            execute_bounded_unary_from_frame, execute_bounded_union, materialize_bounded_frame_to_host,
+            execute_bounded_unary, execute_bounded_union, materialize_bounded_frame_to_host,
             materialize_bounded_join_leaf_local_parquet_source_stream,
         },
         operators::execute_limit,
@@ -40,13 +40,11 @@ impl CompiledGpuTaskExecutor<'_> {
         }
 
         let input_payload = state.resource_payload(input)?;
-        let frame = execute_bounded_unary_from_frame(
+        let frame = execute_bounded_unary(
             &mut self.execution,
             node_id,
-            "compiled_limit",
             input_payload.clone_frame(),
-            false,
-            |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
+            |context, input, metrics| execute_limit(context, limit, input, metrics),
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(vec![(output, CompiledGpuResource::new(frame))])

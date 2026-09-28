@@ -43,7 +43,7 @@ use super::{
     QueryService,
 };
 use crate::{
-    observability::{AdmissionLifecycleState, AdmissionRequestId, RuntimeTerminalOutcome},
+    observability::{AdmissionLifecycleState, AdmissionRequestId, AttemptFaultIsolation, RuntimeTerminalOutcome},
     runtime::{
         DeviceLedger,
         deadline::{DeadlineMutexLockError, mutex_lock_until},
@@ -193,8 +193,8 @@ impl QueryService {
                 DeviceAdmissionHealth::Open => {
                     return Ok(None);
                 },
-                DeviceAdmissionHealth::Closed { reason, generation } => {
-                    all_closed_for_unknown_isolation &= reason.starts_with("unknown-isolation backend failure:");
+                DeviceAdmissionHealth::Closed { reason, isolation, generation } => {
+                    all_closed_for_unknown_isolation &= isolation == AttemptFaultIsolation::Unknown;
                     first_closed_ledger.get_or_insert((*ordinal, reason, generation));
                 },
             }
@@ -220,7 +220,6 @@ impl QueryService {
             .with_fact("device_health_generation", generation)
             .with_fact("device_health_detail", detail.clone());
             if all_closed_for_unknown_isolation {
-                let detail = detail.strip_prefix("unknown-isolation backend failure: ").unwrap_or(detail.as_str());
                 error = error.with_fact("detail", detail);
             }
             return Ok(Some(error));

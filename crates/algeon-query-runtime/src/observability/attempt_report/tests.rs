@@ -1,4 +1,4 @@
-use query_planning::error::{CugraphAllocationSource, QueryError, QueryErrorCode};
+use query_planning::error::{AllocationSource, QueryError, QueryErrorCode};
 
 use super::*;
 
@@ -25,7 +25,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         "cuGraph allocation failed",
     )
     .with_fact("reason", "backend_closing")
-    .with_cugraph_allocation_source(CugraphAllocationSource::RmmBadAlloc);
+    .with_allocation_source(AllocationSource::RmmBadAlloc);
 
     let summary = AttemptFailureSummary::from_native_error(&error, AttemptFailureOperation::Execution);
     assert_eq!(
@@ -40,15 +40,15 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     );
 
     for (source, expected) in [
-        (CugraphAllocationSource::RmmOutOfMemory, AttemptFailureFactValue::CugraphRmmOutOfMemory),
-        (CugraphAllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
+        (AllocationSource::RmmOutOfMemory, AttemptFailureFactValue::CugraphRmmOutOfMemory),
+        (AllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
     ] {
         let error = QueryError::new(
             QueryErrorCode::CudfResourceExhausted,
             "query_engine.test.allocation_source",
             "cuGraph allocation failed",
         )
-        .with_cugraph_allocation_source(source);
+        .with_allocation_source(source);
         assert_eq!(
             AttemptFailureSummary::from_native_error(&error, AttemptFailureOperation::Execution).facts(),
             &[AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value: expected }]
@@ -60,7 +60,7 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         "query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
-    .with_cugraph_allocation_source(CugraphAllocationSource::Unknown);
+    .with_allocation_source(AllocationSource::Unknown);
     assert!(AttemptFailureSummary::from_native_error(&unknown, AttemptFailureOperation::Execution).facts().is_empty());
 
     let untyped_fact = QueryError::new(

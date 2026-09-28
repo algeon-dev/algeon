@@ -6,6 +6,7 @@
 //! planning and execution categories to DataFusion.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     error::Error as StdError,
     fmt,
@@ -14,10 +15,13 @@ use std::{
 
 use serde_json::{Value, json};
 
+pub use self::context::{AllocationSource, FailureContext, MemoryFailure, MemoryUsage, ResourceBoundary};
 use crate::{
     correlation::{QueryId, TraceId},
     triage::TriageCode,
 };
+
+mod context;
 
 // Shared so an error can be cloned: one failure may be reported to every
 // party waiting on the operation that failed.
@@ -627,37 +631,8 @@ struct QueryErrorRepr {
     operation: &'static str,
     message: String,
     facts: Box<Facts>,
-    cugraph_allocation_source: Option<CugraphAllocationSource>,
-    graph_cache_scope_peak_bytes: Option<u64>,
+    context: FailureContext,
     source: Option<SharedSourceError>,
-    cleanup_deadline_elapsed: bool,
-}
-
-/// Closed cuGraph allocation-failure provenance retained independently of
-/// diagnostic string facts.
-///
-/// `RmmOutOfMemory` is the callback-backed path through the query memory
-/// resource. The `bad_alloc` variants identify direct cuGraph/RAFT throwing
-/// paths; when they traverse a resident cache allocation scope that scope
-/// publishes an exact allocator event independently. `Unknown` remains
-/// fail-closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CugraphAllocationSource {
-    Unknown,
-    RmmOutOfMemory,
-    RmmBadAlloc,
-    StdBadAlloc,
-}
-
-impl CugraphAllocationSource {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::RmmOutOfMemory => "rmm_out_of_memory",
-            Self::RmmBadAlloc => "rmm_bad_alloc",
-            Self::StdBadAlloc => "std_bad_alloc",
-        }
-    }
 }
 
 impl QueryError {
@@ -683,10 +658,8 @@ impl QueryError {
             operation,
             message,
             facts: Box::new(Facts::new()),
-            cugraph_allocation_source: None,
-            graph_cache_scope_peak_bytes: None,
+            context: FailureContext::default(),
             source: None,
-            cleanup_deadline_elapsed: false,
         }))
     }
 
@@ -698,13 +671,13 @@ impl QueryError {
     #[must_use]
     #[doc(hidden)]
     pub fn with_cleanup_deadline_elapsed(mut self) -> Self {
-        self.0.cleanup_deadline_elapsed = true;
+        self.0.context.cleanup_deadline_elapsed = true;
         self
     }
 
     #[doc(hidden)]
     pub fn is_cleanup_deadline_elapsed(&self) -> bool {
-        self.0.cleanup_deadline_elapsed
+        self.0.context.cleanup_deadline_elapsed
     }
 
     /// Adds one machine-readable fact.
@@ -725,48 +698,101 @@ impl QueryError {
     #[must_use]
     #[doc(hidden)]
     pub fn with_fact_if_absent(mut self, key: &'static str, value: impl ToString) -> Self {
-        if self.0.facts.get(key).is_none() {
+        if self.0.facts.get(key).is_none() && !self.0.context.projects(key) {
             self.0.facts.insert(key, value.to_string());
         }
         self
     }
 
-    /// Retains typed cuGraph allocation provenance and mirrors its stable label
-    /// into ordinary error facts for existing diagnostic consumers.
-    ///
-    /// This is an explicit overwrite path owned by the cuGraph boundary: the
-    /// mirrored fact always tracks the typed field, so a second call replaces
-    /// both together instead of recording a collision.
+    /// Returns the typed failure evidence that decisions read.
+    pub fn context(&self) -> &FailureContext {
+        &self.0.context
+    }
+
+    /// Records the budget scope the failure passed through. The innermost
+    /// scope wins; a different later scope is reported as a fact collision.
     #[must_use]
-    #[doc(hidden)]
-    pub fn with_cugraph_allocation_source(mut self, source: CugraphAllocationSource) -> Self {
-        self.0.facts.set("cugraph_allocation_source", source.as_str().to_string());
-        self.0.cugraph_allocation_source = Some(source);
+    pub fn with_memory_failure(mut self, memory: MemoryFailure) -> Self {
+        let candidate = FailureContext { memory: Some(memory), ..FailureContext::default() };
+        match &self.0.context.memory {
+            None => self.0.context.memory = candidate.memory,
+            Some(_) => self.record_context_collisions(&candidate),
+        }
         self
     }
 
-    /// Returns the closed cuGraph allocation provenance, when the cuGraph
-    /// boundary supplied one.
-    pub const fn cugraph_allocation_source(&self) -> Option<CugraphAllocationSource> {
-        self.0.cugraph_allocation_source
+    /// Records the execution boundary that owned the failed work. The first
+    /// complete boundary wins as a unit, so an outer scope never pairs its
+    /// node or side with an inner failure location.
+    #[must_use]
+    pub fn with_resource_boundary(mut self, boundary: ResourceBoundary) -> Self {
+        let candidate = FailureContext { boundary: Some(boundary), ..FailureContext::default() };
+        match &self.0.context.boundary {
+            None => self.0.context.boundary = candidate.boundary,
+            Some(_) => self.record_context_collisions(&candidate),
+        }
+        self
+    }
+
+    /// Records the native allocator exception family of an allocation failure.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn with_allocation_source(mut self, source: AllocationSource) -> Self {
+        let candidate = FailureContext { allocation_source: Some(source), ..FailureContext::default() };
+        match self.0.context.allocation_source {
+            None => self.0.context.allocation_source = candidate.allocation_source,
+            Some(_) => self.record_context_collisions(&candidate),
+        }
+        self
     }
 
     /// Retains an exact high-water mark from a completed resident-graph cache
-    /// scope. This is an internal typed sideband, deliberately distinct from
-    /// error facts so consumers cannot mistake diagnostic text for a peak.
+    /// scope. It is typed evidence, never a wire fact, so consumers cannot
+    /// mistake diagnostic text for a peak.
     #[must_use]
     #[doc(hidden)]
     pub fn with_graph_cache_scope_peak_bytes(mut self, peak_bytes: u64) -> Self {
-        self.0.graph_cache_scope_peak_bytes = Some(peak_bytes);
+        self.0.context.graph_cache_scope_peak_bytes.get_or_insert(peak_bytes);
         self
     }
 
-    /// Returns the exact resident-cache scope high-water carried from a graph
-    /// execution error only after that scope completed its fence and health
-    /// proof.
-    #[doc(hidden)]
-    pub const fn graph_cache_scope_peak_bytes(&self) -> Option<u64> {
-        self.0.graph_cache_scope_peak_bytes
+    fn record_context_collisions(&mut self, candidate: &FailureContext) {
+        let current = self.0.context.projection();
+        for (key, value) in candidate.projection() {
+            if current.iter().any(|(existing, current)| *existing == key && *current != value) {
+                self.0.facts.record_collision(key);
+            }
+        }
+    }
+
+    /// Stored diagnostic facts plus the typed context rendered under its
+    /// wire keys, sorted by key.
+    ///
+    /// The typed value wins over a stored fact with the same key; a stored
+    /// fact that disagrees is reported under `fact_collision_keys`.
+    pub fn wire_facts(&self) -> impl Iterator<Item = (&'static str, Cow<'_, str>)> {
+        let mut facts = self
+            .0
+            .facts
+            .iter()
+            .filter(|(key, _)| *key != FACT_COLLISION_KEYS)
+            .map(|(key, value)| (key, Cow::Borrowed(value)))
+            .collect::<BTreeMap<_, _>>();
+        let mut collisions = self.0.facts.collision_keys.clone();
+        for (key, value) in self.0.context.projection() {
+            if facts.insert(key, value.clone()).is_some_and(|stored| stored != value) {
+                collisions.insert(key);
+            }
+        }
+        if !collisions.is_empty() {
+            facts.insert(FACT_COLLISION_KEYS, Cow::Owned(collisions.into_iter().collect::<Vec<_>>().join(",")));
+        }
+        facts.into_iter()
+    }
+
+    /// One value of [`Self::wire_facts`].
+    pub fn wire_fact(&self, key: &str) -> Option<Cow<'_, str>> {
+        self.wire_facts().find_map(|(candidate, value)| (candidate == key).then_some(value))
     }
 
     /// Assigns a query-wide diagnostic correlation id and mirrors it into facts.
@@ -864,7 +890,7 @@ impl QueryError {
             "status": self.status().as_str(),
             "operation": self.0.operation,
             "message": self.0.message,
-            "facts": self.0.facts.iter().collect::<BTreeMap<_, _>>(),
+            "facts": self.wire_facts().collect::<BTreeMap<_, _>>(),
             "source": self.0.source.as_ref().map(|source| source.to_string()),
         })
     }
@@ -895,18 +921,14 @@ impl fmt::Display for QueryError {
             quote(self.message()),
         )?;
 
-        if self.0.facts.values.is_empty() {
-            f.write_str(" facts={}")?;
-        } else {
-            f.write_str(" facts={")?;
-            for (index, (key, value)) in self.0.facts.iter().enumerate() {
-                if index > 0 {
-                    f.write_str(", ")?;
-                }
-                write!(f, "{key}={}", quote(value))?;
+        f.write_str(" facts={")?;
+        for (index, (key, value)) in self.wire_facts().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
             }
-            f.write_str("}")?;
+            write!(f, "{key}={}", quote(&value))?;
         }
+        f.write_str("}")?;
 
         if let Some(source) = &self.0.source {
             write!(f, " source={}", quote(&source.to_string()))?;
@@ -927,8 +949,7 @@ impl fmt::Debug for QueryError {
             .field("operation", &self.0.operation)
             .field("message", &self.0.message)
             .field("facts", &self.0.facts)
-            .field("cugraph_allocation_source", &self.0.cugraph_allocation_source)
-            .field("graph_cache_scope_peak_bytes", &self.0.graph_cache_scope_peak_bytes)
+            .field("context", &self.0.context)
             .field("source", &self.0.source.as_ref().map(|source| source.to_string()))
             .finish()
     }
@@ -951,6 +972,7 @@ fn quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::NodeId;
 
     #[test]
     fn redact_uri_tokens_replaces_uri_like_tokens_only() {
@@ -974,9 +996,48 @@ mod tests {
         )
         .with_graph_cache_scope_peak_bytes(4_096);
 
-        assert_eq!(error.graph_cache_scope_peak_bytes(), Some(4_096));
+        assert_eq!(error.context().graph_cache_scope_peak_bytes, Some(4_096));
         assert_eq!(error.fact_value("graph_cache_scope_peak_bytes"), None);
         assert!(error.to_json()["facts"].get("graph_cache_scope_peak_bytes").is_none());
+    }
+
+    #[test]
+    fn wire_facts_render_typed_context_over_disagreeing_stored_facts() {
+        let node = NodeId::from_index_for_internal_use(4);
+        let error = QueryError::new(
+            QueryErrorCode::QueryMemoryLimitExceeded,
+            "query_engine.test.wire_facts",
+            "typed context projection probe",
+        )
+        .with_fact("budget_bytes", 1)
+        .with_fact("node_id", node)
+        .with_memory_failure(MemoryFailure {
+            boundary: "inner".into(),
+            operation: "cudf.test.op".into(),
+            usage: Some(MemoryUsage {
+                limit_bytes: 4096,
+                peak_bytes: 3,
+                peak_aligned_bytes: 256,
+                current_bytes: 2,
+                current_aligned_bytes: 256,
+                failed_allocation_count: 1,
+                largest_failed_allocation_bytes: 8192,
+            }),
+        })
+        .with_memory_failure(MemoryFailure { boundary: "outer".into(), operation: "cudf.test.op".into(), usage: None })
+        .with_resource_boundary(ResourceBoundary::new("source_chunk_read", node).with_resume("source_chunk"))
+        .with_resource_boundary(ResourceBoundary::new("outer_stage", node))
+        .with_fact_if_absent("resume_boundary", "outer_resume");
+
+        let wire = error.wire_facts().map(|(key, value)| (key, value.into_owned())).collect::<BTreeMap<_, _>>();
+        assert_eq!(wire["budget_bytes"], "4096", "the allocator limit wins over a stale stored fact");
+        assert_eq!(wire["budget_boundary"], "inner", "the innermost scope wins");
+        assert_eq!(wire["memory_boundary"], "source_chunk_read", "the first boundary wins as a unit");
+        assert_eq!(wire["resume_boundary"], "source_chunk", "a typed key counts as present");
+        assert_eq!(wire["node_id"], "n4");
+        assert_eq!(wire[FACT_COLLISION_KEYS], "budget_boundary,budget_bytes,memory_boundary,stage");
+        assert_eq!(error.wire_facts().collect::<Vec<_>>(), error.wire_facts().collect::<Vec<_>>());
+        assert!(error.to_string().contains("budget_bytes=4096"), "{error}");
     }
 
     #[test]

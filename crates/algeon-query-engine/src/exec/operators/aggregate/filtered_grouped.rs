@@ -7,7 +7,7 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
-    cudf_query_error, cudf_query_error_with_budget_details,
+    cudf_query_error,
     filter_inputs::{filtered_aggregate_input_type, filtered_aggregate_value_expr},
     filtered_common::{
         add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
@@ -575,7 +575,7 @@ fn prepare_filtered_grouped_predicates_for_chunk(
         frame = frame
             .with_columns_with_budget(predicate_expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.filtered_grouped_aggregate.filter_predicates",
                     "failed to materialize segmented filtered grouped aggregate predicates",
                     error,
@@ -633,7 +633,7 @@ fn prepare_filtered_grouped_partial_segment(
         frame = frame
             .with_columns_with_budget(masked_expressions, token)
             .map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.filtered_grouped_aggregate.filter_inputs",
                     "failed to materialize segmented filtered grouped aggregate inputs",
                     error,

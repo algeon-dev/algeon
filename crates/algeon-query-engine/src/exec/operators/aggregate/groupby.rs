@@ -1,7 +1,7 @@
 use super::{
     DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
     ExecutionOverrides, GroupByOptions, LoweredAggregate, Result, attach_budget_token_failure_facts, budgeted_value,
-    cudf_query_error, cudf_query_error_with_budget_details,
+    cudf_query_error,
 };
 use crate::observability::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
@@ -74,7 +74,7 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
         .options(GroupByOptions::builder().include_null_keys(true).build())
         .agg_with_budget(&aggregate.aggregations, token)
-        .map_err(|error| cudf_query_error_with_budget_details(operation, message, error));
+        .map_err(|error| cudf_query_error(operation, message, error));
     let mut output = match result {
         Ok(outcome) => {
             let output = budgeted_value(outcome, metrics, operation);

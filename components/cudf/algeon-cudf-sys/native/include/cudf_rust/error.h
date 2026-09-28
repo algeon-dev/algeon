@@ -24,6 +24,10 @@ typedef enum {
   CUDF_ERROR_INVALID_ARGUMENT  = 10,
   CUDF_ERROR_UNSUPPORTED       = 11,
   CUDF_ERROR_SIZE_OVERFLOW     = 12,
+  /// A shim ownership or lifetime invariant failed; not caller input.
+  CUDF_ERROR_INVARIANT_VIOLATION = 13,
+  /// A process-global native binding already exists with different options.
+  CUDF_ERROR_RUNTIME_BINDING_MISMATCH = 14,
 } cudf_status_t;
 
 /// Fixed capacity of the message copied into a per-call error detail.

@@ -1,4 +1,5 @@
 #include "cudf_rust/test_support.h"
+#include "cudf_rust/error_boundary.hpp"
 
 #include "execution_context_internal.hpp"
 #include "handle_access.hpp"
@@ -930,6 +931,16 @@ cudf_status_t cudf_test_throw_invalid_argument()
   cudf_clear_error();
   try {
     throw std::invalid_argument("invalid argument from test shim");
+  } catch (...) {
+    return translate_exception();
+  }
+}
+
+cudf_status_t cudf_test_throw_invariant_error()
+{
+  cudf_clear_error();
+  try {
+    throw cudf::rust::invariant_error("ownership invariant from test shim");
   } catch (...) {
     return translate_exception();
   }

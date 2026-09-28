@@ -40,8 +40,8 @@ fn bounded_native_query_enforces_the_query_memory_cap() {
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
-    assert_eq!(error.fact_value("budget_bytes"), Some("1"));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.wire_fact("budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error.wire_fact("budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
     assert!(error.fact_value("requested_allocation_bytes").is_some());
 
@@ -360,7 +360,7 @@ fn bounded_native_query_fails_with_original_cap_cause_when_no_row_group_fits() {
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
     assert_eq!(error.fact_value("retry_action"), Some("fail_min_chunk"));
-    assert_eq!(error.fact_value("resume_boundary"), Some("source_chunk"));
+    assert_eq!(error.wire_fact("resume_boundary").as_deref(), Some("source_chunk"));
     assert!(metrics.retry_resource_exhausted_count >= 1, "each cap rejection before the floor is recorded");
     assert_attempt_domain_released(admitted.context.context());
 

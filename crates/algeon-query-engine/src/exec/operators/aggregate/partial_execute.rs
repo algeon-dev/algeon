@@ -6,7 +6,7 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::{PreparedDataFrameGroupBy, frame::factorization::Codebook};
 
-use super::{cudf_query_error, cudf_query_error_with_budget_details, groupby::rename_groupby_key_columns, *};
+use super::{cudf_query_error, groupby::rename_groupby_key_columns, *};
 use crate::{
     capability::AggregateStrategyCapabilityDecision,
     naming::unique_alias_with_suffix,
@@ -37,13 +37,8 @@ pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
         .options(GroupByOptions::builder().include_null_keys(true).build())
         .prepare_sort_groupby_with_budget(token)
-        .map_err(|error| {
-            cudf_query_error_with_budget_details(
-                operation,
-                "failed to prepare bounded algeon native sort groupby",
-                error,
-            )
-        }) {
+        .map_err(|error| cudf_query_error(operation, "failed to prepare bounded algeon native sort groupby", error))
+    {
         Ok(outcome) => {
             let prepared = budgeted_value(outcome, metrics, operation);
             prepare_guard.finish(Some(prepared.prepared_facts().num_groups as u64), None);
@@ -100,7 +95,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
         RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
-        cudf_query_error_with_budget_details(
+        cudf_query_error(
             "query_engine.aggregate.execute_single.prepared_sort_groupby",
             "failed to execute bounded algeon native prepared sort groupby aggregate",
             error,
@@ -198,7 +193,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
         RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
-        cudf_query_error_with_budget_details(
+        cudf_query_error(
             "query_engine.aggregate.execute_partial.prepared_sort_groupby",
             "failed to execute bounded algeon native prepared sort groupby aggregate",
             error,

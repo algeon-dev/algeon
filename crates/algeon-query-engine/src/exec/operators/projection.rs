@@ -5,8 +5,8 @@ use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
 use super::{
     ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
     ProjectionNode, QueryError, QueryErrorCode, Result, attach_budget_token_failure_facts, budgeted_value,
-    cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details, datafusion_order_columns,
-    is_supported_arrow_implicit_cast, lower_projection_output_expr, projection_schema_mismatch_error,
+    cudf_dtype_from_arrow_type, cudf_query_error, datafusion_order_columns, is_supported_arrow_implicit_cast,
+    lower_projection_output_expr, projection_schema_mismatch_error,
 };
 use crate::{
     expr::{alias_wrapped_column, representation_cast_column},
@@ -84,7 +84,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut output = budgeted_value(
         frame.with_columns_with_budget(exprs, token).map_err(|error| {
-            cudf_query_error_with_budget_details(
+            cudf_query_error(
                 "query_engine.projection.execute",
                 "failed to execute bounded algeon native projection",
                 error,
@@ -287,7 +287,7 @@ fn materialize_prepared_regexp_replace_projection(
         if let Some(handle) = remaining.remove(output.field.name().as_str()) {
             let series = budgeted_value(
                 handle.execute_with_budget(token).map_err(|error| {
-                    cudf_query_error_with_budget_details(
+                    cudf_query_error(
                         "query_engine.projection.execute",
                         "failed to execute prepared REGEXP_REPLACE projection component",
                         error,
@@ -299,7 +299,7 @@ fn materialize_prepared_regexp_replace_projection(
             );
             frame = budgeted_value(
                 frame.with_column_with_budget(output.field.name().as_str(), series, token).map_err(|error| {
-                    cudf_query_error_with_budget_details(
+                    cudf_query_error(
                         "query_engine.projection.execute",
                         "failed to attach prepared REGEXP_REPLACE output column",
                         error,
@@ -327,7 +327,7 @@ fn materialize_prepared_regexp_replace_projection(
     if !lower_exprs.is_empty() {
         frame = budgeted_value(
             frame.with_columns_with_budget(lower_exprs, token).map_err(|error| {
-                cudf_query_error_with_budget_details(
+                cudf_query_error(
                     "query_engine.projection.execute",
                     "failed to execute bounded algeon native projection non-regexp expressions",
                     error,
@@ -492,7 +492,7 @@ fn coerce_projection_output_schema(
             Some(token) => budgeted_value(
                 frame.cast_column_with_budget(field_name, target_type, token).map_err(|error| {
                     attach_budget_token_failure_facts(
-                        cudf_query_error_with_budget_details(
+                        cudf_query_error(
                             "query_engine.projection.schema_coerce",
                             "failed to cast bounded native projection output column to declared schema type",
                             error,
