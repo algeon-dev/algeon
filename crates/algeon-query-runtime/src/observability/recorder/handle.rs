@@ -24,8 +24,7 @@ use super::{
 };
 use crate::{
     metrics::{BoundaryMetrics, QueryId, TraceId},
-    observability::recorder::ExecutionProgress,
-    runtime::{LakehouseCacheFillEvent, LakehouseCacheFillEventSnapshot},
+    observability::{LakehouseCacheFillEvent, LakehouseCacheFillEventSnapshot, recorder::ExecutionProgress},
 };
 
 /// Growing detail families and the loss class each is retained under.

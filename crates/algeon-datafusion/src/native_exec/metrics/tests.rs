@@ -5,8 +5,7 @@ use query_engine::{
     metrics::{
         JoinOperatorMetrics, OperatorMetrics, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
     },
-    observability::RuntimeObservationConfig,
-    runtime::LakehouseCacheFillEventSnapshot,
+    observability::{LakehouseCacheFillEventSnapshot, RuntimeObservationConfig},
 };
 
 use super::{

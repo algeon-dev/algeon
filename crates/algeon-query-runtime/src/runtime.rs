@@ -14,7 +14,6 @@ mod backend_lifecycle;
 mod backend_metrics;
 #[doc(hidden)]
 pub mod cache;
-mod cache_events;
 mod cache_fill;
 mod context;
 mod deadline;
@@ -61,9 +60,6 @@ pub use backend_metrics::{
 pub use cache::{
     CacheGraphActivity, CacheSourceActivity, CacheSourceEventSnapshot, DeviceCacheReport, cache_observation_fingerprint,
 };
-pub use cache_events::LakehouseCacheFillEventSnapshot;
-#[doc(hidden)]
-pub use cache_events::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome};
 pub(crate) use cache_fill::CacheFillByteBudget;
 pub use cache_fill::{CacheFillBytePermit, LakehouseCacheFillConfig};
 pub use context::{ExecutionCancellation, ExecutionContext};

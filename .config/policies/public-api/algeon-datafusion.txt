@@ -647,6 +647,12 @@ pub fn algeon_datafusion::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<
 pub type algeon_datafusion::cuvs_sql::CuvsAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuvs_sql::exec::node::CuvsRelationFunctionSpec>
 pub mod algeon_datafusion::error
 pub enum algeon_datafusion::error::ClientDetail
+pub algeon_datafusion::error::ClientDetail::Column
+pub algeon_datafusion::error::ClientDetail::Column::name: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::Field
+pub algeon_datafusion::error::ClientDetail::Field::name: alloc::string::String
+pub algeon_datafusion::error::ClientDetail::OrderingKey
+pub algeon_datafusion::error::ClientDetail::OrderingKey::name: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::RelationField
 pub algeon_datafusion::error::ClientDetail::RelationField::data_type: alloc::string::String
 pub algeon_datafusion::error::ClientDetail::RelationField::field: alloc::string::String

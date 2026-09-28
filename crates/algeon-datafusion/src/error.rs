@@ -71,6 +71,13 @@ pub enum ClientDetail {
     UnsupportedColumn { name: String, data_type: String, role: &'static str },
     /// A relation field whose Arrow type a GPU function rejects.
     RelationField { field: String, data_type: String },
+    /// A field a rejection names: absent from its relation, nullable where
+    /// the function requires non-null values, or named by native validation.
+    Field { name: String },
+    /// A column native validation names.
+    Column { name: String },
+    /// An input ORDER BY key that is not an output column of its input.
+    OrderingKey { name: String },
 }
 
 impl ClientDetail {
@@ -86,6 +93,9 @@ impl ClientDetail {
             Self::RelationField { field, data_type } => {
                 vec![("field", field.as_str()), ("actual_type", data_type.as_str())]
             },
+            Self::Field { name } => vec![("field", name.as_str())],
+            Self::Column { name } => vec![("column", name.as_str())],
+            Self::OrderingKey { name } => vec![("key", name.as_str())],
         }
     }
 
@@ -102,6 +112,9 @@ impl fmt::Debug for ClientDetail {
                 f.debug_struct("UnsupportedColumn").field("role", role).finish_non_exhaustive()
             },
             Self::RelationField { .. } => f.debug_struct("RelationField").finish_non_exhaustive(),
+            Self::Field { .. } => f.debug_struct("Field").finish_non_exhaustive(),
+            Self::Column { .. } => f.debug_struct("Column").finish_non_exhaustive(),
+            Self::OrderingKey { .. } => f.debug_struct("OrderingKey").finish_non_exhaustive(),
         }
     }
 }
@@ -787,8 +800,9 @@ impl Error {
         message: impl Into<String>,
         source: QueryError,
     ) -> Self {
+        // `field` and `column` name the caller's schema, so they travel as
+        // client detail rather than in the logged message.
         const CLIENT_FACTS: &[&str] = &[
-            "field",
             "device_ordinal",
             "stage",
             "phase",
@@ -812,7 +826,6 @@ impl Error {
             "occurrence_id",
             "node_id",
             "input_node_id",
-            "column",
             "left_rows",
             "right_rows",
             "output_rows",
@@ -839,7 +852,16 @@ impl Error {
             message.push_str(&facts.join(", "));
             message.push(']');
         }
-        Self::from_native(operation, message, source)
+        let detail = match (wire.get("column"), wire.get("field")) {
+            (Some(column), _) => Some(ClientDetail::Column { name: column.to_string() }),
+            (None, Some(field)) => Some(ClientDetail::Field { name: field.to_string() }),
+            (None, None) => None,
+        };
+        let error = Self::from_native(operation, message, source);
+        match detail {
+            Some(detail) => error.with_client_detail(detail),
+            None => error,
+        }
     }
 
     /// Returns the stable machine-readable adapter error code.

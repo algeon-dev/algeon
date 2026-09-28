@@ -366,7 +366,7 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     // Caller schema identifiers reach the wire status only: the logged client
     // message is the text without them, like `error_message`.
     let log_message = client_status_message(error);
-    let message = client_schema_detail_message(error).unwrap_or_else(|| log_message.clone());
+    let message = client_schema_detail_message(error, &log_message).unwrap_or_else(|| log_message.clone());
     let diagnostics = ErrorLogDiagnostics::from_error(error);
     let log_messages = adapter_status_log_messages(error.message(), log_message.as_str(), &diagnostics);
     // The logged `error_message` is owner-authored adapter text: foreign
@@ -565,27 +565,34 @@ fn client_status_message(error: &Error) -> String {
 /// Owners keep column and field names and their Arrow types out of
 /// `Error::message()`, which the boundary log records verbatim, and attach
 /// them as a [`ClientDetail`]. The text is composed here, so the identifiers
-/// reach the query caller and never the log.
-fn client_schema_detail_message(error: &Error) -> Option<String> {
-    match error.client_detail()? {
+/// reach the query caller and never the log. Kinds whose client text is
+/// generic keep it generic.
+fn client_schema_detail_message(error: &Error, client_message: &str) -> Option<String> {
+    let detail = error.client_detail()?;
+    if !client_actionable_kind(error) {
+        return None;
+    }
+    Some(match detail {
         ClientDetail::UnsupportedColumn { name, data_type, role } => {
-            Some(format!("GPU execution does not support {role} column `{name}` with Arrow type `{data_type}`"))
+            format!("GPU execution does not support {role} column `{name}` with Arrow type `{data_type}`")
         },
         ClientDetail::RelationField { field, data_type } => {
-            Some(format!("{} (field '{field}' has Arrow type `{data_type}`)", error.message()))
+            format!("{client_message} (field '{field}' has Arrow type `{data_type}`)")
         },
-    }
+        ClientDetail::Field { name } => format!("{client_message} (field '{name}')"),
+        ClientDetail::Column { name } => format!("{client_message} (column '{name}')"),
+        ClientDetail::OrderingKey { name } => format!("{client_message} (ORDER BY key '{name}')"),
+    })
 }
 
-/// Whether raw native diagnostic text may cross the Flight boundary as the
-/// `native_message` trailer.
+/// Whether the error's kind is a client-actionable validation kind, whose
+/// caller detail and raw native diagnostic text (the `native_message`
+/// trailer) may cross the Flight boundary.
 ///
 /// `native_message` remains trusted in-process diagnosis, but its key being
 /// allowlisted must not by itself publish raw text: internal, execution,
 /// dependency, invariant, and resource failures stay generic on the wire.
-/// Only client-actionable validation kinds project it alongside their
-/// structured facts.
-fn native_message_is_client_visible(error: &Error) -> bool {
+fn client_actionable_kind(error: &Error) -> bool {
     matches!(
         error.kind(),
         ErrorKind::Cancelled
@@ -633,7 +640,7 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason", &mut omitted);
     insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option", &mut omitted);
-    if native_message_is_client_visible(error) {
+    if client_actionable_kind(error) {
         insert_fact_metadata(status.metadata_mut(), NATIVE_MESSAGE_METADATA_KEY, error, "native_message", &mut omitted);
     }
     insert_fact_metadata(status.metadata_mut(), ALGORITHM_METADATA_KEY, error, "algorithm", &mut omitted);
@@ -1803,7 +1810,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_relation_unsupported_type_keeps_field_identifiers_out_of_message_and_logs() {
+    fn caller_identifier_rejections_keep_identifiers_out_of_message_and_logs() {
         const FIELD: &str = "sentinel_feature_column";
         const ACTUAL_TYPE: &str = "List(Field { name: \"sentinel_item\" })";
         let context = DenseRelationErrorContext {
@@ -1815,26 +1822,43 @@ mod tests {
             required_feature: "cuml",
             feature_disabled_message: "cuML algorithm execution requires the cuml Cargo feature",
         };
-        let adapter = context.unsupported_type("cuml_tsvd", "input", FIELD, ACTUAL_TYPE, "Float32");
+        let native = QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "query_engine.vector_algorithm.validate",
+            "vector feature column is not produced by its input relation",
+        )
+        .with_fact("reason", "missing_feature_column")
+        .with_fact("column", FIELD);
+        let cases = [
+            (context.unsupported_type("cuml_tsvd", "input", FIELD, ACTUAL_TYPE, "Float32"), Code::Unimplemented),
+            (context.field_not_found("cuml_tsvd", "input", FIELD), Code::InvalidArgument),
+            (context.nullable_feature_field("cuml_tsvd", "input", FIELD), Code::InvalidArgument),
+            (context.input_ordering_key_not_projected("cuml_tsvd", "input", FIELD.to_string()), Code::InvalidArgument),
+            (
+                Error::from_native_with_blocking_diagnostics(
+                    "algeon_datafusion.cuml_sql.execute",
+                    "native cuML query execution failed",
+                    native,
+                ),
+                Code::InvalidArgument,
+            ),
+        ];
+        for (adapter, code) in cases {
+            assert!(!adapter.message().contains(FIELD), "{}", adapter.message());
+            assert!(!format!("{adapter:?}").contains(FIELD), "{adapter:?}");
+            let detail = adapter.client_detail().expect("caller identifier travels as client detail");
+            assert!(detail.entries().iter().any(|(_, value)| *value == FIELD), "{detail:?}");
 
-        assert_eq!(adapter.code(), ErrorCode::UnsupportedType);
-        assert!(!adapter.message().contains(FIELD), "{}", adapter.message());
-        assert!(adapter.message().contains("Float32"), "{}", adapter.message());
-        assert_eq!(
-            adapter.client_detail(),
-            Some(&ClientDetail::RelationField { field: FIELD.to_string(), data_type: ACTUAL_TYPE.to_string() })
-        );
+            let (status, logs) = with_captured_logs(|| {
+                datafusion_error_to_status_for_operation(adapter.into(), TEST_OPERATION, FailedStatement::Other)
+            });
 
-        let (status, logs) = with_captured_logs(|| {
-            datafusion_error_to_status_for_operation(adapter.into(), TEST_OPERATION, FailedStatement::Other)
-        });
-
-        assert!(logs.contains("converted adapter error to Flight SQL status"), "{logs}");
-        assert!(!logs.contains(FIELD), "{logs}");
-        assert!(!logs.contains("sentinel_item"), "{logs}");
-        assert_eq!(status.code(), Code::Unimplemented);
-        assert!(status.message().contains(FIELD), "{}", status.message());
-        assert!(status.message().contains(ACTUAL_TYPE), "{}", status.message());
+            assert!(logs.contains("converted adapter error to Flight SQL status"), "{logs}");
+            assert!(!logs.contains(FIELD), "{logs}");
+            assert!(!logs.contains("sentinel_item"), "{logs}");
+            assert_eq!(status.code(), code, "{}", status.message());
+            assert!(status.message().contains(FIELD), "{}", status.message());
+        }
     }
 
     #[test]

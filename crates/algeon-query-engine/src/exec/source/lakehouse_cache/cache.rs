@@ -24,14 +24,12 @@ use crate::{
     chunk::SourceChunkBatch,
     datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result},
+    observability::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome},
     parquet_metadata::{
         PARQUET_FOOTER_SIDECAR_SUFFIX, object_store_query_error, parquet_footer_sidecar_path,
         write_parquet_footer_sidecar_from_file,
     },
-    runtime::{
-        CacheFillBytePermit, LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome,
-        S3ObjectStoreKey,
-    },
+    runtime::{CacheFillBytePermit, S3ObjectStoreKey},
     source::{
         LakehouseCacheFillMode, LakehouseCacheStatus, ParquetReadStrategy, ParquetReaderDecimalType,
         ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef,

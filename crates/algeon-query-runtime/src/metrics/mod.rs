@@ -47,10 +47,7 @@ pub use self::{
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::BudgetedExecutionEvent,
 };
-use crate::{
-    observability::{MetricsCaptureMode, MetricsCompleteness},
-    runtime::LakehouseCacheFillEventSnapshot,
-};
+use crate::observability::{LakehouseCacheFillEventSnapshot, MetricsCaptureMode, MetricsCompleteness};
 
 /// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
