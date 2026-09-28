@@ -135,14 +135,21 @@ function PrimaryLinks(): ReactNode {
   const items = useThemeConfig().navbar.items as NavbarItemConfig[];
   return (
     <ul className="menu__list">
-      {items.map((item, i) => (
-        <NavbarItem
-          mobile
-          {...item}
-          onClick={() => mobileSidebar.toggle()}
-          key={i}
-        />
-      ))}
+      {items.map((item, i) => {
+        const itemConfig =
+          item.className?.includes('header-github-link') &&
+          !('label' in item && item.label)
+            ? {...item, label: 'GitHub'}
+            : item;
+        return (
+          <NavbarItem
+            mobile
+            {...itemConfig}
+            onClick={() => mobileSidebar.toggle()}
+            key={i}
+          />
+        );
+      })}
       <ColorModeMenuItem />
     </ul>
   );
