@@ -468,11 +468,9 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
     // duplicate, reverse, self, and zero-similarity pair. Their small
     // unweighted Jaccard, Sorensen, and overlap results are hand-verifiable
     // directly from the adjacency sets: N(0)={1,2}, N(3)={1,2,5},
-    // N(1)={0,2,3,4}, N(4)={1,5}. On its unweighted explicit-pair path,
-    // libcugraph's cosine kernel consumes unit norms and a binary non-empty
-    // intersection indicator. Preserve that native contract (one for every
-    // overlapping pair and zero for `(1,4)`) rather than projecting an
-    // algebraic cosine formula.
+    // N(1)={0,2,3,4}, N(4)={1,5}. Unweighted cosine uses the set formula
+    // |A∩B|/sqrt(|A||B|) over full neighborhoods, so `(0,3)` scores
+    // 2/sqrt(2*3) and `(1,4)` scores zero.
     ParitySpec {
         label: "jaccard/toy_graph@explicit_pairs",
         algorithm: CugraphAlgorithm::Jaccard,
@@ -519,7 +517,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         params_json: r#"{}"#,
         seed: None,
         truth_source: ParityTruthSource::HandVerified {
-            document_json: r#"{"result":{"first":[0,0,3,0,1],"second":[3,3,0,0,4],"similarity":[1.0,1.0,1.0,1.0,0.0]}}"#,
+            document_json: r#"{"result":{"first":[0,0,3,0,1],"second":[3,3,0,0,4],"similarity":[0.816496580927726,0.816496580927726,0.816496580927726,1.0,0.0]}}"#,
         },
         oracle_relpath: None,
         comparator: ParityComparator::SimilarityMultiset,

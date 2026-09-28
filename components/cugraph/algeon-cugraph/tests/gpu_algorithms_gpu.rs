@@ -400,7 +400,8 @@ fn weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods() {
         .expect("score copy");
 
     assert_eq!(scores[0], 0.0);
-    assert!(scores[1].is_finite() && scores[1] > 0.0);
+    // 10 / (2 * sqrt(74)) over full neighborhoods {2:2} and {2:5, 3:7}.
+    assert!((scores[1] - 0.581_238_2).abs() < 1.0e-5, "weighted cosine expected 0.5812382, got {}", scores[1]);
 }
 
 #[test]
