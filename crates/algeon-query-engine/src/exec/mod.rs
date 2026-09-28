@@ -78,7 +78,7 @@ pub use source::sanitize_cache_component;
 use source::{read_gpu_resident_source, read_literal_batch_source};
 #[cfg(all(feature = "cuvs", feature = "test-hooks"))]
 #[doc(hidden)]
-pub use vector_algorithm::set_vector_after_index_build_hook_for_tests;
+pub use vector_algorithm::{set_vector_after_index_build_hook_for_tests, set_vector_pool_coverage_hook_for_tests};
 
 #[cfg(feature = "cugraph")]
 use self::graph_algorithm::*;

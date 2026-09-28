@@ -8,10 +8,7 @@ use std::{
 };
 
 use super::{
-    domain::{
-        QueryMemoryDomain, QueryMemoryDomainHandle, ReservationArena, ReservationArenaHandle, ReservationHandle,
-        StreamReservationLease,
-    },
+    domain::{QueryMemoryDomain, QueryMemoryDomainHandle},
     failure::{
         AllocatorEvent, AllocatorEventRead, AllocatorEventRingBounds, FailureCallbackState,
         device_manager_failure_callbacks, failure_callback_trampoline,
@@ -105,10 +102,6 @@ impl Drop for RawCurrentResourceRouteLease {
 }
 
 impl DeviceMemoryManager {
-    pub(super) fn raw_handle(&self) -> cudf_sys::cudf_memory_manager_handle {
-        self.handle.raw.as_ptr()
-    }
-
     /// Explicitly install or reuse the process-lifetime memory manager.
     ///
     /// Physical-base options must match an existing installation. An identified
@@ -616,47 +609,6 @@ impl DeviceMemoryManager {
         }
     }
 
-    /// Attach a hard live-byte reservation to `stream`.
-    pub fn reserve_stream(
-        &self,
-        stream: &CudaStream,
-        reservation_id: u64,
-        limit_bytes: usize,
-    ) -> Result<StreamReservationLease> {
-        self.reserve_stream_with_arena(stream, reservation_id, limit_bytes, None)
-    }
-
-    /// Create a query-scoped reservation arena owned by this manager.
-    pub fn reservation_arena(&self, arena_id: u64, limit_bytes: usize) -> Result<ReservationArena> {
-        let _guard = DeviceGuard::new(self.device())?;
-        let mut arena = ptr::null_mut();
-        error::check_status_in_with_details(
-            unsafe {
-                cudf_sys::cudf_memory_manager_create_reservation_arena(
-                    self.handle.raw.as_ptr(),
-                    arena_id,
-                    limit_bytes,
-                    &mut arena,
-                )
-            },
-            "memory::device_memory_manager::reservation_arena",
-            [
-                ("device", self.device().ordinal().to_string()),
-                ("arena_id", arena_id.to_string()),
-                ("limit_bytes", limit_bytes.to_string()),
-            ],
-        )?;
-        let arena = ReservationArenaHandle {
-            raw: Some(error::require_non_null(
-                arena,
-                "memory::device_memory_manager::reservation_arena",
-                "reservation arena",
-            )?),
-            device: self.device(),
-        };
-        Ok(ReservationArena { handle: Arc::new(arena), manager: self.clone() })
-    }
-
     /// Create a query memory domain backed by this manager's shared CUDA async pool.
     ///
     /// When this manager owns a static allocation partition, live allocations
@@ -691,87 +643,5 @@ impl DeviceMemoryManager {
             device: self.device(),
         };
         Ok(QueryMemoryDomain { handle: Arc::new(domain), manager: self.clone() })
-    }
-
-    pub(super) fn reserve_stream_with_arena(
-        &self,
-        stream: &CudaStream,
-        reservation_id: u64,
-        limit_bytes: usize,
-        arena: Option<&ReservationArena>,
-    ) -> Result<StreamReservationLease> {
-        let _guard = DeviceGuard::new(self.device())?;
-        if stream.device() != self.device() {
-            return Err(error::Error::new_with(
-                error::ErrorCode::RuntimeBindingMismatch,
-                "memory::device_memory_manager::reserve_stream",
-                "stream reservation requires stream and memory manager to be on the same CUDA device",
-            )
-            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(stream.device().ordinal_raw()))
-            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
-            .with_detail("resource", "stream_and_memory_manager")
-            .with_detail("reason", "cross_device_stream_reservation"));
-        }
-        if let Some(arena) = arena
-            && arena.manager.device() != self.device()
-        {
-            return Err(error::Error::new_with(
-                error::ErrorCode::RuntimeBindingMismatch,
-                "memory::device_memory_manager::reserve_stream",
-                "reservation arena requires arena and memory manager to be on the same CUDA device",
-            )
-            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(arena.manager.device().ordinal_raw()))
-            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
-            .with_detail("resource", "arena_and_memory_manager")
-            .with_detail("reason", "cross_device_reservation_arena"));
-        }
-
-        let mut reservation = ptr::null_mut();
-        let status = match arena {
-            Some(arena) => unsafe {
-                cudf_sys::cudf_memory_manager_attach_reservation_to_arena(
-                    self.handle.raw.as_ptr(),
-                    stream.as_raw(),
-                    arena.handle.raw(),
-                    reservation_id,
-                    limit_bytes,
-                    &mut reservation,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_memory_manager_attach_reservation(
-                    self.handle.raw.as_ptr(),
-                    stream.as_raw(),
-                    reservation_id,
-                    limit_bytes,
-                    &mut reservation,
-                )
-            },
-        };
-        error::check_status_in_with_details(
-            status,
-            "memory::device_memory_manager::reserve_stream",
-            [
-                ("device", self.device().ordinal().to_string()),
-                ("reservation_id", reservation_id.to_string()),
-                ("limit_bytes", limit_bytes.to_string()),
-            ],
-        )?;
-        let reservation = ReservationHandle {
-            raw: Some(error::require_non_null(
-                reservation,
-                "memory::device_memory_manager::reserve_stream",
-                "stream reservation",
-            )?),
-            device: self.device(),
-        };
-        Ok(StreamReservationLease {
-            manager: self.clone(),
-            stream: stream.clone(),
-            arena: arena.cloned(),
-            _query_domain: None,
-            resource: None,
-            reservation: Arc::new(reservation),
-        })
     }
 }

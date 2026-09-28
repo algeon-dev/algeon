@@ -264,7 +264,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     )
     .with_fact("budget_boundary", "test_boundary")
     .with_fact("budget_bytes", 32 * 1024 * 1024)
-    .with_fact("budget_enforcement", "stream_bound_reservation")
+    .with_fact("budget_enforcement", "query_domain_member")
     .with_fact("budget_status", "exceeded_or_lower_layer_rejected")
     .with_fact("budget_operation", "dataframe::with_columns_with_budget")
     .with_fact("budget_peak_bytes", 8192)

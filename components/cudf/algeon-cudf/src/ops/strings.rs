@@ -822,7 +822,10 @@ pub(crate) fn try_to_integers_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{ExecutionBudgetRequest, Runtime};
+    use crate::{
+        QueryMemoryDomainOptions,
+        runtime::{ExecutionBudgetRequest, ExecutionBudgetToken, Runtime},
+    };
 
     #[test]
     fn budgeted_replace_with_backrefs_output_carries_the_execution_domain() {
@@ -830,11 +833,17 @@ mod tests {
         let input = runtime.series(&["abc-123", "def-456"]).expect("input series");
         let (pattern, replacement) = (r"([a-z]+)-(\d+)", r"\2/\1");
         let facts = input.str().replace_with_backrefs_output_size(pattern, replacement).expect("size pass");
-        let token = runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("replace_backrefs_domain"),
-            )
-            .expect("budget token");
+        let domain = runtime
+            .device_memory_manager()
+            .expect("memory manager")
+            .query_memory_domain(1, QueryMemoryDomainOptions::new(facts.required_budget_bytes()))
+            .expect("query domain");
+        let lease = domain.reserve_stream(runtime.stream(), 1, facts.required_budget_bytes()).expect("member");
+        let token = ExecutionBudgetToken::from_shared_lease(
+            &runtime,
+            ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("replace_backrefs_domain"),
+            lease,
+        );
         let execution_domain = token
             .execution_overrides()
             .resolve_output_domain(input.as_column().execution_domain())

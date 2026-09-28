@@ -4,7 +4,10 @@ use std::{
     ffi::c_void,
     fs::File,
     ptr,
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::{
+        Arc, Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use arrow::{
@@ -13,7 +16,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, DeviceId, ErrorCode, Runtime, Series, TimestampResolution, TypeId,
+    DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetRequest, ExecutionBudgetToken, QueryMemoryDomain,
+    QueryMemoryDomainOptions, Result as CudfResult, Runtime, Series, StreamReservationLease, TimestampResolution,
+    TypeId,
     core::{
         Column, CudfType, DeviceBuffer, Scalar,
         error::{FactKeyName, FactValue},
@@ -42,6 +47,37 @@ use cudf_sys::{
 use parquet::arrow::ArrowWriter;
 use rapids_interop::{ColumnLayout, InteropError, Placement};
 use tempfile::TempDir;
+
+static NEXT_TEST_MEMBER_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn execution_budget_token(runtime: &Runtime, request: ExecutionBudgetRequest) -> CudfResult<ExecutionBudgetToken> {
+    let cap = request.budget_bytes();
+    let domain = runtime.device_memory_manager()?.query_memory_domain(
+        NEXT_TEST_MEMBER_ID.fetch_add(1, Ordering::Relaxed),
+        QueryMemoryDomainOptions::new(cap).with_ceiling_bytes(cap),
+    )?;
+    execution_budget_token_in_domain(runtime, request, &domain)
+}
+
+pub fn execution_budget_token_in_domain(
+    runtime: &Runtime,
+    request: ExecutionBudgetRequest,
+    domain: &QueryMemoryDomain,
+) -> CudfResult<ExecutionBudgetToken> {
+    let lease = domain.reserve_stream(
+        runtime.stream(),
+        NEXT_TEST_MEMBER_ID.fetch_add(1, Ordering::Relaxed),
+        request.budget_bytes(),
+    )?;
+    Ok(ExecutionBudgetToken::from_shared_lease(runtime, request, lease))
+}
+
+pub fn query_domain_member(runtime: &Runtime, member_id: u64, cap: usize) -> CudfResult<StreamReservationLease> {
+    let domain = runtime
+        .device_memory_manager()?
+        .query_memory_domain(NEXT_TEST_MEMBER_ID.fetch_add(1, Ordering::Relaxed), QueryMemoryDomainOptions::new(cap))?;
+    domain.reserve_stream(runtime.stream(), member_id, cap)
+}
 
 pub fn sample_df() -> DataFrame {
     let ids = column_from_slice(&[3i32, 1, 4, 1, 5]).unwrap();

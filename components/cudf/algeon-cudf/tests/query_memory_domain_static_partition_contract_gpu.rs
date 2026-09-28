@@ -92,7 +92,10 @@ fn static_partition_domain_oom_reports_query_identity_without_trim_or_retry() {
     let callback_resource = manager.resource().with_failure_callback_details(callback).unwrap();
     let filling_runtime =
         Runtime::builder().with_device(device).with_memory_resource(manager.resource().clone()).build().unwrap();
-    let _backend_owner = manager.reserve_stream(filling_runtime.stream(), 92_900, STATIC_PARTITION_BYTES).unwrap();
+    let filling_domain =
+        manager.query_memory_domain(92_900, QueryMemoryDomainOptions::new(STATIC_PARTITION_BYTES)).unwrap();
+    let _backend_owner =
+        filling_domain.reserve_stream(filling_runtime.stream(), 92_900, STATIC_PARTITION_BYTES).unwrap();
     let held_manager_allocation = filling_runtime.device_buffer(STATIC_PARTITION_BYTES).unwrap();
 
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_resource).build().unwrap();

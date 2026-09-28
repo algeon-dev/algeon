@@ -8,7 +8,7 @@ use super::{
     ExecutionOverrides,
     affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeLeaseAnchor, RuntimeLeaseOwner},
     binding_extension::{BindingExtensionInitError, BindingExtensionLease},
-    budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
+    budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetToken},
     device::DeviceId,
     device_guard::DeviceGuard,
     event::CudaEvent,
@@ -20,7 +20,7 @@ use crate::{
     core::{
         column::{Column, DeviceBuffer},
         error::{self, DeviceIdFact, Error, ErrorCode, ErrorKind, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
-        memory::{DeviceMemoryManager, DeviceMemoryResource, StreamReservationLease},
+        memory::{DeviceMemoryManager, DeviceMemoryResource},
         scalar::Scalar,
         table::Table,
         types::{CudfType, DataType, TimestampResolution, TypeId},
@@ -95,7 +95,7 @@ fn budgeted_series_report(
 ///
 /// `Runtime` is therefore the canonical place to express a workflow's default
 /// execution placement. For query-style budgets, prefer
-/// [`Runtime::execution_budget_token`] or [`Runtime::stream_reservation`]
+/// a shared [`crate::QueryMemoryDomain`] member lease
 /// instead of constructing a separate memory resource. Create an explicit
 /// [`DeviceMemoryResource`] first only when you need an advanced allocator
 /// handle to reuse across runtimes or borrow through
@@ -252,12 +252,6 @@ impl Runtime {
         self.domain.memory_resource()
     }
 
-    /// Create a hard execution-budget token using this runtime's default
-    /// stream and a device-level reservation-aware memory manager.
-    pub fn execution_budget_token(&self, request: ExecutionBudgetRequest) -> Result<ExecutionBudgetToken> {
-        ExecutionBudgetToken::from_runtime(self, request)
-    }
-
     /// Resolve the device-level reservation-aware memory manager for this runtime.
     pub fn device_memory_manager(&self) -> Result<DeviceMemoryManager> {
         DeviceMemoryManager::for_device(self.device())
@@ -295,16 +289,15 @@ impl Runtime {
         })
     }
 
-    /// Attach a stream-bound reservation to this runtime's default stream.
-    pub fn stream_reservation(&self, reservation_id: u64, limit_bytes: usize) -> Result<StreamReservationLease> {
-        self.device_memory_manager()?.reserve_stream(self.stream(), reservation_id, limit_bytes)
-    }
-
-    pub(crate) fn with_memory_resource_override(
-        &self,
-        mr: &DeviceMemoryResource,
-        operation: &'static str,
-    ) -> Result<Self> {
+    /// Derive a runtime with a same-device memory resource.
+    ///
+    /// The derived runtime retains this runtime's device, stream, workflow,
+    /// affinity, lifetime owners, and runtime lease. Its execution binding and
+    /// retained handle bundle change when the allocator changes. Objects created
+    /// through it retain that allocator and the inherited lifetime owners.
+    /// A resource on another CUDA device is rejected. `operation` supplies
+    /// the diagnostic operation label if derivation fails.
+    pub fn with_memory_resource_override(&self, mr: &DeviceMemoryResource, operation: &'static str) -> Result<Self> {
         let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
         Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
     }

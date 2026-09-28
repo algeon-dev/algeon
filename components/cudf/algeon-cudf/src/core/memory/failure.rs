@@ -42,18 +42,9 @@ impl DeviceMemoryFailureSource {
     }
 }
 
-/// Budget domain that rejected an allocation.
-///
-/// This identifies the budget that rejected the allocation, not every budget
-/// that was attached to the stream. For example, a reservation attached to an
-/// arena reports [`Self::StreamReservation`] when its own member limit rejects
-/// first, and [`Self::ReservationArena`] when the arena cap rejects first.
+/// Allocation owner whose cap rejected an allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceMemoryFailureAllocationDomain {
-    /// A stream-bound reservation rejected the allocation.
-    StreamReservation { reservation_id: u64 },
-    /// A query-scoped reservation arena rejected the allocation.
-    ReservationArena { arena_id: u64, reservation_id: u64 },
     /// A query memory domain rejected the allocation.
     QueryMemoryDomain { domain_id: u64, member_id: u64 },
     /// A cache allocation scope rejected the allocation.
@@ -66,12 +57,6 @@ impl DeviceMemoryFailureAllocationDomain {
     fn from_sys(kind: u64, primary_id: u64, secondary_id: u64) -> Option<Self> {
         match kind {
             value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_NONE as u64 => None,
-            value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION as u64 => {
-                Some(Self::StreamReservation { reservation_id: primary_id })
-            },
-            value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA as u64 => {
-                Some(Self::ReservationArena { arena_id: primary_id, reservation_id: secondary_id })
-            },
             value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN as u64 => {
                 Some(Self::QueryMemoryDomain { domain_id: primary_id, member_id: secondary_id })
             },

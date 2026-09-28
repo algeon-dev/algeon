@@ -1,4 +1,4 @@
-//! Stream reservations, reservation arenas, and query memory domains.
+//! Query memory domains and their stream-member leases.
 
 use std::{
     ptr::{self, NonNull},
@@ -10,7 +10,7 @@ use super::{
     resource::{DeviceMemoryResource, DeviceMemoryResourceHandle, record_native_teardown_failure},
     usage::{
         DeviceMemoryPoolUsage, QueryMemoryDomainAllocation, QueryMemoryDomainIdentity, QueryMemoryDomainUsage,
-        ReservationArenaUsage, ReservationUsage,
+        ReservationUsage,
     },
 };
 use crate::{
@@ -19,9 +19,9 @@ use crate::{
     runtime::{self, device_guard::DeviceGuard, stream::CudaStream},
 };
 
-/// A live reservation attached to a CUDA stream.
+/// A shared query-memory-domain member attached to a CUDA stream.
 ///
-/// Dropping this value detaches the reservation from the stream. Allocations
+/// Dropping its final clone detaches the member from the stream. Allocations
 /// made while it was attached remain accounted to the reservation identity
 /// until those retained objects are destroyed.
 #[derive(Debug, Clone)]
@@ -37,9 +37,8 @@ pub struct StreamReservationLease {
     // attempt hold one member per stream for its whole lifetime while
     // handing shared views to per-stage budget tokens.
     pub(super) reservation: Arc<ReservationHandle>,
-    pub(super) resource: Option<DeviceMemoryResource>,
-    pub(super) _query_domain: Option<QueryMemoryDomain>,
-    pub(super) arena: Option<ReservationArena>,
+    pub(super) resource: DeviceMemoryResource,
+    pub(super) _query_domain: QueryMemoryDomain,
     pub(super) stream: CudaStream,
     pub(super) manager: DeviceMemoryManager,
 }
@@ -51,21 +50,9 @@ pub struct StreamReservationLease {
 #[derive(Debug)]
 pub struct RawStreamReservationLease {
     pub(super) reservation: Arc<ReservationHandle>,
-    pub(super) resource: Option<DeviceMemoryResource>,
-    pub(super) _query_domain: Option<QueryMemoryDomain>,
-    pub(super) _arena: Option<ReservationArena>,
+    pub(super) resource: DeviceMemoryResource,
+    pub(super) _query_domain: QueryMemoryDomain,
     pub(super) raw_stream: *mut std::ffi::c_void,
-    pub(super) manager: DeviceMemoryManager,
-}
-
-/// Query-scoped parent reservation shared by stream-bound member leases.
-///
-/// Dropping the final handle prevents new members from attaching. Existing
-/// allocations made by member leases remain accounted natively until those GPU
-/// allocations are released.
-#[derive(Clone, Debug)]
-pub struct ReservationArena {
-    pub(super) handle: Arc<ReservationArenaHandle>,
     pub(super) manager: DeviceMemoryManager,
 }
 
@@ -83,12 +70,6 @@ pub(super) struct ReservationHandle {
 }
 
 #[derive(Debug)]
-pub(super) struct ReservationArenaHandle {
-    pub(super) raw: Option<NonNull<cudf_sys::cudf_reservation_arena_handle_state>>,
-    pub(super) device: DeviceId,
-}
-
-#[derive(Debug)]
 pub(super) struct QueryMemoryDomainHandle {
     pub(super) raw: Option<NonNull<cudf_sys::cudf_query_memory_domain_handle_state>>,
     pub(super) device: DeviceId,
@@ -98,59 +79,9 @@ pub(super) struct QueryMemoryDomainHandle {
 unsafe impl Send for ReservationHandle {}
 unsafe impl Sync for ReservationHandle {}
 
-// SAFETY: native arena usage/resize/destroy paths are synchronized by the manager.
-unsafe impl Send for ReservationArenaHandle {}
-unsafe impl Sync for ReservationArenaHandle {}
-
-// SAFETY: native query-domain usage/resize/destroy paths are synchronized by the manager.
+// SAFETY: native query-domain usage/destroy paths are synchronized by the manager.
 unsafe impl Send for QueryMemoryDomainHandle {}
 unsafe impl Sync for QueryMemoryDomainHandle {}
-
-impl ReservationArena {
-    /// Manager that owns this arena.
-    pub fn manager(&self) -> &DeviceMemoryManager {
-        &self.manager
-    }
-
-    /// CUDA device owned by this arena's manager.
-    pub fn device(&self) -> DeviceId {
-        self.manager.device()
-    }
-
-    /// Attach a stream-bound member reservation to this arena.
-    pub fn reserve_stream(
-        &self,
-        stream: &CudaStream,
-        reservation_id: u64,
-        limit_bytes: usize,
-    ) -> Result<StreamReservationLease> {
-        self.manager.reserve_stream_with_arena(stream, reservation_id, limit_bytes, Some(self))
-    }
-
-    /// Snapshot usage counters for this arena.
-    pub fn usage(&self) -> Result<ReservationArenaUsage> {
-        let _guard = DeviceGuard::new(self.device())?;
-        let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_reservation_arena_usage(self.handle.raw(), &mut usage) },
-            "memory::reservation_arena::usage",
-        )?;
-        Ok(usage.into())
-    }
-
-    /// Resize this arena's hard live-byte limit.
-    ///
-    /// Shrinking below current live usage is allowed. Future member allocations
-    /// fail until enough memory is released or the arena is grown again.
-    pub fn resize(&self, limit_bytes: usize) -> Result<()> {
-        let _guard = DeviceGuard::new(self.device())?;
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_reservation_arena_resize(self.handle.raw(), limit_bytes) },
-            "memory::reservation_arena::resize",
-            [("device", self.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
-        )
-    }
-}
 
 impl QueryMemoryDomain {
     /// Manager that owns this query memory domain.
@@ -279,9 +210,8 @@ impl QueryMemoryDomain {
         Ok(StreamReservationLease {
             manager: self.manager.clone(),
             stream: stream.clone(),
-            arena: None,
-            _query_domain: Some(self.clone()),
-            resource: Some(resource),
+            _query_domain: self.clone(),
+            resource,
             reservation: Arc::new(reservation),
         })
     }
@@ -306,16 +236,6 @@ impl QueryMemoryDomain {
             "memory::query_memory_domain::pool_usage",
         )?;
         Ok(usage.into())
-    }
-
-    /// Resize this domain's live-byte grant.
-    pub fn resize_grant(&self, grant_bytes: usize) -> Result<()> {
-        let _guard = DeviceGuard::new(self.device())?;
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_query_memory_domain_resize_grant(self.handle.raw(), grant_bytes) },
-            "memory::query_memory_domain::resize_grant",
-            [("device", self.device().ordinal().to_string()), ("grant_bytes", grant_bytes.to_string())],
-        )
     }
 
     /// Permanently closes this domain to new allocations and returns its
@@ -407,19 +327,9 @@ impl RawStreamReservationLease {
         Ok(usage.into())
     }
 
-    /// Resize this reservation's hard live-byte limit.
-    pub fn resize(&self, limit_bytes: usize) -> Result<()> {
-        let _guard = DeviceGuard::new(self.manager.device())?;
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw(), limit_bytes) },
-            "memory::raw_stream_reservation_lease::resize",
-            [("device", self.manager.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
-        )
-    }
-
-    /// Device-level memory resource to use for explicit execution options.
+    /// Direct member resource to use for explicit execution options.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
-        self.resource.as_ref().unwrap_or_else(|| self.manager.resource())
+        &self.resource
     }
 }
 
@@ -434,14 +344,9 @@ impl StreamReservationLease {
         &self.stream
     }
 
-    /// Device-level memory resource to place in explicit execution options.
+    /// Direct member resource to place in explicit execution options.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
-        self.resource.as_ref().unwrap_or_else(|| self.manager.resource())
-    }
-
-    /// Parent reservation arena for this lease, when it is an arena member.
-    pub fn reservation_arena(&self) -> Option<&ReservationArena> {
-        self.arena.as_ref()
+        &self.resource
     }
 
     /// Snapshot usage counters for this reservation.
@@ -455,22 +360,7 @@ impl StreamReservationLease {
         Ok(usage.into())
     }
 
-    /// Resize this reservation's hard live-byte limit.
-    ///
-    /// Shrinking below current live usage is allowed. Future allocations fail
-    /// until enough memory is released or the reservation is grown again.
-    /// Query-memory-domain members enforce this independently of the parent
-    /// domain grant.
-    pub fn resize(&self, limit_bytes: usize) -> Result<()> {
-        let _guard = DeviceGuard::new(self.manager.device())?;
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw(), limit_bytes) },
-            "memory::stream_reservation_lease::resize",
-            [("device", self.manager.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
-        )
-    }
-
-    /// Attach a sibling raw CUDA stream to the same query domain or reservation arena.
+    /// Attach a sibling raw CUDA stream to the same query memory domain.
     ///
     /// `raw_stream` must be a live non-default CUDA stream on the manager device.
     /// Drop the returned lease before destroying that stream.
@@ -485,13 +375,6 @@ impl StreamReservationLease {
         limit_bytes: usize,
     ) -> Result<RawStreamReservationLease> {
         let _guard = DeviceGuard::new(self.manager.device())?;
-        if self._query_domain.is_none() && self.arena.is_none() {
-            return Err(error::Error::new_with(
-                error::ErrorCode::UnsupportedOperation,
-                "memory::stream_reservation_lease::attach_sibling_raw_stream",
-                "a standalone stream reservation has no shared query domain or arena",
-            ));
-        }
         if raw_stream.is_null() {
             return Err(error::Error::new_with(
                 error::ErrorCode::ForeignInvalidArgument,
@@ -501,28 +384,15 @@ impl StreamReservationLease {
         }
         let mut raw_reservation = ptr::null_mut();
         let mut raw_resource = ptr::null_mut();
-        let status = if let Some(domain) = &self._query_domain {
-            unsafe {
-                cudf_sys::cudf_query_memory_domain_attach_raw_stream(
-                    domain.handle.raw(),
-                    raw_stream,
-                    reservation_id,
-                    limit_bytes,
-                    &mut raw_reservation,
-                    &mut raw_resource,
-                )
-            }
-        } else {
-            unsafe {
-                cudf_sys::cudf_memory_manager_attach_reservation_to_arena_raw(
-                    self.manager.raw_handle(),
-                    raw_stream,
-                    self.arena.as_ref().unwrap().handle.raw(),
-                    reservation_id,
-                    limit_bytes,
-                    &mut raw_reservation,
-                )
-            }
+        let status = unsafe {
+            cudf_sys::cudf_query_memory_domain_attach_raw_stream(
+                self._query_domain.handle.raw(),
+                raw_stream,
+                reservation_id,
+                limit_bytes,
+                &mut raw_reservation,
+                &mut raw_resource,
+            )
         };
         let reservation = NonNull::new(raw_reservation)
             .map(|raw| ReservationHandle { raw: Some(raw), device: self.manager.device() });
@@ -551,31 +421,26 @@ impl StreamReservationLease {
             )
             .unwrap_err()
         })?;
+        let resource = resource.ok_or_else(|| {
+            error::require_non_null(
+                raw_resource,
+                "memory::stream_reservation_lease::attach_sibling_raw_stream",
+                "device memory resource",
+            )
+            .unwrap_err()
+        })?;
         Ok(RawStreamReservationLease {
             manager: self.manager.clone(),
             raw_stream,
             reservation: Arc::new(reservation),
             resource,
             _query_domain: self._query_domain.clone(),
-            _arena: self.arena.clone(),
         })
     }
 
     /// Borrow this lease as per-operation execution overrides.
     pub fn execution_overrides(&self) -> crate::ExecutionOverrides<'_> {
         crate::ExecutionOverrides::new().with_stream(&self.stream).with_memory_resource(self.memory_resource())
-    }
-}
-
-impl Drop for ReservationArenaHandle {
-    fn drop(&mut self) {
-        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
-        runtime::drop_device_resource(&mut raw, self.device, "ReservationArenaHandle::drop", |owned| {
-            let status = unsafe { cudf_sys::cudf_reservation_arena_destroy(owned) };
-            if status != cudf_sys::CUDF_SUCCESS {
-                record_native_teardown_failure(self.device, "ReservationArenaHandle::drop", status);
-            }
-        });
     }
 }
 

@@ -28,7 +28,7 @@ use cudf::{
 };
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
 
-use crate::common::{error_context_value, nullable_series, run_named_cases, series};
+use crate::common::{error_context_value, execution_budget_token, nullable_series, run_named_cases, series};
 
 // ===========================================================================
 // Helpers
@@ -418,11 +418,11 @@ fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fract
         8,
     );
     let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
-    let token = Runtime::builder()
-        .build()
-        .unwrap()
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_div_expr"))
-        .unwrap();
+    let token = execution_budget_token(
+        &Runtime::builder().build().unwrap(),
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_div_expr"),
+    )
+    .unwrap();
 
     let outcome = df
         .with_columns_with_budget(

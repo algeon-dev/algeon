@@ -40,8 +40,6 @@ typedef enum {
 
 typedef enum {
   CUDF_MEMORY_FAILURE_DOMAIN_NONE                = 0,
-  CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION  = 1,
-  CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA   = 2,
   CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN = 3,
 } cudf_memory_failure_domain_t;
 
@@ -104,9 +102,6 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
 cudf_status_t cudf_memory_resource_create_cuda_async(size_t initial_pool_size,
                                                      uint64_t release_threshold,
                                                      cudf_memory_resource_handle* out);
-cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
-                                                   size_t allocation_limit,
-                                                   cudf_memory_resource_handle* out);
 cudf_status_t cudf_memory_resource_create_failure_callback(cudf_memory_resource_handle upstream,
                                                            cudf_memory_failure_callback_t callback,
                                                            void* callback_arg,

@@ -2,7 +2,7 @@ mod common;
 
 use std::{
     sync::{
-        Arc, Barrier, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -20,6 +20,8 @@ use cudf::{
 };
 use cudf_sys::test_support;
 use static_assertions::assert_not_impl_any;
+
+use crate::common::{execution_budget_token, execution_budget_token_in_domain, query_domain_member};
 
 assert_not_impl_any!(cudf::ExecutionBudgetToken: Clone);
 
@@ -42,7 +44,11 @@ struct BudgetReservationDropOrderProbe {
 impl Drop for BudgetReservationDropOrderProbe {
     fn drop(&mut self) {
         let reservation_id = NEXT_BUDGET_LIFETIME_TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let detached = self.manager.reserve_stream(&self.stream, reservation_id, 1).is_ok();
+        let detached = self
+            .manager
+            .query_memory_domain(reservation_id, QueryMemoryDomainOptions::new(1))
+            .and_then(|domain| domain.reserve_stream(&self.stream, reservation_id, 1))
+            .is_ok();
         self.reservation_detached.store(detached, Ordering::SeqCst);
     }
 }
@@ -365,7 +371,7 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
             callback_calls.fetch_add(1, Ordering::SeqCst);
             seen_source.store(failure_source_code(info.source), Ordering::SeqCst);
             seen_trim_count.store(info.trim_retry_count, Ordering::SeqCst);
-            if let Some(DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id }) =
+            if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { member_id: reservation_id, .. }) =
                 info.allocation_domain
             {
                 seen_reservation_id.store(reservation_id, Ordering::SeqCst);
@@ -374,7 +380,7 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
     };
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
-    let _lease = manager.reserve_stream(runtime.stream(), 9002, 1).unwrap();
+    let _lease = query_domain_member(&runtime, 9002, 1).unwrap();
 
     let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
 
@@ -394,7 +400,7 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
 }
 
 #[test]
-fn reservation_arena_failure_callback_reports_arena_and_member_identity() {
+fn query_domain_failure_callback_reports_arena_and_member_identity() {
     let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device = manager_runtime.device();
     let manager = manager_runtime.device_memory_manager().unwrap();
@@ -406,8 +412,10 @@ fn reservation_arena_failure_callback_reports_arena_and_member_identity() {
     let callback_reservation_id = Arc::clone(&seen_reservation_id);
     let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
         callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
-        if let Some(DeviceMemoryFailureAllocationDomain::ReservationArena { arena_id, reservation_id }) =
-            info.allocation_domain
+        if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain {
+            domain_id: arena_id,
+            member_id: reservation_id,
+        }) = info.allocation_domain
         {
             callback_arena_id.store(arena_id, Ordering::SeqCst);
             callback_reservation_id.store(reservation_id, Ordering::SeqCst);
@@ -415,7 +423,7 @@ fn reservation_arena_failure_callback_reports_arena_and_member_identity() {
     });
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
-    let arena = manager.reservation_arena(30_005, 1).unwrap();
+    let arena = manager.query_memory_domain(30_005, QueryMemoryDomainOptions::new(1)).unwrap();
     let _lease = arena.reserve_stream(runtime.stream(), 30_505, 64 * 1024 * 1024).unwrap();
 
     let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
@@ -429,7 +437,7 @@ fn reservation_arena_failure_callback_reports_arena_and_member_identity() {
 #[test]
 fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_reservations() {
     assert_send_sync::<DeviceMemoryManager>();
-    assert_send_sync::<cudf::ReservationArena>();
+    assert_send_sync::<cudf::QueryMemoryDomain>();
     assert_send_sync::<StreamReservationLease>();
 
     let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -438,9 +446,9 @@ fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_rese
 
     assert_eq!(rt.memory_resource().testing_raw_handle_value(), manager_mr);
 
-    let lease = rt.stream_reservation(42, 64 * 1024 * 1024).unwrap();
+    let lease = query_domain_member(&rt, 42, 64 * 1024 * 1024).unwrap();
     assert_eq!(lease.stream().testing_raw_handle_value(), rt.stream().testing_raw_handle_value());
-    assert_eq!(lease.memory_resource().testing_raw_handle_value(), manager_mr);
+    assert_ne!(lease.memory_resource().testing_raw_handle_value(), manager_mr);
 
     let usage = lease.usage().unwrap();
     assert_eq!(usage.reservation_id, 42);
@@ -453,7 +461,7 @@ fn raw_stream_sibling_reservation_accounts_and_detaches_before_stream_destructio
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
-    let arena = manager.reservation_arena(30_901, 4 * 1024 * 1024).unwrap();
+    let arena = manager.query_memory_domain(30_901, QueryMemoryDomainOptions::new(4 * 1024 * 1024)).unwrap();
     let sibling = arena.reserve_stream(runtime.stream(), 30_902, 4 * 1024 * 1024).unwrap();
     let mut stream_handle = std::ptr::null_mut();
     assert_eq!(unsafe { cudf_sys::cudf_stream_create(&mut stream_handle) }, cudf_sys::CUDF_SUCCESS);
@@ -524,12 +532,12 @@ fn raw_current_resource_route_accounts_and_detaches_before_stream_reuse() {
 }
 
 #[test]
-fn reservation_arena_enforces_query_cap_across_streams() {
+fn query_domain_enforces_query_cap_across_streams() {
     let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = left.device_memory_manager().unwrap();
-    let arena = manager.reservation_arena(30_001, 12 * 1024 * 1024).unwrap();
+    let arena = manager.query_memory_domain(30_001, QueryMemoryDomainOptions::new(12 * 1024 * 1024)).unwrap();
     let left_lease = arena.reserve_stream(left.stream(), 30_101, 16 * 1024 * 1024).unwrap();
     let right_lease = arena.reserve_stream(right.stream(), 30_202, 16 * 1024 * 1024).unwrap();
 
@@ -540,10 +548,10 @@ fn reservation_arena_enforces_query_cap_across_streams() {
     assert_eq!(left_lease.usage().unwrap().failed_allocation_count, 0);
     assert!(
         right_lease.usage().unwrap().failed_allocation_count > 0,
-        "member usage should record failures caused by the parent arena cap"
+        "member usage should record failures caused by the parent domain cap"
     );
     let arena_usage = arena.usage().unwrap();
-    assert_eq!(arena_usage.arena_id, 30_001);
+    assert_eq!(arena_usage.domain_id, 30_001);
     assert_eq!(arena_usage.active_members, 2);
     assert!(arena_usage.failed_allocation_count > 0);
     assert!(arena_usage.current_bytes >= 8 * 1024 * 1024);
@@ -552,45 +560,11 @@ fn reservation_arena_enforces_query_cap_across_streams() {
 }
 
 #[test]
-fn reservation_arena_resize_grows_and_shrinks_parent_limit() {
-    let _pool_state = shared_device_pool_guard();
-    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = left.device_memory_manager().unwrap();
-    let arena = manager.reservation_arena(30_002, 12 * 1024 * 1024).unwrap();
-    let _left_lease = arena.reserve_stream(left.stream(), 30_111, 32 * 1024 * 1024).unwrap();
-    let _right_lease = arena.reserve_stream(right.stream(), 30_222, 32 * 1024 * 1024).unwrap();
-
-    let left_buffer = left.device_buffer(8 * 1024 * 1024).unwrap();
-    let err = expect_device_buffer_error(right.device_buffer(8 * 1024 * 1024));
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-
-    arena.resize(20 * 1024 * 1024).unwrap();
-    let right_buffer = right.device_buffer(8 * 1024 * 1024).unwrap();
-    let grown = arena.usage().unwrap();
-    assert_eq!(grown.allocation_limit_bytes, 20 * 1024 * 1024);
-    assert!(grown.current_bytes >= 16 * 1024 * 1024);
-
-    arena.resize(1).unwrap();
-    let shrunk = arena.usage().unwrap();
-    assert_eq!(shrunk.allocation_limit_bytes, 1);
-    assert!(shrunk.current_aligned_bytes > shrunk.allocation_limit_bytes);
-    let err = expect_device_buffer_error(right.device_buffer(1));
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-
-    drop(left_buffer);
-    drop(right_buffer);
-    arena.resize(1024 * 1024).unwrap();
-    let buffer = right.device_buffer(1024).unwrap();
-    assert_eq!(buffer.size_bytes().unwrap(), 1024);
-}
-
-#[test]
-fn reservation_arena_counts_retained_allocations_after_member_detach() {
+fn query_domain_counts_retained_allocations_after_member_detach() {
     let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
-    let arena = manager.reservation_arena(30_003, 16 * 1024 * 1024).unwrap();
+    let arena = manager.query_memory_domain(30_003, QueryMemoryDomainOptions::new(16 * 1024 * 1024)).unwrap();
     let lease = arena.reserve_stream(runtime.stream(), 30_303, 16 * 1024 * 1024).unwrap();
 
     let buffer = runtime.device_buffer(4 * 1024 * 1024).unwrap();
@@ -604,7 +578,7 @@ fn reservation_arena_counts_retained_allocations_after_member_detach() {
     assert_eq!(after_detach.active_members, 0);
     assert!(
         after_detach.current_bytes >= 4 * 1024 * 1024,
-        "retained allocation should keep charging the arena after its member detaches"
+        "retained allocation should keep charging the domain after its member detaches"
     );
 
     drop(buffer);
@@ -612,28 +586,8 @@ fn reservation_arena_counts_retained_allocations_after_member_detach() {
     let after_drop = arena.usage().unwrap();
     assert!(
         after_drop.current_bytes < after_detach.current_bytes,
-        "dropping retained allocation must release arena accounting"
+        "dropping retained allocation must release domain accounting"
     );
-}
-
-#[test]
-fn execution_budget_token_can_attach_as_arena_member() {
-    let _pool_state = shared_device_pool_guard();
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = runtime.device_memory_manager().unwrap();
-    let arena = manager.reservation_arena(30_004, 64 * 1024 * 1024).unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_arena(
-        &runtime,
-        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("arena_member"),
-        &arena,
-    )
-    .unwrap();
-
-    let outcome = runtime.series_from_value_with_budget(13i32, 4096, &token).unwrap();
-
-    assert_eq!(token.enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
-    assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
-    assert!(arena.usage().unwrap().current_bytes >= outcome.value().device_allocated_size_bytes().unwrap() as u64);
 }
 
 #[test]
@@ -648,13 +602,13 @@ fn execution_budget_token_can_attach_as_query_domain_member() {
             QueryMemoryDomainOptions::new(64 * 1024 * 1024).with_ceiling_bytes(64 * 1024 * 1024),
         )
         .unwrap();
-    let left_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let left_token = execution_budget_token_in_domain(
         &left,
         ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_domain_member"),
         &domain,
     )
     .unwrap();
-    let right_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let right_token = execution_budget_token_in_domain(
         &right,
         ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_domain_member"),
         &domain,
@@ -697,7 +651,7 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
             QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
         )
         .unwrap();
-    let producer = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let producer = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("frozen_domain_producer"),
         &domain,
@@ -711,7 +665,7 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
     assert!(frozen.current_aligned_bytes > 0);
     assert_eq!(domain.freeze().unwrap().current_aligned_bytes, frozen.current_aligned_bytes);
 
-    let consumer = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let consumer = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("frozen_domain_rejected_allocation"),
         &domain,
@@ -737,33 +691,10 @@ fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
 fn execution_budget_token_retains_source_runtime_until_token_drop() {
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();
-    let token = cudf::ExecutionBudgetToken::from_runtime(
-        &runtime,
-        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_lifetime"),
-    )
-    .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_lifetime"))
+            .unwrap();
 
-    drop(runtime);
-    assert_eq!(drops.load(Ordering::SeqCst), 0);
-
-    drop(token);
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn arena_budget_token_retains_source_runtime_after_external_handles_drop() {
-    let _pool_state = shared_device_pool_guard();
-    let (runtime, drops) = runtime_with_budget_drop_probe();
-    let manager = runtime.device_memory_manager().unwrap();
-    let arena = manager.reservation_arena(next_budget_lifetime_test_id(), 1024 * 1024).unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_arena(
-        &runtime,
-        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("arena_runtime_lifetime"),
-        &arena,
-    )
-    .unwrap();
-
-    drop(arena);
     drop(runtime);
     assert_eq!(drops.load(Ordering::SeqCst), 0);
 
@@ -782,7 +713,7 @@ fn query_domain_budget_token_retains_source_runtime_after_external_handles_drop(
             QueryMemoryDomainOptions::new(1024 * 1024).with_ceiling_bytes(1024 * 1024),
         )
         .unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(1024 * 1024).with_boundary("query_domain_runtime_lifetime"),
         &domain,
@@ -802,7 +733,7 @@ fn execution_budget_token_constructed_from_runtime_clone_retains_exact_source() 
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();
     let supplied_clone = runtime.clone();
-    let token = cudf::ExecutionBudgetToken::from_runtime(
+    let token = execution_budget_token(
         &supplied_clone,
         ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_clone_lifetime"),
     )
@@ -827,7 +758,7 @@ fn budgeted_output_inherits_retained_runtime_lifetime_after_token_drop() {
             QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
         )
         .unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("budgeted_output_runtime_lifetime"),
         &domain,
@@ -849,7 +780,7 @@ fn execution_budget_token_retains_only_its_source_runtime() {
     let _pool_state = shared_device_pool_guard();
     let (runtime_a, drops_a) = runtime_with_budget_drop_probe();
     let (runtime_b, drops_b) = runtime_with_budget_drop_probe();
-    let token = cudf::ExecutionBudgetToken::from_runtime(
+    let token = execution_budget_token(
         &runtime_a,
         ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_a_lifetime"),
     )
@@ -871,11 +802,9 @@ fn execution_budget_token_retention_has_no_runtime_affinity_cycle() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let affinity_anchor = runtime.affinity_anchor();
     let lease_anchor = runtime.lease_anchor();
-    let token = cudf::ExecutionBudgetToken::from_runtime(
-        &runtime,
-        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_cycle_check"),
-    )
-    .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_cycle_check"))
+            .unwrap();
 
     drop(runtime);
     assert!(affinity_anchor.is_alive());
@@ -900,7 +829,7 @@ fn execution_budget_token_detaches_reservation_before_retained_runtime_drop() {
         }))
         .unwrap();
     drop(base);
-    let token = cudf::ExecutionBudgetToken::from_runtime(
+    let token = execution_budget_token(
         &retained_runtime,
         ExecutionBudgetRequest::new(1024 * 1024).with_boundary("reservation_drop_order"),
     )
@@ -908,7 +837,11 @@ fn execution_budget_token_detaches_reservation_before_retained_runtime_drop() {
     drop(retained_runtime);
 
     assert!(
-        manager.reserve_stream(token.stream(), next_budget_lifetime_test_id(), 1).is_err(),
+        manager
+            .query_memory_domain(next_budget_lifetime_test_id(), QueryMemoryDomainOptions::new(1))
+            .unwrap()
+            .reserve_stream(token.stream(), next_budget_lifetime_test_id(), 1)
+            .is_err(),
         "the token reservation must still be attached before token drop"
     );
     assert!(!reservation_detached.load(Ordering::SeqCst));
@@ -931,7 +864,7 @@ fn query_domain_member_usage_closes_when_budget_allocation_is_freed() {
             QueryMemoryDomainOptions::new(16 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
         )
         .unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("domain_member_deallocation"),
         &domain,
@@ -959,28 +892,6 @@ fn query_domain_member_usage_closes_when_budget_allocation_is_freed() {
 }
 
 #[test]
-fn query_domain_member_budget_token_resize_updates_hard_member_limit() {
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = runtime.device_memory_manager().unwrap();
-    let domain = manager
-        .query_memory_domain(40_013, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
-        .unwrap();
-    let mut token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
-        &runtime,
-        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("domain_member_resize"),
-        &domain,
-    )
-    .unwrap();
-
-    token.resize(1024).unwrap();
-
-    assert_eq!(token.request().budget_bytes(), 1024);
-    assert_eq!(token.reservation_usage().unwrap().allocation_limit_bytes, 1024);
-    let err = runtime.series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-}
-
-#[test]
 fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -989,7 +900,7 @@ fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
         .unwrap();
 
     {
-        let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        let token = execution_budget_token_in_domain(
             &runtime,
             ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("first_domain_member"),
             &domain,
@@ -999,7 +910,7 @@ fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
         assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     }
 
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("second_domain_member"),
         &domain,
@@ -1017,14 +928,14 @@ fn second_live_query_domain_budget_token_on_same_stream_is_structured_rejection(
     let domain = manager
         .query_memory_domain(40_015, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
         .unwrap();
-    let _first = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let _first = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("first_live_domain_member"),
         &domain,
     )
     .unwrap();
 
-    let err = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let err = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("second_live_domain_member"),
         &domain,
@@ -1112,14 +1023,12 @@ fn shared_pool_keeps_query_domain_limits_and_outputs_independent() {
     assert_eq!(detail.generation, identity.generation);
     assert_eq!(left_domain.usage().unwrap().current_allocations, 0);
 
-    left_domain.resize_grant(1).unwrap();
-    let left_error = left.series(&[1i32, 2, 3]).unwrap_err();
+    let left_error = expect_device_buffer_error(left.device_buffer(domain_limit + 256));
     assert_eq!(left_error.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(left_error.ffi_detail().unwrap().failure_source, CudfErrorFailureSource::ReservationLimit);
     assert_eq!(left_domain.usage().unwrap().current_allocations, 0);
     assert_eq!(right_output.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 
-    left_domain.resize_grant(domain_limit).unwrap();
     let alternating_started = Instant::now();
     let left_sorted = left.series(&[5i32, 1, 4, 2, 3]).unwrap().sort_values(SortOptions::default()).unwrap();
     let right_sorted = right_output.sort_values(SortOptions::default()).unwrap();
@@ -1156,13 +1065,13 @@ fn query_domain_member_limit_is_independent_from_domain_grant() {
             QueryMemoryDomainOptions::new(16 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
         )
         .unwrap();
-    let small = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let small = execution_budget_token_in_domain(
         &left,
         ExecutionBudgetRequest::new(1024).with_boundary("small_member"),
         &domain,
     )
     .unwrap();
-    let large = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let large = execution_budget_token_in_domain(
         &right,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("large_member"),
         &domain,
@@ -1188,7 +1097,7 @@ fn query_domain_budget_output_uses_direct_member_resource_without_stream_route()
             QueryMemoryDomainOptions::new(16 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
         )
         .unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("direct_member"),
         &domain,
@@ -1274,97 +1183,6 @@ fn query_memory_domain_frees_are_accounted_per_domain() {
     drop(right_buffer);
 
     assert_eq!(right_domain.usage().unwrap().current_bytes, 0);
-}
-
-#[test]
-fn query_memory_domain_resize_updates_gate_but_rejects_above_ceiling() {
-    let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = rt.device_memory_manager().unwrap();
-    let domain = manager
-        .query_memory_domain(40_002, QueryMemoryDomainOptions::new(1).with_ceiling_bytes(8 * 1024 * 1024))
-        .unwrap();
-    let _lease = domain.reserve_stream(rt.stream(), 40_201, 8 * 1024 * 1024).unwrap();
-
-    let err = expect_device_buffer_error(rt.device_buffer(1024));
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert!(domain.usage().unwrap().failed_allocation_count > 0);
-
-    domain.resize_grant(8 * 1024 * 1024).unwrap();
-    let buffer = rt.device_buffer(1024).unwrap();
-    assert_eq!(buffer.size_bytes().unwrap(), 1024);
-
-    let err = domain.resize_grant(16 * 1024 * 1024).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-
-    _lease.resize(1024).unwrap();
-    assert_eq!(_lease.usage().unwrap().allocation_limit_bytes, 1024);
-}
-
-#[test]
-fn query_memory_domain_and_legacy_reservation_are_mutually_exclusive_per_stream() {
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let manager = runtime.device_memory_manager().unwrap();
-    let domain = manager
-        .query_memory_domain(40_011, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
-        .unwrap();
-
-    let _domain_lease = domain.reserve_stream(runtime.stream(), 41_101, 8 * 1024 * 1024).unwrap();
-    let err = runtime.stream_reservation(41_102, 8 * 1024 * 1024).unwrap_err();
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-}
-
-#[test]
-fn concurrent_query_domain_and_legacy_reservation_on_same_stream_never_both_attach() {
-    let _pool_state = shared_device_pool_guard();
-
-    for iteration in 0..64 {
-        let runtime = Arc::new(Runtime::builder().with_device_memory_manager().build().unwrap());
-        let manager = runtime.device_memory_manager().unwrap();
-        let domain = Arc::new(
-            manager
-                .query_memory_domain(
-                    50_000 + iteration,
-                    QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
-                )
-                .unwrap(),
-        );
-        let barrier = Arc::new(Barrier::new(3));
-
-        let legacy_runtime = Arc::clone(&runtime);
-        let legacy_barrier = Arc::clone(&barrier);
-        let legacy = std::thread::spawn(move || {
-            legacy_barrier.wait();
-            legacy_runtime.execution_budget_token(
-                ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("concurrent_legacy_reservation"),
-            )
-        });
-
-        let domain_runtime = Arc::clone(&runtime);
-        let domain_barrier = Arc::clone(&barrier);
-        let domain_handle = Arc::clone(&domain);
-        let query_domain = std::thread::spawn(move || {
-            domain_barrier.wait();
-            cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
-                &domain_runtime,
-                ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("concurrent_query_domain"),
-                domain_handle.as_ref(),
-            )
-        });
-
-        barrier.wait();
-        // Both results must outlive both joins: dropping the winner's token
-        // detaches its reservation, after which a delayed loser attach
-        // legitimately succeeds without exercising the exclusion.
-        let legacy_result = legacy.join().unwrap();
-        let domain_result = query_domain.join().unwrap();
-        let legacy_attached = legacy_result.is_ok();
-        let domain_attached = domain_result.is_ok();
-        assert_ne!(
-            legacy_attached, domain_attached,
-            "iteration {iteration}: exactly one reservation family must attach to one stream"
-        );
-    }
 }
 
 #[test]
@@ -1519,9 +1337,6 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     assert_eq!(replacement_lease.usage().unwrap().routed_total_allocations, 0);
     drop(replacement_lease);
 
-    let legacy = runtime.stream_reservation(61_103, 64 * 1024 * 1024).unwrap();
-    drop(legacy);
-
     let replacement_lease = replacement.reserve_stream(runtime.stream(), 61_104, 64 * 1024 * 1024).unwrap();
 
     std::thread::spawn(move || drop(buffer)).join().unwrap();
@@ -1672,7 +1487,7 @@ fn query_domain_direct_output_keeps_domain_registry_until_output_drop() {
             QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
         )
         .unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("retained_direct_member"),
         &domain,
@@ -1700,7 +1515,7 @@ fn fused_filter_literals_use_active_query_domain_member_after_input_member_detac
             QueryMemoryDomainOptions::new(32 * 1024 * 1024).with_ceiling_bytes(32 * 1024 * 1024),
         )
         .unwrap();
-    let input_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let input_token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("filter_input"),
         &domain,
@@ -1710,7 +1525,7 @@ fn fused_filter_literals_use_active_query_domain_member_after_input_member_detac
     let frame = DataFrame::from_series([("value", input)]).unwrap();
     drop(input_token);
 
-    let filter_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let filter_token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("filter_output"),
         &domain,
@@ -1733,7 +1548,7 @@ fn detached_query_domain_member_allocation_is_permanent_invalid_input() {
             QueryMemoryDomainOptions::new(16 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
         )
         .unwrap();
-    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("detached_member_input"),
         &domain,
@@ -1761,7 +1576,7 @@ fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
             QueryMemoryDomainOptions::new(32 * 1024 * 1024).with_ceiling_bytes(32 * 1024 * 1024),
         )
         .unwrap();
-    let input_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let input_token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("decimal_filter_input"),
         &domain,
@@ -1776,7 +1591,7 @@ fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
     drop(integer_frame);
     drop(input_token);
 
-    let filter_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+    let filter_token = execution_budget_token_in_domain(
         &runtime,
         ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("decimal_filter_output"),
         &domain,
@@ -1790,23 +1605,6 @@ fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
 }
 
 #[test]
-fn query_execution_context_reserves_stream_against_device_manager_resource() {
-    let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let query = rt.query_execution();
-    let manager_mr = query.device_memory_manager().unwrap().resource().testing_raw_handle_value();
-
-    let lease = query.reserve_stream(77, 32 * 1024 * 1024).unwrap();
-
-    assert_eq!(lease.stream().testing_raw_handle_value(), query.stream().testing_raw_handle_value());
-    assert_eq!(lease.memory_resource().testing_raw_handle_value(), manager_mr);
-
-    let usage = lease.usage().unwrap();
-    assert_eq!(usage.reservation_id, 77);
-    assert!(usage.attached);
-    assert_eq!(usage.allocation_limit_bytes, 32 * 1024 * 1024);
-}
-
-#[test]
 fn concurrent_stream_reservations_share_device_resource_without_counter_crosstalk() {
     let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -1817,9 +1615,9 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
     assert_ne!(left.stream().testing_raw_handle_value(), right.stream().testing_raw_handle_value());
 
     let left_handle = std::thread::spawn(move || {
-        let token = left
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_query"))
-            .unwrap();
+        let token =
+            execution_budget_token(&left, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_query"))
+                .unwrap();
         let outcome = left.series_from_value_with_budget(11i32, 1024, &token).unwrap();
         let usage = token.reservation_usage().unwrap();
         assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 11);
@@ -1832,9 +1630,9 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
     });
 
     let right_handle = std::thread::spawn(move || {
-        let token = right
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_query"))
-            .unwrap();
+        let token =
+            execution_budget_token(&right, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_query"))
+                .unwrap();
         let outcome = right.series_from_value_with_budget(29i32, 2048, &token).unwrap();
         let usage = token.reservation_usage().unwrap();
         assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 29);
@@ -1849,8 +1647,8 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
     let left_usage = left_handle.join().unwrap();
     let right_usage = right_handle.join().unwrap();
 
-    assert_eq!(left_usage.3, device_mr);
-    assert_eq!(right_usage.3, device_mr);
+    assert_ne!(left_usage.3, device_mr);
+    assert_ne!(right_usage.3, device_mr);
     assert!(left_usage.1 >= left_usage.0);
     assert!(right_usage.1 >= right_usage.0);
     assert!(left_usage.2 >= left_usage.0);
@@ -1872,24 +1670,34 @@ fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
     let left_handle = std::thread::spawn(move || {
         set_current_device_for_runtime(&left);
         assert_eq!(current_device_resource_raw_value(), device_mr);
-        let token = left
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_current_mr"))
-            .unwrap();
+        let token = execution_budget_token(
+            &left,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_current_mr"),
+        )
+        .unwrap();
         let outcome = left.series_from_value_with_budget(3i32, 1024, &token).unwrap();
-        assert_eq!(outcome.value().as_column().testing_execution_domain_mr_value(), device_mr);
-        assert_eq!(token.memory_resource().testing_raw_handle_value(), device_mr);
+        assert_eq!(
+            outcome.value().as_column().testing_execution_domain_mr_value(),
+            token.memory_resource().testing_raw_handle_value()
+        );
+        assert_ne!(token.memory_resource().testing_raw_handle_value(), device_mr);
         assert_eq!(current_device_resource_raw_value(), device_mr);
     });
 
     let right_handle = std::thread::spawn(move || {
         set_current_device_for_runtime(&right);
         assert_eq!(current_device_resource_raw_value(), device_mr);
-        let token = right
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_current_mr"))
-            .unwrap();
+        let token = execution_budget_token(
+            &right,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_current_mr"),
+        )
+        .unwrap();
         let outcome = right.series_from_value_with_budget(5i32, 2048, &token).unwrap();
-        assert_eq!(outcome.value().as_column().testing_execution_domain_mr_value(), device_mr);
-        assert_eq!(token.memory_resource().testing_raw_handle_value(), device_mr);
+        assert_eq!(
+            outcome.value().as_column().testing_execution_domain_mr_value(),
+            token.memory_resource().testing_raw_handle_value()
+        );
+        assert_ne!(token.memory_resource().testing_raw_handle_value(), device_mr);
         assert_eq!(current_device_resource_raw_value(), device_mr);
     });
 
@@ -1903,9 +1711,9 @@ fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
 fn reservation_usage_releases_retained_output_by_allocation_identity() {
     let _pool_state = shared_device_pool_guard();
     let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let token = rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("retained_output"))
-        .unwrap();
+    let token =
+        execution_budget_token(&rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("retained_output"))
+            .unwrap();
 
     let outcome = rt.series_from_value_with_budget(7i32, 4096, &token).unwrap();
     let output_bytes = outcome.value().device_allocated_size_bytes().unwrap();
@@ -1926,10 +1734,10 @@ fn reservation_limit_failure_is_stream_local() {
     let _pool_state = shared_device_pool_guard();
     let small_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
     let large_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let small = small_rt.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("small_query")).unwrap();
-    let large = large_rt
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("large_query"))
-        .unwrap();
+    let small = execution_budget_token(&small_rt, ExecutionBudgetRequest::new(1).with_boundary("small_query")).unwrap();
+    let large =
+        execution_budget_token(&large_rt, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("large_query"))
+            .unwrap();
 
     let err = small_rt.series_from_value_with_budget(1i32, 1024, &small).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
@@ -1943,16 +1751,16 @@ fn reservation_limit_failure_is_stream_local() {
 #[test]
 fn failure_callback_memory_resource_observes_once_and_preserves_failure() {
     let device = DeviceId::current().unwrap();
-    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
-    let limiting = upstream.limiting(1).unwrap();
+    let base = Runtime::builder().with_device(device).build().unwrap();
+    let lease = query_domain_member(&base, 9003, 1).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&calls);
     let callback = Arc::new(move |bytes: usize| {
         assert!(bytes > 0);
         callback_calls.fetch_add(1, Ordering::SeqCst);
     });
-    let callback_mr = limiting.with_failure_callback(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let callback_mr = lease.memory_resource().with_failure_callback(callback).unwrap();
+    let runtime = base.with_memory_resource_override(&callback_mr, "test.callback_member").unwrap();
 
     let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
 
@@ -1964,16 +1772,16 @@ fn failure_callback_memory_resource_observes_once_and_preserves_failure() {
 #[test]
 fn failure_callback_memory_resource_catches_rust_panics() {
     let device = DeviceId::current().unwrap();
-    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
-    let limiting = upstream.limiting(1).unwrap();
+    let base = Runtime::builder().with_device(device).build().unwrap();
+    let lease = query_domain_member(&base, 9003, 1).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&calls);
     let callback = Arc::new(move |_bytes: usize| {
         callback_calls.fetch_add(1, Ordering::SeqCst);
         panic!("failure callback panic must not cross FFI");
     });
-    let callback_mr = limiting.with_failure_callback(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let callback_mr = lease.memory_resource().with_failure_callback(callback).unwrap();
+    let runtime = base.with_memory_resource_override(&callback_mr, "test.callback_member").unwrap();
 
     let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
 
@@ -1991,15 +1799,15 @@ fn failure_callback_memory_resource_catches_rust_panics() {
 #[test]
 fn failure_callback_memory_resource_never_retries() {
     let device = DeviceId::current().unwrap();
-    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
-    let limiting = upstream.limiting(1).unwrap();
+    let base = Runtime::builder().with_device(device).build().unwrap();
+    let lease = query_domain_member(&base, 9003, 1).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&calls);
     let callback = Arc::new(move |_bytes: usize| {
         callback_calls.fetch_add(1, Ordering::SeqCst);
     });
-    let callback_mr = limiting.with_failure_callback(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let callback_mr = lease.memory_resource().with_failure_callback(callback).unwrap();
+    let runtime = base.with_memory_resource_override(&callback_mr, "test.callback_member").unwrap();
 
     let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
 
@@ -2021,110 +1829,13 @@ fn failure_callback_memory_resource_observes_stream_reservation_limit_once() {
     });
     let callback_mr = manager.resource().with_failure_callback(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
-    let _lease = manager.reserve_stream(runtime.stream(), 9001, 1).unwrap();
+    let _lease = query_domain_member(&runtime, 9001, 1).unwrap();
 
     let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn stream_reservation_resize_grows_limit_for_later_allocations() {
-    let _pool_state = shared_device_pool_guard();
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let lease = runtime.stream_reservation(9101, 1).unwrap();
-
-    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(lease.usage().unwrap().allocation_limit_bytes, 1);
-
-    lease.resize(1 << 20).unwrap();
-
-    let series = runtime.series(&[1i32, 2, 3]).unwrap();
-    assert_eq!(series.len(), 3);
-    let usage = lease.usage().unwrap();
-    assert_eq!(usage.allocation_limit_bytes, 1 << 20);
-    assert!(usage.peak_aligned_bytes > 0);
-}
-
-#[test]
-fn stream_reservation_resize_allows_shrink_below_live_usage_and_blocks_future_allocations() {
-    let _pool_state = shared_device_pool_guard();
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let lease = runtime.stream_reservation(9102, 1 << 20).unwrap();
-    let retained = runtime.series(&[1i32, 2, 3]).unwrap();
-    let live_usage = lease.usage().unwrap();
-    assert!(live_usage.current_aligned_bytes > 1);
-
-    lease.resize(1).unwrap();
-
-    let shrunk_usage = lease.usage().unwrap();
-    assert_eq!(shrunk_usage.allocation_limit_bytes, 1);
-    assert!(shrunk_usage.current_aligned_bytes > shrunk_usage.allocation_limit_bytes);
-
-    let err = runtime.series(&[4i32, 5, 6]).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-
-    drop(retained);
-    lease.resize(1 << 20).unwrap();
-    let series = runtime.series(&[4i32, 5, 6]).unwrap();
-    assert_eq!(series.len(), 3);
-}
-
-#[test]
-fn execution_budget_token_resize_grows_limit_and_updates_reports() {
-    let _pool_state = shared_device_pool_guard();
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let mut token =
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("resize_grow")).unwrap();
-
-    let err = runtime.series_from_value_with_budget(1i32, 3, &token).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(token.request().budget_bytes(), 1);
-    assert_eq!(token.reservation_usage().unwrap().allocation_limit_bytes, 1);
-
-    token.resize(1 << 20).unwrap();
-
-    let outcome = runtime.series_from_value_with_budget(2i32, 3, &token).unwrap();
-    assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap(), vec![2, 2, 2]);
-    assert_eq!(token.request().budget_bytes(), 1 << 20);
-    assert_eq!(outcome.report().request().budget_bytes(), 1 << 20);
-    let usage = token.reservation_usage().unwrap();
-    assert_eq!(usage.allocation_limit_bytes, 1 << 20);
-    assert!(usage.peak_aligned_bytes > 0);
-}
-
-#[test]
-fn execution_budget_token_resize_shrinks_below_live_usage_and_blocks_future_allocations() {
-    let _pool_state = shared_device_pool_guard();
-    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let mut token =
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1 << 20).with_boundary("resize_shrink")).unwrap();
-    let retained = runtime.series_from_value_with_budget(3i32, 3, &token).unwrap();
-    let live_usage = token.reservation_usage().unwrap();
-    assert!(live_usage.current_aligned_bytes > 1);
-
-    token.resize(1).unwrap();
-
-    assert_eq!(token.request().budget_bytes(), 1);
-    let shrunk_usage = token.reservation_usage().unwrap();
-    assert_eq!(shrunk_usage.allocation_limit_bytes, 1);
-    assert!(shrunk_usage.current_aligned_bytes > shrunk_usage.allocation_limit_bytes);
-
-    let err = runtime.series_from_value_with_budget(4i32, 3, &token).unwrap_err();
-    assert_eq!(err.code(), ErrorCode::OutOfMemory);
-    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-
-    drop(retained);
-    token.resize(1 << 20).unwrap();
-    let outcome = runtime.series_from_value_with_budget(5i32, 3, &token).unwrap();
-    assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap(), vec![5, 5, 5]);
-    assert_eq!(outcome.report().request().budget_bytes(), 1 << 20);
 }
 
 /// With the device memory domain installed, concurrent execution mixing default
@@ -2193,8 +1904,8 @@ fn concurrent_temp_heavy_pipelines_keep_reservation_accounting_isolated() {
 
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
-    let left_lease = left.stream_reservation(9101, 64 * 1024 * 1024).unwrap();
-    let right_lease = right.stream_reservation(9202, 1).unwrap();
+    let left_lease = query_domain_member(&left, 9101, 64 * 1024 * 1024).unwrap();
+    let right_lease = query_domain_member(&right, 9202, 1).unwrap();
 
     let left_worker = std::thread::spawn(move || {
         let data: Vec<i32> = (0..ROWS as i32).rev().collect();
@@ -2299,13 +2010,11 @@ fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
         &runtime,
         ExecutionBudgetRequest::new(1024 * 1024).with_boundary("first_shared_stage"),
         lease.clone(),
-        ExecutionBudgetEnforcement::QueryDomainMember,
     );
     let second = cudf::ExecutionBudgetToken::from_shared_lease(
         &runtime,
         ExecutionBudgetRequest::new(128 * 1024 * 1024).with_boundary("second_shared_stage"),
         lease.clone(),
-        ExecutionBudgetEnforcement::QueryDomainMember,
     );
     let first_outcome = runtime.series_from_value_with_budget(3i32, 1_000_000, &first).unwrap();
     let second_outcome = runtime.series_from_value_with_budget(5i32, 1_000_000, &second).unwrap();

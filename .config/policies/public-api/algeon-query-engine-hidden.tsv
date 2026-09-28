@@ -44,8 +44,11 @@ query_engine::exec::sanitize_cache_component	cross-crate	query-engine exec	prod:
 query_engine::exec::set_forest_after_import_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::set_forest_batch_element_limit_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
 query_engine::exec::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
 query_engine::exec::vector_algorithm::enabled::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec::vector_algorithm::enabled	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::vector_algorithm::enabled::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec::vector_algorithm::enabled	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
 query_engine::exec::vector_algorithm::set_vector_after_index_build_hook_for_tests	test-hooks	query-engine exec::vector_algorithm	tests: algeon-query-engine	error-model plan P4 moves scheduler tests into the crate
+query_engine::exec::vector_algorithm::set_vector_pool_coverage_hook_for_tests	test-hooks	query-engine exec::vector_algorithm	tests: algeon-query-engine	remove when the standalone pool-accounting regression needs no execution-boundary observation
 query_engine::materialization_sizing	cross-crate	query-engine crate root	tests: algeon-query-engine	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_engine::object_store_error	cross-crate	query-engine crate root	prod: algeon-datafusion	error-model plan P4 moves it into the owning crate's documented cross-crate seam module
 query_engine::util	cross-crate	query-engine crate root	prod: algeon-datafusion, algeon-query-engine; tools: bench; tests: tools	error-model plan P6 removes the query-engine facade

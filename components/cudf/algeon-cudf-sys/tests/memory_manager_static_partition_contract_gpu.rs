@@ -127,16 +127,14 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
     assert_eq!(unsafe { cudf_sys::cudf_stream_create(&mut stream) }, cudf_sys::CUDF_SUCCESS);
     assert!(!stream.is_null());
 
-    let mut manager_reservation = ptr::null_mut();
+    let mut manager_route = ptr::null_mut();
     assert_eq!(
-        unsafe {
-            cudf_sys::cudf_memory_manager_attach_reservation(manager, stream, 7_000, LIMIT, &mut manager_reservation)
-        },
+        unsafe { cudf_sys::cudf_memory_manager_route_current_resource(manager, stream, resource, &mut manager_route) },
         cudf_sys::CUDF_SUCCESS,
     );
     assert!(
-        !manager_reservation.is_null(),
-        "ordinary allocations must exercise the installed manager resource on an attached stream"
+        !manager_route.is_null(),
+        "ordinary allocations must exercise the installed manager resource through its explicit stream route"
     );
 
     let exec = cudf_sys::cudf_exec_options_t {
@@ -321,7 +319,7 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
     assert_eq!(unsafe { cudf_sys::cudf_reservation_detach(reservation) }, cudf_sys::CUDF_SUCCESS);
     assert_eq!(unsafe { cudf_sys::cudf_query_memory_domain_destroy(domain) }, cudf_sys::CUDF_SUCCESS);
     assert_eq!(unsafe { cudf_sys::cudf_stream_destroy(domain_stream) }, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(unsafe { cudf_sys::cudf_reservation_detach(manager_reservation) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(unsafe { cudf_sys::cudf_current_resource_route_destroy(manager_route) }, cudf_sys::CUDF_SUCCESS);
     assert_eq!(unsafe { cudf_sys::cudf_stream_destroy(stream) }, cudf_sys::CUDF_SUCCESS);
     assert_eq!(unsafe { cudf_sys::cudf_memory_resource_destroy(resource, device) }, cudf_sys::CUDF_SUCCESS);
 }

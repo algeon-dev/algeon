@@ -129,17 +129,13 @@ pub(in crate::exec) fn execute_ml_algorithm(
     if relation_input_for(&ML_OPERATIONS, inputs, binding.input, node_id, "input")?.num_rows() == 0 {
         return empty_ml_output(context, ml);
     }
-    let domain_token = context
-        .attempt_allocation_domain_id()
-        .map(|_| {
-            let bytes = context.device_budget_bytes();
-            let bytes = usize::try_from(bytes).map_err(|_| {
-                QueryError::new(QueryErrorCode::InvalidPlan, EXECUTE, "ML execution budget exceeds usize")
-                    .with_fact("budget_bytes", bytes)
-            })?;
-            context.execution_budget_token(ExecutionBudgetRequest::new(bytes).with_boundary("ml_algorithm"))
-        })
-        .transpose()?;
+    let bytes = context.device_budget_bytes();
+    let bytes = usize::try_from(bytes).map_err(|_| {
+        QueryError::new(QueryErrorCode::InvalidPlan, EXECUTE, "ML execution budget exceeds usize")
+            .with_fact("budget_bytes", bytes)
+    })?;
+    let domain_token =
+        context.execution_budget_token(ExecutionBudgetRequest::new(bytes).with_boundary("ml_algorithm"))?;
     let runtime = context.shared_runtime()?;
     let resources = CumlResources::for_runtime(runtime).map_err(|error| {
         cuml_query_error(EXECUTE, "failed to create query-local cuML resources", error).with_fact("node_id", node_id)
@@ -168,7 +164,7 @@ pub(in crate::exec) fn execute_ml_algorithm(
                 plan,
                 node_id,
                 inputs,
-                (&resources, version, domain_token.as_ref()),
+                (&resources, version, &domain_token),
                 params,
                 ml.spec.algorithm,
             )
@@ -571,7 +567,7 @@ fn execute_random_forest(
     plan: &QueryPlan,
     node_id: NodeId,
     inputs: &BTreeMap<NodeId, GpuDataFrame>,
-    native: (&CumlResources, (u16, u16, u16), Option<&cudf::ExecutionBudgetToken>),
+    native: (&CumlResources, (u16, u16, u16), &cudf::ExecutionBudgetToken),
     params: &MlRandomForestParams,
     algorithm: MlAlgorithm,
 ) -> Result<GpuDataFrame> {
@@ -592,10 +588,7 @@ fn execute_random_forest(
         .with_matrix_layout("row_major");
     // The pool routes must remain installed until after the forest is destroyed.
     let streams = resources
-        .training_streams(
-            NonZeroUsize::new(1).expect("one stream"),
-            token.map(cudf::ExecutionBudgetToken::stream_reservation),
-        )
+        .training_streams(NonZeroUsize::new(1).expect("one stream"), Some(token.stream_reservation()))
         .map_err(|error| {
             cuml_query_error(EXECUTE, "failed to cover RF training stream", error).with_fact("node_id", node_id)
         })?;

@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::{
-    domain::{QueryMemoryDomainHandle, ReservationArenaHandle, ReservationHandle},
+    domain::{QueryMemoryDomainHandle, ReservationHandle},
     failure::{
         DeviceMemoryFailureInfo, FailureCallbackState, failure_callback_trampoline, wrap_simple_failure_callback,
     },
@@ -256,38 +256,6 @@ impl DeviceMemoryResource {
             "memory::device_memory_resource::cuda_async_on",
             Some(Arc::new(RetirementStreams::default())),
             Vec::new(),
-        )
-    }
-
-    /// Create a hard-limiting memory resource around this resource.
-    ///
-    /// The returned resource uses `self` as its upstream allocator and rejects
-    /// allocations once the adaptor's live allocated bytes would exceed
-    /// `allocation_limit_bytes`. Existing upstream allocations are not counted.
-    ///
-    /// This is an execution boundary, not a preflight sizing contract: callers
-    /// still need operation-specific sizing APIs for retained outputs they
-    /// intend to reserve before execution.
-    pub fn limiting(&self, allocation_limit_bytes: usize) -> Result<Self> {
-        let _guard = DeviceGuard::new(self.device())?;
-        let mut handle = ptr::null_mut();
-        // SAFETY: handle is initialized to null and set by the C shim on success.
-        error::check_status_in_with_details(
-            unsafe {
-                cudf_sys::cudf_memory_resource_create_limiting(self.handle.raw(), allocation_limit_bytes, &mut handle)
-            },
-            "memory::device_memory_resource::limiting",
-            [
-                ("allocation_limit_bytes", allocation_limit_bytes.to_string()),
-                ("upstream_device", self.device().ordinal().to_string()),
-            ],
-        )?;
-        Self::from_created_handle_with_callbacks(
-            handle,
-            self.device(),
-            "memory::device_memory_resource::limiting",
-            self.handle.retirement_streams.clone(),
-            self.handle._failure_callbacks.clone(),
         )
     }
 
@@ -558,12 +526,6 @@ impl DeviceMemoryResourceHandle {
 impl ReservationHandle {
     pub(super) fn raw(&self) -> cudf_sys::cudf_reservation_handle {
         self.raw.expect("live reservation retains its native handle").as_ptr()
-    }
-}
-
-impl ReservationArenaHandle {
-    pub(super) fn raw(&self) -> cudf_sys::cudf_reservation_arena_handle {
-        self.raw.expect("live reservation arena retains its native handle").as_ptr()
     }
 }
 

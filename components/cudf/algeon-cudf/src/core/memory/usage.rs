@@ -1,4 +1,4 @@
-//! Usage-counter snapshots for resources, reservations, arenas, and query domains.
+//! Usage-counter snapshots for resources and query domains.
 
 use crate::DeviceId;
 
@@ -56,7 +56,7 @@ impl From<cudf_sys::cudf_memory_pool_usage_t> for DeviceMemoryPoolUsage {
     }
 }
 
-/// Usage counters for a stream-bound reservation.
+/// Usage counters for a query-domain stream member.
 ///
 /// These counters are recorded by the device-level reservation-aware memory
 /// manager. `current_*` counters include retained allocations that were
@@ -67,33 +67,10 @@ pub struct ReservationUsage {
     pub reservation_id: u64,
     pub attached: bool,
     /// Allocations made through a query-domain member's direct resource.
-    /// Zero for legacy and arena reservations.
     pub direct_total_allocations: u64,
     /// Allocations routed from the device-current resource into a query-domain
-    /// member. Zero for legacy and arena reservations.
+    /// member.
     pub routed_total_allocations: u64,
-    pub allocation_limit_bytes: u64,
-    pub current_bytes: u64,
-    pub peak_bytes: u64,
-    pub total_bytes: u64,
-    pub current_aligned_bytes: u64,
-    pub peak_aligned_bytes: u64,
-    pub total_allocations: u64,
-    pub current_allocations: u64,
-    pub peak_allocations: u64,
-    pub failed_allocation_count: u64,
-    pub largest_failed_allocation_bytes: u64,
-}
-
-/// Usage counters for a query-scoped reservation arena.
-///
-/// The counters include allocations retained by member reservations even after
-/// those members have detached from their streams.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReservationArenaUsage {
-    pub arena_id: u64,
-    pub active: bool,
-    pub active_members: u64,
     pub allocation_limit_bytes: u64,
     pub current_bytes: u64,
     pub peak_bytes: u64,
@@ -168,27 +145,6 @@ impl From<cudf_sys::cudf_memory_resource_usage_t> for QueryMemoryDomainUsage {
             active: value.reserved[1] != 0,
             active_members: value.reserved[2],
             ceiling_bytes: value.reserved[3],
-            allocation_limit_bytes: value.allocation_limit_bytes,
-            current_bytes: value.current_bytes,
-            peak_bytes: value.peak_bytes,
-            total_bytes: value.total_bytes,
-            current_aligned_bytes: value.current_aligned_bytes,
-            peak_aligned_bytes: value.peak_aligned_bytes,
-            total_allocations: value.total_allocations,
-            current_allocations: value.current_allocations,
-            peak_allocations: value.peak_allocations,
-            failed_allocation_count: value.failed_allocation_count,
-            largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
-        }
-    }
-}
-
-impl From<cudf_sys::cudf_memory_resource_usage_t> for ReservationArenaUsage {
-    fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
-        Self {
-            arena_id: value.reserved[0],
-            active: value.reserved[1] != 0,
-            active_members: value.reserved[2],
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
             peak_bytes: value.peak_bytes,

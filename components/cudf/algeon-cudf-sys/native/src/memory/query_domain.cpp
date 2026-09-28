@@ -178,16 +178,6 @@ query_domain_resource::begin_operation() noexcept
   return operation_guard{this};
 }
 
-bool query_domain_resource::resize_grant(std::size_t grant_bytes, std::string& error)
-{
-  if (grant_bytes > requested_ceiling_bytes_) {
-    error = "query memory domain grant exceeds immutable pool ceiling";
-    return false;
-  }
-  grant_bytes_.store(grant_bytes, std::memory_order_relaxed);
-  return true;
-}
-
 bool query_domain_resource::freeze(std::string& error)
 {
   bool expected = true;
@@ -511,12 +501,6 @@ void query_domain_member_resource::detach() noexcept
   counters_->attached.store(false, std::memory_order_release);
 }
 
-bool query_domain_member_resource::resize(std::size_t limit_bytes) noexcept
-{
-  counters_->allocation_limit.store(limit_bytes, std::memory_order_release);
-  return true;
-}
-
 void* query_domain_member_resource::do_allocate(std::size_t bytes,
                                                 rmm::cuda_stream_view stream,
                                                 std::size_t alignment)
@@ -676,18 +660,6 @@ std::shared_ptr<query_domain_member_state> reservation_aware_resource_adaptor::a
     query_domain_members_by_stream_.erase(existing_domain);
     query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
   }
-  {
-    std::scoped_lock legacy_lock{mutex_};
-    auto const existing = reservations_by_stream_.find(key);
-    if (existing != reservations_by_stream_.end()) {
-      auto state = existing->second.lock();
-      if (state != nullptr && state->attached) {
-        error = "stream already has an attached memory reservation";
-        return {};
-      }
-      reservations_by_stream_.erase(existing);
-    }
-  }
 
   auto state          = std::make_shared<query_domain_member_state>();
   state->id           = reservation_id;
@@ -806,30 +778,6 @@ reservation_aware_resource_adaptor::query_domain_effective_device_memory(
     throw cudf::logic_error{"CUDA stream has no active query memory domain member"};
   }
   return it->second->domain->resource->effective_device_memory();
-}
-
-bool reservation_aware_resource_adaptor::resize_query_domain(
-  std::shared_ptr<query_domain_state> const& state, std::size_t grant_bytes, std::string& error)
-{
-  std::shared_lock lock{query_domain_mutex_};
-  if (!state->active) {
-    error = "query memory domain is not active";
-    return false;
-  }
-  return state->resource->resize_grant(grant_bytes, error);
-}
-
-bool reservation_aware_resource_adaptor::resize_query_domain_member(
-  std::shared_ptr<query_domain_member_state> const& state,
-  std::size_t limit_bytes,
-  std::string& error)
-{
-  std::shared_lock lock{query_domain_mutex_};
-  if (!state->attached) {
-    error = "query memory domain member is not attached";
-    return false;
-  }
-  return state->resource->resize(limit_bytes);
 }
 
 std::optional<reservation_aware_resource_adaptor::query_domain_member_route>
@@ -1118,24 +1066,6 @@ cudf_status_t cudf_query_memory_domain_pool_usage(cudf_query_memory_domain_handl
     if (!state.domain->resource->pool_usage(*out)) {
       set_error("failed to read query memory domain pool usage");
       return CUDF_ERROR_INVALID_OPERATION;
-    }
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_handle domain,
-                                                    size_t grant_bytes)
-{
-  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
-  CUDF_RUST_TRY
-  {
-    auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
-    auto* adaptor = state.manager->owner->reservation_adaptor;
-    std::string resize_error;
-    if (!adaptor->resize_query_domain(state.domain, grant_bytes, resize_error)) {
-      set_error(resize_error);
-      return CUDF_ERROR_INVALID_ARGUMENT;
     }
     return CUDF_SUCCESS;
   }

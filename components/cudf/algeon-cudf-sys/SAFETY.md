@@ -32,6 +32,14 @@ runtime; it neither transfers allocation ownership nor permits arbitrary raw
 RMM pointers as ABI inputs. The owner that created an allocation remains
 responsible for its lifetime and device-aware release.
 
+Query-memory-domain grants and member limits are immutable after creation.
+`cudf_reservation_handle` owns one query-domain member attachment and must be
+detached exactly once. Member resources retain their allocation owner until
+all allocations are released. A detached routed member with pending allocation
+submissions blocks stream reuse until those submissions finish. Raw sibling
+stream attachments require the caller to retain the stream through detach and
+asynchronous completion.
+
 ## Completion and callbacks
 
 A host-copy/materialization API returns only after its host output is ready to

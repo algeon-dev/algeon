@@ -10,8 +10,8 @@ use cudf::{
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs,
-    dataframe_from_columns, error_context_value, lock_event_observation, observed_exec_mr_values,
-    reset_exec_observation, run_named_cases, scalar, series, with_test_runtime,
+    dataframe_from_columns, error_context_value, execution_budget_token, lock_event_observation,
+    observed_exec_mr_values, reset_exec_observation, run_named_cases, scalar, series, with_test_runtime,
 };
 
 fn decimal128_scale_zero_frame() -> DataFrame {
@@ -306,9 +306,11 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     )
     .unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_with_columns"))
-            .unwrap()
+        execution_budget_token(
+            runtime,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_with_columns"),
+        )
+        .unwrap()
     });
 
     let _event_observation = lock_event_observation();
@@ -321,7 +323,7 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(result.column_names(), &["a", "b", "sum"]);
     assert_eq!(result.series("sum").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
     assert_eq!(report.request().boundary(), "shape_with_columns");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -336,8 +338,7 @@ fn test_with_columns_with_budget_case_report_records_output() {
     )
     .unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("case_preflight"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("case_preflight"))
             .unwrap()
     });
     let expr = when(col("score").eq(col("fallback"))).then(col("score")).otherwise(lit_null(TypeId::Float64));
@@ -359,8 +360,7 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     )
     .unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_cast"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_cast"))
             .unwrap()
     });
 
@@ -374,7 +374,7 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(result.series("qty").unwrap().dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.series("qty").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
     assert_eq!(report.request().boundary(), "shape_cast");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -393,8 +393,7 @@ fn test_cast_column_decimal128_scale_to_scale_preserves_requested_scale() {
 fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator() {
     let df = decimal128_scale_zero_frame();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(512).with_boundary("shape_cast_decimal_scale"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(512).with_boundary("shape_cast_decimal_scale"))
             .unwrap()
     });
 
@@ -408,7 +407,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
 
     assert_amount_decimal128_scale_8(result);
     assert_eq!(report.request().boundary(), "shape_cast_decimal_scale");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
@@ -427,7 +426,7 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     )
     .unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("shape_with_columns")).unwrap()
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("shape_with_columns")).unwrap()
     });
 
     let err = expect_cudf_err(
@@ -439,7 +438,7 @@ fn test_with_columns_with_budget_reports_exceeded_budget_details() {
     assert_eq!(err.operation(), "dataframe::with_columns_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_with_columns"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
@@ -450,7 +449,7 @@ fn test_cast_column_with_budget_reports_exceeded_budget_details() {
     )
     .unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("shape_cast")).unwrap()
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("shape_cast")).unwrap()
     });
 
     let err = expect_cudf_err(
@@ -462,15 +461,14 @@ fn test_cast_column_with_budget_reports_exceeded_budget_details() {
     assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
 fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts() {
     let df = decimal128_scale_zero_frame();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("shape_cast_decimal_scale"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("shape_cast_decimal_scale"))
             .unwrap()
     });
 
@@ -483,7 +481,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
     assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast_decimal_scale"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 

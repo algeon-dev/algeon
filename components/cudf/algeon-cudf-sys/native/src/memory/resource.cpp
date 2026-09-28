@@ -10,7 +10,6 @@
 #include <rmm/error.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/failure_callback_resource_adaptor.hpp>
-#include <rmm/mr/limiting_resource_adaptor.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 
 #include <algorithm>
@@ -158,8 +157,6 @@ void update_atomic_peak(std::atomic<std::size_t>& peak, std::size_t value)
   while (observed < value &&
          !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {}
 }
-
-void update_peak(std::size_t& peak, std::size_t value) { peak = std::max(peak, value); }
 
 void fill_usage(cudf_memory_resource_usage_t& out,
                 std::size_t allocation_limit,
@@ -504,33 +501,6 @@ cudf_status_t cudf_memory_resource_create_cuda_async(size_t initial_pool_size,
     state->owner->device     = current_cuda_device();
     state->owner->async_pool = async_pool_ptr;
     state->owner->mr         = std::move(async_pool);
-    register_memory_resource_lifetime(state->owner);
-    *out = reinterpret_cast<cudf_memory_resource_handle>(state.release());
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
-                                                   size_t allocation_limit,
-                                                   cudf_memory_resource_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_NULL_CHECK(upstream, "upstream is null");
-  CUDF_RUST_TRY
-  {
-    auto state              = std::make_unique<memory_resource_handle_state>();
-    state->owner            = std::make_shared<memory_resource_owner>();
-    auto& owner             = *state->owner;
-    auto& upstream_owner    = memory_resource_owner_from_handle(upstream);
-    owner.upstream_lifetime = cudf_memory_resource_lifetime_from_handle(upstream);
-    owner.async_pool        = upstream_owner.async_pool;
-    owner.device            = upstream_owner.device;
-    auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    owner.mr =
-      std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::limiting_resource_adaptor>>(
-        rmm::mr::any_device_resource_from_raw(upstream_mr), allocation_limit);
     register_memory_resource_lifetime(state->owner);
     *out = reinterpret_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;

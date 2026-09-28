@@ -15,10 +15,10 @@ use cudf::{
 use tempfile::TempDir;
 
 use crate::common::{
-    dataframe_device_ptr, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, lock_event_observation, observed_exec_mr_overflowed,
-    observed_exec_mr_values, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    run_named_cases, sample_runtime, series, series_device_ptr,
+    dataframe_device_ptr, dependency_wait_call_count_for_stream, error_context_value, execution_budget_token,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation,
+    observed_exec_mr_overflowed, observed_exec_mr_values, reset_dependency_observation, reset_exec_observation,
+    reset_sync_observation, run_named_cases, sample_runtime, series, series_device_ptr,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -639,9 +639,9 @@ fn device_memory_resource_budget_tracking_usage_rejects_non_tracking_resource() 
 fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
-    let token = runtime
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("scalar_series"))
-        .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("scalar_series"))
+            .unwrap();
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
@@ -663,7 +663,7 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
     );
     assert_all_observed_exec_mrs_are_manager_mr(&token);
     assert_eq!(report.request().boundary(), "scalar_series");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -676,9 +676,9 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
 
 fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
-    let token = runtime
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("value_series"))
-        .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("value_series"))
+            .unwrap();
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
@@ -700,7 +700,7 @@ fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
     );
     assert_all_observed_exec_mrs_are_manager_mr(&token);
     assert_eq!(report.request().boundary(), "value_series");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -708,9 +708,9 @@ fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
 
 fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
-    let token = runtime
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("null_series"))
-        .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("null_series"))
+            .unwrap();
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
@@ -727,7 +727,7 @@ fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
     );
     assert_all_observed_exec_mrs_are_manager_mr(&token);
     assert_eq!(report.request().boundary(), "null_series");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -735,9 +735,11 @@ fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
 
 fn runtime_nulls_with_budget_decimal_scale_routes_allocator() {
     let runtime = sample_runtime();
-    let token = runtime
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_null_series"))
-        .unwrap();
+    let token = execution_budget_token(
+        &runtime,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_null_series"),
+    )
+    .unwrap();
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
 
     let _event_observation = lock_event_observation();
@@ -759,9 +761,9 @@ fn runtime_nulls_with_budget_decimal_scale_routes_allocator() {
 fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
-    let token = runtime
-        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("scalar_column"))
-        .unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("scalar_column"))
+            .unwrap();
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
@@ -776,7 +778,7 @@ fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() 
     let output_bytes = series.device_allocated_size_bytes().unwrap();
 
     assert_eq!(report.request().boundary(), "scalar_column");
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
@@ -785,7 +787,8 @@ fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() 
 fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
-    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("scalar_series")).unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("scalar_series")).unwrap();
 
     let err = expect_cudf_err(
         runtime.series_from_scalar_with_budget(&scalar, 1024, &token),
@@ -800,7 +803,7 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
     );
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("scalar_series"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
     let peak_bytes = error_context_value(&err, "budget_peak_bytes")
         .expect("budget_peak_bytes detail")
@@ -817,7 +820,7 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
 
 fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
-    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("value_series")).unwrap();
+    let token = execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("value_series")).unwrap();
 
     let err = expect_cudf_err(
         runtime.series_from_value_with_budget(42i32, 1024, &token),
@@ -832,13 +835,13 @@ fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
     );
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("value_series"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
 fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
-    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("null_series")).unwrap();
+    let token = execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("null_series")).unwrap();
 
     let err = expect_cudf_err(
         runtime.nulls_with_budget(DataType::from(TypeId::Int32), 1024, &token),
@@ -850,14 +853,15 @@ fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_operation").as_deref(), Some("runtime::nulls_with_budget"));
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("null_series"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
 fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
-    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("scalar_column")).unwrap();
+    let token =
+        execution_budget_token(&runtime, ExecutionBudgetRequest::new(1).with_boundary("scalar_column")).unwrap();
 
     let err = expect_cudf_err(
         runtime.column_from_scalar_with_budget(&scalar, 1024, &token),
@@ -872,7 +876,7 @@ fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
     );
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("scalar_column"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 

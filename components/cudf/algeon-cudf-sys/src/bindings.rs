@@ -123,10 +123,8 @@ pub type cudf_memory_manager_installation_retry_t = core::ffi::c_uint;
 #[doc = " Closed reason carried by every authoritative install/inspect record."]
 pub type cudf_memory_manager_installation_cause_t = core::ffi::c_uint;
 pub type _bindgen_ty_11 = core::ffi::c_uint;
-#[doc = " Opaque handle to one stream-bound memory reservation."]
+#[doc = " Opaque handle to one stream-bound query-memory-domain member."]
 pub type cudf_reservation_handle = *mut cudf_reservation_handle_state;
-#[doc = " Opaque handle to one query-scoped reservation arena."]
-pub type cudf_reservation_arena_handle = *mut cudf_reservation_arena_handle_state;
 #[doc = " Opaque handle to one query-scoped CUDA memory domain."]
 pub type cudf_query_memory_domain_handle = *mut cudf_query_memory_domain_handle_state;
 #[doc = " Column sort order."]
@@ -517,11 +515,6 @@ pub struct cudf_reservation_handle_state {
 }
 #[repr(C)]
 #[derive(Debug)]
-pub struct cudf_reservation_arena_handle_state {
-    _unused: [u8; 0],
-}
-#[repr(C)]
-#[derive(Debug)]
 pub struct cudf_query_memory_domain_handle_state {
     _unused: [u8; 0],
 }
@@ -583,8 +576,6 @@ pub const CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED: _bindgen_ty_6 = -2147483
 pub const CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL: cudf_memory_failure_source_t = 0;
 pub const CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT: cudf_memory_failure_source_t = 1;
 pub const CUDF_MEMORY_FAILURE_DOMAIN_NONE: cudf_memory_failure_domain_t = 0;
-pub const CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION: cudf_memory_failure_domain_t = 1;
-pub const CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA: cudf_memory_failure_domain_t = 2;
 pub const CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN: cudf_memory_failure_domain_t = 3;
 pub const CUDF_TYPE_EMPTY: cudf_type_id_t = 0;
 pub const CUDF_TYPE_INT8: cudf_type_id_t = 1;
@@ -900,11 +891,6 @@ unsafe extern "C" {
     pub fn cudf_memory_resource_create_cuda_async(
         initial_pool_size: usize,
         release_threshold: u64,
-        out: *mut cudf_memory_resource_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_resource_create_limiting(
-        upstream: cudf_memory_resource_handle,
-        allocation_limit: usize,
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
     pub fn cudf_memory_resource_create_failure_callback(
@@ -2715,47 +2701,12 @@ unsafe extern "C" {
         resource: cudf_memory_resource_handle,
         out: *mut cudf_current_resource_route_handle,
     ) -> cudf_status_t;
-    pub fn cudf_memory_manager_attach_reservation(
-        manager: cudf_memory_manager_handle,
-        stream: cudf_stream_handle,
-        reservation_id: u64,
-        limit_bytes: usize,
-        out: *mut cudf_reservation_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_create_reservation_arena(
-        manager: cudf_memory_manager_handle,
-        arena_id: u64,
-        limit_bytes: usize,
-        out: *mut cudf_reservation_arena_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_attach_reservation_to_arena(
-        manager: cudf_memory_manager_handle,
-        stream: cudf_stream_handle,
-        arena: cudf_reservation_arena_handle,
-        reservation_id: u64,
-        limit_bytes: usize,
-        out: *mut cudf_reservation_handle,
-    ) -> cudf_status_t;
-    pub fn cudf_memory_manager_attach_reservation_to_arena_raw(
-        manager: cudf_memory_manager_handle,
-        raw_stream: *mut core::ffi::c_void,
-        arena: cudf_reservation_arena_handle,
-        reservation_id: u64,
-        limit_bytes: usize,
-        out: *mut cudf_reservation_handle,
-    ) -> cudf_status_t;
     pub fn cudf_reservation_usage(
         reservation: cudf_reservation_handle,
         out: *mut cudf_memory_resource_usage_t,
     ) -> cudf_status_t;
-    pub fn cudf_reservation_resize(reservation: cudf_reservation_handle, limit_bytes: usize) -> cudf_status_t;
     pub fn cudf_reservation_detach(reservation: cudf_reservation_handle) -> cudf_status_t;
-    pub fn cudf_reservation_arena_usage(
-        arena: cudf_reservation_arena_handle,
-        out: *mut cudf_memory_resource_usage_t,
-    ) -> cudf_status_t;
-    pub fn cudf_reservation_arena_resize(arena: cudf_reservation_arena_handle, limit_bytes: usize) -> cudf_status_t;
-    pub fn cudf_reservation_arena_destroy(arena: cudf_reservation_arena_handle) -> cudf_status_t;
+    #[doc = " Create a domain with an immutable grant and pool ceiling."]
     pub fn cudf_memory_manager_create_query_memory_domain(
         manager: cudf_memory_manager_handle,
         domain_id: u64,
@@ -2763,6 +2714,7 @@ unsafe extern "C" {
         ceiling_bytes: usize,
         out: *mut cudf_query_memory_domain_handle,
     ) -> cudf_status_t;
+    #[doc = " Attach a member whose allocation limit remains fixed until detach."]
     pub fn cudf_query_memory_domain_attach_stream(
         domain: cudf_query_memory_domain_handle,
         stream: cudf_stream_handle,
@@ -2790,10 +2742,6 @@ unsafe extern "C" {
     pub fn cudf_query_memory_domain_pool_usage(
         domain: cudf_query_memory_domain_handle,
         out: *mut cudf_memory_pool_usage_t,
-    ) -> cudf_status_t;
-    pub fn cudf_query_memory_domain_resize_grant(
-        domain: cudf_query_memory_domain_handle,
-        grant_bytes: usize,
     ) -> cudf_status_t;
     pub fn cudf_query_memory_domain_freeze(domain: cudf_query_memory_domain_handle) -> cudf_status_t;
     #[doc = " Copies this domain's live allocation registry into `out`.\n\n Writes at most `capacity` records and always reports the full live count\n in `out_count`, so a caller can detect truncation. Passing a null `out`\n with zero `capacity` queries the count alone."]

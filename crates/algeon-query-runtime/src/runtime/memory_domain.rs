@@ -16,10 +16,9 @@ use crate::native_error::cudf_query_error;
 
 /// Creates the authoritative hard allocation domain for one admitted attempt.
 ///
-/// The domain grant equals its ceiling equals the immutable admission grant;
-/// Algeon never calls `resize_grant` on this domain.  The caller must retain
-/// the returned value and propagate it through the admission envelope rather
-/// than attempting another lookup by grant identity.
+/// The domain grant and ceiling equal the immutable admission grant. The
+/// caller retains this domain through the admission envelope and shares it
+/// with derived contexts.
 pub(super) fn create_grant_memory_domain(
     runtime: &cudf::Runtime,
     grant: &MemoryGrant,

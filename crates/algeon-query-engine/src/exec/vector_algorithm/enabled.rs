@@ -3,6 +3,8 @@ use std::sync::{Mutex, PoisonError};
 use std::{collections::BTreeMap, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef};
+#[cfg(feature = "test-hooks")]
+use cudf::ReservationUsage;
 use cudf::{CudfType, DenseMatrixLayout, PackedMatrix, Series, TypeId, frame::dataframe::GpuRecordBatch};
 use cuvs::{
     BruteForceIndex, CagraBuildAlgo, CagraIndex, CagraIndexParams, CagraSearchAlgo, CagraSearchParams, CuvsResources,
@@ -113,24 +115,20 @@ pub(in crate::exec) fn execute_vector_algorithm(
 ) -> Result<GpuDataFrame> {
     context.check_cancellation(EXECUTE_OPERATION)?;
     // Vector operators do not have an independent workspace estimate. Use
-    // the immutable context grant for the boundary: the live member makes
+    // the context's allocation member for the boundary: the live member makes
     // cuVS's device-current temporaries domain-accounted before resources are
     // constructed, and remains attached through all cuVS calls below.
-    let domain_token = context
-        .attempt_allocation_domain_id()
-        .map(|_| {
-            let budget_bytes = context.device_budget_bytes();
-            let budget = usize::try_from(budget_bytes).map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    EXECUTE_OPERATION,
-                    "vector execution budget exceeds platform usize range",
-                )
-                .with_fact("budget_bytes", budget_bytes)
-            })?;
-            context.execution_budget_token(cudf::ExecutionBudgetRequest::new(budget).with_boundary("vector_algorithm"))
-        })
-        .transpose()?;
+    let budget_bytes = context.device_budget_bytes();
+    let budget = usize::try_from(budget_bytes).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            EXECUTE_OPERATION,
+            "vector execution budget exceeds platform usize range",
+        )
+        .with_fact("budget_bytes", budget_bytes)
+    })?;
+    let domain_token =
+        context.execution_budget_token(cudf::ExecutionBudgetRequest::new(budget).with_boundary("vector_algorithm"))?;
     let runtime = context.shared_runtime()?;
     let resources = CuvsResources::for_runtime(runtime).map_err(|error| {
         cuvs_query_error(EXECUTE_OPERATION, "failed to create query-local cuVS resources", error)
@@ -138,13 +136,11 @@ pub(in crate::exec) fn execute_vector_algorithm(
             .with_fact("algorithm", node.spec.algorithm.as_str())
     })?;
     // The pool guard remains live through native index destruction and output assembly.
-    let _pool_coverage = resources
-        .stream_pool_coverage(domain_token.as_ref().map(cudf::ExecutionBudgetToken::stream_reservation))
-        .map_err(|error| {
-            cuvs_query_error(EXECUTE_OPERATION, "failed to cover cuVS stream pool allocations", error)
-                .with_fact("node_id", node_id)
-                .with_fact("algorithm", node.spec.algorithm.as_str())
-        })?;
+    let _pool_coverage = resources.stream_pool_coverage(Some(domain_token.stream_reservation())).map_err(|error| {
+        cuvs_query_error(EXECUTE_OPERATION, "failed to cover cuVS stream pool allocations", error)
+            .with_fact("node_id", node_id)
+            .with_fact("algorithm", node.spec.algorithm.as_str())
+    })?;
     let native_version = cuvs_sys::validate_runtime_version().map_err(|error| {
         QueryError::new(
             QueryErrorCode::CudfDependencyFailure,
@@ -156,7 +152,7 @@ pub(in crate::exec) fn execute_vector_algorithm(
         .with_source(error)
     })?;
 
-    match &node.spec.params {
+    let result = match &node.spec.params {
         VectorAlgorithmParams::BruteForceKnn(params) => {
             require_vector_element::<f32>(
                 relation_element(plan, inputs, &params.dataset, node_id, VectorAlgorithm::BruteForceKnn, "dataset")?,
@@ -400,7 +396,16 @@ pub(in crate::exec) fn execute_vector_algorithm(
             )?;
             execute_pca(context, plan, node_id, params, inputs, &resources, native_version)
         },
+    };
+    #[cfg(feature = "test-hooks")]
+    {
+        let hook = *VECTOR_POOL_COVERAGE_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(hook) = hook {
+            let usage = _pool_coverage.usage().expect("test hook samples the live RAFT pool members");
+            hook(context, &usage);
+        }
     }
+    result
 }
 
 pub(in crate::exec) fn validate_vector_algorithm_execution(node_id: NodeId, node: &VectorAlgorithmNode) -> Result<()> {
@@ -437,6 +442,19 @@ static VECTOR_AFTER_INDEX_BUILD_HOOK: Mutex<Option<fn(&ExecutionContext)>> = Mut
 #[doc(hidden)]
 pub fn set_vector_after_index_build_hook_for_tests(hook: Option<fn(&ExecutionContext)>) {
     *VECTOR_AFTER_INDEX_BUILD_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
+}
+
+#[cfg(feature = "test-hooks")]
+type VectorPoolCoverageHook = fn(&ExecutionContext, &[ReservationUsage]);
+
+#[cfg(feature = "test-hooks")]
+static VECTOR_POOL_COVERAGE_HOOK: Mutex<Option<VectorPoolCoverageHook>> = Mutex::new(None);
+
+/// Samples existing RAFT pool members after native dispatch and before their leases detach.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub fn set_vector_pool_coverage_hook_for_tests(hook: Option<fn(&ExecutionContext, &[ReservationUsage])>) {
+    *VECTOR_POOL_COVERAGE_HOOK.lock().unwrap_or_else(PoisonError::into_inner) = hook;
 }
 
 #[expect(

@@ -10,8 +10,8 @@ use cudf::{
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, dataframe_from_columns,
-    error_context_value, last_exec_mr_value, observed_exec_mr_values, reset_exec_observation, run_named_cases,
-    sample_df, series, with_test_runtime,
+    error_context_value, execution_budget_token, last_exec_mr_value, observed_exec_mr_values, reset_exec_observation,
+    run_named_cases, sample_df, series, with_test_runtime,
 };
 
 fn assert_sort_options_validation_error(
@@ -415,8 +415,7 @@ fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_out
 fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort"))
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort"))
             .unwrap()
     });
 
@@ -428,7 +427,7 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
 
     assert_eq!(report.request().boundary(), "final_sort");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
     assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
     assert_eq!(report.output_bytes(), None);
     assert_budget_report_high_water(report, expected_order_bytes);
@@ -451,9 +450,11 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
     let options = SortOptions::new().with_stable(true);
     let expected = df.sort_values(["id"], options.clone()).unwrap();
     let token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("stable_final_sort"))
-            .unwrap()
+        execution_budget_token(
+            runtime,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("stable_final_sort"),
+        )
+        .unwrap()
     });
 
     reset_exec_observation();
@@ -487,16 +488,20 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
     let df = sample_df();
     let prepared = {
         let prepare_token = with_test_runtime(|runtime| {
-            runtime
-                .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_order"))
-                .unwrap()
+            execution_budget_token(
+                runtime,
+                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_order"),
+            )
+            .unwrap()
         });
         df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &prepare_token).unwrap().into_value()
     };
     let materialize_token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_output"))
-            .unwrap()
+        execution_budget_token(
+            runtime,
+            ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_output"),
+        )
+        .unwrap()
     });
 
     reset_exec_observation();
@@ -525,7 +530,7 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
 fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
-        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("final_sort")).unwrap()
+        execution_budget_token(runtime, ExecutionBudgetRequest::new(1).with_boundary("final_sort")).unwrap()
     });
 
     let err = df
@@ -535,7 +540,7 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("final_sort"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"),);
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("query_domain_member"),);
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"),);
     assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));

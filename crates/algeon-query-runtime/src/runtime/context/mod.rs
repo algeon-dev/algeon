@@ -28,7 +28,6 @@ use super::{
 use super::{allocator_correlation::CacheScopeCorrelationGuard, cache::resident_graph::GpuResidentGraphCache};
 use crate::{
     metrics::{QueryId, TraceId},
-    native_error::cudf_query_error,
     observability::{
         AttemptId, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle,
         RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeStreamLeaseScope, RuntimeTerminalOutcome,
@@ -523,30 +522,12 @@ impl ExecutionContext {
         }
     }
 
-    /// Creates a hard execution-budget token for this context's runtime stream.
+    /// Shares this stream's member for a budgeted execution stage.
     ///
-    /// Service-admitted contexts attach a member of their immutable attempt
-    /// domain; contexts without one use the runtime's standalone reservation
-    /// path.
+    /// The stage request cannot change the immutable query-domain cap.
     pub fn execution_budget_token(&self, request: cudf::ExecutionBudgetRequest) -> Result<cudf::ExecutionBudgetToken> {
         let runtime = self.runtime()?;
-        if let Some(member) = self.stream.member() {
-            // One member per stream for the attempt's lifetime; per-stage
-            // tokens share it rather than attaching a second member.
-            return Ok(cudf::ExecutionBudgetToken::from_shared_lease(
-                &runtime,
-                request,
-                member.clone(),
-                cudf::ExecutionBudgetEnforcement::QueryDomainMember,
-            ));
-        }
-        runtime.execution_budget_token(request).map_err(|error| {
-            cudf_query_error(
-                "query_engine.runtime.context.execution_budget_token",
-                "failed to create execution budget token",
-                error,
-            )
-        })
+        Ok(cudf::ExecutionBudgetToken::from_shared_lease(&runtime, request, self.stream.member().clone()))
     }
 
     /// Returns the immutable domain id for this admitted attempt.
