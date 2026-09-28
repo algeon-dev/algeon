@@ -25,7 +25,7 @@ use query_engine::{
 
 use super::{physical::candidate_outcomes_from_report, *};
 #[cfg(feature = "cugraph")]
-use crate::native_exec::AlgeonNativeComposedExec;
+use crate::native_exec::{AlgeonNativeComposedExec, AlgeonNativeGpuProducerExec};
 use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode},
@@ -99,7 +99,9 @@ fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
 }
 
 #[cfg(feature = "cugraph")]
-fn native_edge_exec() -> Arc<dyn ExecutionPlan> {
+/// A native edge relation in the form planning hands it to a graph: a
+/// GPU-resident producer the graph reads on the device.
+fn native_edge_producer() -> Arc<dyn ExecutionPlan> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
@@ -110,9 +112,8 @@ fn native_edge_exec() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["src".to_string(), "dst".to_string()],
     )));
-    Arc::new(
-        AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), test_execution_config()).unwrap(),
-    )
+    let plan = builder.finish_with_host_sink(source).unwrap().clone_with_gpu_resident_sink();
+    Arc::new(AlgeonNativeGpuProducerExec::try_new("query_gpu_coverage_edges", plan).unwrap())
 }
 
 #[cfg(feature = "cugraph")]
@@ -642,10 +643,10 @@ mod cugraph {
 
     #[test]
     fn final_observation_recursively_unwraps_cooperative_native_inputs() {
-        let single_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
+        let single_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_producer()));
         assert_eq!(classify_final_plan(cugraph_exec(single_wrapped).as_ref()), FinalPlanDisposition::Native);
 
-        let inner_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
+        let inner_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_producer()));
         let nested_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner_wrapped));
         assert_eq!(classify_final_plan(cugraph_exec(nested_wrapped).as_ref()), FinalPlanDisposition::Native);
     }
@@ -657,7 +658,7 @@ mod cugraph {
 
     #[test]
     fn reject_cpu_policy_accepts_nested_cooperative_cugraph_input() {
-        let inner: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
+        let inner: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_producer()));
         let nested: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner));
         let plan = composed_cugraph_plan(nested);
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
@@ -676,7 +677,7 @@ mod cugraph {
 
     #[test]
     fn bare_cugraph_with_native_child_is_native() {
-        let plan: Arc<dyn ExecutionPlan> = cugraph_exec(native_edge_exec());
+        let plan: Arc<dyn ExecutionPlan> = cugraph_exec(native_edge_producer());
         let observation = observe_final_plan(plan.as_ref());
         let coverage = QueryGpuCoverage::planned(
             validated_under_for_tests(),
@@ -720,7 +721,7 @@ mod cugraph {
 
     #[test]
     fn wrapped_cugraph_with_native_child_stays_full() {
-        let cugraph = cugraph_exec(native_edge_exec());
+        let cugraph = cugraph_exec(native_edge_producer());
         let input_name = cugraph.coverage_gpu_result_input_name().to_string();
         let plan = composed_exec_with_child(cugraph, input_name);
         let observation = observe_final_plan(plan.as_ref());

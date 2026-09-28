@@ -44,8 +44,8 @@ mod invocation;
 mod mixed;
 
 use attempt::{
-    NativeCostSelection, NativeOptimizationAttempt, optimize_count_only_native_plan, optimize_final_native_plan,
-    peel_cooperative_native_exec,
+    NativeCostSelection, NativeOptimizationAttempt, NativeReplacementSink, optimize_count_only_native_plan,
+    optimize_final_native_plan, peel_cooperative_native_exec,
 };
 pub use capability_envelope::{
     NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
@@ -200,9 +200,12 @@ pub async fn plan_with_native_diagnostics(
 pub struct AlgeonNativePhysicalOptimizerRule {
     config: AlgeonNativeOptimizerConfig,
     stage: NativeOptimizerStage,
-    // False for a cuGraph input subplan: that plan is a child of the query
-    // root, so the outer run binds admission and checks the CPU policy.
-    plans_query_root: bool,
+    // Where the planned root's result goes. A query root streams Arrow to
+    // DataFusion. A cuGraph input subplan is a child of the query root that
+    // the graph reads on the device, so a native root is decided in that
+    // GPU-resident form here, and the outer run binds admission and checks
+    // the CPU policy.
+    root_sink: NativeReplacementSink,
 }
 
 // Distinct rule identities let the count-only probe run before the final rewrite pass.
@@ -217,12 +220,18 @@ enum NativeOptimizerStage {
 impl AlgeonNativePhysicalOptimizerRule {
     /// Create the final native rewrite rule.
     pub fn new(config: AlgeonNativeOptimizerConfig) -> Self {
-        Self { config, stage: NativeOptimizerStage::Final, plans_query_root: true }
+        Self { config, stage: NativeOptimizerStage::Final, root_sink: NativeReplacementSink::HostArrow }
     }
 
+    /// The rule for one cuGraph input subplan, whose native root binds into
+    /// the graph under `input_name`.
     #[cfg(feature = "cugraph")]
-    pub(crate) fn new_cugraph_subplan(config: AlgeonNativeOptimizerConfig) -> Self {
-        Self { config, stage: NativeOptimizerStage::Final, plans_query_root: false }
+    pub(crate) fn new_cugraph_subplan(config: AlgeonNativeOptimizerConfig, input_name: String) -> Self {
+        Self {
+            config,
+            stage: NativeOptimizerStage::Final,
+            root_sink: NativeReplacementSink::GpuResidentProducer { input_name },
+        }
     }
 
     /// Return the immutable config copied into rewritten native exec nodes.
@@ -234,7 +243,7 @@ impl AlgeonNativePhysicalOptimizerRule {
         Self {
             config: self.config.clone(),
             stage: NativeOptimizerStage::CountOnlyProbe,
-            plans_query_root: self.plans_query_root,
+            root_sink: self.root_sink.clone(),
         }
     }
 
@@ -256,8 +265,12 @@ impl AlgeonNativePhysicalOptimizerRule {
         Ok((plan, invocation.planning_diagnostics()))
     }
 
+    fn plans_query_root(&self) -> bool {
+        matches!(self.root_sink, NativeReplacementSink::HostArrow)
+    }
+
     fn ends_planning_pass(&self) -> bool {
-        self.stage == NativeOptimizerStage::Final && self.plans_query_root
+        self.stage == NativeOptimizerStage::Final && self.plans_query_root()
     }
 }
 
@@ -319,6 +332,8 @@ impl AlgeonNativePhysicalOptimizerRule {
         }
         let already_selected = if plan.downcast_ref::<AlgeonNativeExec>().is_some()
             || plan.downcast_ref::<AlgeonNativeComposedExec>().is_some()
+            || plan.downcast_ref::<AlgeonNativeGpuProducerExec>().is_some()
+            || plan.downcast_ref::<AlgeonNativeComposedGpuProducerExec>().is_some()
             || is_certified_mixed_execution_plan(plan.as_ref())
         {
             Some(Arc::clone(&plan))
@@ -365,6 +380,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                     native_execution_config,
                     native_optimizer_options,
                     cost_selection,
+                    &self.root_sink,
                 )?
             },
             (None, super::RelationalNativeRewritePolicy::Enabled, NativeOptimizerStage::Final) => {
@@ -373,6 +389,7 @@ impl AlgeonNativePhysicalOptimizerRule {
                     native_execution_config,
                     native_optimizer_options,
                     cost_selection,
+                    &self.root_sink,
                 )?
             },
         };
@@ -393,7 +410,7 @@ impl AlgeonNativePhysicalOptimizerRule {
         } else {
             None
         };
-        if self.plans_query_root
+        if self.plans_query_root()
             && let Some((source, evidence)) = native_admission
         {
             optimized.plan = wrap_plan_with_native_admission(Arc::clone(&optimized.plan), source, evidence);
@@ -465,7 +482,7 @@ fn plan_native_admission(
 
 fn native_fragment_capability_evidences(plan: &dyn ExecutionPlan) -> Result<Vec<AttemptCapabilityEvidence>> {
     let mut evidence_items = Vec::new();
-    collect_native_fragment_capability_evidences(plan, false, true, &mut evidence_items)?;
+    collect_native_fragment_capability_evidences(plan, true, &mut evidence_items)?;
     if let Some(manifest) = gpu_function_execution_manifest(plan)? {
         evidence_items.push(AttemptCapabilityEvidence::empty().with_execution_manifest(manifest).map_err(|error| {
             Error::from_native(
@@ -627,52 +644,25 @@ fn plan_contains_gpu_execution(plan: &dyn ExecutionPlan) -> bool {
 
 fn collect_native_fragment_capability_evidences(
     plan: &dyn ExecutionPlan,
-    executes_as_cugraph_input: bool,
     materializes_host_result: bool,
     evidence_items: &mut Vec<AttemptCapabilityEvidence>,
 ) -> Result<()> {
     #[cfg(feature = "cugraph")]
-    let is_composed = if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
-        let gpu_plan;
-        let composed_plan = if executes_as_cugraph_input {
-            gpu_plan = composed.native_plan().clone_with_gpu_resident_sink();
-            &gpu_plan
-        } else {
-            composed.native_plan()
-        };
-        evidence_items.push(composed_admission_capability_evidence(composed_plan, composed.gpu_inputs())?);
-        true
-    } else {
-        false
-    };
-    #[cfg(not(feature = "cugraph"))]
-    let is_composed = false;
-    if is_composed {
+    if let Some(composed) = plan.downcast_ref::<AlgeonNativeComposedExec>() {
+        evidence_items.push(composed_admission_capability_evidence(composed.native_plan(), composed.gpu_inputs())?);
         for child in plan.children() {
-            let child_is_cugraph = graph_execution_plan(child.as_ref()).is_some();
             for descendant in child.children() {
-                collect_native_fragment_capability_evidences(
-                    descendant.as_ref(),
-                    executes_as_cugraph_input || child_is_cugraph,
-                    false,
-                    evidence_items,
-                )?;
+                collect_native_fragment_capability_evidences(descendant.as_ref(), false, evidence_items)?;
             }
         }
         return Ok(());
     }
     let graph_execution_evidence =
         graph_execution_plan(plan).map(GraphExecutionPlan::graph_execution_capability_evidence).transpose()?;
-    let is_cugraph_execution = graph_execution_evidence.is_some();
     let producer = gpu_resident_producer(plan);
     for child in plan.children() {
         let child_materializes_host_result = producer.is_none() || gpu_resident_producer(child.as_ref()).is_none();
-        collect_native_fragment_capability_evidences(
-            child.as_ref(),
-            executes_as_cugraph_input || is_cugraph_execution,
-            child_materializes_host_result,
-            evidence_items,
-        )?;
+        collect_native_fragment_capability_evidences(child.as_ref(), child_materializes_host_result, evidence_items)?;
     }
     if let Some(evidence) = graph_execution_evidence {
         evidence_items.push(evidence);
@@ -687,13 +677,6 @@ fn collect_native_fragment_capability_evidences(
         return Ok(());
     }
     if let Some(native_plan) = lowered_native_plan(plan) {
-        let gpu_resident_plan;
-        let native_plan = if executes_as_cugraph_input {
-            gpu_resident_plan = native_plan.clone_with_gpu_resident_sink();
-            &gpu_resident_plan
-        } else {
-            native_plan
-        };
         evidence_items.push(AttemptCapabilityEvidence::for_query_plan(native_plan));
     }
     Ok(())

@@ -34,8 +34,10 @@ use query_engine::{
     admission::AttemptCapabilityEvidence,
     exec::admit_query_plan,
     expr::{Expr, SortExpr, SortSpec},
+    mode::StatisticalAggregateExecutionMode,
     observability::{AttemptDisposition, RuntimeTerminalOutcome},
     plan::{NodeId, PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
+    policy::PlanningPolicy,
     runtime::{ExecutionCancellation, QueryAdmissionRequest, StandaloneConfig},
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
@@ -65,11 +67,13 @@ use crate::{
         graph_vertex_upper_bound_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
     },
     native_exec::{
-        GraphClaimCalibrationCapture, QueryAdmissionSource, SealedAttemptMetricsTarget, SourceChunking,
+        AlgeonNativeComposedGpuProducerExec, GraphClaimCalibrationCapture, QueryAdmissionSource,
+        SealedAttemptMetricsTarget, SourceChunking,
         admission::{
             QueryAdmissionTicket, query_admission_ticket_from_task_context, task_context_with_query_admission_ticket,
         },
-        composed_admission_capability_evidence, gpu_resident_producer, gpu_resident_producer_unique_output_key,
+        admit_for_test, composed_admission_capability_evidence, gpu_resident_producer,
+        gpu_resident_producer_unique_output_key,
         graph::{GraphExecutionPlan, graph_execution_plan},
     },
     native_report::NativeDataFusionExecutionMetrics,
@@ -426,8 +430,14 @@ fn native_edge_source_with_root(
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let root = root(&mut builder, source);
-    let plan = builder.finish_with_host_sink(root).unwrap();
-    Arc::new(AlgeonNativeExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    native_edge_producer(builder.finish_with_host_sink(root).unwrap(), config)
+}
+
+/// A native edge relation in the form planning hands it to a graph: a
+/// GPU-resident producer holding its admitted artifact.
+fn native_edge_producer(plan: QueryPlan, config: &AlgeonNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
+    let admitted = admit_for_test(&plan.clone_with_gpu_resident_sink(), config).unwrap();
+    Arc::new(AlgeonNativeGpuProducerExec::try_new_for_shared_plan("edges", admitted, config, None).unwrap())
 }
 
 fn native_graph_residency_edge_source_with_stable_id(
@@ -458,8 +468,7 @@ fn native_graph_residency_edge_source_with_stable_id(
             ],
         )
         .unwrap();
-    let plan = builder.finish_with_host_sink(projected).unwrap();
-    Arc::new(AlgeonNativeExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    native_edge_producer(builder.finish_with_host_sink(projected).unwrap(), config)
 }
 
 fn native_graph_residency_edge_source(config: &AlgeonNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
@@ -1434,9 +1443,6 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
         ..StandaloneConfig::default()
     })
     .unwrap();
-    let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, &native_context);
     let staged_inputs = stage_cugraph_inputs(
         &triangle_spec(),
         memory_edge_source(16),
@@ -1449,10 +1455,8 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
     .expect("host graph inputs should stage");
     assert!(runtime.memory_pool.reserved() > 0, "staged host batches must be reserved before upload");
 
-    let uploaded = staged_inputs
-        .upload(&native_context, &mut graph_metrics, task_context)
-        .await
-        .expect("staged host graph inputs should upload");
+    let uploaded =
+        staged_inputs.upload(&native_context, task_context).await.expect("staged host graph inputs should upload");
 
     assert_eq!(
         runtime.memory_pool.reserved(),
@@ -1471,9 +1475,6 @@ async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_uplo
     let admitted = attempt.acquire_context().expect("admitted context");
     let native_context = admitted.context();
     assert!(native_context.is_query_service_admitted());
-    let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, native_context);
     let staged_inputs = stage_cugraph_inputs(
         &triangle_spec(),
         memory_edge_source(16),
@@ -1486,7 +1487,7 @@ async fn cugraph_staged_upload_rejects_missing_admission_plan_before_source_uplo
     .expect("host graph inputs should stage");
     assert!(staged_inputs.admitted_graph_plan.is_none());
 
-    let error = match staged_inputs.upload(native_context, &mut graph_metrics, task_context).await {
+    let error = match staged_inputs.upload(native_context, task_context).await {
         Err(error) => error,
         Ok(_) => panic!("an admitted upload without its exact graph plan must fail closed"),
     };
@@ -1564,8 +1565,8 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
     let backend = test_gpu_backend();
     let admission_source = admission_source(&backend);
     let (schema, producer_evidence) = direct_composed_graph_evidence();
-    let consumer_host_plan = direct_composed_consumer_plan(&["producer_a", "producer_b"], Arc::clone(&schema));
-    let consumer_gpu_plan = consumer_host_plan.clone_with_gpu_resident_sink();
+    let consumer_gpu_plan = direct_composed_consumer_plan(&["producer_a", "producer_b"], Arc::clone(&schema))
+        .clone_with_gpu_resident_sink();
     let execute_counts = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let producer_names = ["producer_a", "producer_b"];
     let (_producer_attempt, producer_ticket) =
@@ -1583,14 +1584,24 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
             }) as Arc<dyn ExecutionPlan>
         })
         .collect::<Vec<_>>();
-    let composed_exec = Arc::new(
-        AlgeonNativeComposedExec::try_new(
-            consumer_host_plan.clone(),
-            children.clone(),
-            backend_execution_config(&backend),
-        )
-        .expect("direct composed fixture must build"),
-    ) as Arc<dyn ExecutionPlan>;
+    // The edge source as planning hands it to the graph: a composed producer
+    // that holds its admitted GPU-resident artifact.
+    let composed_edge_source = |consumer_plan: &QueryPlan, task_context: Arc<TaskContext>| {
+        let admitted =
+            admit_query_plan(consumer_plan, StatisticalAggregateExecutionMode::default(), PlanningPolicy::default())
+                .expect("composed edge-source fixture must be admissible");
+        let producer = Arc::new(
+            AlgeonNativeComposedGpuProducerExec::try_new_with_equivalence_properties(
+                "composed_edge",
+                admitted,
+                children.clone(),
+                backend_execution_config(&backend),
+                EquivalenceProperties::new(Arc::clone(consumer_plan.output_schema())),
+            )
+            .expect("composed edge-source fixture must build"),
+        ) as Arc<dyn ExecutionPlan>;
+        prepare_gpu_resident_producer_for_execution(producer, task_context)
+    };
 
     let wrong_order_children = vec![Arc::clone(&children[1]), Arc::clone(&children[0])];
     let (_wrong_order_attempt, wrong_order_config) =
@@ -1600,27 +1611,14 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
         .execution_context_async(Arc::clone(&wrong_order_task_context))
         .await
         .expect("wrong-order fixture must acquire an admitted context");
-    let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = AlgeonNativeMetrics::new(&metrics_set, 0);
-    let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, wrong_order_context.context());
-    let wrong_order_admitted = admit_query_plan(
-        &consumer_gpu_plan,
-        wrong_order_context.context().statistical_aggregate_execution_mode(),
-        wrong_order_context.context().planning_policy(),
-    )
-    .expect("wrong-order fixture consumer must be admissible");
-    let wrong_order_error = match execute_edge_source_to_gpu(
-        wrong_order_context.context(),
-        &mut graph_metrics,
-        Arc::clone(&composed_exec),
-        Arc::clone(&wrong_order_task_context),
-        Some(wrong_order_admitted),
-    )
-    .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("runtime producer order must not execute under a differently ordered admission evidence"),
-    };
+    let edge_source = composed_edge_source(&consumer_gpu_plan, Arc::clone(&wrong_order_task_context))
+        .await
+        .expect("composed edge source prepares");
+    let wrong_order_error =
+        match execute_edge_source_to_gpu(wrong_order_context.context(), edge_source, wrong_order_task_context).await {
+            Err(error) => error,
+            Ok(_) => panic!("runtime producer order must not execute under a differently ordered admission evidence"),
+        };
     let wrong_order_algeon = wrong_order_error.find_algeon_error().expect("order rejection must remain structured");
     assert_eq!(
         wrong_order_algeon.fact_value("schedule_reason"),
@@ -1638,27 +1636,17 @@ async fn composed_edge_source_rejects_admission_mismatch_before_running_producer
         .execution_context_async(Arc::clone(&original_task_context))
         .await
         .expect("original fixture must acquire an admitted context");
-    let changed_consumer_gpu_plan = consumer_host_plan
+    let changed_consumer_gpu_plan = consumer_gpu_plan
         .with_appended_sort(SortSpec::new(vec![SortExpr::new(Expr::column("vertex"), false, false)]))
         .clone_with_gpu_resident_sink();
-    let changed_consumer_admitted = admit_query_plan(
-        &changed_consumer_gpu_plan,
-        original_context.context().statistical_aggregate_execution_mode(),
-        original_context.context().planning_policy(),
-    )
-    .expect("changed-scope fixture consumer must be admissible");
-    let changed_scope_error = match execute_edge_source_to_gpu(
-        original_context.context(),
-        &mut graph_metrics,
-        composed_exec,
-        original_task_context,
-        Some(changed_consumer_admitted),
-    )
-    .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("a changed consumer scope must not execute admitted producers"),
-    };
+    let edge_source = composed_edge_source(&changed_consumer_gpu_plan, Arc::clone(&original_task_context))
+        .await
+        .expect("changed-scope composed edge source prepares");
+    let changed_scope_error =
+        match execute_edge_source_to_gpu(original_context.context(), edge_source, original_task_context).await {
+            Err(error) => error,
+            Ok(_) => panic!("a changed consumer scope must not execute admitted producers"),
+        };
     let changed_scope_algeon = changed_scope_error.find_algeon_error().expect("scope rejection must remain structured");
     assert_eq!(changed_scope_algeon.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
     assert_eq!(execute_counts[0].load(Ordering::SeqCst), 0);
@@ -2382,9 +2370,18 @@ fn admission_backed_cugraph_allows_native_child_execution() {
 #[tokio::test]
 async fn cugraph_prepares_nested_native_source_metadata_before_graph_admission() {
     let config = AlgeonNativeExecutionConfig::default().with_lakehouse_footer_pruning(true);
-    let native_exec = native_edge_source(vec![100, 200], &config);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("edges.parquet").with_row_group_rows(vec![100, 200])],
+        edge_schema(),
+        vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let host_native =
+        Arc::new(AlgeonNativeExec::try_new(builder.finish_with_host_sink(source).unwrap(), config.clone()).unwrap())
+            as Arc<dyn ExecutionPlan>;
     let wrapped = Arc::new(
-        RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1))
+        RepartitionExec::try_new(host_native, Partitioning::UnknownPartitioning(1))
             .expect("test wrapper should accept the native child"),
     ) as Arc<dyn ExecutionPlan>;
 

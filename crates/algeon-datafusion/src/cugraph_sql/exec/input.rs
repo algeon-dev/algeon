@@ -11,7 +11,6 @@ use arrow::array::new_empty_array;
 use cudf::DataFrame;
 use futures::{StreamExt, stream::iter};
 use query_engine::{
-    admission::AdmittedPlan,
     error::{QueryError, QueryErrorCode},
     native_error::cudf_query_error,
     plan::QueryPlan,
@@ -21,13 +20,12 @@ use query_engine::{
 use super::{
     AlgeonNativeComposedExec, AlgeonNativeExec, AlgeonNativeMetrics, BoxFuture, ChildrenPropertiesMode,
     CugraphAlgorithmSpec, DataFusionError, DataFusionResult, Error, ErrorCode, ExecutionContext, ExecutionPlan,
-    GpuDataFrame, GpuResidentInputMap, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics,
-    HostBatchCursorConfig, MemoryConsumer, MemoryReservation, QueryExecutionRequest, QueryOutput, RecordBatch,
-    RecordBatchStream, RecordOutput, ReplaceChildrenOptions, Result, SchemaRef, Stream, TaskContext, TryStreamExt,
-    as_algeon_native_composed_exec, as_algeon_native_exec, counted_cudf_runtime, edge_source_output_rows,
-    execute_gpu_resident_producer_with_context, execute_query_plan, finalize_graph_query_outcome,
-    get_record_batch_memory_size, gpu_resident_producer, gpu_resident_producer_input_name, plan_contains_algeon_native,
-    prepare_gpu_resident_producer_for_execution, resident_side_input_output_rows, resolve_native_edge_source_gpu_plan,
+    GpuDataFrame, GpuResultHandle, GraphBfsPublishedResult, GraphExecutionMetrics, HostBatchCursorConfig,
+    MemoryConsumer, MemoryReservation, RecordBatch, RecordBatchStream, RecordOutput, ReplaceChildrenOptions, Result,
+    SchemaRef, Stream, TaskContext, TryStreamExt, counted_cudf_runtime, edge_source_output_rows,
+    execute_gpu_resident_producer_with_context, get_record_batch_memory_size, gpu_resident_producer,
+    graph_input_native_producer, plan_contains_algeon_native, prepare_gpu_resident_producer_for_execution,
+    resident_side_input_output_rows,
 };
 use crate::native_exec::validate_host_wrapped_gpu_execution;
 
@@ -167,7 +165,6 @@ pub(super) struct StagedCugraphInputs {
     pub(super) edge: StagedCugraphSource,
     pub(super) predicates: Vec<StagedCugraphSource>,
     pub(super) admitted_graph_plan: Option<QueryPlan>,
-    pub(super) admitted_edge_source_gpu_plan: Option<Arc<AdmittedPlan>>,
     pub(super) host_evidence: HostReservationEvidence,
     pub(super) reservation: Option<MemoryReservation>,
 }
@@ -269,14 +266,12 @@ async fn stage_cugraph_source(
     staged_bytes: &AtomicUsize,
     reservation: &MemoryReservation,
 ) -> DataFusionResult<StagedCugraphSource> {
+    let plan = graph_input_native_producer(&plan).cloned().unwrap_or(plan);
     if gpu_resident_producer(plan.as_ref()).is_some() {
         let plan = prepare_gpu_resident_producer_for_execution(plan, Arc::clone(&task_context)).await?;
         return Ok(StagedCugraphSource::Native { schema: plan.schema(), plan });
     }
     let schema = plan.schema();
-    if as_algeon_native_exec(plan.as_ref()).is_some() || as_algeon_native_composed_exec(plan.as_ref()).is_some() {
-        return Ok(StagedCugraphSource::Native { schema, plan });
-    }
     if plan_contains_algeon_native(plan.as_ref()) {
         validate_host_wrapped_gpu_execution(plan.as_ref(), task_context.as_ref())?;
     }
@@ -399,7 +394,6 @@ impl CollectedCugraphInputs {
             edge,
             predicates,
             admitted_graph_plan: None,
-            admitted_edge_source_gpu_plan: None,
             host_evidence,
             reservation: Some(reservation),
         })
@@ -435,25 +429,16 @@ impl StagedCugraphInputs {
     pub(super) async fn upload(
         self,
         context: &ExecutionContext,
-        metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
     ) -> DataFusionResult<UploadedCugraphInputs> {
         self.validate_admission(context)?;
-        let Self {
-            edge,
-            predicates,
-            admitted_graph_plan: _,
-            admitted_edge_source_gpu_plan,
-            host_evidence,
-            reservation,
-        } = self;
+        let Self { edge, predicates, admitted_graph_plan: _, host_evidence, reservation } = self;
         let edge_schema = edge.schema();
-        let edge_frame =
-            edge.upload(context, metrics, Arc::clone(&task_context), admitted_edge_source_gpu_plan).await?;
+        let edge_frame = edge.upload(context, Arc::clone(&task_context)).await?;
         let mut predicate_frames = Vec::with_capacity(predicates.len());
         for source in predicates {
             let schema = source.schema();
-            let frame = source.upload(context, metrics, Arc::clone(&task_context), None).await?;
+            let frame = source.upload(context, Arc::clone(&task_context)).await?;
             predicate_frames.push(CugraphGpuFrame { schema, frame });
         }
         let _reservation = reservation;
@@ -503,14 +488,10 @@ impl StagedCugraphSource {
     async fn upload(
         self,
         context: &ExecutionContext,
-        metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
-        admitted_edge_source_gpu_plan: Option<Arc<AdmittedPlan>>,
     ) -> DataFusionResult<GpuDataFrame> {
         match self {
-            Self::Native { plan, .. } => {
-                execute_edge_source_to_gpu(context, metrics, plan, task_context, admitted_edge_source_gpu_plan).await
-            },
+            Self::Native { plan, .. } => execute_edge_source_to_gpu(context, plan, task_context).await,
             Self::Host { schema, batches } => record_batches_to_gpu(context, schema, &batches),
         }
     }
@@ -736,6 +717,10 @@ pub(super) fn prepare_cugraph_source_metadata(
     task_context: Arc<TaskContext>,
 ) -> BoxFuture<'static, DataFusionResult<Arc<dyn ExecutionPlan>>> {
     Box::pin(async move {
+        let plan = graph_input_native_producer(&plan).cloned().unwrap_or(plan);
+        if gpu_resident_producer(plan.as_ref()).is_some() {
+            return prepare_gpu_resident_producer_for_execution(plan, task_context).await;
+        }
         if let Some(native) = plan.downcast_ref::<AlgeonNativeExec>() {
             return Ok(
                 Arc::new(native.prepare_lakehouse_metadata(task_context.as_ref()).await?) as Arc<dyn ExecutionPlan>
@@ -770,106 +755,14 @@ pub(super) fn prepare_cugraph_source_metadata(
 
 pub(super) async fn execute_edge_source_to_gpu(
     context: &ExecutionContext,
-    metrics: &mut GraphExecutionMetrics<'_>,
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
-    admitted_edge_source_gpu_plan: Option<Arc<AdmittedPlan>>,
 ) -> DataFusionResult<GpuDataFrame> {
     if gpu_resident_producer(plan.as_ref()).is_some() {
         let (_, handle) =
             execute_gpu_resident_producer_with_context(plan.as_ref(), context, 0, Arc::clone(&task_context)).await?;
         return Ok(handle.into_gpu_frame());
     }
-    if let Some(native) = as_algeon_native_exec(plan.as_ref()) {
-        let admitted = match admitted_edge_source_gpu_plan {
-            Some(admitted) => admitted,
-            None => {
-                resolve_native_edge_source_gpu_plan(native.execution_config(), native.admitted(), task_context.as_ref())
-                    .await?
-            },
-        };
-        let outcome = execute_query_plan(context, QueryExecutionRequest::admitted(&admitted));
-        let output = finalize_graph_query_outcome(
-            metrics,
-            outcome,
-            "algeon_datafusion.cugraph_sql.edge_source_native",
-            "native cuGraph edge-source execution failed",
-        )?;
-        let QueryOutput::GpuResident(handle) = output else {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.cugraph_sql.edge_source_native",
-                "native cuGraph edge source did not produce a GPU-resident result",
-            )
-            .into());
-        };
-        return Ok(handle.into_gpu_frame());
-    }
-    if let Some(native) = as_algeon_native_composed_exec(plan.as_ref()) {
-        let admitted = match admitted_edge_source_gpu_plan {
-            Some(admitted) => admitted,
-            None => {
-                resolve_native_edge_source_gpu_plan(native.execution_config(), native.admitted(), task_context.as_ref())
-                    .await?
-            },
-        };
-        let runtime_occurrence_ids = native
-            .gpu_inputs()
-            .iter()
-            .map(|input| {
-                gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
-                    DataFusionError::from(
-                        Error::new(
-                            ErrorCode::InvalidExecutionPlan,
-                            "algeon_datafusion.cugraph_sql.edge_source_composed",
-                            "the composed cuGraph edge source is missing a top-level producer occurrence identity",
-                        )
-                        .with_fact("reason", "composed_admission_occurrence_missing"),
-                    )
-                })
-            })
-            .collect::<DataFusionResult<Vec<_>>>()?;
-        context.validate_admitted_composed_attempt(admitted.plan(), &runtime_occurrence_ids).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "algeon_datafusion.cugraph_sql.edge_source_composed.admission",
-                "the admitted composed edge source does not match runtime execution",
-                error,
-            ))
-        })?;
-        let mut gpu_inputs = GpuResidentInputMap::new();
-        for child in native.gpu_inputs() {
-            let Some(producer) = gpu_resident_producer(child.as_ref()) else {
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "algeon_datafusion.cugraph_sql.edge_source_composed",
-                    "native composed cuGraph edge-source child was not a GPU-resident producer",
-                )
-                .with_fact("child_name", child.name())
-                .into());
-            };
-            let (input_name, handle) =
-                producer.execute_gpu_result_with_context(context, 0, Arc::clone(&task_context)).await?;
-            gpu_inputs.insert(input_name, handle);
-        }
-        let outcome =
-            execute_query_plan(context, QueryExecutionRequest::admitted(&admitted).with_gpu_inputs(&gpu_inputs));
-        let output = finalize_graph_query_outcome(
-            metrics,
-            outcome,
-            "algeon_datafusion.cugraph_sql.edge_source_composed",
-            "native composed cuGraph edge-source execution failed",
-        )?;
-        let QueryOutput::GpuResident(handle) = output else {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "algeon_datafusion.cugraph_sql.edge_source_composed",
-                "native composed cuGraph edge source did not produce a GPU-resident result",
-            )
-            .into());
-        };
-        return Ok(handle.into_gpu_frame());
-    }
-
     Err(Error::new(
         ErrorCode::InvalidExecutionPlan,
         "algeon_datafusion.cugraph_sql.edge_source_host_import",

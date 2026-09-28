@@ -562,8 +562,8 @@ async fn cugraph_bfs_string_subplans_lower_to_native_gpu_producers() {
     let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("logical BFS must retain its graph producer boundary");
     assert_eq!(cugraph.children().len(), 3, "edge, source, and include relations remain graph inputs");
     assert!(
-        cugraph.children().iter().all(|child| plan_contains_native_exec(child.as_ref())),
-        "logical BFS edge and side inputs must lower through native GPU producers"
+        cugraph.children().iter().all(|child| cugraph_input_is_native_gpu_producer(child.as_ref())),
+        "logical BFS edge and side inputs must be planned as native GPU-resident producers"
     );
 }
 
@@ -597,8 +597,8 @@ async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     );
     let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("numeric BFS must retain its graph boundary");
     assert!(
-        cugraph.children().iter().all(|child| plan_contains_native_exec(child.as_ref())),
-        "numeric BFS child relations must retain native execution planning"
+        cugraph.children().iter().all(|child| cugraph_input_is_native_gpu_producer(child.as_ref())),
+        "numeric BFS edge and predicate relations must be planned as native GPU-resident producers"
     );
 }
 

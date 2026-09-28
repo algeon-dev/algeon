@@ -232,12 +232,13 @@ fn install_gpu_sql_family(
 pub(crate) fn session_state_with_native_execution_config(
     state: &SessionState,
     native_execution_config: AlgeonNativeExecutionConfig,
+    input_name: String,
 ) -> Option<SessionState> {
     let optimizer_config =
         installed_algeon_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
     let relational_rewrite_enabled =
         optimizer_config.relational_native_rewrite_policy() == RelationalNativeRewritePolicy::Enabled;
-    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config));
+    let rule = Arc::new(AlgeonNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config, input_name));
     let mut rules = state.physical_optimizers().to_vec();
     // The outer optimizer run revisits this subtree through `CugraphAlgoExec`'s
     // children. DataFusion forbids `JoinSelection` from swapping a hash join
@@ -419,9 +420,12 @@ mod tests {
         let optimizer_config = AlgeonNativeOptimizerConfig::default()
             .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state = SessionStateBuilder::new().with_algeon_native(optimizer_config.clone()).build();
-        let nested =
-            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
-                .expect("nested cuGraph planning requires installed native selection");
+        let nested = session_state_with_native_execution_config(
+            &state,
+            optimizer_config.native_execution_config().clone(),
+            "cugraph_test_input".to_string(),
+        )
+        .expect("nested cuGraph planning requires installed native selection");
         let final_rewrite = |state: &SessionState| {
             Arc::clone(
                 state
@@ -499,9 +503,12 @@ mod tests {
             .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state =
             SessionStateBuilder::new_with_default_features().with_algeon_native(optimizer_config.clone()).build();
-        let nested =
-            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
-                .expect("nested cuGraph planning requires installed native selection");
+        let nested = session_state_with_native_execution_config(
+            &state,
+            optimizer_config.native_execution_config().clone(),
+            "cugraph_test_input".to_string(),
+        )
+        .expect("nested cuGraph planning requires installed native selection");
         let is_post_pushdown = |rule: &Arc<dyn PhysicalOptimizerRule + Send + Sync>| {
             rule.name() == DATAFUSION_POST_OPTIMIZATION_FILTER_PUSHDOWN_RULE_NAME
         };
@@ -515,9 +522,12 @@ mod tests {
         let optimizer_config = AlgeonNativeOptimizerConfig::default()
             .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state = SessionStateBuilder::new().with_algeon_native(optimizer_config.clone()).build();
-        let nested =
-            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
-                .expect("nested cuGraph planning requires installed native selection");
+        let nested = session_state_with_native_execution_config(
+            &state,
+            optimizer_config.native_execution_config().clone(),
+            "cugraph_test_input".to_string(),
+        )
+        .expect("nested cuGraph planning requires installed native selection");
         assert_eq!(nested.config().target_partitions(), 1);
         // The caller's own session keeps whatever parallelism it configured.
         assert!(state.config().target_partitions() >= 1);
@@ -531,9 +541,12 @@ mod tests {
             .with_config(SessionConfig::new().with_target_partitions(4))
             .with_algeon_native(optimizer_config.clone())
             .build();
-        let nested =
-            session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
-                .expect("nested cuGraph planning requires installed native selection");
+        let nested = session_state_with_native_execution_config(
+            &state,
+            optimizer_config.native_execution_config().clone(),
+            "cugraph_test_input".to_string(),
+        )
+        .expect("nested cuGraph planning requires installed native selection");
 
         assert_eq!(nested.config().target_partitions(), 4);
     }
@@ -552,6 +565,7 @@ mod tests {
         let _nested = session_state_with_native_execution_config(
             &ctx.state(),
             optimizer_config.native_execution_config().clone(),
+            "cugraph_test_input".to_string(),
         )
         .expect("nested cuGraph planning requires installed native selection");
 

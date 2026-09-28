@@ -308,8 +308,8 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
         "Flight SQL EXPLAIN should show the source and target relation inputs:\n{explain_text}",
     );
     assert!(
-        explain_text.matches("AlgeonNativeExec:").count() >= 3,
-        "edge, source, and target relation inputs should all be native children before GPU-resident execution:\n{explain_text}",
+        explain_text.matches("AlgeonNativeGpuProducerExec:").count() >= 3,
+        "edge, source, and target relation inputs should all be planned as GPU-resident native producers:\n{explain_text}",
     );
     assert!(
         !explain_text.contains("HashJoinExec"),

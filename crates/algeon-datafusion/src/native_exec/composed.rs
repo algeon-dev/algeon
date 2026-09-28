@@ -17,8 +17,6 @@ use datafusion::{
     },
 };
 use futures::future::BoxFuture;
-#[cfg(feature = "cugraph")]
-use query_engine::plan::row_bounds::query_plan_hard_row_upper_bound;
 use query_engine::{
     admission::{AdmittedPlan, AttemptCapabilityEvidence, AttemptExecutionScope, AttemptProducerOccurrence},
     error::{QueryError, QueryErrorCode, Result as QueryEngineResult},
@@ -75,11 +73,6 @@ pub struct AlgeonNativeComposedExec {
 }
 
 impl AlgeonNativeComposedExec {
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        query_plan_hard_row_upper_bound(self.native_plan())
-    }
-
     /// Create composed native execution from GPU-resident producer children.
     ///
     /// The final plan must use a host Arrow sink, every child must advertise a
@@ -208,21 +201,10 @@ impl AlgeonNativeComposedExec {
         self.admitted.plan()
     }
 
-    /// The artifact planning admitted for this node.
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn admitted(&self) -> &Arc<AdmittedPlan> {
-        &self.admitted
-    }
-
     #[cfg(feature = "bench-support")]
     #[doc(hidden)]
     pub fn admitted_plan_for_internal_consumer(&self) -> &Arc<AdmittedPlan> {
         &self.admitted
-    }
-
-    #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
-    pub(crate) fn execution_config(&self) -> &AlgeonNativeExecutionConfig {
-        &self.execution_config
     }
 
     #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
@@ -1014,6 +996,34 @@ impl GpuResidentProducer for AlgeonNativeComposedGpuProducerExec {
                 .with_log_safe_fact("producer_state", "not_prepared")
                 .into());
             }
+
+            // Producers run only after the admitted composed bound matches
+            // this consumer and the order of the occurrences it binds.
+            let runtime_occurrence_ids = self
+                .gpu_inputs
+                .iter()
+                .map(|input| {
+                    gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
+                        DataFusionError::from(
+                            Error::new(
+                                ErrorCode::InvalidExecutionPlan,
+                                "algeon_datafusion.native_composed_gpu_producer.execute_gpu",
+                                "a composed GPU-resident producer input is missing its occurrence identity",
+                            )
+                            .with_fact("reason", "composed_admission_occurrence_missing"),
+                        )
+                    })
+                })
+                .collect::<DataFusionResult<Vec<_>>>()?;
+            native_context.validate_admitted_composed_attempt(self.admitted.plan(), &runtime_occurrence_ids).map_err(
+                |error| {
+                    DataFusionError::from(Error::from_native(
+                        "algeon_datafusion.native_composed_gpu_producer.admission",
+                        "the admitted composed bound does not match runtime execution",
+                        error,
+                    ))
+                },
+            )?;
 
             let mut input_map = GpuResidentInputMap::new();
             for child in &self.gpu_inputs {
