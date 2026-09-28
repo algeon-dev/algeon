@@ -3,8 +3,8 @@
 ## Working principles
 
 - Fix the owning runtime, interop, FFI, or native-discovery contract instead of
-  hiding a failure in an algorithm wrapper. Extend `cudf` or
-  `components/algeon-interop` when the missing ownership or execution
+  hiding a failure in an algorithm wrapper. Extend `cudf`, `components/cuvs/cuvs`,
+  or `components/algeon-interop` when the missing ownership or execution
   primitive belongs there.
 - Keep changes scoped. Preserve unrelated worktree edits and avoid
   opportunistic cleanup, generated-file churn, or native rebuilds outside the
@@ -20,8 +20,9 @@ execution follow the root `algeon-datafusion` ownership map.
   `cuvs/`; raw generated C bindings and native discovery belong in
   `cuvs-sys/`.
 - `cudf` is a root-workspace component dependency, and the interop contract
-  types are imported through `cudf::interop::contract`. The pinned official
-  cuVS source is `components/cuvs/cuvs`.
+  types are imported through `cudf::interop::contract`.
+  `components/cuvs/cuvs/` is the pinned Algeon cuVS fork used for
+  native builds.
 - The canonical install defaults are `target/native/cuvs-install` and the
   shared `target/native/cudf-install`; override them only with explicit
   selectors such as `CUVS_ROOT` and `CUVS_INSTALL_DIR`.

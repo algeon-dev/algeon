@@ -1,7 +1,7 @@
 # cuVS component
 
 `components/cuvs` is the Algeon Rust vector integration component
-built around [`libcuvs`](https://github.com/rapidsai/cuvs). It is part of the
+built around [`libcuvs`](https://github.com/algeon-dev/cuvs). It is part of the
 root Cargo workspace, not a second repository or workspace.
 Its main direction is to make cuVS usable as part of backend services and query execution systems for
 [Algeon](https://github.com/algeon-dev/algeon/tree/main/components/cuvs). It focuses on safe Rust APIs for GPU vector
@@ -20,7 +20,7 @@ behavior explicit enough for service-side integration.
 
 - `components/cuvs/algeon-cuvs/` - the safe public Rust API crate, published as `cuvs` (import `cuvs`).
 - `components/cuvs/algeon-cuvs-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
-- `components/cuvs/cuvs/` - the pinned [algeon-dev cuVS fork](https://github.com/algeon-dev/cuvs) source submodule used to build the native libraries.
+- `components/cuvs/cuvs/` - the pinned **[forked cuVS](https://github.com/algeon-dev/cuvs)** source submodule used to build `libcuvs`.
 - `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` - root-owned native build entry points.
 - `scripts/dev/bindings.sh cuvs` - root-owned checked-binding maintenance.
 

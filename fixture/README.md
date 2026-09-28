@@ -26,6 +26,8 @@ fixture/
     citation_network/                # DBLP / AMiner V12 -> cuGraph edge and paper tables
     amazon_reviews_2023/             # Amazon Reviews 2023 -> products and reviews
     ember2024/                       # EMBER2024 -> forest-inference feature splits
+    kuairand/                        # KuaiRand recommendation -> interactions, users, videos, stats
+    merrec/                          # MerRec C2C recommendation -> events and items
   graph/
     cugraph/                         # cuGraph parity corpus and oracle JSON
     prepare.sh                       # cuGraph corpus preparation entrypoint
@@ -97,7 +99,7 @@ fixture/fixture.sh clickbench fetch --layout both --out ./fixture/clickbench/dat
 
 ## Demo datasets
 
-`demo/README.md` lists the three demo datasets, their converters, and the
+`demo/README.md` lists the demo datasets, their converters, and the
 Parquet conventions they share. Each converter reads upstream files from its
 dataset's `raw/` directory and writes Snappy Parquet next to it:
 
@@ -105,6 +107,8 @@ dataset's `raw/` directory and writes Snappy Parquet next to it:
 fixture/fixture.sh graph dblp-ingest --overwrite              # demo/citation_network/v1/
 fixture/fixture.sh amazon-reviews prepare --force             # demo/amazon_reviews_2023/parquet/
 fixture/fixture.sh ember2024 prepare --split test --split challenge   # demo/ember2024/parquet/
+fixture/fixture.sh kuairand prepare --force                   # demo/kuairand/parquet/
+fixture/fixture.sh merrec prepare --force                     # demo/merrec/parquet/
 ```
 
 For the Citation Network, follow the
@@ -153,6 +157,8 @@ ln -s "$ALGEON_FIXTURE_ROOT/tpcds"            fixture/tpc-ds/data
 ln -s "$ALGEON_FIXTURE_ROOT/clickbench"       fixture/clickbench/data
 ln -s "$ALGEON_FIXTURE_ROOT/citation_network" fixture/demo/citation_network/v1/parquet
 ln -s "$ALGEON_FIXTURE_ROOT/amazon_reviews"   fixture/demo/amazon_reviews_2023/parquet
+ln -s "$ALGEON_FIXTURE_ROOT/kuairand"         fixture/demo/kuairand/parquet
+ln -s "$ALGEON_FIXTURE_ROOT/merrec"           fixture/demo/merrec/parquet
 ln -s "$ALGEON_FIXTURE_ROOT/synthetic"        fixture/graph/synthetic
 ```
 

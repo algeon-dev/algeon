@@ -9,7 +9,7 @@ re-exports each requested split as `parquet/<split>.parquet` with columns `id`
 vectorized files), and `label` (EMBER's raw int32 label).
 
 Run with the venv described in fixture/demo/ember2024/README.md:
-    ~/.venvs/forest/bin/python fixture/demo/ember2024/prepare.py --split test
+    ~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/prepare.py --split test
 """
 
 from __future__ import annotations
@@ -208,7 +208,7 @@ def main() -> None:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path(__file__).resolve().parent,
+        default=Path(__file__).resolve().parents[1],
         help="Dataset root holding raw/ (JSONL, X_*.dat, y_*.dat), models/, and parquet/ (default: this directory)",
     )
     args = parser.parse_args()

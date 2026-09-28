@@ -112,7 +112,7 @@ features repeat values, and plain encoding grew the same sample from 452 MB to
 
 ```bash
 # From the venv directly:
-~/.venvs/forest/bin/python fixture/demo/ember2024/prepare.py --split test
+~/.venvs/forest/bin/python fixture/demo/ember2024/scripts/prepare.py --split test
 
 # Or via the fixture entrypoint (resolves ~/.venvs/forest automatically,
 # override with ALGEON_EMBER_PYTHON):
@@ -161,7 +161,7 @@ label 1 (malicious); `challenge` is 100% label 1.
 
 ```
 fixture/demo/ember2024/
-  prepare.py, prepare.sh, README.md   versioned
+  scripts/prepare.py, prepare.sh, README.md   versioned
   raw/       weekly JSONL, archives, and thrember's X_*.dat / y_*.dat memmaps
   models/    14 pretrained LightGBM models
   parquet/   <split>.parquet exports read by crates/workloads

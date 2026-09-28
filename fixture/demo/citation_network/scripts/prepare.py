@@ -48,11 +48,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-DATASET_DIR = Path(__file__).resolve().parent
+DATASET_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = DATASET_DIR.parents[2]
 DEFAULT_OUT_ROOT = DATASET_DIR.parent
 DEFAULT_SOURCE_JSON = DATASET_DIR / "raw" / "dblp.v12.json"
-GENERATOR = "fixture/demo/citation_network/prepare.py"
+GENERATOR = "fixture/demo/citation_network/scripts/prepare.py"
 DEFAULT_ROW_GROUP_SIZE = 1_048_576
 DEFAULT_PROFILE_ROW_GROUP_SIZE = 131_072
 DEFAULT_BUCKET_WIDTH = 100_000_000  # AMiner ids reach ~3e9; keep bucket ids compact for pruning demos.

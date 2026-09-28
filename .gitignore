@@ -43,7 +43,7 @@ __pycache__/
 # (raw/), generated, and model data under fixture/demo/<dataset>/ is not.
 /fixture/demo/*/*
 !/fixture/demo/*/README.md
-!/fixture/demo/*/*.py
+!/fixture/demo/*/scripts
 !/fixture/demo/*/*.sh
 
 # private documentation

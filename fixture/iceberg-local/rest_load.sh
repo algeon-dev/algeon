@@ -138,7 +138,7 @@ if [[ "${WORKLOAD}" == "citation_network" ]]; then
     echo "error: missing citation network parquet under ${data_dir}" >&2
     echo "       Download dblp.v12.json from the DBLP/AMiner Citation Network V12 distribution," >&2
     echo "       then run:" >&2
-    echo "         python3 fixture/demo/citation_network/prepare.py --source-json /path/to/dblp.v12.json" >&2
+    echo "         python3 fixture/demo/citation_network/scripts/prepare.py --source-json /path/to/dblp.v12.json" >&2
     echo "       or set CITATION_NETWORK_DATA_DIR to an existing parquet directory." >&2
     exit 2
   fi
@@ -156,7 +156,7 @@ fi
 print_citation_network_acquisition_instructions() {
   echo "       Download dblp.v12.json from the DBLP/AMiner Citation Network V12 distribution," >&2
   echo "       then run:" >&2
-  echo "         python3 fixture/demo/citation_network/prepare.py --source-json /path/to/dblp.v12.json" >&2
+  echo "         python3 fixture/demo/citation_network/scripts/prepare.py --source-json /path/to/dblp.v12.json" >&2
   echo "       or set CITATION_NETWORK_DATA_DIR to an existing parquet directory." >&2
 }
 
