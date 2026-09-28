@@ -16,8 +16,8 @@ SQL planning, runtime admission, and query execution follow the root
 `algeon-datafusion` ownership map.
 
 - Safe graph, algorithm, result, and cuDF interop APIs belong in
-  `cugraph/`; bindgen and native contract resolution belong in
-  `cugraph-sys/`.
+  `algeon-cugraph/`; bindgen and native contract resolution belong in
+  `algeon-cugraph-sys/`.
 - `cudf` and `cuvs` are root-workspace component dependencies. Shared interop
   contract types are imported from `cudf::interop::contract`, owned by
   `components/algeon-interop`. `components/cugraph/cugraph/` is the pinned

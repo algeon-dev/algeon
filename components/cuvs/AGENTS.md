@@ -17,8 +17,8 @@ surface used by Algeon. SQL planning, runtime admission, and query
 execution follow the root `algeon-datafusion` ownership map.
 
 - Safe algorithm, tensor, ownership, and completion APIs belong in
-  `cuvs/`; raw generated C bindings and native discovery belong in
-  `cuvs-sys/`.
+  `algeon-cuvs/`; raw generated C bindings and native discovery belong in
+  `algeon-cuvs-sys/`.
 - `cudf` is a root-workspace component dependency, and the interop contract
   types are imported through `cudf::interop::contract`.
   `components/cuvs/cuvs/` is the pinned Algeon cuVS fork used for
