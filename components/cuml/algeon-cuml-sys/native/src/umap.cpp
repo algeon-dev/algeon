@@ -62,6 +62,7 @@ ML::UMAPParams make_params(cuml_umap_params_t const& source)
   params.init = source.init;
   params.random_state = source.random_state;
   params.deterministic = true;
+  params.verbosity = cuml_native_log_level;
   params.metric = ML::distance::DistanceType::L2SqrtExpanded;
   params.build_algo = ML::UMAPParams::BRUTE_FORCE_KNN;
   params.a = -1.0f;
