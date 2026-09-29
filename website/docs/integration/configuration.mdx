@@ -109,7 +109,7 @@ export ALGEON_SERVER_EXECUTION_MODE=functions_only
 Accepted values are `native_preferred`, `functions_only`, and `native_required`.
 See [Choose an execution mode](./datafusion-session.mdx#choose-an-execution-mode)
 for their behavior, composition boundaries, host staging limits, and embedded
-Rust configuration. This is backend policy, not a SQL `SET` option. Function
+Rust configuration. This is backend policy, not a SQL `SET` option. UDTF
 features, registration, device profiles, and GPU admission are still required.
 
 ### Native settings
@@ -187,8 +187,6 @@ budget:
 
 All values must be greater than zero.
 
-<span id="gpu-sql-functions" />
-
 ## GPU SQL UDTFs
 
 cuGraph registration is controlled by these settings:
@@ -205,14 +203,14 @@ Per-call named `construction_policy` and other graph values override these defau
 [Graph Inputs and Construction](../cugraph/graph-options.mdx).
 
 cuVS has no enable variable. The server installs cuVS SQL on every session it
-builds; the `cuvs` feature decides whether the functions execute or return a
+builds; the `cuvs` feature decides whether the UDTFs execute or return a
 structured `required_feature_disabled` error. See
 [cuVS execution](../cuvs/overview.mdx#execution).
 
 ## Models and forest inference
 
 `cuml_forest_predict` reads its model file from a server-configured models
-root. Without a `[models]` table, the function is listed by
+root. Without a `[models]` table, the UDTF is listed by
 `gpu_list_functions()` but unavailable with `model_root_unconfigured`:
 
 ```toml

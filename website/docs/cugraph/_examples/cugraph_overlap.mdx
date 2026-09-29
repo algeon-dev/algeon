@@ -10,7 +10,7 @@ field labels, and have at least as many references as BERT. The smaller set is
 therefore BERT's 55-reference bibliography, and the overlap score is the share
 of that list also found in each candidate's bibliography.
 
-The function requires an undirected graph. Positive IDs represent citing
+The UDTF requires an undirected graph. Positive IDs represent citing
 papers and negative IDs represent cited papers in the reference role. This
 keeps papers that cite BERT on the positive-ID side and references on the
 negative-ID side. The edge projection omits weights, so each reference
@@ -71,5 +71,5 @@ covers 11 of BERT's 55 references, the largest share in this result at 0.2.
 A score of 1 means that every reference in BERT's smaller list also appears
 in the candidate's list. Candidate citations to BERT and agreement with its
 claims are outside this measure. Compare with the
-[Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx),
+[Jaccard similarity example](../udtfs/similarity/cugraph_jaccard.mdx),
 which divides by the union of both lists.

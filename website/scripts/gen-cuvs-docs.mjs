@@ -28,7 +28,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cuvs');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cuvs');
-const FUNCTIONS_DIR = join(DOCS_DIR, 'functions');
+const UDTFS_DIR = join(DOCS_DIR, 'udtfs');
 const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cuvs/';
 
 // These presentation families are documentation navigation only. They do not
@@ -55,6 +55,15 @@ const FAMILIES = {
     functions: ['cuvs_pca'],
   },
 };
+
+// Functions listed first, in this order, in the cheatsheet and the sidebar. The
+// remaining functions follow in descriptor order.
+const LEADING_FUNCTIONS = ['cuvs_top_k'];
+
+function listingOrder(specs) {
+  const leading = LEADING_FUNCTIONS.map(name => specs.find(spec => spec.function_name === name));
+  return [...leading, ...specs.filter(spec => !LEADING_FUNCTIONS.includes(spec.function_name))];
+}
 
 const FUNCTIONS = {
   cuvs_brute_force_knn: {
@@ -197,7 +206,7 @@ function renderVectorBindingShapes(spec) {
   ].join('\n');
 }
 
-function renderPage(spec) {
+function renderPage(spec, sidebarPosition) {
   const entry = presentation(spec);
   const documentation = documentationFor(spec.function_name);
   const officialDocsUrl = `${OFFICIAL_DOCS_ROOT}${documentation.officialPath}`;
@@ -205,7 +214,8 @@ function renderPage(spec) {
     generator: 'website/scripts/gen-cuvs-docs.mjs',
     spec,
     title: entry.quickstart.display_name,
-    slug: `/cuvs/functions/${spec.function_name}`,
+    slug: `/cuvs/udtfs/${spec.function_name}`,
+    sidebarPosition,
     reference: `Official cuVS reference: [${documentation.officialApi}](${officialDocsUrl})`,
     quickstart: { prerequisite: quickstartPrerequisite(spec, entry), sql: entry.quickstart.sql },
     inputs: renderInputs(spec),
@@ -214,7 +224,7 @@ function renderPage(spec) {
     examples: existsSync(join(DOCS_DIR, '_examples', `${spec.function_name}.mdx`))
       ? narrativeExampleImport(`../_examples/${spec.function_name}.mdx`) : null,
     limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    discoveryLink: '../../reference/gpu-function-catalog.mdx',
+    discoveryLink: '../../reference/gpu-udtf-catalog.mdx',
   });
 }
 
@@ -222,11 +232,11 @@ function renderCheatsheet(specs) {
   return [
     '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
-    table(['Function', 'Family', 'Description', 'Official API'], specs.map(spec => {
+    table(['UDTF', 'Family', 'Description', 'Official API'], specs.map(spec => {
       const entry = presentation(spec);
       const documentation = documentationFor(spec.function_name);
       return [
-        `[${cell(entry.quickstart.display_name)}](./functions/${spec.function_name}.mdx)`,
+        `[${cell(entry.quickstart.display_name)}](./udtfs/${spec.function_name}.mdx)`,
         cell(FAMILIES[spec.family].label),
         cell(spec.summary),
         `[${cell(documentation.officialApi)}](${OFFICIAL_DOCS_ROOT}${documentation.officialPath})`,
@@ -240,11 +250,11 @@ function renderDtypeSupport(specs) {
   return [
     '{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
-    '## Vector element and metric support by function',
+    '## Vector element and metric support by UDTF',
     '',
     'Each cell lists valid `metric` values for that input element. Yes means the element is supported without a `metric` option; No means the element is unsupported.',
     '',
-    table(['Function', ...elements], specs.map(spec => {
+    table(['UDTF', ...elements], specs.map(spec => {
       const support = spec.relation_roles[0].fields.features.element_metric_support;
       return [code(spec.function_name), ...elements.map(element => {
         const entry = support.find(candidate => candidate.element === element);
@@ -270,10 +280,15 @@ function main() {
       throw new Error(`unclassified unified descriptor ${spec.function_name}`);
     }
   }
-  for (const spec of specs) write(join(FUNCTIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
-  write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
+  // The sidebar position is the cheatsheet row, so both list functions in the
+  // same order.
+  const listed = listingOrder(specs);
+  listed.forEach((spec, index) => {
+    write(join(UDTFS_DIR, `${spec.function_name}.mdx`), renderPage(spec, index + 1));
+  });
+  write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(listed));
   write(join(DOCS_DIR, '_vector-element-support.mdx'), renderDtypeSupport(specs));
-  console.log(`Wrote ${specs.length} generated cuVS function pages and cheatsheet.`);
+  console.log(`Wrote ${specs.length} generated cuVS UDTF pages and cheatsheet.`);
 }
 
 main();

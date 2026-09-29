@@ -38,43 +38,43 @@ verification remain incomplete; compare outputs against trusted reference result
 
 ## Compose algorithms {/* #from-a-question-to-a-working-set */}
 
-Each example above passes a subquery to a GPU table function and gets rows
-back. SQL groups those rows, joins them to titles or file metadata, or hands
-them to another function. In the marketplace example, the product groups
+Each example above passes a subquery to a GPU UDTF (user-defined table
+function) and gets rows back. SQL groups those rows, joins them to titles or
+file metadata, or hands them to another UDTF. In the marketplace example, the product groups
 ranked by personalized PageRank become the vertex pairs that Jaccard scores,
 inside the same statement.
 
 SQL filters and joins select the input rows. The size of that input depends
-on the data and conditions, and each function requires specific columns and
+on the data and conditions, and each UDTF requires specific columns and
 types. GPU memory also includes graph construction and algorithm scratch space.
 
 <FlowDiagram
   minWidth={680}
-  ariaLabel="SQL subquery to GPU table function to result rows in the same statement."
+  ariaLabel="SQL subquery to GPU UDTF to result rows in the same statement."
   nodes={[
     {
       id: 'working-set', kind: 'SQL', name: 'Working set', tone: 'plan',
       note: ['filter · join · aggregate', 'rows selected for the analysis'],
     },
     {
-      id: 'algorithm', kind: 'GPU table function', name: 'Algorithm', tone: 'gpu',
+      id: 'algorithm', kind: 'GPU UDTF', name: 'Algorithm', tone: 'gpu',
       edgeLabel: 'subquery',
       note: ['graph · vector · ML', 'cugraph_* · cuvs_* · cuml_*'],
     },
     {
       id: 'rows', kind: 'rows', name: 'Result', tone: 'engine',
       edgeLabel: 'relation',
-      note: ['join back · filter · aggregate', "or the next function's input"],
+      note: ['join back · filter · aggregate', "or the next UDTF's input"],
     },
   ]}
   groups={[{label: 'one SQL statement · one physical plan', nodes: ['working-set', 'algorithm', 'rows']}]}
-  caption="Each function accepts a relation with its required columns and types. Its output can feed another function or a SQL join."
+  caption="Each UDTF accepts a relation with its required columns and types. Its output can feed another UDTF or a SQL join."
 />
 
-## SQL algorithms {/* #available-building-blocks */}
+## Algorithm families {/* #available-building-blocks */}
 
 DataFusion provides SQL planning and the session APIs. Algeon adds cuDF
-execution for supported relational plans and SQL table functions backed by
+execution for supported relational plans and GPU UDTFs backed by
 NVIDIA's GPU libraries:
 
 | Capability | SQL interface | Current use |
@@ -83,8 +83,8 @@ NVIDIA's GPU libraries:
 | Vector analysis | [`cuvs_*`](./cuvs/overview.mdx) | Exact and approximate kNN, pairwise distances, per-row top-k, KMeans, and PCA over vector columns. |
 | Machine learning | [`cuml_*`](./cuml/overview.mdx) | Fit models within a query, or score features with a pretrained XGBoost, LightGBM, or Treelite forest. |
 
-All of them return ordinary rows, and each family's function index lists
-every installed algorithm. Each family requires its build feature and
+All of them return ordinary rows, and each family's UDTF index lists
+every installed UDTF. Each family requires its build feature and
 session setup; pretrained forest inference also requires a configured models
 directory. General inference for neural networks trained in PyTorch remains
 future work.
@@ -118,24 +118,24 @@ how much relational work joins the GPU:
 | Mode | Relational execution |
 | --- | --- |
 | `native_preferred` (default) | Supported candidates run on cuDF; unsupported or unselected candidates keep their DataFusion CPU plan with the same results. |
-| `functions_only` | Ordinary SQL runs on DataFusion CPU around explicit GPU table functions. |
+| `functions_only` | Ordinary SQL runs on DataFusion CPU around explicit GPU UDTFs. |
 | `native_required` | A completed plan that still contains DataFusion CPU operators is rejected. |
 
 Selection normally replaces a
 [whole candidate](./design/native-lowering.mdx#selection-fallback-and-mixed-execution)
 (with one certified
 [mixed exception](./reference/glossary.md#planning-and-lowering)). Explicit
-GPU functions have no CPU fallback in any mode, and once GPU execution
+GPU UDTFs have no CPU fallback in any mode, and once GPU execution
 starts, a failure returns as a structured error and is never replayed on
 CPU. In `functions_only`, inputs crossing from CPU operators to a GPU
-function are staged in host memory before upload, under
+UDTF are staged in host memory before upload, under
 [host staging limits](./integration/datafusion-session.mdx#compose-cpu-and-gpu-work)
 separate from the GPU cap.
 
 ## Validate and diagnose {/* #context-for-the-next-attempt */}
 
-[Discover & Validate GPU UDTFs](./guides/gpu-function-discovery.mdx) covers
-function discovery, signatures, and static validation against registered tables
+[Discover & Validate GPU UDTFs](./guides/gpu-udtf-discovery.mdx) covers
+UDTF discovery, signatures, and static validation against registered tables
 or views. Static validation reads no rows and launches no kernels; checks that
 depend on data happen during execution.
 [GPU coverage reports](./integration/gpu-coverage-validation.mdx) describe which

@@ -7,7 +7,7 @@ description: SQL-visible cuML decomposition, clustering, embedding, classificati
 # cuML SQL API
 
 Algeon exposes NVIDIA RAPIDS [cuML](https://github.com/rapidsai/cuml)
-as GPU UDTFs in DataFusion SQL sessions. `cuml_tsvd` fits and
+as GPU UDTFs (user-defined table functions) in DataFusion SQL sessions. `cuml_tsvd` fits and
 transforms a truncated singular-value decomposition. `cuml_hdbscan` assigns cluster IDs with
 membership probabilities, and `cuml_umap` produces a manifold embedding.
 `cuml_logistic_regression` and `cuml_random_forest_classifier` fit Int32 class
@@ -20,6 +20,35 @@ server-configured models root, rather than fitting a model in the statement.
 Each result includes `row_ordinal` and an `id` from the relation supplying
 output rows.
 
+## Questions to explore
+
+Each question opens a captured example on its UDTF page. The examples read
+the [demo datasets](../guides/datasets/index.mdx); prepare one before running
+its queries.
+
+### EMBER2024
+
+Extracted features for malware files: all 6,315 files in the challenge split,
+which holds only malicious files, plus 1% samples of the train and test splits.
+
+- [Which high-scoring challenge files should an analyst review first?](./udtfs/cuml_forest_predict.mdx#examples) (`cuml_forest_predict`, `cuvs_top_k`)
+- [How much analyst review does each classifier leave for a new quarter?](./udtfs/cuml_logistic_regression.mdx#examples) (`cuml_logistic_regression`, `cuml_random_forest_classifier`)
+- [Which missed Win32 files should an analyst group for batch review?](./udtfs/cuml_hdbscan.mdx#examples) (`cuvs_pca`, `cuml_hdbscan`)
+- [Where do the challenge histograms sit in a two-dimensional UMAP view?](./udtfs/cuml_umap.mdx?dataset=ember2024#examples) (`cuml_umap`)
+
+### Amazon Reviews
+
+Low-rating Electronics reviews from Amazon Reviews 2023, with 1,024-dimension
+BGE-M3 text embeddings.
+
+- [Which nearby reviews should a support analyst read together?](./udtfs/cuml_umap.mdx#examples) (`cuml_umap`)
+
+### MerRec marketplace
+
+Per-user category preferences from Mercari US browsing events, October 2023.
+
+- [Which captured audiences have concentrated preferences, and which have mixed profiles?](./udtfs/cuml_hdbscan.mdx?dataset=merrec#examples) (`cuml_hdbscan`, `cuml_umap`)
+
 ## Input and call shape
 
 Each relation argument (`input`, `training`, or `predict`) is a parenthesized `SELECT` subquery. Ordinary session
@@ -29,8 +58,8 @@ an execution argument. [ML Inputs](./ml-inputs.mdx) specifies the canonical
 
 For metadata validation, `gpu_validate_call` resolves a registered table or
 view and inspects its schema without evaluating rows. The [GPU UDTF
-Catalog API](../reference/gpu-function-catalog.mdx) documents discovery and
-validation. [UDTFs](./functions/index.mdx) contains the generated option,
+Catalog API](../reference/gpu-udtf-catalog.mdx) documents discovery and
+validation. [cuML UDTFs](./udtfs/index.mdx) contains the generated option,
 output, and limitation reference for each cuML UDTF.
 
 ## Execution and lifetime
@@ -45,7 +74,7 @@ catalog entries remain discoverable with `available=false` and
 guide](../integration/datafusion-session.mdx) describes backend,
 execution-mode, and `CumlSqlConfig` setup.
 
-The six fitting functions evaluate their input within one statement.
+The six fitting UDTFs evaluate their input within one statement.
 Models and transforms are released after that call; there is no model cache,
 cross-statement reuse, or serialization. `cuml_forest_predict` instead reads
 and binds a model file from a server-configured models root; without one

@@ -1,0 +1,107 @@
+---
+title: Logistic Regression
+sidebar_label: Logistic Regression
+description: "Fit a query-local cuML logistic or softmax classifier and score independent rows."
+slug: /cuml/udtfs/cuml_logistic_regression
+sidebar_position: 3
+---
+
+{/* GENERATED FROM the unified GPU UDTF catalog by website/scripts/gen-cuml-docs.mjs. Do not edit by hand. */}
+
+# Logistic Regression
+
+UDTF: `cuml_logistic_regression`
+
+Official cuML reference: [Python API](https://docs.nvidia.com/cuml/latest/api/generated/cuml.linear_model.LogisticRegression/)
+
+Fit a query-local cuML logistic or softmax classifier and score independent rows.
+
+## Quickstart
+
+Register the relations referenced by the parenthesized `SELECT` clauses below. For metadata validation, the descriptor names `training_vectors` and `predict_vectors`.
+
+```sql
+SELECT id, prediction
+FROM cuml_logistic_regression(
+  training => (SELECT id, d0, label FROM train),
+  predict => (SELECT id, d0 FROM test)
+)
+ORDER BY row_ordinal;
+```
+
+## Inputs
+
+Each relation argument is a parenthesized `SELECT` subquery. Metadata validation resolves a registered table or view for the same role without scanning its rows. See [ML Inputs](../ml-inputs.mdx) for the ID, Float32 feature, null, finite-value, and runtime-dimension contract.
+
+| Role | Required | Validation reference | Description |
+| --- | --- | --- | --- |
+| `training` | yes | `table` | Dense Float32 features and non-null Int32 label used to fit the query-local model. |
+| `predict` | yes | `table` | Independent dense Float32 rows scored with the query-local model; must omit label. |
+
+### Vector element types
+
+| Element type | Valid metrics |
+| --- | --- |
+| `Float32` | Not applicable |
+
+## Arguments and options
+
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `penalty_l1` | `number` | no | L1 penalty. |
+| `penalty_l2` | `number` | no | L2 penalty. |
+| `max_iter` | `integer` | no | Maximum QN iterations. |
+| `linesearch_max_iter` | `integer` | no | Maximum line-search iterations. |
+| `lbfgs_memory` | `integer` | no | L-BFGS history length. |
+| `fit_intercept` | `boolean` | no | Fit an intercept. |
+| `penalty_normalized` | `boolean` | no | Normalize the penalty by row count. |
+| `grad_tol` | `number` | no | QN gradient tolerance. |
+| `change_tol` | `number` | no | QN objective change tolerance. |
+
+### SQL value argument schemas
+
+| Argument | Required | Literal shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `change_tol` | no | `number` | `0.00001` | minimum 0 | QN objective change tolerance. |
+| `fit_intercept` | no | `boolean` | `true` |  | Fit an intercept. |
+| `grad_tol` | no | `number` | `0.0001` | minimum 0 | QN gradient tolerance. |
+| `lbfgs_memory` | no | `integer` | `5` | minimum 1; maximum 2147483647 | L-BFGS history length. |
+| `linesearch_max_iter` | no | `integer` | `50` | minimum 1; maximum 2147483647 | Maximum line-search iterations. |
+| `max_iter` | no | `integer` | `1000` | minimum 1; maximum 2147483647 | Maximum QN iterations. |
+| `penalty_l1` | no | `number` | `0` | minimum 0 | L1 penalty. |
+| `penalty_l2` | no | `number` | `0` | minimum 0 | L2 penalty. |
+| `penalty_normalized` | no | `boolean` | `true` |  | Normalize the penalty by row count. |
+
+### Vector binding shapes
+
+Each relation subquery projects a non-null `id` and either non-null Float32 feature columns in dimension order or one non-null `vector` list column of non-null Float32 values. For classification, `training` also projects non-null Int32 `label`; regression requires non-null finite Float32 `label`. The `predict` relation omits it.
+
+The list-column shape excludes other feature columns. See [ML Inputs](../ml-inputs.mdx) for the allowed list containers and runtime checks.
+
+## Output
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `row_ordinal` | `UInt64` | no | Evaluated input row position, including when IDs repeat. Follows the input's top-level ORDER BY on output columns; unspecified without one. |
+| `id` | `same_as_predict.id` | no | Logical ID from the predict relation. |
+| `prediction` | `Int32` | no | Predicted zero-based class index. |
+
+**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Examples
+
+import Examples from '../_examples/cuml_logistic_regression.mdx';
+
+<Examples />
+
+## Limits
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Training labels must be non-null Int32 contiguous classes 0..C-1; predict must omit label and match the feature dimension.
+- Binary labels use logistic loss; three or more classes use softmax. Reaching max_iter is not an error.
+- The model is query-local. An empty predict relation returns an empty result without a native call.
+
+To dry-run validate relation metadata, column types, and options without execution, see [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx).

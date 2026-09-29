@@ -105,7 +105,7 @@ Two pages carry the details behind this flow:
         <code>crates/algeon-datafusion/src/native/</code> for shape recognition and lowering,{" "}
         <code>crates/algeon-datafusion/src/native_exec/</code> for wrappers,{" "}
         <code>crates/algeon-datafusion/src/cugraph_sql/</code> and <code>crates/algeon-datafusion/src/cuvs_sql/</code> for the
-        SQL function families, <code>crates/algeon-datafusion/src/native_report/</code> for report
+        GPU UDTF families, <code>crates/algeon-datafusion/src/native_report/</code> for report
         rows, and <code>crates/algeon-datafusion/src/error.rs</code> for adapter errors.</>,
     },
     {
@@ -192,7 +192,7 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 | cuVS SQL | You want exact kNN, KMeans, and PCA over vector columns as relations. | `crates/algeon-datafusion/src/cuvs_sql/` |
 | GPU UDTF catalog | You want to list, describe, and validate the installed `cugraph_*`, `cuvs_*`, and `cuml_*` UDTFs before executing them. | `crates/algeon-datafusion/src/gpu_functions/` |
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native scan facts while workspace views stay mutable. | `crates/algeon-datafusion/src/table_format/` |
-| Reports and errors | You need stable evidence for candidate selection, final plans, runtime, function validation, source access, and failures. | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/native_report/`, `crates/algeon-datafusion/src/error.rs` |
+| Reports and errors | You need stable evidence for candidate selection, final plans, runtime, UDTF validation, source access, and failures. | `crates/algeon-datafusion/src/report.rs`, `crates/algeon-datafusion/src/native_report/`, `crates/algeon-datafusion/src/error.rs` |
 
 The preferred embedded entry point is a process-scoped `AlgeonGpuBackend`. It
 installs the native optimizer and gives every installed session the same
@@ -235,7 +235,7 @@ plan after native selection. The full boundary is described in
 
 | Feature | Adds |
 | --- | --- |
-| `cugraph` | cuGraph SQL algorithms and graph execution. |
+| `cugraph` | cuGraph UDTFs and graph execution. |
 | `cuvs` | cuVS UDTFs (`cuvs_brute_force_knn`, `cuvs_kmeans`, `cuvs_pca`) and their GPU execution. |
 | `iceberg` | Iceberg catalogs and native scan integration. |
 | `nvml` | Optional NVML device diagnostics. |
@@ -243,28 +243,26 @@ plan after native selection. The full boundary is described in
 `algeon-datafusion` exposes these DataFusion-specific features; the private
 `server` shell forwards them to the adapter and engine.
 
-<span id="specialized-gpu-functions" />
-
 ## Specialized GPU UDTFs
 
-Graph, vector, and ML algorithms are GPU UDTFs. Their descriptors are
+Graph, vector, and ML algorithms are exposed as GPU UDTFs. Their descriptors are
 projected through the shared GPU UDTF catalog, so `gpu_list_functions`,
 `gpu_describe_function`, and `gpu_validate_call` provide discovery and dry-run
 validation for every installed family without provider-specific metadata
-functions. The recommended workflow for either family is:
+UDTFs. The recommended workflow for either family is:
 
-1. `gpu_list_functions()` to discover enabled functions, filtering with
+1. `gpu_list_functions()` to discover enabled UDTFs, filtering with
    `WHERE provider = 'cugraph'` or `'cuvs'` for one family.
 2. `gpu_describe_function('<fn>')` to inspect the fixed descriptor, including
    signatures, options, schemas, examples, and limitations.
 3. `gpu_validate_call('<fn>', '<call_json>')` to check a versioned envelope
    containing named relations and options without scanning inputs or
    launching CUDA.
-4. Execute the function once validation returns `valid = true`.
+4. Execute the UDTF once validation returns `valid = true`.
 
 ### cuGraph SQL path
 
-With `--features cugraph`, every graph execution function in
+With `--features cugraph`, every graph execution UDTF in
 `CUGRAPH_OPERATION_REGISTRY` is available as a `cugraph_*` UDTF:
 
 ```sql
@@ -286,7 +284,7 @@ ORDER BY value DESC;
       detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
         resolves the edge relation in the DataFusion catalog, creates the
         physical edge-source plan, and returns <code>CugraphAlgoExec</code>.
-        The metadata functions expose the same registry for humans and agents.</>,
+        The metadata UDTFs expose the same registry for humans and agents.</>,
     },
     {
       id: 'gdf', lane: 'gpu', col: 1,
@@ -338,7 +336,7 @@ ORDER BY value DESC;
 />
 
 cuGraph shares the native cuDF runtime, metrics, memory cap, and structured
-error handling; it is not a separate service boundary. The function reference
+error handling; it is not a separate service boundary. The UDTF reference
 lives in [cuGraph SQL API](../cugraph/overview.mdx).
 
 ### cuVS SQL path
@@ -353,7 +351,7 @@ through the `cuvs` component inside the same admitted memory cap. Each
 call builds the index, model, or transform it needs for that statement; there
 is no cross-statement cache of vector artifacts. See
 [cuVS SQL API](../cuvs/overview.mdx#execution) for the execution conditions
-and function reference.
+and UDTF reference.
 
 ## Lakehouse and workspace boundary
 

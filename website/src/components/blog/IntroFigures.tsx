@@ -121,7 +121,7 @@ export function GlueVsPlanFigure({caption}: {caption?: React.ReactNode}) {
 
   return (
     <Figure caption={caption} svgW={svgW} svgH={svgH} minW={620} center
-      ariaLabel="Left: export, notebook, GPU call, and import as separate steps. Right: one SQL statement with the algorithm as a table function.">
+      ariaLabel="Left: export, notebook, GPU call, and import as separate steps. Right: one SQL statement with the algorithm as a UDTF.">
       <text x={leftX} y={EDGE + 14} fontSize={HEAD.size} letterSpacing={`${HEAD.track}em`}
         fill={COLOR.muted}>
         {LEFT_HEAD}
@@ -188,7 +188,7 @@ const LOOP_BACKEND: DiagramNode = {
 };
 const LOOP_ALGEON: DiagramNode = {
   kind: 'GPU query engine', name: 'Algeon',
-  note: ['plan · admit · run on one GPU', 'graph · vector · ML functions'], tone: 'gpu',
+  note: ['plan · admit · run on one GPU', 'graph · vector · ML UDTFs'], tone: 'gpu',
 };
 const LOOP_LAKE: DiagramNode = {
   kind: 'world state · physical store', name: 'Lakehouse',

@@ -31,6 +31,8 @@ const config: Config = {
 
   onBrokenLinks: 'throw',
 
+  clientModules: ['./src/clientModules/revealTabAnchor.ts'],
+
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang.
   i18n: {

@@ -1,0 +1,35 @@
+.collapsible {
+  margin-bottom: var(--ifm-leading);
+  scroll-margin-top: calc(var(--ifm-navbar-height) + 0.5rem);
+}
+
+/* The toggle sits directly under the code, so the block's own bottom margin
+   moves to the wrapper. */
+.clip > :global(.theme-code-block) {
+  margin-bottom: 0;
+}
+
+/* About 20 lines of code at the default code font size and line height. */
+.collapsed .clip {
+  max-height: 28rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 4rem), transparent);
+}
+
+.toggle {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-code-border-radius);
+  background: transparent;
+  color: var(--ifm-color-primary);
+  font-size: var(--ifm-code-font-size);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.toggle:hover {
+  background: var(--ifm-color-emphasis-100);
+}

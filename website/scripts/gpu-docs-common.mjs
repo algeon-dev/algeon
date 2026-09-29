@@ -130,6 +130,7 @@ export function renderFunctionPage({
   spec,
   title,
   slug,
+  sidebarPosition,
   reference,
   quickstart,
   inputs,
@@ -150,6 +151,9 @@ export function renderFunctionPage({
   if (slug) {
     parts.push(`slug: ${slug}`);
   }
+  if (sidebarPosition !== undefined) {
+    parts.push(`sidebar_position: ${sidebarPosition}`);
+  }
   parts.push(
     '---',
     '',
@@ -157,7 +161,7 @@ export function renderFunctionPage({
     '',
     `# ${title}`,
     '',
-    `SQL function: ${code(spec.function_name)}`,
+    `UDTF: ${code(spec.function_name)}`,
   );
   if (reference != null) parts.push('', reference);
   parts.push('', prose(spec.summary));
@@ -272,7 +276,7 @@ function optionType(option) {
 
 export function renderDenseArguments(spec, bindingShapes) {
   const argumentsTable = spec.argument_descriptions.length === 0
-    ? '_This function has no scalar SQL arguments beyond its relation arguments._'
+    ? '_This UDTF has no scalar SQL arguments beyond its relation arguments._'
     : table(['Argument', 'Type', 'Required', 'Description'], spec.argument_descriptions.map(argument => [
       code(argument.name),
       code(argument.type || sqlArgumentType(argument)),
@@ -297,7 +301,7 @@ export function renderDenseArguments(spec, bindingShapes) {
     '',
     '### SQL value argument schemas',
     '',
-    rows.length === 0 ? '_This function has no options._' : table(['Argument', 'Required', 'Literal shape', 'Default', 'Constraints', 'Description'], rows),
+    rows.length === 0 ? '_This UDTF has no options._' : table(['Argument', 'Required', 'Literal shape', 'Default', 'Constraints', 'Description'], rows),
     '',
     '### Vector binding shapes',
     '',
@@ -329,7 +333,7 @@ export function renderDenseOutputSchema(spec) {
       cell(field.repeats ? `${field.description} ${repeatedFieldSentence(field)}` : field.description),
     ])),
     '',
-    '**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-function-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
+    '**Concrete schemas are call-specific.** Run [`gpu_validate_call`](../../reference/gpu-udtf-catalog.mdx) against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
   ].join('\n');
 }
 

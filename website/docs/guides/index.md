@@ -8,11 +8,11 @@ description: Discover installed GPU UDTFs, validate their calls, and prepare the
 
 Step-by-step recipes for discovering installed GPU UDTFs, validating calls,
 checking whole-query GPU coverage, and preparing the datasets that the
-function examples read.
+UDTF examples read.
 
 ## Available guides
 
-- [Discover & Validate GPU UDTFs](./gpu-function-discovery.mdx) - find
+- [Discover & Validate GPU UDTFs](./gpu-udtf-discovery.mdx) - find
   installed cuGraph and cuVS UDTFs, inspect a contract, validate a call,
   and check whole-query GPU coverage.
 - [Demo Datasets](./datasets/index.mdx) - prepare and register the Citation

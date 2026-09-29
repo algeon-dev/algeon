@@ -10,7 +10,7 @@ description: Source preparation, browsing graphs, audience features, and capture
 and purchase events from the Mercari US marketplace. The examples use one
 shard from October 2023 and turn it into a graph of product groups that users
 browse in sequence, plus a table of per-user category preferences. Graph,
-clustering, and projection functions then run over those tables.
+clustering, and projection UDTFs then run over those tables.
 
 The examples measure browsing and audience overlap. They leave purchase and
 conversion outcomes unevaluated, and none of the captures estimates revenue
@@ -29,19 +29,19 @@ uplift.
 
 ## Examples
 
-- [Find collectible markets that share an audience with Nintendo games](../../cugraph/functions/centrality/cugraph_personalized_pagerank.mdx#examples)
+- [Find collectible markets that share an audience with Nintendo games](../../cugraph/udtfs/centrality/cugraph_personalized_pagerank.mdx#examples)
   with personalized PageRank and Jaccard.
   [Download its ten result rows](/data/merrec-graph-capture.json).
-- [Compare audience cosine with Jaccard for Nintendo games](../../cugraph/functions/similarity/cugraph_cosine.mdx#examples),
+- [Compare audience cosine with Jaccard for Nintendo games](../../cugraph/udtfs/similarity/cugraph_cosine.mdx#examples),
   where small markets that draw most viewers from the seed audience rank
   higher under cosine. [Download its ten result rows](/data/merrec-cosine-capture.json).
-- [Inspect concentrated and mixed preferences](../../cuml/functions/cuml_hdbscan.mdx#examples)
+- [Inspect concentrated and mixed preferences](../../cuml/udtfs/cuml_hdbscan.mdx#examples)
   with HDBSCAN and UMAP.
   [Download all 1,919 points](/data/merrec-audience-capture.json).
-- [Describe campaign themes](../../cuvs/functions/cuvs_kmeans.mdx#examples)
+- [Describe campaign themes](../../cuvs/udtfs/cuvs_kmeans.mdx#examples)
   with KMeans and Top-K, returning three category means for each of eight
   groups. [Download all 24 rows](/data/merrec-segment-capture.json).
-- [Build navigation collections](../../cugraph/functions/community/cugraph_leiden.mdx#examples)
+- [Build navigation collections](../../cugraph/udtfs/community/cugraph_leiden.mdx#examples)
   with Leiden and weighted PageRank, returning five representative markets for
   each of 22 groups. [Download all 110 rows](/data/merrec-community-capture.json).
 
@@ -125,7 +125,7 @@ query.
 
 ## Run the examples
 
-Copy an example's SQL from its function page into any Flight SQL client
+Copy an example's SQL from its UDTF page into any Flight SQL client
 connected to `127.0.0.1:50063`, or pass a saved query file to the runner:
 
 ```bash

@@ -4,7 +4,7 @@ import MerRecAudienceCosine from './merrec_audience_cosine.mdx';
 
 {/* Hand-owned examples for cugraph_cosine. NOT generated; safe to edit. */}
 
-<Tabs>
+<Tabs queryString="dataset">
 <TabItem value="citation-network" label="Citation network" default>
 
 This example runs on the [citation network demo dataset](../../guides/datasets/citation-network.mdx).
@@ -17,7 +17,7 @@ labels. For bibliographies A and B, the cosine score is
 `|A ∩ B| / sqrt(|A| × |B|)`. Its denominator, the geometric mean of the two
 list sizes, accounts for bibliographies of different lengths.
 
-The function requires an undirected graph. Positive IDs represent citing
+The UDTF requires an undirected graph. Positive IDs represent citing
 papers, and negative IDs represent cited-paper reference roles. This keeps
 each positive paper ID adjacent only to negative IDs for its references;
 papers that cite BERT remain positive vertices. The edge projection omits
@@ -78,11 +78,11 @@ MASS has 53, so the score is `19 / sqrt(55 × 53) = 0.352`.
 
 The result ranks bibliography similarity; topic meaning is outside the score. For
 intersection divided by the union of references, see the
-[Jaccard similarity example](../functions/similarity/cugraph_jaccard.mdx).
+[Jaccard similarity example](../udtfs/similarity/cugraph_jaccard.mdx).
 
 </TabItem>
 
-<TabItem value="merrec-marketplace" label="MerRec marketplace">
+<TabItem value="merrec" label="MerRec marketplace">
 
 <MerRecAudienceCosine />
 

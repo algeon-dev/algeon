@@ -138,16 +138,16 @@ These types do not have native execution support today:
 cuGraph UDTFs have a narrower edge-table contract:
 
 - Source and destination vertex columns must use one of the numeric types
-  declared for the function in the generated [cuGraph vertex ID support
-  matrix](../cugraph/graph-options.mdx#vertex-id-support-by-function), or must
+  declared for the UDTF in the generated [cuGraph vertex ID support
+  matrix](../cugraph/graph-options.mdx#vertex-id-support-by-udtf), or must
   both belong to the logical string family (`Utf8`, `LargeUtf8`, `Utf8View`)
-  when that function declares logical string support.
+  when that UDTF declares logical string support.
 - Logical string endpoints share one codebook even when their physical Arrow
   string types differ. Vertex-identity output columns are canonicalized to
   `Utf8`; numeric scores, distances, counts, coordinates, and opaque labels
-  keep their function-defined numeric types.
+  keep their UDTF-defined numeric types.
 - Some legacy cuGraph dispatch paths remain `Int32`-only. The generated
-  matrix is the source for that per-function distinction; this overview does
+  matrix is the source for that per-UDTF distinction; this overview does
   not maintain a second algorithm inventory.
 - Edge weight columns, when supplied, must be `Float32` or `Float64`.
 - `edge_id_col`, when supplied for a numeric graph, must use the same numeric
@@ -156,32 +156,32 @@ cuGraph UDTFs have a narrower edge-table contract:
   `include_edge_ids_*` and `include_edge_id_col`.
 :::
 
-The unified SQL metadata functions expose the same contract at runtime. Use
-`gpu_describe_function('<function>')` and
-`gpu_validate_call('<function>', '<call_json>')` before running a new graph
+The metadata UDTFs expose the same contract at runtime. Use
+`gpu_describe_function('<udtf>')` and
+`gpu_validate_call('<udtf>', '<call_json>')` before running a new graph
 call. The validation envelope names the edge table or view under
 `relations.edges.table` and supplies graph bindings under `options`.
 
 ## cuVS vector elements
 
-:::warning[cuVS vector types depend on the function and metric]
-cuVS UDTFs accept dense vectors in wide feature columns or one list column. Every wide feature column and every vector binding in a call must have the same element type. The generated [cuVS element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-function) lists the verified combinations. In particular, integer IVF-PQ does not support cosine. Pairwise `distance` matches its `Float32` or `Float64` input; ANN distance stays `Float32`, and KMeans `cluster_id` stays `Int32`.
+:::warning[cuVS vector types depend on the UDTF and metric]
+cuVS UDTFs accept dense vectors in wide feature columns or one list column. Every wide feature column and every vector binding in a call must have the same element type. The generated [cuVS element and metric matrix](../cuvs/vector-inputs.mdx#vector-element-and-metric-support-by-udtf) lists the verified combinations. In particular, integer IVF-PQ does not support cosine. Pairwise `distance` matches its `Float32` or `Float64` input; ANN distance stays `Float32`, and KMeans `cluster_id` stays `Int32`.
 
 Floating elements must be finite. Integer elements have no finite-value scan. No cuVS call implicitly casts vector elements; use `CAST` in the relation subquery. `Float16` is unsupported because cuDF has no Float16 representation.
 :::
 
-Use `gpu_describe_function('<function>')` for the catalog contract and `gpu_validate_call('<function>', '<call_json>')` for static input validation.
+Use `gpu_describe_function('<udtf>')` for the catalog contract and `gpu_validate_call('<udtf>', '<call_json>')` for static input validation.
 
 ## cuML feature relations
 
-The six `cuml_*` functions accept dense `Float32` features only, either as
+The six `cuml_*` UDTFs accept dense `Float32` features only, either as
 ordered wide columns or a `vector` column containing `FixedSizeList<Float32>`
 (or a uniform `List<Float32>` / `LargeList<Float32>`). Features must be finite;
 there is no implicit numeric cast. Every relation requires a non-null `id`
 of type `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`. Repeated IDs are
 allowed because `row_ordinal UInt64` identifies each output row.
 
-For logistic regression and both random-forest functions, `training` requires
+For logistic regression and both random-forest UDTFs, `training` requires
 a non-null `label` column. Classifiers require `Int32` labels; the regressor
 requires finite `Float32` targets. The separate `predict` relation rejects
 `label`. Unsupervised `input` treats every non-`id` wide column as a feature,
@@ -192,5 +192,5 @@ HDBSCAN outputs `cluster_id Int64` (`-1` for noise) and `probability Float32`.
 Supervised output is `prediction Int32` for classifiers or `prediction Float32`
 for the regressor. Each output also contains `row_ordinal UInt64` and an `id`
 with the relation's input ID type. See [cuML SQL inputs](../cuml/ml-inputs.mdx)
-for relation bindings and [cuML UDTFs](../cuml/functions/index.mdx) for
-function-specific output contracts.
+for relation bindings and [cuML UDTFs](../cuml/udtfs/index.mdx) for
+UDTF-specific output contracts.

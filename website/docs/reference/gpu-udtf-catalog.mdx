@@ -1,0 +1,164 @@
+---
+sidebar_position: 4
+slug: /reference/gpu-udtf-catalog
+title: GPU UDTF Catalog API
+sidebar_label: GPU UDTF Catalog API
+description: Schema reference for discovering installed cuGraph, cuVS, and cuML UDTFs, inspecting descriptors, and validating calls.
+---
+
+# GPU UDTF Catalog API
+
+Three metadata UDTFs describe every cuGraph, cuVS, and cuML execution UDTF installed
+in a session, so a person or an agent can find, understand, and check a call
+without reading server source:
+
+- `gpu_list_functions()` lists which UDTFs are installed and whether each
+  one is executable in this build and session.
+- `gpu_describe_function(name)` returns one UDTF's contract: signature,
+  relation roles, option schema, result schemas, examples, and limitations.
+- `gpu_validate_call(name, call_json)` checks a concrete call against the
+  schema of the named tables or views and the UDTF's options. This is
+  static validation, a dry run: it reads no data and runs nothing on the GPU.
+
+The catalog is one list across providers; filter by `provider` for the
+cuGraph, cuVS, or cuML subset. cuVS UDTFs (including `cuvs_brute_force_knn`,
+`cuvs_ivf_flat`, `cuvs_ivf_pq`, `cuvs_cagra`, `cuvs_kmeans`, and `cuvs_pca`) are executable
+when the build enables the `cuvs` feature;
+otherwise they are listed with `available=false` and
+`unavailable_reason='required_feature_disabled'`. cuML UDTFs
+use provider `cuml` and require the `cuml` feature for
+execution. See [cuML SQL API](../cuml/overview.mdx) for their query-local
+lifetime.
+
+For the task-oriented list, describe, validate, and execute workflow, use
+[Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx).
+This page is the detailed API reference for the metadata UDTFs and their
+response schemas.
+
+Execution syntax is provider-specific: cuGraph, cuVS, and cuML UDTFs use named
+arguments, with each relation supplied as a parenthesized relation-valued
+subquery. Validation is provider-neutral: the `call_json` envelope names
+registered tables or views by role and never evaluates SQL text embedded in
+JSON.
+
+## gpu_list_functions
+
+`gpu_list_functions()` takes no arguments and returns one row for each
+installed execution UDTF. It does not list the three metadata UDTFs
+themselves. Rows are ordered by `function_name` before ordinary SQL projection
+or filtering.
+
+```sql
+SELECT function_name, provider, available, summary
+FROM gpu_list_functions()
+WHERE provider IN ('cugraph', 'cuvs', 'cuml')
+ORDER BY function_name;
+```
+
+| Column | Arrow type | Nullable | Meaning |
+| --- | --- | --- | --- |
+| `function_name` | `Utf8` | no | Exact canonical execution UDTF name. |
+| `provider` | `Utf8` | no | Implementation provider, such as `cugraph`, `cuvs`, or `cuml`. |
+| `available` | `Boolean` | no | Whether the UDTF can be planned for GPU execution in this session and build. |
+| `unavailable_reason` | `Utf8` | yes | Stable reason code when `available=false`. |
+| `signature` | `Utf8` | no | Canonical SQL execution signature. |
+| `summary` | `Utf8` | no | Short human-readable description. |
+| `relation_roles_json` | `Utf8` | no | Ordered relation-role definitions as valid JSON. |
+
+`available=true` means the selected UDTF can be planned for GPU
+execution. It does not reserve GPU memory, acquire runtime admission, inspect
+relation rows, or prove that an entire query runs on the GPU.
+
+## gpu_describe_function(function_name)
+
+`gpu_describe_function` takes one exact canonical execution UDTF name and
+returns one full descriptor row. It has no compact or verbose mode: project the
+columns you need. Provider-local short aliases are not accepted.
+
+```sql
+SELECT signature, options_schema_json, result_schemas_json
+FROM gpu_describe_function('cuvs_brute_force_knn');
+```
+
+| Column | Arrow type | Nullable | Meaning |
+| --- | --- | --- | --- |
+| `function_name` | `Utf8` | no | Exact canonical execution UDTF name. |
+| `provider` | `Utf8` | no | Implementation provider. |
+| `available` | `Boolean` | no | Current session/build planning availability. |
+| `unavailable_reason` | `Utf8` | yes | Stable reason code when unavailable. |
+| `signature` | `Utf8` | no | Canonical SQL execution signature. |
+| `summary` | `Utf8` | no | Short human-readable description. |
+| `relation_roles_json` | `Utf8` | no | Ordered relation-role definitions as valid JSON. |
+| `argument_descriptions_json` | `Utf8` | no | Structured descriptions of non-relation arguments as valid JSON. |
+| `options_schema_json` | `Utf8` | no | JSON schema for the execution UDTF's options object. |
+| `result_schemas_json` | `Utf8` | no | Generic/default and mode-dependent result schemas, including field semantics when available. |
+| `validation_request_schema_json` | `Utf8` | no | JSON schema accepted by `gpu_validate_call` for this UDTF. |
+| `examples_json` | `Utf8` | no | Structured Quickstart, validation, and provider execution metadata. |
+| `limitations_json` | `Utf8` | no | Known static and runtime limitations. |
+
+Every JSON column contains valid JSON. Empty objects and arrays are represented
+as `{}` and `[]`, not SQL `NULL`.
+
+## gpu_validate_call(function_name, call_json)
+
+`gpu_validate_call` takes an exact canonical execution UDTF name and a
+common JSON envelope. The selected provider owns the meaning of
+relation roles and options, while the envelope consistently names UDTF
+inputs.
+
+```sql
+SELECT *
+FROM gpu_validate_call(
+  'cuvs_kmeans',
+  '{
+    "relations":{"input":{"table":"embedding_vectors"}},
+    "options":{"n_clusters":8}
+  }'
+);
+```
+
+The envelope requires exactly these fields:
+
+- `relations`: object keyed by the descriptor-defined relation roles. Each
+  relation currently has exactly one `table` field with a one-, two-, or
+  three-part DataFusion table or view reference.
+- `options`: object validated by the selected UDTF.
+
+Unknown envelope keys, relation roles, and option keys are rejected. The
+metadata path resolves named tables and views only; it does not accept
+arbitrary SQL in JSON. To dry-run a derived subquery, register it as a
+temporary view first.
+
+| Column | Arrow type | Nullable | Meaning |
+| --- | --- | --- | --- |
+| `valid` | `Boolean` | no | Whether the full static call is valid in this session. |
+| `error_code` | `Utf8` | yes | Stable structured reason when invalid. |
+| `message` | `Utf8` | no | Human-readable validation result. |
+| `function_name` | `Utf8` | no | Canonical name, or the unresolved requested name. |
+| `relations_resolved` | `Boolean` | no | Whether every required relation resolved. |
+| `normalized_call_json` | `Utf8` | no | Canonical envelope after defaults and canonicalization. |
+| `output_schema_json` | `Utf8` | no | Concrete output schema when it can be derived. |
+| `would_execute_gpu` | `Boolean` | no | Whether this UDTF call would target GPU execution after static planning. |
+| `details_json` | `Utf8` | no | Structured per-relation and provider-specific validation facts. |
+
+A syntactically valid request for an unknown UDTF or invalid execution call
+returns one structured invalid row. Wrong metadata UDTF arity and
+nonliteral metadata arguments are planning errors.
+
+### What validation does & does not do
+
+**Does:** check that the UDTF exists; resolve every required named relation;
+validate provider-owned relation bindings, columns, dtypes, dimensions,
+conditional arguments, and option values; apply defaults; and derive a concrete
+output schema when possible.
+
+**Does Not:** read any data or run anything on the GPU. It does not scan
+relation rows, materialize Parquet, construct graphs, launch CUDA, allocate
+device memory, acquire query admission, or prove runtime facts such as
+source-vertex existence, vector uniformity, or evaluated relation cardinality.
+Memory is decided at execution: an admitted call runs inside its granted cap
+and fails with an allocation error if it exceeds it.
+
+`would_execute_gpu` is scoped to one selected UDTF call. To check whether a
+whole query's planned path stays on the GPU, use
+[GPU coverage validation](../integration/gpu-coverage-validation.mdx).

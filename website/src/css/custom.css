@@ -746,9 +746,9 @@
 /* Overview cheatsheet: pull in the right edge with comfortable negative space
    on desktop, aligning prose and table to the same max-width without eating up the entire right screen. */
 @media (min-width: 997px) {
-  html[class*='/functions/index'] article,
-  html[class*='/functions/index'] .theme-doc-markdown,
-  html[class*='/functions/index'] .pagination-nav,
+  html[class*='/udtfs/index'] article,
+  html[class*='/udtfs/index'] .theme-doc-markdown,
+  html[class*='/udtfs/index'] .pagination-nav,
   article:has(.cu-functions-cheatsheet),
   .theme-doc-markdown:has(.cu-functions-cheatsheet),
   article:has(.cu-functions-cheatsheet) ~ .pagination-nav,
@@ -756,7 +756,7 @@
   .cugraph-function-cheatsheet,
   .cuvs-function-cheatsheet,
   .cuml-function-cheatsheet,
-  html[class*='/functions/index'] .table-responsive-wrapper {
+  html[class*='/udtfs/index'] .table-responsive-wrapper {
     width: 100%;
     max-width: min(72rem, calc(100% - 2rem));
     margin-right: auto;
@@ -767,7 +767,7 @@
 .cugraph-function-cheatsheet,
 .cuvs-function-cheatsheet,
 .cuml-function-cheatsheet,
-html[class*='/functions/index'] .table-responsive-wrapper {
+html[class*='/udtfs/index'] .table-responsive-wrapper {
   width: 100%;
   overflow-x: auto;
 }
@@ -776,7 +776,7 @@ html[class*='/functions/index'] .table-responsive-wrapper {
 .cugraph-function-cheatsheet table,
 .cuvs-function-cheatsheet table,
 .cuml-function-cheatsheet table,
-html[class*='/functions/index'] .table-responsive-wrapper table {
+html[class*='/udtfs/index'] .table-responsive-wrapper table {
   display: table;
   width: 100%;
 }
@@ -785,7 +785,7 @@ html[class*='/functions/index'] .table-responsive-wrapper table {
 .cugraph-function-cheatsheet table td,
 .cuvs-function-cheatsheet table td,
 .cuml-function-cheatsheet table td,
-html[class*='/functions/index'] .table-responsive-wrapper table td {
+html[class*='/udtfs/index'] .table-responsive-wrapper table td {
   vertical-align: top;
 }
 
@@ -813,12 +813,12 @@ html[class*='/functions/index'] .table-responsive-wrapper table td {
 .cuml-function-cheatsheet table td:nth-child(2),
 .cuml-function-cheatsheet table th:nth-child(4),
 .cuml-function-cheatsheet table td:nth-child(4),
-html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(1),
-html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(1),
-html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(2),
-html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(2),
-html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(4),
-html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(4) {
+html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(1),
+html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(1),
+html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(2),
+html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(2),
+html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(4),
+html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(4) {
   white-space: nowrap;
 }
 
@@ -830,8 +830,8 @@ html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(4) 
 .cuvs-function-cheatsheet table td:nth-child(3),
 .cuml-function-cheatsheet table th:nth-child(3),
 .cuml-function-cheatsheet table td:nth-child(3),
-html[class*='/functions/index'] .table-responsive-wrapper table th:nth-child(3),
-html[class*='/functions/index'] .table-responsive-wrapper table td:nth-child(3) {
+html[class*='/udtfs/index'] .table-responsive-wrapper table th:nth-child(3),
+html[class*='/udtfs/index'] .table-responsive-wrapper table td:nth-child(3) {
   white-space: normal;
   min-width: 22rem;
 }

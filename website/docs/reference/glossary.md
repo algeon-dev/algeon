@@ -17,7 +17,9 @@ defined here.
   execution UDTFs. The `gpu_*` catalog calls and `algeon_explain_coverage`
   are metadata UDTFs; they do not run a GPU algorithm. Algeon's relation
   planners bind execution UDTFs, while DataFusion registers the catalog UDTFs
-  as `TableFunction`s. See [GPU UDTF Catalog API](./gpu-function-catalog.mdx).
+  as `TableFunction`s. The catalog API names each UDTF a function, as in
+  `gpu_list_functions` and its `function_name` column. See
+  [GPU UDTF Catalog API](./gpu-udtf-catalog.mdx).
 - `Candidate`: a complete DataFusion physical plan (or subtree) that
   normalization recognizes as potentially executable natively. Every candidate
   receives a structured outcome in the

@@ -22,20 +22,43 @@ executes the SQL and returns rows for the application to present.
 
 ## Questions to explore
 
-- [What should I read to understand BERT beyond its own bibliography?](./functions/centrality/cugraph_personalized_pagerank.mdx#examples)
-- [Which mutually citing paper pairs have the largest publication-year gaps?](./functions/connectivity/cugraph_strongly_connected_components.mdx#examples)
-- [Which papers should I read after the Transformer if I want familiar references?](./functions/similarity/cugraph_jaccard.mdx#examples)
-- [Which widely cited early language-modeling papers are closest to the Transformer?](./functions/traversal/cugraph_sssp.mdx#examples)
-- [Which papers act as reading guides, and which works are their shared foundations?](./functions/centrality/cugraph_hits.mdx#examples)
-- [What is the shortest citation chain from BERT back to LSTM?](./functions/traversal/cugraph_bfs.mdx#examples)
-- [How are the papers around the Transformer connected?](./functions/layout/cugraph_force_atlas2.mdx#examples)
-- [Which large publication-year gaps remain in a minimal map of AI citations?](./functions/connectivity/cugraph_minimum_spanning_tree.mdx#examples)
-- [Which well-connected papers have the tightest citation neighborhoods?](./functions/structure/cugraph_triangle_count_all.mdx#examples)
-- [Do citation communities match the research fields in our catalog?](./functions/community/cugraph_louvain.mdx#examples)
-- [Which research pockets are disconnected from the main citation network?](./functions/connectivity/cugraph_weakly_connected_components.mdx#examples)
-- [Which broader reading lists cover most of BERT's bibliography?](./functions/similarity/cugraph_overlap.mdx#examples)
+Each question opens a captured example on its UDTF page. The examples read
+the [demo datasets](../guides/datasets/index.mdx); prepare one before running
+its queries.
 
-Use [functions-only execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
+### Citation network
+
+DBLP / AMiner V12: 4.9M papers linked by 45.6M citations.
+
+- [Which papers rank highest when citations from influential papers count more?](./udtfs/centrality/cugraph_pagerank.mdx#examples) (`cugraph_pagerank`)
+- [What should I read to understand BERT beyond its own bibliography?](./udtfs/centrality/cugraph_personalized_pagerank.mdx#examples) (`cugraph_personalized_pagerank`)
+- [What is the shortest citation chain from BERT back to LSTM?](./udtfs/traversal/cugraph_bfs.mdx#examples) (`cugraph_bfs`)
+- [Which papers should I read after the Transformer if I want familiar references?](./udtfs/similarity/cugraph_jaccard.mdx#examples) (`cugraph_jaccard`)
+- [Which papers act as reading guides, and which works are their shared foundations?](./udtfs/centrality/cugraph_hits.mdx#examples) (`cugraph_hits`)
+- [Do citation communities match the research fields in our catalog?](./udtfs/community/cugraph_louvain.mdx#examples) (`cugraph_louvain`)
+- [Which research pockets are disconnected from the main citation network?](./udtfs/connectivity/cugraph_weakly_connected_components.mdx#examples) (`cugraph_weakly_connected_components`)
+- [How are the papers around the Transformer connected?](./udtfs/layout/cugraph_force_atlas2.mdx#examples) (`cugraph_force_atlas2`)
+
+### MerRec marketplace
+
+Mercari US browsing events from October 2023, built into a graph of product
+groups linked by browsing transitions and shared viewers.
+
+- [Which collectible categories should accompany a Nintendo games landing page?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=merrec#examples) (`cugraph_personalized_pagerank`, `cugraph_jaccard`)
+- [Which markets draw most of their viewers from the Nintendo Games audience?](./udtfs/similarity/cugraph_cosine.mdx?dataset=merrec#examples) (`cugraph_cosine`, `cugraph_jaccard`)
+- [Which browsing neighborhoods could become draft marketplace collections?](./udtfs/community/cugraph_leiden.mdx?dataset=merrec#examples) (`cugraph_leiden`, `cugraph_pagerank`)
+
+### EMBER2024
+
+Win32 malware files from the challenge split, linked to the import symbols
+they share.
+
+- [Which import patterns should an analyst compare around an unlabeled file?](./udtfs/centrality/cugraph_personalized_pagerank.mdx?dataset=ember2024#examples) (`cugraph_personalized_pagerank`, `cugraph_jaccard`)
+
+The remaining cuGraph pages, from degree counts to spectral clustering, read
+the citation network.
+
+Use [`functions_only` execution](../integration/datafusion-session.mdx#choose-an-execution-mode)
 to keep scans and surrounding SQL on DataFusion CPU while graph algorithms run
 on GPU. The same page covers backend configuration and host staging limits.
 
@@ -57,8 +80,8 @@ FROM cugraph_pagerank(
 Algorithms that need additional relations name them explicitly, for example
 `personalization => (SELECT vertex, value FROM ppr_seeds)` for personalized
 PageRank or `vertex_pairs => (SELECT first, second FROM candidate_pairs)` for
-similarity functions. BFS source selectors and SSSP's source vertex are named
-value arguments as well. Each function page gives the complete signature and
+similarity UDTFs. BFS source selectors and SSSP's source vertex are named
+value arguments as well. Each UDTF page gives the complete signature and
 the canonical columns required for every relation role.
 
 Relation subqueries can read tables, views, CTEs, joins, and filters. Register
@@ -69,17 +92,17 @@ for source and session setup, and [Graph Inputs and Construction](./graph-option
 for vertex-ID contracts, directedness, vertex renumbering, and edge
 normalization.
 
-## Functions
+## UDTFs
 
-Start with [Browse functions](./functions/index.mdx) to choose an algorithm by
+Start with [cuGraph UDTFs](./udtfs/index.mdx) to choose an algorithm by
 family or compare the generated catalog descriptors.
 
 ## Discovery and validation
 
-Use [Discover & Validate GPU UDTFs](../guides/gpu-function-discovery.mdx)
+Use [Discover & Validate GPU UDTFs](../guides/gpu-udtf-discovery.mdx)
 for the shared list, describe, validate, and execute workflow. The exact
 metadata response and validation-request schemas are in the
-[GPU UDTF Catalog API](../reference/gpu-function-catalog.mdx).
+[GPU UDTF Catalog API](../reference/gpu-udtf-catalog.mdx).
 
 ## Reuse in bounded servers
 
@@ -95,5 +118,5 @@ other calls bypass the cache. Configure and observe it through
   session or a Flight SQL server.
 - [Prepare graph inputs](./graph-options.mdx): choose a supported vertex-ID
   domain and refine graph construction semantics.
-- [Run the citation-network demo](../guides/datasets/citation-network.mdx): follow the shared
-  dataset and runnable examples used by the algorithm reference.
+- [Prepare a demo dataset](../guides/datasets/index.mdx): set up the data
+  that the UDTF-page examples read.

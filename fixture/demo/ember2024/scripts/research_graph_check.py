@@ -333,7 +333,7 @@ def run() -> dict:
         },
         "finding": "The SQL result matches the current native/parity behavior, while the NVIDIA Python API documentation and local SQL wording describe conventional cosine. Classify this as a public semantic gap; no engine-defect claim follows from this query.",
         "sources": {
-            "local_public_sql_description": "website/docs/cugraph/functions/similarity/cugraph_cosine.mdx",
+            "local_public_sql_description": "website/docs/cugraph/udtfs/similarity/cugraph_cosine.mdx",
             "upstream_python_api_docstring": "components/cugraph/cugraph/python/cugraph/cugraph/link_prediction/cosine.py",
             "local_native_pairwise_path": "components/cugraph/cugraph/cpp/src/link_prediction/detail/similarity_impl.cuh",
             "local_parity_fixture": "crates/algeon-datafusion/src/cugraph_sql/parity.rs",

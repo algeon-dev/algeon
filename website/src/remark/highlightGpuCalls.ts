@@ -1,9 +1,9 @@
-// Highlights the lines of each SQL block that open a GPU table function call,
+// Highlights the lines of each SQL block that open a GPU UDTF call,
 // so a reader can see where cuGraph, cuVS, or cuML work enters the statement.
 // A block whose metastring already sets a `{…}` line range keeps that range.
 //
-// Generated function pages (scripts/gpu-docs-common.mjs) open with a
-// `## Quickstart` template call to the page's own function; highlighting it
+// Generated UDTF pages (scripts/gpu-docs-common.mjs) open with a
+// `## Quickstart` template call to the page's own UDTF; highlighting it
 // marks nothing new, so that section stays plain.
 
 type MdastNode = {
