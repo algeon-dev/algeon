@@ -27,10 +27,8 @@ pub(in crate::exec) mod pipeline;
 mod resident;
 mod source_batching_policy;
 
+pub(in crate::exec::bounded) use aggregate::apply_source_adjacent_aggregate_chunk_caps;
 use aggregate::*;
-pub(in crate::exec::bounded) use aggregate::{
-    SourceAdjacentAggregateChunkCapHints, apply_source_adjacent_aggregate_chunk_caps,
-};
 pub(in crate::exec) use attempt::BoundedExecutionAttempt;
 use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
@@ -43,12 +41,11 @@ pub(in crate::exec::bounded) use join::{
     consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_resident_frame,
     execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
     execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
-    execute_bounded_compiled_join_probe_from_stream, execute_bounded_join_leaf_source,
-    materialize_bounded_join_leaf_local_parquet_source_stream, partitioned_join_build_commitment,
-    plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
-    plan_bounded_shared_join_aggregate_local_parquet_source_stream, release_bounded_compiled_join_probe_state,
-    stateless_streaming_probe_supported, stream_bounded_join_leaf_local_parquet_source_chunks,
-    try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    execute_bounded_compiled_join_probe_from_stream, materialize_bounded_join_leaf_local_parquet_source_stream,
+    partitioned_join_build_commitment, plan_bounded_aggregate_input_local_parquet_source_stream,
+    plan_bounded_join_leaf_local_parquet_source_stream, plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+    release_bounded_compiled_join_probe_state, stateless_streaming_probe_supported,
+    stream_bounded_join_leaf_local_parquet_source_chunks, try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 #[cfg(feature = "cugraph")]
 pub(in crate::exec::bounded) use operator::execute_bounded_graph_algorithm_from_inputs;

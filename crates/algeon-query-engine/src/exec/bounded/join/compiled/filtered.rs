@@ -4,12 +4,12 @@ use super::{
     BoundedCompiledFilteredJoinBuildState, BoundedCompiledFilteredJoinProbeState, BoundedExecutionAttempt,
     BoundedJoinSideFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionMetrics, ExecutionOverrides,
     GpuDataFrame, GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
-    attach_budget_token_failure_facts, bounded_invariant_violation, cudf_query_error,
-    execution_budget_token_for_boundary, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
-    keyed_filtered_semi_anti_join_capable, lower_null_equality, materialize_left_only_join_output_projection,
-    materialize_mark_join_output_projection, null_aware_anti_probe, null_aware_anti_probe_input,
-    observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame, projected_input_columns,
-    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, validate_executable_join_subset,
+    attach_budget_token_failure_facts, cudf_query_error, execution_budget_token_for_boundary, execution_overrides,
+    join_index_error, join_side_output_upper_bound_bytes, lower_null_equality,
+    materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
+    null_aware_anti_probe_input, observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
+    projected_input_columns, projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
+    validate_executable_join_subset,
 };
 use crate::{
     exec::{bounded::compiled::lanes::AggregateLaneDispatch, join::NullAwareAntiProbe},
@@ -23,12 +23,6 @@ pub(super) fn execute_compiled_filtered_join_build_from_resident_frame(
     input: ResidentGpuFrame,
 ) -> Result<BoundedCompiledFilteredJoinBuildState> {
     validate_executable_join_subset(node)?;
-    if !keyed_filtered_semi_anti_join_capable(node) {
-        return Err(bounded_invariant_violation(
-            "compiled filtered join build requires a filtered semi/anti/mark join node",
-            "compiled_join_strategy_unsupported",
-        ));
-    }
     let setup = filtered_join_build_setup(node);
     let build =
         prepare_bounded_join_side_input_from_resident_frame(execution, input, &setup.right_columns, JoinSide::Right)?;
@@ -74,14 +68,14 @@ fn build_filtered_join_artifact(
                 "failed to build compiled bounded filtered join",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
             .with_fact("key_count", node.spec.keys.len())
             .with_fact("build_side", JoinSide::Right)
         })?;
     let filtered_join = GpuFilteredJoinBuildHandle::new(execution.context(), filtered_join, node.spec.null_equality)
         .map_err(|error| {
             error
-                .with_fact("join_type", node.spec.join_type)
+                .with_fact("join_type", &node.spec.join_type)
                 .with_fact("key_count", node.spec.keys.len())
                 .with_fact("build_side", JoinSide::Right)
         })?;
@@ -198,10 +192,10 @@ fn begin_filtered_join_probe_state(
     probe_state_bytes_message: &'static str,
 ) -> Result<(cudf::DataFrameFilteredJoinProbeState, u64)> {
     let probe_state = match node.spec.join_type {
-        JoinType::LeftSemi | JoinType::LeftMark => {
+        JoinType::LeftSemi | JoinType::LeftMark { .. } => {
             build.filtered_join.filtered_join().begin_left_semi_probe_in(&probe.frame, &build.left_keys, overrides)
         },
-        JoinType::LeftAnti => {
+        JoinType::LeftAnti { .. } => {
             build.filtered_join.filtered_join().begin_left_anti_probe_in(&probe.frame, &build.left_keys, overrides)
         },
         JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::Cross => unreachable!("validated above"),
@@ -209,7 +203,7 @@ fn begin_filtered_join_probe_state(
     .map_err(|error| join_index_error(error, node))?;
     let probe_state_bytes = probe_state.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
         cudf_query_error("query_engine.bounded.join.filtered_probe_state_bytes", probe_state_bytes_message, error)
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
             .with_fact("build_side", JoinSide::Right)
     })?;
     execution.metrics().record_filtered_join_probe_state_bytes(probe_state_bytes);
@@ -250,8 +244,7 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
             error,
         )
     })?;
-    let output = if node.spec.join_type == JoinType::LeftMark {
-        let mark_column_name = node.spec.mark_column_name.as_deref().unwrap_or("mark");
+    let output = if let Some(mark_column_name) = node.spec.join_type.mark_column() {
         // Mark join: estimate reservation as probe size (all rows kept) + mark column overhead.
         let output_reservation_bytes = probe.bytes.saturating_add(probe.rows.saturating_mul(1));
         let output = materialize_mark_join_output_projection(
@@ -292,7 +285,7 @@ pub(in crate::exec::bounded) fn execute_compiled_filtered_join_probe_chunk_from_
             &indices,
             &overrides,
             &node.spec.output_projection,
-            node.spec.join_type,
+            node.spec.join_type.clone(),
         )?;
         let output_rows = output.num_rows() as u64;
         let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
@@ -330,8 +323,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             error,
         )
     })?;
-    let output = if node.spec.join_type == JoinType::LeftMark {
-        let mark_column_name = node.spec.mark_column_name.as_deref().unwrap_or("mark");
+    let output = if let Some(mark_column_name) = node.spec.join_type.mark_column() {
         let output_reservation_bytes = probe.bytes.saturating_add(probe.rows.saturating_mul(1));
         let output = materialize_mark_join_output_projection(
             execution.context(),
@@ -372,7 +364,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             &indices,
             &overrides,
             &node.spec.output_projection,
-            node.spec.join_type,
+            node.spec.join_type.clone(),
         )?;
         execution.metrics().add_operator_time(build.timer.elapsed());
         let output_rows = output.num_rows() as u64;
@@ -453,7 +445,7 @@ pub(super) fn release_compiled_filtered_join_probe_state(probe: BoundedCompiledF
 /// facts are build-time. Only right-build semi/anti/mark shares the
 /// chunk-independent contract.
 pub(in crate::exec::bounded) fn filtered_parallel_probe_supported(node: &JoinNode) -> bool {
-    matches!(node.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark)
+    matches!(node.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. })
         && node.spec.build_side == JoinSide::Right
 }
 

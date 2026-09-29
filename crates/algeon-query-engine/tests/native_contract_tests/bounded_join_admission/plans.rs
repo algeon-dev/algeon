@@ -111,7 +111,7 @@ pub(crate) fn keyless_conditional_join_input_subplan_plan(variant: KeylessInputS
     let anti_join_type = if matches!(variant, KeylessInputSubplanVariant::InnerJoinInput) {
         JoinType::Inner
     } else {
-        JoinType::LeftAnti
+        JoinType::LEFT_ANTI
     };
     let anti_join = builder
         .add_join(

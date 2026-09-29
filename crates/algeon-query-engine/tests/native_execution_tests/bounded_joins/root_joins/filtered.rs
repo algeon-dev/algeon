@@ -23,7 +23,7 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
         &right_path,
         &left_schema,
         &right_schema,
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
     );
 
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
@@ -120,7 +120,7 @@ fn bounded_native_query_executes_empty_root_filtered_left_anti_join_with_zero_ga
         &right_path,
         &left_schema,
         &right_schema,
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
     );
 
     assert_empty_bounded_filtered_join_result(&result, "left_anti");

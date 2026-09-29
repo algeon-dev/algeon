@@ -799,17 +799,6 @@ impl CompiledGpuTaskExecutor<'_> {
         }
         Ok(())
     }
-
-    pub(super) fn source_has_dynamic_filter_routes(&self, source_node_id: NodeId) -> bool {
-        self.plan.dynamic_filter_routes().iter().any(|route| {
-            matches!(
-                &route.consumer,
-                DynamicFilterConsumer::LocalParquetSource {
-                    source_node_id: route_source_node_id
-                } if *route_source_node_id == source_node_id
-            )
-        })
-    }
 }
 
 fn join_probe_input_node(join: &JoinNode) -> NodeId {

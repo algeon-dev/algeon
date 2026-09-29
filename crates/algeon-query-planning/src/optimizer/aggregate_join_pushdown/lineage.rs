@@ -366,7 +366,7 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn substitute_unqualified_colu
 }
 
 pub(in crate::optimizer::aggregate_join_pushdown) fn join_side_introduces_nulls(
-    join_type: JoinType,
+    join_type: &JoinType,
     side: JoinSide,
 ) -> bool {
     matches!((join_type, side), (JoinType::Left, JoinSide::Right) | (JoinType::Full, JoinSide::Left | JoinSide::Right))

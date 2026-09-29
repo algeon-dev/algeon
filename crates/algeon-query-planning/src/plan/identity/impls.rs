@@ -468,11 +468,9 @@ impl StableHash for JoinSpec {
             residual_predicate,
             output_projection,
             null_equality,
-            null_aware,
             build_side,
             datafusion_order_preserved_side,
             build_artifact_id,
-            mark_column_name,
             at_most_one_match_side,
             advisory_output_statistics: _,
         } = self;
@@ -481,11 +479,9 @@ impl StableHash for JoinSpec {
         residual_predicate.stable_hash(hasher);
         output_projection.stable_hash(hasher);
         null_equality.stable_hash(hasher);
-        null_aware.stable_hash(hasher);
         build_side.stable_hash(hasher);
         datafusion_order_preserved_side.stable_hash(hasher);
         build_artifact_id.stable_hash(hasher);
-        mark_column_name.stable_hash(hasher);
         at_most_one_match_side.stable_hash(hasher);
     }
 }

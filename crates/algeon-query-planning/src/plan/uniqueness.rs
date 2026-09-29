@@ -116,7 +116,7 @@ fn join_unique_keys(
     if bounded_side == Some(JoinSide::Left)
         || bounded_is_unique
         || right_is_unique
-        || matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        || matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
     {
         output.extend(remap_unique_key_sets(left_keys, mappings(JoinSide::Left)));
     }
@@ -283,7 +283,7 @@ mod tests {
             Field::new("sourceId", DataType::Utf8, false),
             Field::new("targetId", DataType::Utf8, false),
         ]));
-        for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
             let mut builder = QueryPlanBuilder::new();
             let relation = builder.add_source(SourceNode::LocalParquet(endpoint_source()));
             let unique_relation = builder

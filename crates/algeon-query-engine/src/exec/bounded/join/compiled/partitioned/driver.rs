@@ -656,7 +656,7 @@ fn partitioned_join_retry_policy(context: &ExecutionContext) -> PartitionedJoinR
 fn partitioned_join_probe_split_supported(node: &JoinNode) -> bool {
     matches!(node.spec.join_type, JoinType::Inner)
         || (node.spec.build_side == JoinSide::Right
-            && matches!(node.spec.join_type, JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti))
+            && matches!(node.spec.join_type, JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti { .. }))
 }
 
 /// A failure in the build side's working set needs smaller partitions; a
@@ -753,7 +753,7 @@ fn attach_partitioned_join_retry_error(
     partitioned_join_retry_facts(plan, work, attempt, policy, retry_action)
         .attach_to_error(error)
         .with_fact_if_absent("partition", work.root_partition)
-        .with_fact_if_absent("join_type", plan.node.spec.join_type)
+        .with_fact_if_absent("join_type", &plan.node.spec.join_type)
         .with_fact_if_absent("build_side", plan.node.spec.build_side)
         .with_fact_if_absent("retry_attempt", attempt)
         .with_fact_if_absent("max_retry_attempts", policy.max_attempts)
@@ -984,7 +984,7 @@ mod tests {
         assert!(partitioned_join_probe_split_supported(&retry_join_node(JoinType::Inner, JoinSide::Left)));
         assert!(partitioned_join_probe_split_supported(&retry_join_node(JoinType::Left, JoinSide::Right)));
         assert!(partitioned_join_probe_split_supported(&retry_join_node(JoinType::LeftSemi, JoinSide::Right)));
-        assert!(partitioned_join_probe_split_supported(&retry_join_node(JoinType::LeftAnti, JoinSide::Right)));
+        assert!(partitioned_join_probe_split_supported(&retry_join_node(JoinType::LEFT_ANTI, JoinSide::Right)));
         assert!(!partitioned_join_probe_split_supported(&retry_join_node(JoinType::Full, JoinSide::Right)));
         assert!(!partitioned_join_probe_split_supported(&retry_join_node(JoinType::Left, JoinSide::Left)));
     }

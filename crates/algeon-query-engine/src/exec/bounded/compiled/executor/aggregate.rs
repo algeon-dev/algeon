@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState};
 use crate::{
-    dynamic_filter::DynamicFilterProducer,
     error::Result,
     exec::{
         bounded::{
@@ -21,7 +20,7 @@ use crate::{
         },
         operators::execute_window,
     },
-    pipeline::{CompiledPipeline, PipelineTask, ResidentDataForm, ResidentResourceId, SortStrategy},
+    pipeline::{AggregatePlan, PipelineTask, ResidentDataForm, ResidentResourceId, SortStrategy, TaskPhysical},
     plan::{PlanNode, QueryPlan},
 };
 
@@ -46,7 +45,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
-        let topk = compiled_aggregate_topk(self.plan, self.pipeline, task);
+        let topk = compiled_aggregate_topk(self.plan, task)?;
         let input_schema = self
             .plan
             .node(aggregate.input)
@@ -192,48 +191,36 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 }
 
-/// Propagates the compiled sort's existing pruning contract through an
-/// exclusively consumed projection chain. Shared aggregate facts must remain
-/// complete for every consumer, including dynamic-filter producers.
-fn compiled_aggregate_topk<'a>(
-    plan: &'a QueryPlan,
-    pipeline: &CompiledPipeline,
-    task: &PipelineTask,
-) -> Option<SourceAggregateTopK<'a>> {
-    let node_id = task.plan_node()?;
-    if plan.dynamic_filter_routes().iter().any(|route| {
-        matches!(
-            route.producer,
-            DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } if aggregate_node_id == node_id
-        )
-    }) {
-        return None;
-    }
-    let mut current = task;
-    let mut stages = Vec::new();
-    loop {
-        let [output] = current.output_resources() else {
-            return None;
-        };
-        let resource = pipeline.resources().iter().find(|resource| resource.id() == *output)?;
-        let [consumer] = resource.consumers() else {
-            return None;
-        };
-        current = pipeline.tasks().iter().find(|task| task.id() == *consumer)?;
-        let node_id = current.plan_node()?;
-        let node = plan.node(node_id)?;
-        match &node.kind {
-            PlanNode::Projection(projection) => stages.push(BoundedUnaryStage::Projection { node: projection }),
-            PlanNode::Sort(sort) => {
-                let SortStrategy::FusedTopK { limit_node, .. } = current.sort_strategy()? else {
-                    return None;
-                };
-                let PlanNode::Limit(limit) = &plan.node(limit_node)?.kind else {
-                    return None;
-                };
-                return Some(SourceAggregateTopK { post_aggregate_stages: stages, sort, limit: (limit_node, limit) });
-            },
-            _ => return None,
-        }
-    }
+/// Resolves the top-k the compiled aggregate plan fused into plan nodes.
+fn compiled_aggregate_topk<'a>(plan: &'a QueryPlan, task: &PipelineTask) -> Result<Option<SourceAggregateTopK<'a>>> {
+    let TaskPhysical::Aggregate(AggregatePlan { topk: Some(fusion) }) = task.physical() else {
+        return Ok(None);
+    };
+    let fused_node = |node_id| {
+        plan.node(node_id).map(|node| &node.kind).ok_or_else(|| {
+            invalid("compiled aggregate top-k references a missing plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+        })
+    };
+    let unexpected = |node_id| {
+        invalid("compiled aggregate top-k references a plan node of another kind")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+    };
+    let post_aggregate_stages = fusion
+        .post_aggregate_projections
+        .iter()
+        .map(|node_id| match fused_node(*node_id)? {
+            PlanNode::Projection(projection) => Ok(BoundedUnaryStage::Projection { node: projection }),
+            _ => Err(unexpected(*node_id)),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let PlanNode::Sort(sort) = fused_node(fusion.sort_node)? else {
+        return Err(unexpected(fusion.sort_node));
+    };
+    let PlanNode::Limit(limit) = fused_node(fusion.limit_node)? else {
+        return Err(unexpected(fusion.limit_node));
+    };
+    Ok(Some(SourceAggregateTopK { post_aggregate_stages, sort, limit: (fusion.limit_node, limit) }))
 }

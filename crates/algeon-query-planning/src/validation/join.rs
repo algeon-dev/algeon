@@ -13,12 +13,18 @@ use super::{
 };
 use crate::{
     backend::AnalysisContext,
+    capability::{JoinForm, classify_join},
     datatypes::is_supported_arrow_cast,
     expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue, UnaryMathOp},
-    plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
+    plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId},
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "join validation threads the node identity, both input schemas with their available columns, the output schema, and the backend context"
+)]
 pub(crate) fn validate_join_capability(
+    node_id: NodeId,
     join: &JoinNode,
     left_schema: &SchemaRef,
     left_available: &BTreeSet<String>,
@@ -27,13 +33,13 @@ pub(crate) fn validate_join_capability(
     output_schema: &SchemaRef,
     ctx: AnalysisContext<'_>,
 ) -> Result<()> {
-    if join.spec.null_aware && (join.spec.join_type != JoinType::LeftAnti || join.spec.keys.len() != 1) {
+    if join.spec.join_type.is_null_aware() && join.spec.keys.len() != 1 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "query_engine.join.validate",
             "native null-aware joins must be single-key left anti joins",
         )
-        .with_fact("join_type", join.spec.join_type)
+        .with_fact("join_type", &join.spec.join_type)
         .with_fact("key_count", join.spec.keys.len()));
     }
     if join.spec.join_type == JoinType::Cross && !join.spec.keys.is_empty() {
@@ -61,7 +67,7 @@ pub(crate) fn validate_join_capability(
             "query_engine.join.validate",
             "native cross join execution does not support residual predicates; use conditional join IR instead",
         )
-        .with_fact("join_type", join.spec.join_type));
+        .with_fact("join_type", &join.spec.join_type));
     }
     if join.spec.join_type == JoinType::Left && join.spec.build_side != JoinSide::Right {
         return Err(QueryError::new(
@@ -69,39 +75,19 @@ pub(crate) fn validate_join_capability(
             "query_engine.join.validate",
             "native reusable hash left join execution requires the right side to be the build side",
         )
-        .with_fact("join_type", join.spec.join_type)
+        .with_fact("join_type", &join.spec.join_type)
         .with_fact("build_side", join.spec.build_side));
     }
-    if join.spec.join_type == JoinType::LeftMark && join.spec.build_side != JoinSide::Right {
+    if matches!(join.spec.join_type, JoinType::LeftMark { .. }) && join.spec.build_side != JoinSide::Right {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
             "query_engine.join.validate",
             "native left mark join execution requires the right side to be the build side",
         )
-        .with_fact("join_type", join.spec.join_type)
+        .with_fact("join_type", &join.spec.join_type)
         .with_fact("build_side", join.spec.build_side));
     }
-    let mark_column_name = match (join.spec.join_type, join.spec.mark_column_name.as_deref()) {
-        (JoinType::LeftMark, Some(mark_column_name)) => Some(mark_column_name),
-        (JoinType::LeftMark, None) => {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.join.validate",
-                "native left mark join requires a mark_column_name in the join spec",
-            )
-            .with_fact("join_type", join.spec.join_type));
-        },
-        (_, Some(mark_column_name)) => {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.join.validate",
-                "mark_column_name is only valid for left mark joins",
-            )
-            .with_fact("join_type", join.spec.join_type)
-            .with_fact("mark_column_name", mark_column_name));
-        },
-        (_, None) => None,
-    };
+    let mark_column_name = join.spec.join_type.mark_column();
     if let Some(build_artifact_id) = &join.spec.build_artifact_id {
         if build_artifact_id.is_empty() {
             return Err(QueryError::new(
@@ -118,7 +104,7 @@ pub(crate) fn validate_join_capability(
                 "native reusable hash-join build artifacts require equality keys",
             )
             .with_fact("build_artifact_id", build_artifact_id)
-            .with_fact("join_type", join.spec.join_type));
+            .with_fact("join_type", &join.spec.join_type));
         }
         if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full) {
             return Err(QueryError::new(
@@ -127,7 +113,7 @@ pub(crate) fn validate_join_capability(
                 "native durable hash-join build artifacts are supported only for reusable hash-join probe types",
             )
             .with_fact("build_artifact_id", build_artifact_id)
-            .with_fact("join_type", join.spec.join_type));
+            .with_fact("join_type", &join.spec.join_type));
         }
     }
 
@@ -150,14 +136,16 @@ pub(crate) fn validate_join_capability(
             ctx,
         ) {
             Ok(data_type) => data_type,
-            Err(_error) if join_residual_post_filter_supported(join) => validate_post_join_residual_expr(
-                predicate,
-                left_schema,
-                left_available,
-                right_schema,
-                right_available,
-                ctx,
-            )?,
+            Err(_error) if matches!(classify_join(node_id, join), Ok(JoinForm::KeyedEquiPostFilter)) => {
+                validate_post_join_residual_expr(
+                    predicate,
+                    left_schema,
+                    left_available,
+                    right_schema,
+                    right_available,
+                    ctx,
+                )?
+            },
             Err(error) => return Err(error),
         };
         require_boolean(&predicate_type, "join residual predicate")?;
@@ -188,7 +176,7 @@ fn keyless_predicate_free_outer_join(join: &JoinNode) -> bool {
 }
 
 fn validate_join_type_projection(join: &JoinNode) -> Result<()> {
-    if !matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark) {
+    if !matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. }) {
         return Ok(());
     }
 
@@ -198,7 +186,7 @@ fn validate_join_type_projection(join: &JoinNode) -> Result<()> {
             "query_engine.join.validate",
             "left semi, left anti, and left mark joins can only project left-side output columns",
         )
-        .with_fact("join_type", join.spec.join_type)
+        .with_fact("join_type", &join.spec.join_type)
         .with_fact("side", output.side)
         .with_fact("column", output.column.name())
         .with_fact("output_name", output.output_name.as_str()));
@@ -987,13 +975,6 @@ fn validate_post_join_residual_expr(
     }
 }
 
-fn join_residual_post_filter_supported(join: &JoinNode) -> bool {
-    join.spec.join_type == JoinType::Inner
-        && !join.spec.keys.is_empty()
-        && !join.spec.output_projection.is_empty()
-        && join.spec.residual_predicate.as_ref().is_some_and(residual_expr_requires_post_filter)
-}
-
 fn validate_post_join_string_unary_expr(
     expr: &Expr,
     left_schema: &SchemaRef,
@@ -1007,44 +988,6 @@ fn validate_post_join_string_unary_expr(
         validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
     require_string(&data_type, context)?;
     Ok(data_type)
-}
-
-fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
-    match expr {
-        Expr::Case { .. } => true,
-        Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::TryCast { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Trim { expr, .. }
-        | Expr::LTrim { expr, .. }
-        | Expr::RTrim { expr, .. }
-        | Expr::StringContains { expr, .. }
-        | Expr::StartsWith { expr, .. }
-        | Expr::EndsWith { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::UnaryMath { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Alias { expr, .. } => residual_expr_requires_post_filter(expr),
-        Expr::Concat(exprs) => exprs.iter().any(residual_expr_requires_post_filter),
-        Expr::Like { expr, .. } | Expr::Substring { expr, .. } => residual_expr_requires_post_filter(expr),
-        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
-        Expr::Binary { op: BinaryOp::Or, .. } => true,
-        Expr::Binary { left, right, .. } => {
-            residual_expr_requires_post_filter(left) || residual_expr_requires_post_filter(right)
-        },
-        Expr::InList { expr, list, .. } => {
-            residual_expr_requires_post_filter(expr) || list.iter().any(residual_expr_requires_post_filter)
-        },
-        Expr::Column(_) | Expr::Literal(_) => false,
-    }
 }
 
 #[expect(

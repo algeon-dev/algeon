@@ -333,7 +333,7 @@ pub(super) fn shared_source_join_build_and_aggregate_data_plan(fact_path: &Path,
 }
 
 pub(super) fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPlan {
-    assert!(matches!(join_type, JoinType::LeftSemi | JoinType::LeftAnti));
+    assert!(matches!(join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. }));
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),
         Field::new("left_value", DataType::Int32, false),

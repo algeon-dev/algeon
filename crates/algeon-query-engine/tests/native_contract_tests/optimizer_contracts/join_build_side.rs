@@ -61,7 +61,7 @@ fn native_optimizer_flips_left_semi_keyed_residual_join_to_small_left_build_side
 #[test]
 fn native_optimizer_flips_left_anti_keyed_residual_join_to_small_left_build_side() {
     let plan = estimated_semi_anti_residual_join_plan(
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
         JoinSide::Right,
         16 * 1024 * 1024,
         100_000,
@@ -82,7 +82,7 @@ fn native_optimizer_flips_left_anti_keyed_residual_join_to_small_left_build_side
     let PlanNode::Join(join) = &result.plan.root_node().kind else {
         panic!("optimized root should remain the left-anti residual join");
     };
-    assert_eq!(join.spec.join_type, JoinType::LeftAnti);
+    assert_eq!(join.spec.join_type, JoinType::LEFT_ANTI);
     assert!(join.spec.residual_predicate.is_some());
     assert!(join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left));
     assert_eq!(join.spec.build_side, JoinSide::Left);
@@ -90,9 +90,9 @@ fn native_optimizer_flips_left_anti_keyed_residual_join_to_small_left_build_side
 
 #[test]
 fn join_build_side_selection_keeps_residual_semi_anti_join_when_sizes_do_not_improve_it() {
-    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+    for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
         let plan = estimated_semi_anti_residual_join_plan(
-            join_type,
+            join_type.clone(),
             JoinSide::Right,
             256 * 1024 * 1024,
             10_000_000,
@@ -122,9 +122,9 @@ fn join_build_side_selection_keeps_residual_semi_anti_join_when_sizes_do_not_imp
 
 #[test]
 fn disabled_native_optimizer_keeps_residual_semi_anti_join_build_side_selection_off() {
-    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+    for join_type in [JoinType::LeftSemi, JoinType::LEFT_ANTI] {
         let plan = estimated_semi_anti_residual_join_plan(
-            join_type,
+            join_type.clone(),
             JoinSide::Right,
             16 * 1024 * 1024,
             100_000,
@@ -579,7 +579,7 @@ fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_a
         dates,
         excluded_week,
         JoinSpec::new(
-            JoinType::LeftAnti,
+            JoinType::LEFT_ANTI,
             vec![JoinKey::new(
                 ColumnRef::input(0, "d_week_seq", "d_week_seq"),
                 ColumnRef::input(1, "week_seq", "week_seq"),

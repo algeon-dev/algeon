@@ -1,11 +1,11 @@
 use super::{
     BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, ExecutionMetrics, LocalParquetSource,
-    MemoryControlPolicy, NodeId, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy,
-    SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
-    apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
-    record_bounded_parquet_source_metrics, validate_local_parquet_source,
+    MemoryControlPolicy, NodeId, Result, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
+    annotate_join_leaf_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps,
+    plan_local_parquet_source_chunks_with_execution_context, record_bounded_parquet_source_metrics,
+    validate_local_parquet_source,
 };
-use crate::rapids_backend::rapids_analysis_context;
+use crate::{pipeline::AggregateInputHints, rapids_backend::rapids_analysis_context};
 
 pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stream(
     context: &ExecutionContext,
@@ -29,7 +29,7 @@ pub(in crate::exec::bounded) fn plan_bounded_aggregate_input_local_parquet_sourc
     source: &LocalParquetSource,
     node_id: NodeId,
     has_source_adjacent_stages: bool,
-    chunk_cap_hints: SourceAdjacentAggregateChunkCapHints,
+    chunk_cap_hints: AggregateInputHints,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -47,7 +47,7 @@ pub(in crate::exec::bounded) fn plan_bounded_shared_join_aggregate_local_parquet
     source: &LocalParquetSource,
     node_id: NodeId,
     has_source_adjacent_stages: bool,
-    chunk_cap_hints: SourceAdjacentAggregateChunkCapHints,
+    chunk_cap_hints: AggregateInputHints,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     plan_bounded_local_parquet_source_stream(
@@ -65,7 +65,7 @@ fn plan_bounded_local_parquet_source_stream(
     source: &LocalParquetSource,
     node_id: NodeId,
     memory_model: SourceTaskMemoryModel,
-    chunk_cap_hints: Option<SourceAdjacentAggregateChunkCapHints>,
+    chunk_cap_hints: Option<AggregateInputHints>,
     metrics: &ExecutionMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source, rapids_analysis_context(context.planning_policy()))?;

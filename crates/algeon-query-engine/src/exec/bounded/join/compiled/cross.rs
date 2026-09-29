@@ -44,7 +44,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             "failed to create compiled bounded projected cross join plan",
             error,
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
     })?;
     let expected_output_rows = plan.output_rows() as u64;
     let output_reservation_bytes =
@@ -54,7 +54,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
                 "failed to size compiled bounded projected cross join output",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
         })?;
     let output = plan.materialize_in(&overrides).map_err(|error| {
         cudf_query_error(
@@ -62,7 +62,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             "failed to materialize compiled bounded projected cross join output",
             error,
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
     })?;
     let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
     execution.metrics().add_operator_time(timer.elapsed());
@@ -164,7 +164,7 @@ pub(super) fn execute_compiled_keyless_outer_cross_join_materialize(
             "compiled keyless outer cross join execution supports predicate-free left and full joins",
             "keyless_outer_cross_join_requires_left_or_full",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("key_count", node.spec.keys.len())
         .with_fact("residual_predicate", node.spec.residual_predicate.is_some())),
     }
@@ -194,7 +194,7 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
             "query_engine.bounded.join.keyless_outer_cross",
             "keyless outer cross join output row count exceeds usize",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
     })?;
     if output_size > i32::MAX as usize {
         return Err(QueryError::new(
@@ -202,7 +202,7 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
             "query_engine.bounded.join.keyless_outer_cross",
             "keyless outer cross join gather-map row count exceeds INT32_MAX",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("output_rows", output_size));
     }
 
@@ -246,7 +246,7 @@ fn keyless_outer_cross_join_indices(
                     "failed to create preserved-side keyless outer cross gather map",
                     error,
                 )
-                .with_fact("join_type", node.spec.join_type)
+                .with_fact("join_type", &node.spec.join_type)
             },
         )
     };
@@ -257,7 +257,7 @@ fn keyless_outer_cross_join_indices(
                 "failed to create keyless outer cross null-supplier gather sentinel",
                 error,
             )
-            .with_fact("join_type", node.spec.join_type)
+            .with_fact("join_type", &node.spec.join_type)
         })?;
         context
             .runtime()?
@@ -269,7 +269,7 @@ fn keyless_outer_cross_join_indices(
                     "failed to create null-supplying keyless outer cross gather map",
                     error,
                 )
-                .with_fact("join_type", node.spec.join_type)
+                .with_fact("join_type", &node.spec.join_type)
             })
     };
     match preserved_side {

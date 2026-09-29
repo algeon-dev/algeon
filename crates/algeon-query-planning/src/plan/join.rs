@@ -47,12 +47,6 @@ pub struct JoinSpec {
     pub output_projection: Vec<JoinOutputColumn>,
     /// Null matching behavior for equality keys.
     pub null_equality: JoinNullEquality,
-    /// Whether a `LeftAnti` join has SQL `NOT IN` null semantics.
-    ///
-    /// A NULL key on the right input empties the output, and a non-empty right
-    /// input also drops left rows whose key is NULL. Only single-key `LeftAnti`
-    /// joins may set it.
-    pub null_aware: bool,
     /// Input chosen to build reusable/hash state.
     ///
     /// This is a physical execution choice. It does not redefine which input is
@@ -72,11 +66,6 @@ pub struct JoinSpec {
     /// for the logical build input, key set, null-equality behavior, and other
     /// build-affecting choices.
     pub build_artifact_id: Option<HashJoinBuildArtifactId>,
-    /// Output column name for the Boolean mark column in a `LeftMark` join.
-    ///
-    /// Must be `Some` when `join_type == LeftMark` and `None` otherwise.
-    /// The mark column appears as the last field in the output schema.
-    pub mark_column_name: Option<String>,
     /// Side whose every row produces at most one output row, a proven lookup
     /// relationship that bounds output rows by that input.
     ///
@@ -110,11 +99,9 @@ impl JoinSpec {
             residual_predicate: None,
             output_projection: Vec::new(),
             null_equality: JoinNullEquality::NullsDoNotMatch,
-            null_aware: false,
             build_side: JoinSide::Right,
             datafusion_order_preserved_side: JoinSide::Right,
             build_artifact_id: None,
-            mark_column_name: None,
             at_most_one_match_side: None,
             advisory_output_statistics: None,
         }
@@ -138,12 +125,6 @@ impl JoinSpec {
         self
     }
 
-    /// Sets SQL `NOT IN` null semantics for a single-key `LeftAnti` join.
-    pub fn with_null_aware(mut self, null_aware: bool) -> Self {
-        self.null_aware = null_aware;
-        self
-    }
-
     /// Sets the physical build side without changing semantic left/right inputs.
     pub fn with_build_side(mut self, build_side: JoinSide) -> Self {
         self.build_side = build_side;
@@ -162,12 +143,6 @@ impl JoinSpec {
     /// table name. Validation rejects empty ids.
     pub fn with_build_artifact_id(mut self, id: impl Into<String>) -> Self {
         self.build_artifact_id = Some(HashJoinBuildArtifactId::new(id));
-        self
-    }
-
-    /// Sets the output column name for the Boolean mark column in a `LeftMark` join.
-    pub fn with_mark_column_name(mut self, name: impl Into<String>) -> Self {
-        self.mark_column_name = Some(name.into());
         self
     }
 
@@ -273,7 +248,10 @@ impl fmt::Display for JoinOutputColumn {
 }
 
 /// Logical join type represented by the native IR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// State that only one join type carries lives in that variant, so a null-aware
+/// flag or mark column cannot be attached to a join type that ignores it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JoinType {
     /// Keep rows that match on the join condition from both sides.
     Inner,
@@ -284,12 +262,38 @@ pub enum JoinType {
     /// Keep left rows that have a match; output only left-side columns.
     LeftSemi,
     /// Keep left rows that do not have a match; output only left-side columns.
-    LeftAnti,
+    LeftAnti {
+        /// SQL `NOT IN` null semantics: a NULL key on the right input empties
+        /// the output, and a non-empty right input also drops left rows whose
+        /// key is NULL. Only a single-key join may set it.
+        null_aware: bool,
+    },
     /// Cartesian join; equality keys should be empty.
     Cross,
     /// Keep every left row; output left-side columns plus a Boolean mark column
     /// that is `true` when at least one matching right row exists.
-    LeftMark,
+    LeftMark {
+        /// Output name of the mark column, the last field of the output schema.
+        mark_column: String,
+    },
+}
+
+impl JoinType {
+    /// A `LeftAnti` join without SQL `NOT IN` null semantics.
+    pub const LEFT_ANTI: Self = Self::LeftAnti { null_aware: false };
+
+    /// Whether this is a `LeftAnti` join with SQL `NOT IN` null semantics.
+    pub fn is_null_aware(&self) -> bool {
+        matches!(self, Self::LeftAnti { null_aware: true })
+    }
+
+    /// The mark column of a `LeftMark` join.
+    pub fn mark_column(&self) -> Option<&str> {
+        match self {
+            Self::LeftMark { mark_column } => Some(mark_column),
+            Self::Inner | Self::Left | Self::Full | Self::LeftSemi | Self::LeftAnti { .. } | Self::Cross => None,
+        }
+    }
 }
 
 impl fmt::Display for JoinType {
@@ -299,9 +303,9 @@ impl fmt::Display for JoinType {
             Self::Left => "left",
             Self::Full => "full",
             Self::LeftSemi => "left_semi",
-            Self::LeftAnti => "left_anti",
+            Self::LeftAnti { .. } => "left_anti",
             Self::Cross => "cross",
-            Self::LeftMark => "left_mark",
+            Self::LeftMark { .. } => "left_mark",
         })
     }
 }

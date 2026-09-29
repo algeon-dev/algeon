@@ -1,15 +1,18 @@
-//! Join-strategy capability analysis.
+//! Join operator forms and strategy choice.
 //!
-//! Classifies each [`JoinNode`] into a [`KeyedHashJoinStrategyDecision`] using
-//! the byte/row thresholds captured in [`KeyedHashJoinStrategyOptions`]. Decisions are
-//! consumed by capability admission, the bounded executor's strategy
-//! selection, and the join-strategy metric rows.
-
-use std::collections::BTreeMap;
+//! [`classify_join`] derives one [`JoinForm`] per join node from its spec;
+//! the form names the executors that can run the join. [`choose_join_strategy`]
+//! picks one of them from size facts and the thresholds in
+//! [`KeyedHashJoinStrategyOptions`]. Capability admission, the compiled join
+//! plan, the bounded executor's refinement, and the join-strategy metric rows
+//! read these two functions.
 
 use arrow::datatypes::DataType;
 
-use super::rejection::Reason;
+use super::{
+    join_strategy::{JoinStrategy, JoinStrategyChoice, JoinStrategyEvidence},
+    rejection::{Reason, Rejection, RejectionOwner},
+};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, Expr},
@@ -24,14 +27,14 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KeyedHashJoinStrategyOptions {
-    large_keyed_hash_build_row_threshold: u64,
-    large_keyed_hash_build_bytes_threshold: u64,
-    large_keyed_hash_probe_bytes_threshold: u64,
-    small_reusable_hash_build_row_threshold: u64,
-    small_reusable_hash_build_bytes_threshold: u64,
-    small_one_shot_probe_bytes_threshold: u64,
-    max_small_probe_left_one_shot_build_row_threshold: u64,
-    max_small_probe_left_one_shot_build_bytes_threshold: u64,
+    pub(super) large_keyed_hash_build_row_threshold: u64,
+    pub(super) large_keyed_hash_build_bytes_threshold: u64,
+    pub(super) large_keyed_hash_probe_bytes_threshold: u64,
+    pub(super) small_reusable_hash_build_row_threshold: u64,
+    pub(super) small_reusable_hash_build_bytes_threshold: u64,
+    pub(super) small_one_shot_probe_bytes_threshold: u64,
+    pub(super) max_small_probe_left_one_shot_build_row_threshold: u64,
+    pub(super) max_small_probe_left_one_shot_build_bytes_threshold: u64,
 }
 
 impl KeyedHashJoinStrategyOptions {
@@ -185,52 +188,6 @@ impl Default for KeyedHashJoinStrategyOptions {
     }
 }
 
-/// Node-local native join execution capability.
-///
-/// This describes the operator strategy a single join node can use inside a
-/// compiled pipeline. It deliberately does not name whole-query bounded
-/// families or root/multi-join topology paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub enum JoinExecutionCapability {
-    KeyedHash,
-    KeyedFilteredSemiAnti,
-    KeylessConditional(KeylessConditionalJoinKind),
-    KeylessOuterCross,
-    ProjectedCross,
-    KeyedResidualMixed,
-}
-
-/// Physical strategy selected for a keyed hash-capable join after size,
-/// reuse, and residual-expression facts have been evaluated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub enum KeyedHashJoinStrategy {
-    /// Prebuild and retain a hash-table artifact because the build side is
-    /// reused, explicitly materialized, or small enough to keep reusable.
-    ReusableHashEqui,
-    /// Build and probe for this join instance only, without preserving a
-    /// reusable hash-table artifact for later probes.
-    OneShotEqui,
-    /// Partition a large keyed equi-join so build/probe memory is bounded by
-    /// partition-sized work units.
-    PartitionedHashEqui,
-    /// Partition a keyed join whose residual predicate is evaluated within the
-    /// mixed keyed/residual path instead of as a reusable equi hash join.
-    PartitionedMixedKeyedResidual,
-}
-
-impl KeyedHashJoinStrategy {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReusableHashEqui => "reusable_hash_equi",
-            Self::OneShotEqui => "one_shot_equi",
-            Self::PartitionedHashEqui => "partitioned_hash_equi",
-            Self::PartitionedMixedKeyedResidual => "partitioned_mixed_keyed_residual",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct KeyedHashJoinStrategyInputFacts {
@@ -254,21 +211,6 @@ pub struct KeyedHashJoinStrategyInputFacts {
     pub reusable_prebuild_supported: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum KeyedHashJoinStrategyDecision {
-    Selected { strategy: KeyedHashJoinStrategy, facts: BTreeMap<&'static str, String> },
-    Rejected { reason: Reason, facts: BTreeMap<&'static str, String> },
-}
-
-impl KeyedHashJoinStrategyDecision {
-    pub(crate) fn facts(&self) -> &BTreeMap<&'static str, String> {
-        match self {
-            Self::Selected { facts, .. } | Self::Rejected { facts, .. } => facts,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[doc(hidden)]
 pub enum KeylessConditionalJoinKind {
@@ -279,113 +221,181 @@ pub enum KeylessConditionalJoinKind {
     LeftAnti,
 }
 
-impl KeylessConditionalJoinKind {
-    pub(crate) fn try_from_join(join: &JoinNode) -> Option<Self> {
-        if !join.spec.keys.is_empty()
-            || join.spec.residual_predicate.is_none()
-            || join.spec.output_projection.is_empty()
-        {
-            return None;
-        }
-
-        match join.spec.join_type {
-            JoinType::Inner => Some(Self::Inner),
-            JoinType::Left if join.spec.build_side == JoinSide::Right => Some(Self::Left),
-            JoinType::Full => Some(Self::Full),
-            JoinType::LeftSemi if join.spec.build_side == JoinSide::Left => Some(Self::LeftSemi),
-            JoinType::LeftAnti if join.spec.build_side == JoinSide::Left => Some(Self::LeftAnti),
-            JoinType::Left | JoinType::Cross | JoinType::LeftMark => None,
-            JoinType::LeftSemi | JoinType::LeftAnti => None,
-        }
-    }
-}
-
+/// The operator form of one join node, derived once from its spec.
+///
+/// Each form names the executors that can run the join
+/// ([`JoinForm::strategies`]); strategy choice picks among them from size
+/// facts and never widens the set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[doc(hidden)]
-pub fn join_node_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
-    single_join_node_execution_capability(join).or_else(|| multi_join_subtree_join_execution_capability(join))
+pub enum JoinForm {
+    /// Equality keys without a residual: an inner join, a left join that
+    /// builds its right side, or a full join.
+    KeyedEqui,
+    /// An inner join with equality keys whose residual only a filter after
+    /// matching can evaluate.
+    KeyedEquiPostFilter,
+    /// Equality keys without a residual: a semi, anti, or mark join that
+    /// builds its right side and outputs only left columns.
+    KeyedFilteredSemiAnti,
+    /// Equality keys and a residual the mixed join evaluates while matching.
+    /// `left_match` marks a semi or anti join that builds its left side.
+    KeyedResidual { left_match: bool },
+    /// A residual without equality keys.
+    KeylessConditional(KeylessConditionalJoinKind),
+    /// A left (building its right side) or full join without keys or residual.
+    KeylessOuterCross,
+    /// A cross join without keys or residual.
+    ProjectedCross,
 }
 
-pub(crate) fn single_join_node_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
-    if keyed_hash_join_capable(join) {
-        return Some(JoinExecutionCapability::KeyedHash);
+impl JoinForm {
+    /// Every strategy that can execute this form.
+    pub fn strategies(self) -> &'static [JoinStrategy] {
+        match self {
+            Self::KeyedEqui => {
+                &[JoinStrategy::ReusableHashEqui, JoinStrategy::OneShotEqui, JoinStrategy::PartitionedHashEqui]
+            },
+            Self::KeyedEquiPostFilter => &[JoinStrategy::OneShotEqui],
+            Self::KeyedFilteredSemiAnti => &[JoinStrategy::FilteredSemiAnti],
+            Self::KeyedResidual { left_match: false } => {
+                &[JoinStrategy::MixedKeyedResidual, JoinStrategy::PartitionedMixedKeyedResidual]
+            },
+            Self::KeyedResidual { left_match: true } => &[JoinStrategy::MixedKeyedResidual],
+            Self::KeylessConditional(KeylessConditionalJoinKind::Inner) => {
+                &[JoinStrategy::KeylessConditional { join_type: KeylessConditionalJoinKind::Inner }]
+            },
+            Self::KeylessConditional(KeylessConditionalJoinKind::Left) => {
+                &[JoinStrategy::KeylessConditional { join_type: KeylessConditionalJoinKind::Left }]
+            },
+            Self::KeylessConditional(KeylessConditionalJoinKind::Full) => {
+                &[JoinStrategy::KeylessConditional { join_type: KeylessConditionalJoinKind::Full }]
+            },
+            Self::KeylessConditional(KeylessConditionalJoinKind::LeftSemi) => {
+                &[JoinStrategy::KeylessConditional { join_type: KeylessConditionalJoinKind::LeftSemi }]
+            },
+            Self::KeylessConditional(KeylessConditionalJoinKind::LeftAnti) => {
+                &[JoinStrategy::KeylessConditional { join_type: KeylessConditionalJoinKind::LeftAnti }]
+            },
+            Self::KeylessOuterCross => &[JoinStrategy::KeylessOuterCross],
+            Self::ProjectedCross => &[JoinStrategy::ProjectedCross],
+        }
     }
-    if keyed_filtered_semi_anti_join_capable(join) {
-        return Some(JoinExecutionCapability::KeyedFilteredSemiAnti);
+
+    /// Whether the build runs ahead of other ready work. A filtered semi,
+    /// anti, or mark build is a key set the probe side waits on.
+    pub fn builds_first(self) -> bool {
+        self == Self::KeyedFilteredSemiAnti
     }
-    if let Some(join_type) = KeylessConditionalJoinKind::try_from_join(join) {
-        return Some(JoinExecutionCapability::KeylessConditional(join_type));
-    }
-    if keyless_outer_cross_join_capable(join) {
-        return Some(JoinExecutionCapability::KeylessOuterCross);
-    }
-    if projected_cross_join_capable(join) {
-        return Some(JoinExecutionCapability::ProjectedCross);
-    }
-    if keyed_residual_mixed_join_capable(join) {
-        return Some(JoinExecutionCapability::KeyedResidualMixed);
-    }
-    None
 }
 
-pub(crate) fn multi_join_subtree_join_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
-    if keyed_hash_join_capable(join) {
-        return Some(JoinExecutionCapability::KeyedHash);
+/// Classifies a join node into the operator form that executes it, or
+/// rejects a join no native executor runs.
+pub(crate) fn classify_join(node_id: NodeId, join: &JoinNode) -> std::result::Result<JoinForm, Rejection> {
+    let spec = &join.spec;
+    let rejection = |reason| {
+        Rejection::new(
+            RejectionOwner::Node(node_id),
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("join_type", spec.join_type.to_string()),
+                ("key_count", spec.keys.len().to_string()),
+                ("has_residual", spec.residual_predicate.is_some().to_string()),
+                ("build_side", spec.build_side.to_string()),
+            ],
+        )
+    };
+    if spec.output_projection.is_empty() {
+        return Err(rejection(Reason::UnsupportedJoinNodeCapability));
     }
-    if keyed_filtered_semi_anti_join_capable(join) {
-        return Some(JoinExecutionCapability::KeyedFilteredSemiAnti);
-    }
-    if multi_join_keyed_residual_mixed_join_capable(join) {
-        return Some(JoinExecutionCapability::KeyedResidualMixed);
-    }
-    None
-}
-
-#[doc(hidden)]
-pub fn keyed_hash_join_capable(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
-}
-
-pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    join: &JoinNode,
-    options: &KeyedHashJoinStrategyOptions,
-) -> Option<KeyedHashJoinStrategyDecision> {
-    if join_residual_requires_post_join_filter(join) {
-        return Some(keyed_hash_join_strategy_decision_with_options(
-            join,
-            keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join),
-            options,
-        ));
-    }
-    if keyed_hash_join_capable(join) {
-        return Some(keyed_hash_join_strategy_decision_with_options(
-            join,
-            keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join),
-            options,
-        ));
-    }
-    let input = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join);
-    if let Some(decision) = partitioned_mixed_keyed_residual_strategy_decision(join, input, options) {
-        return Some(decision);
-    }
-    if one_shot_equi_join_supported(join) {
-        let decision = keyed_hash_join_strategy_decision_with_options(join, input, options);
-        if matches!(
-            decision,
-            KeyedHashJoinStrategyDecision::Selected {
-                strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-                ..
+    let build_right = spec.build_side == JoinSide::Right;
+    let left_only_output = spec.output_projection.iter().all(|column| column.side == JoinSide::Left);
+    let form = match (spec.keys.is_empty(), &spec.residual_predicate) {
+        (false, None) => match spec.join_type {
+            JoinType::Inner | JoinType::Full => Some(JoinForm::KeyedEqui),
+            JoinType::Left => build_right.then_some(JoinForm::KeyedEqui),
+            JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => {
+                (build_right && left_only_output).then_some(JoinForm::KeyedFilteredSemiAnti)
+            },
+            JoinType::Cross => None,
+        },
+        (false, Some(residual)) => {
+            // Null-aware anti semantics are implemented only by the filtered
+            // semi/anti executor, which takes no residual.
+            let left_match = matches!(spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
+                && !build_right
+                && left_only_output;
+            let mixed = !spec.join_type.is_null_aware()
+                && match spec.join_type {
+                    JoinType::Inner | JoinType::Full => true,
+                    JoinType::Left => build_right,
+                    JoinType::LeftSemi | JoinType::LeftAnti { .. } => left_match || (build_right && left_only_output),
+                    JoinType::Cross | JoinType::LeftMark { .. } => false,
+                };
+            match (mixed, expr_requires_post_join_filter(residual)) {
+                (false, _) => None,
+                (true, false) => Some(JoinForm::KeyedResidual { left_match }),
+                (true, true) if spec.join_type == JoinType::Inner => Some(JoinForm::KeyedEquiPostFilter),
+                (true, true) => return Err(rejection(Reason::PostJoinResidualFilterRequiresOneShotEquiJoin)),
             }
-        ) {
-            return Some(decision);
+        },
+        (true, Some(_)) => match spec.join_type {
+            JoinType::Inner => Some(KeylessConditionalJoinKind::Inner),
+            JoinType::Left => build_right.then_some(KeylessConditionalJoinKind::Left),
+            JoinType::Full => Some(KeylessConditionalJoinKind::Full),
+            JoinType::LeftSemi => (!build_right).then_some(KeylessConditionalJoinKind::LeftSemi),
+            JoinType::LeftAnti { .. } => (!build_right).then_some(KeylessConditionalJoinKind::LeftAnti),
+            JoinType::Cross | JoinType::LeftMark { .. } => None,
         }
+        .map(JoinForm::KeylessConditional),
+        (true, None) => match spec.join_type {
+            JoinType::Left => build_right.then_some(JoinForm::KeylessOuterCross),
+            JoinType::Full => Some(JoinForm::KeylessOuterCross),
+            JoinType::Cross => Some(JoinForm::ProjectedCross),
+            JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => None,
+        },
+    };
+    form.ok_or_else(|| rejection(Reason::UnsupportedJoinNodeCapability))
+}
+
+/// Chooses the strategy that executes `join` in `form` from size facts.
+///
+/// The choice is always one of [`JoinForm::strategies`]. Missing size facts
+/// still yield an executable strategy: an unknown keyed build keeps the
+/// reusable hash table.
+pub(crate) fn choose_join_strategy(
+    form: JoinForm,
+    join: &JoinNode,
+    input: KeyedHashJoinStrategyInputFacts,
+    options: &KeyedHashJoinStrategyOptions,
+) -> JoinStrategyChoice {
+    match form {
+        JoinForm::KeyedEqui => keyed_equi_strategy_choice(join, input, options),
+        JoinForm::KeyedEquiPostFilter => JoinStrategyChoice::with_evidence(JoinStrategyEvidence::new(
+            join,
+            input,
+            JoinStrategy::OneShotEqui,
+            options,
+            Some("residual_requires_post_join_filter"),
+            Some("residual_requires_post_join_filter"),
+        )),
+        JoinForm::KeyedResidual { left_match: false } => {
+            partitioned_mixed_keyed_residual_evidence(join, input, options)
+                .map_or(JoinStrategyChoice::without_evidence(JoinStrategy::MixedKeyedResidual), |evidence| {
+                    JoinStrategyChoice::with_evidence(evidence)
+                })
+        },
+        JoinForm::KeyedResidual { left_match: true } => {
+            JoinStrategyChoice::without_evidence(JoinStrategy::MixedKeyedResidual)
+        },
+        JoinForm::KeyedFilteredSemiAnti => JoinStrategyChoice::without_evidence(JoinStrategy::FilteredSemiAnti),
+        JoinForm::KeylessConditional(join_type) => {
+            JoinStrategyChoice::without_evidence(JoinStrategy::KeylessConditional { join_type })
+        },
+        JoinForm::KeylessOuterCross => JoinStrategyChoice::without_evidence(JoinStrategy::KeylessOuterCross),
+        JoinForm::ProjectedCross => JoinStrategyChoice::without_evidence(JoinStrategy::ProjectedCross),
     }
-    None
 }
 
 #[doc(hidden)]
@@ -411,50 +421,11 @@ pub fn keyed_hash_join_strategy_input_facts_for_plan(
     }
 }
 
-#[cfg(test)]
-#[doc(hidden)]
-pub fn keyed_hash_join_strategy_decision(
-    join: &JoinNode,
-    input: KeyedHashJoinStrategyInputFacts,
-) -> KeyedHashJoinStrategyDecision {
-    keyed_hash_join_strategy_decision_with_options(join, input, &KeyedHashJoinStrategyOptions::default())
-}
-
-pub(crate) fn keyed_hash_join_strategy_decision_with_options(
+fn keyed_equi_strategy_choice(
     join: &JoinNode,
     input: KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
-) -> KeyedHashJoinStrategyDecision {
-    if join_residual_requires_post_join_filter(join) {
-        if one_shot_equi_join_supported(join) {
-            return KeyedHashJoinStrategyDecision::Selected {
-                strategy: KeyedHashJoinStrategy::OneShotEqui,
-                facts: strategy_facts(
-                    join,
-                    input,
-                    KeyedHashJoinStrategy::OneShotEqui,
-                    options,
-                    Some("residual_requires_post_join_filter"),
-                    Some("residual_requires_post_join_filter"),
-                    None,
-                ),
-            };
-        }
-
-        return KeyedHashJoinStrategyDecision::Rejected {
-            reason: Reason::PostJoinResidualFilterRequiresOneShotEquiJoin,
-            facts: strategy_facts(
-                join,
-                input,
-                KeyedHashJoinStrategy::OneShotEqui,
-                options,
-                None,
-                Some("residual_requires_post_join_filter"),
-                Some("one_shot_equi_requires_keyed_inner_left_or_full_join"),
-            ),
-        };
-    }
-
+) -> JoinStrategyChoice {
     let large_build = keyed_hash_join_build_is_large(&input, options);
     let small_build = !large_build
         && (input.observed_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
@@ -492,14 +463,18 @@ pub(crate) fn keyed_hash_join_strategy_decision_with_options(
     } else {
         None
     };
+    let evidence = |strategy, reusable_rejected, partitioned_rejected| {
+        JoinStrategyChoice::with_evidence(JoinStrategyEvidence::new(
+            join,
+            input,
+            strategy,
+            options,
+            reusable_rejected,
+            partitioned_rejected,
+        ))
+    };
 
-    if let Some(decision) = partitioned_mixed_keyed_residual_strategy_decision(join, input, options) {
-        return decision;
-    }
-
-    if one_shot_equi_join_supported(join)
-        && join.spec.join_type == JoinType::Left
-        && join.spec.build_side == JoinSide::Right
+    if join.spec.join_type == JoinType::Left
         && input.reusable_prebuild_supported
         && single_use_without_artifact
         && !small_build
@@ -507,112 +482,36 @@ pub(crate) fn keyed_hash_join_strategy_decision_with_options(
         && one_shot_contained_left_join_build
         && one_shot_contained_left_join_output
     {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::OneShotEqui,
-            facts: strategy_facts(
-                join,
-                input,
-                KeyedHashJoinStrategy::OneShotEqui,
-                options,
-                reusable_rejected_reason,
-                Some("small_preserved_probe_prefers_one_shot_left_join"),
-                None,
-            ),
-        };
+        return evidence(
+            JoinStrategy::OneShotEqui,
+            reusable_rejected_reason,
+            Some("small_preserved_probe_prefers_one_shot_left_join"),
+        );
     }
 
     let prefer_reusable = join.spec.build_artifact_id.is_some()
         || input.probe_reuse_count > 1
         || (reusable_rejected_reason.is_none() && (!build_size_known || small_build));
     if prefer_reusable {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::ReusableHashEqui,
-            facts: strategy_facts(join, input, KeyedHashJoinStrategy::ReusableHashEqui, options, None, None, None),
-        };
+        return evidence(JoinStrategy::ReusableHashEqui, None, None);
     }
-
-    if one_shot_equi_join_supported(join) && small_build && small_probe {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::OneShotEqui,
-            facts: strategy_facts(
-                join,
-                input,
-                KeyedHashJoinStrategy::OneShotEqui,
-                options,
-                reusable_rejected_reason,
-                Some("small_non_reusable_join_prefers_one_shot"),
-                None,
-            ),
-        };
-    }
-
-    if partitioned_equi_join_supported(join) {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::PartitionedHashEqui,
-            facts: strategy_facts(
-                join,
-                input,
-                KeyedHashJoinStrategy::PartitionedHashEqui,
-                options,
-                reusable_rejected_reason,
-                None,
-                None,
-            ),
-        };
-    }
-
-    if partitioned_keyed_residual_join_supported(join) {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-            facts: strategy_facts(
-                join,
-                input,
-                KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-                options,
-                reusable_rejected_reason,
-                None,
-                None,
-            ),
-        };
-    }
-
-    if one_shot_equi_join_supported(join) {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::OneShotEqui,
-            facts: strategy_facts(
-                join,
-                input,
-                KeyedHashJoinStrategy::OneShotEqui,
-                options,
-                reusable_rejected_reason,
-                Some("partitioned_hash_equi_unsupported"),
-                None,
-            ),
-        };
-    }
-
-    KeyedHashJoinStrategyDecision::Rejected {
-        reason: Reason::LargeKeyedHashJoinStrategyUnsupported,
-        facts: strategy_facts(
-            join,
-            input,
-            KeyedHashJoinStrategy::OneShotEqui,
-            options,
+    if small_build && small_probe {
+        return evidence(
+            JoinStrategy::OneShotEqui,
             reusable_rejected_reason,
-            Some("partitioned_hash_equi_unsupported"),
-            Some("one_shot_equi_requires_keyed_inner_left_or_full_join"),
-        ),
+            Some("small_non_reusable_join_prefers_one_shot"),
+        );
     }
+    evidence(JoinStrategy::PartitionedHashEqui, reusable_rejected_reason, None)
 }
 
-fn partitioned_mixed_keyed_residual_strategy_decision(
+/// Evidence for partitioning a keyed residual join, when its build or probe
+/// side is large enough that the mixed join should run partition by partition.
+fn partitioned_mixed_keyed_residual_evidence(
     join: &JoinNode,
     input: KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
-) -> Option<KeyedHashJoinStrategyDecision> {
-    if !partitioned_keyed_residual_join_supported(join) || join_residual_requires_post_join_filter(join) {
-        return None;
-    }
+) -> Option<JoinStrategyEvidence> {
     let large_build = keyed_hash_join_build_is_large(&input, options);
     let large_probe =
         input.probe_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_probe_bytes_threshold);
@@ -626,26 +525,22 @@ fn partitioned_mixed_keyed_residual_strategy_decision(
         return None;
     }
     let reusable_rejected_reason = if !input.reusable_prebuild_supported {
-        Some("build_key_prebuild_reservation_unsupported")
+        "build_key_prebuild_reservation_unsupported"
     } else if large_build {
-        Some("build_side_too_large")
+        "build_side_too_large"
     } else if large_probe && !small_build {
-        Some("probe_side_too_large")
+        "probe_side_too_large"
     } else {
-        Some("keyed_residual_requires_partitioned_mixed_strategy")
+        "keyed_residual_requires_partitioned_mixed_strategy"
     };
-    Some(KeyedHashJoinStrategyDecision::Selected {
-        strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-        facts: strategy_facts(
-            join,
-            input,
-            KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-            options,
-            reusable_rejected_reason,
-            None,
-            None,
-        ),
-    })
+    Some(JoinStrategyEvidence::new(
+        join,
+        input,
+        JoinStrategy::PartitionedMixedKeyedResidual,
+        options,
+        Some(reusable_rejected_reason),
+        None,
+    ))
 }
 
 /// Whether the build side already exceeds the large-build thresholds.
@@ -663,72 +558,43 @@ pub fn keyed_hash_join_build_is_large(
         || input.build_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_build_bytes_threshold)
 }
 
-#[cfg(test)]
+/// Whether measuring build-key uniqueness could move a keyed left join from
+/// partitioning to a one-shot join: the choice is not one-shot without the
+/// measurement and would be with a unique build key.
 #[doc(hidden)]
 pub fn keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
-    join: &JoinNode,
-    input: KeyedHashJoinStrategyInputFacts,
-) -> bool {
-    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options(
-        join,
-        input,
-        &KeyedHashJoinStrategyOptions::default(),
-    )
-}
-
-#[doc(hidden)]
-pub fn keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options(
+    form: JoinForm,
     join: &JoinNode,
     input: KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
 ) -> bool {
-    if join.spec.join_type != JoinType::Left
-        || join.spec.build_side != JoinSide::Right
-        || input.build_key_unique.is_some()
-    {
+    if form != JoinForm::KeyedEqui || join.spec.join_type != JoinType::Left || input.build_key_unique.is_some() {
         return false;
     }
-    if matches!(
-        keyed_hash_join_strategy_decision_with_options(join, input, options),
-        KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }
-    ) {
+    if keyed_equi_strategy_choice(join, input, options).strategy() == JoinStrategy::OneShotEqui {
         return false;
     }
-    matches!(
-        keyed_hash_join_strategy_decision_with_options(
-            join,
-            KeyedHashJoinStrategyInputFacts { build_key_unique: Some(true), ..input },
-            options,
-        ),
-        KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }
-    )
+    keyed_equi_strategy_choice(join, KeyedHashJoinStrategyInputFacts { build_key_unique: Some(true), ..input }, options)
+        .strategy()
+        == JoinStrategy::OneShotEqui
 }
 
-#[doc(hidden)]
-pub fn partitioned_equi_join_supported(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
-}
-
-#[doc(hidden)]
-pub fn partitioned_keyed_residual_join_supported(join: &JoinNode) -> bool {
-    !keyed_residual_left_match_join_capable(join) && keyed_residual_mixed_join_capable(join)
-}
-
-pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-        && (join.spec.residual_predicate.is_none()
-            || (join.spec.join_type == JoinType::Inner && join_residual_requires_post_join_filter(join)))
-        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
-}
-
-pub(crate) fn join_residual_requires_post_join_filter(join: &JoinNode) -> bool {
-    join.spec.residual_predicate.as_ref().is_some_and(expr_requires_post_join_filter)
+/// Whether a probe kernel of `strategy` pulls its probe input chunk by
+/// chunk, so a frame-stream probe input stays chunked instead of being
+/// concatenated first.
+pub(crate) fn join_probe_streams_chunks(join: &JoinNode, form: JoinForm, strategy: JoinStrategy) -> bool {
+    match form {
+        JoinForm::KeyedEqui | JoinForm::KeyedFilteredSemiAnti | JoinForm::KeylessOuterCross => {
+            match join.spec.join_type {
+                JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => true,
+                JoinType::Left => join.spec.build_side == JoinSide::Right,
+                JoinType::Full | JoinType::Cross => false,
+            }
+        },
+        JoinForm::KeyedEquiPostFilter => strategy == JoinStrategy::OneShotEqui,
+        JoinForm::KeyedResidual { left_match } => left_match && strategy == JoinStrategy::MixedKeyedResidual,
+        JoinForm::KeylessConditional(_) | JoinForm::ProjectedCross => false,
+    }
 }
 
 fn expr_requires_post_join_filter(expr: &Expr) -> bool {
@@ -768,71 +634,6 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
         Expr::Column(_) | Expr::Literal(_) => false,
     }
-}
-
-fn strategy_facts(
-    join: &JoinNode,
-    input: KeyedHashJoinStrategyInputFacts,
-    strategy: KeyedHashJoinStrategy,
-    options: &KeyedHashJoinStrategyOptions,
-    reusable_rejected_reason: Option<&'static str>,
-    partitioned_rejected_reason: Option<&'static str>,
-    one_shot_rejected_reason: Option<&'static str>,
-) -> BTreeMap<&'static str, String> {
-    let mut facts = BTreeMap::from([
-        ("join_strategy", strategy.as_str().to_string()),
-        ("join_type", join.spec.join_type.to_string()),
-        ("build_side", join.spec.build_side.to_string()),
-        ("key_count", join.spec.keys.len().to_string()),
-        ("probe_reuse_count", input.probe_reuse_count.to_string()),
-        ("build_artifact_id_present", join.spec.build_artifact_id.is_some().to_string()),
-        ("reusable_prebuild_supported", input.reusable_prebuild_supported.to_string()),
-        ("large_keyed_hash_build_row_threshold", options.large_keyed_hash_build_row_threshold.to_string()),
-        ("large_keyed_hash_build_bytes_threshold", options.large_keyed_hash_build_bytes_threshold.to_string()),
-        ("large_keyed_hash_probe_bytes_threshold", options.large_keyed_hash_probe_bytes_threshold.to_string()),
-        ("small_reusable_hash_build_row_threshold", options.small_reusable_hash_build_row_threshold.to_string()),
-        ("small_reusable_hash_build_bytes_threshold", options.small_reusable_hash_build_bytes_threshold.to_string()),
-        ("small_one_shot_probe_bytes_threshold", options.small_one_shot_probe_bytes_threshold.to_string()),
-        (
-            "max_small_probe_left_one_shot_build_row_threshold",
-            options.max_small_probe_left_one_shot_build_row_threshold.to_string(),
-        ),
-        (
-            "max_small_probe_left_one_shot_build_bytes_threshold",
-            options.max_small_probe_left_one_shot_build_bytes_threshold.to_string(),
-        ),
-    ]);
-    if let Some(rows) = input.estimated_build_rows {
-        facts.insert("estimated_build_rows", rows.to_string());
-    }
-    if let Some(rows) = input.observed_build_rows {
-        facts.insert("observed_build_rows", rows.to_string());
-    }
-    if let Some(bytes) = input.build_side_bytes {
-        facts.insert("build_side_bytes", bytes.to_string());
-    }
-    if let Some(bytes) = input.probe_side_bytes {
-        facts.insert("probe_side_bytes", bytes.to_string());
-    }
-    if let Some(rows) = input.estimated_output_rows {
-        facts.insert("estimated_output_rows", rows.to_string());
-    }
-    if let Some(bytes) = input.estimated_output_bytes {
-        facts.insert("estimated_output_bytes", bytes.to_string());
-    }
-    if let Some(unique) = input.build_key_unique {
-        facts.insert("build_key_unique", unique.to_string());
-    }
-    if let Some(reason) = reusable_rejected_reason {
-        facts.insert("reusable_hash_join_rejected_reason", reason.to_string());
-    }
-    if let Some(reason) = partitioned_rejected_reason {
-        facts.insert("partitioned_hash_join_rejected_reason", reason.to_string());
-    }
-    if let Some(reason) = one_shot_rejected_reason {
-        facts.insert("one_shot_equi_rejected_reason", reason.to_string());
-    }
-    facts
 }
 
 fn probe_input_for_join(join: &JoinNode) -> NodeId {
@@ -875,70 +676,6 @@ fn hash_join_prebuild_reservation_supported_type(data_type: &DataType) -> bool {
             | DataType::Map(_, _)
             | DataType::Union(_, _)
     )
-}
-
-#[doc(hidden)]
-pub fn keyed_filtered_semi_anti_join_capable(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark)
-        && join.spec.build_side == JoinSide::Right
-        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
-        && (join.spec.join_type != JoinType::LeftMark || join.spec.mark_column_name.is_some())
-}
-
-pub(crate) fn projected_cross_join_capable(join: &JoinNode) -> bool {
-    join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && join.spec.join_type == JoinType::Cross
-}
-
-pub(crate) fn keyless_outer_cross_join_capable(join: &JoinNode) -> bool {
-    join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::Left | JoinType::Full)
-        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
-}
-
-#[doc(hidden)]
-pub fn keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
-    // Null-aware anti semantics are implemented only by the filtered semi/anti strategy.
-    if join.spec.keys.is_empty()
-        || join.spec.residual_predicate.is_none()
-        || join.spec.output_projection.is_empty()
-        || join.spec.null_aware
-    {
-        return false;
-    }
-
-    match join.spec.join_type {
-        JoinType::Inner | JoinType::Full => true,
-        JoinType::Left => join.spec.build_side == JoinSide::Right,
-        JoinType::LeftSemi | JoinType::LeftAnti => {
-            keyed_residual_left_match_join_capable(join)
-                || (join.spec.build_side == JoinSide::Right
-                    && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left))
-        },
-        JoinType::Cross | JoinType::LeftMark => false,
-    }
-}
-
-#[doc(hidden)]
-pub fn keyed_residual_left_match_join_capable(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_some()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
-        && join.spec.build_side == JoinSide::Left
-        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
-}
-
-pub(crate) fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
-    matches!(join.spec.join_type, JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti)
-        && keyed_residual_mixed_join_capable(join)
 }
 
 #[cfg(test)]
@@ -1000,13 +737,27 @@ mod tests {
         }
     }
 
-    fn selected_strategy(decision: KeyedHashJoinStrategyDecision) -> KeyedHashJoinStrategy {
-        match decision {
-            KeyedHashJoinStrategyDecision::Selected { strategy, .. } => strategy,
-            KeyedHashJoinStrategyDecision::Rejected { reason, facts } => {
-                panic!("expected selected strategy, got rejection {reason} with facts {facts:?}");
-            },
-        }
+    fn form(join: &JoinNode) -> Option<JoinForm> {
+        classify_join(NodeId::from_index_for_test(2), join).ok()
+    }
+
+    fn choice(
+        join: &JoinNode,
+        input: KeyedHashJoinStrategyInputFacts,
+        options: &KeyedHashJoinStrategyOptions,
+    ) -> JoinStrategyChoice {
+        choose_join_strategy(form(join).expect("test join has an operator form"), join, input, options)
+    }
+
+    fn keyed_hash_join_strategy_decision(
+        join: &JoinNode,
+        input: KeyedHashJoinStrategyInputFacts,
+    ) -> JoinStrategyChoice {
+        choice(join, input, &Options::default())
+    }
+
+    fn selected_strategy(choice: JoinStrategyChoice) -> JoinStrategy {
+        choice.strategy()
     }
 
     #[test]
@@ -1016,7 +767,7 @@ mod tests {
             input_facts(Some(10), None, Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
     #[test]
@@ -1027,28 +778,24 @@ mod tests {
             Expr::column("right_value"),
         ));
 
-        assert!(!one_shot_equi_join_supported(&join));
-        assert_eq!(join_node_execution_capability(&join), Some(JoinExecutionCapability::KeyedResidualMixed));
+        assert_eq!(form(&join), Some(JoinForm::KeyedResidual { left_match: false }));
     }
 
     #[test]
     fn null_aware_anti_join_executes_only_on_the_filtered_strategy() {
-        let mut join = single_use_join(JoinType::LeftAnti);
-        join.spec = join
-            .spec
-            .with_output_projection(vec![JoinOutputColumn::left(
-                ColumnRef::input(0, "left_value", "left_value"),
-                "left_value",
-            )])
-            .with_null_aware(true);
-        assert_eq!(join_node_execution_capability(&join), Some(JoinExecutionCapability::KeyedFilteredSemiAnti));
+        let mut join = single_use_join(JoinType::LeftAnti { null_aware: true });
+        join.spec = join.spec.with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "left_value", "left_value"),
+            "left_value",
+        )]);
+        assert_eq!(form(&join), Some(JoinForm::KeyedFilteredSemiAnti));
 
         join.spec = join.spec.with_residual_predicate(Expr::binary(
             Expr::column("left_value"),
             BinaryOp::Gt,
             Expr::column("right_value"),
         ));
-        assert_eq!(join_node_execution_capability(&join), None);
+        assert_eq!(form(&join), None);
     }
 
     #[test]
@@ -1062,8 +809,8 @@ mod tests {
             input_facts(Some(10), None, Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
         );
 
-        assert!(one_shot_equi_join_supported(&join));
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::OneShotEqui);
+        assert_eq!(form(&join), Some(JoinForm::KeyedEquiPostFilter));
+        assert_eq!(selected_strategy(decision), JoinStrategy::OneShotEqui);
     }
 
     #[test]
@@ -1073,21 +820,21 @@ mod tests {
             input_facts(Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None, None),
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
     #[test]
     fn unknown_probe_tiny_estimated_build_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(&single_use_inner_join(), input_facts(Some(10), None, None));
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
     #[test]
     fn unknown_probe_tiny_observed_without_estimate_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(&single_use_inner_join(), input_facts(None, Some(31), None));
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
     #[test]
@@ -1097,7 +844,7 @@ mod tests {
             input_facts(None, Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None),
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
     #[test]
@@ -1118,15 +865,13 @@ mod tests {
             .with_small_reusable_hash_build_row_threshold(5)
             .with_small_reusable_hash_build_bytes_threshold(1024);
 
-        assert_eq!(
-            selected_strategy(keyed_hash_join_strategy_decision(&join, input)),
-            KeyedHashJoinStrategy::ReusableHashEqui
-        );
-        let decision = keyed_hash_join_strategy_decision_with_options(&join, input, &options);
+        assert_eq!(selected_strategy(keyed_hash_join_strategy_decision(&join, input)), JoinStrategy::ReusableHashEqui);
+        let decision = choice(&join, input, &options);
+        let facts = decision.evidence().expect("a keyed choice carries its evidence").facts();
 
-        assert_eq!(selected_strategy(decision.clone()), KeyedHashJoinStrategy::PartitionedHashEqui);
-        assert_eq!(decision.facts().get("small_reusable_hash_build_row_threshold"), Some(&"5".to_string()));
-        assert_eq!(decision.facts().get("small_reusable_hash_build_bytes_threshold"), Some(&"1024".to_string()));
+        assert_eq!(selected_strategy(decision), JoinStrategy::PartitionedHashEqui);
+        assert_eq!(facts.get("small_reusable_hash_build_row_threshold"), Some(&"5".to_string()));
+        assert_eq!(facts.get("small_reusable_hash_build_bytes_threshold"), Some(&"1024".to_string()));
     }
 
     #[test]
@@ -1156,7 +901,7 @@ mod tests {
             },
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::OneShotEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::OneShotEqui);
     }
 
     #[test]
@@ -1176,7 +921,7 @@ mod tests {
             },
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::ReusableHashEqui);
     }
 
     #[test]
@@ -1196,7 +941,7 @@ mod tests {
             },
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::PartitionedHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::PartitionedHashEqui);
     }
 
     #[test]
@@ -1216,12 +961,13 @@ mod tests {
             },
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::PartitionedHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::PartitionedHashEqui);
     }
 
     #[test]
     fn left_join_with_small_probe_and_contained_build_requests_uniqueness_probe() {
         assert!(keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
+            JoinForm::KeyedEqui,
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
                 estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
@@ -1234,6 +980,7 @@ mod tests {
                 probe_reuse_count: 1,
                 reusable_prebuild_supported: true,
             },
+            &Options::default(),
         ));
     }
 
@@ -1254,6 +1001,6 @@ mod tests {
             },
         );
 
-        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::PartitionedHashEqui);
+        assert_eq!(selected_strategy(decision), JoinStrategy::PartitionedHashEqui);
     }
 }

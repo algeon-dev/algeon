@@ -164,12 +164,12 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
             .with_execution(&overrides)
             .mixed_left_semi_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::LeftAnti => left
+        JoinType::LeftAnti { .. } => left
             .frame
             .with_execution(&overrides)
             .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::Cross | JoinType::LeftMark => unreachable!("validated above"),
+        JoinType::Cross | JoinType::LeftMark { .. } => unreachable!("validated above"),
     }
     .map_err(|error| join_index_error(error, node));
     let size_data = match size_data {
@@ -219,7 +219,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
         &right.frame,
         &overrides,
         &node.spec.output_projection,
-        node.spec.join_type,
+        node.spec.join_type.clone(),
         node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,

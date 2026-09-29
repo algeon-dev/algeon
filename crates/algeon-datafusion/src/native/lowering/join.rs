@@ -12,6 +12,7 @@ use datafusion::{
 };
 use query_engine::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
+    error::{QueryError, QueryErrorCode},
     expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr},
     plan::{
         AdvisoryOutputStatistics, JoinKey as NativeJoinKey, JoinNullEquality as NativeJoinNullEquality,
@@ -47,13 +48,27 @@ use crate::{
 /// are reversed before building the native join.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CanonicalJoin {
-    join_type: NativeJoinType,
+    kind: CanonicalJoinKind,
     swap_inputs: bool,
 }
 
+/// The native join type of a canonical join, without the state only one join
+/// type carries; the null-aware flag and the mark column join it when the
+/// spec is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CanonicalJoinKind {
+    Inner,
+    Left,
+    Full,
+    LeftSemi,
+    LeftAnti,
+    LeftMark,
+    Cross,
+}
+
 impl CanonicalJoin {
-    pub(super) const fn new(join_type: NativeJoinType, swap_inputs: bool) -> Self {
-        Self { join_type, swap_inputs }
+    pub(super) const fn new(kind: CanonicalJoinKind, swap_inputs: bool) -> Self {
+        Self { kind, swap_inputs }
     }
 
     fn order_inputs(
@@ -92,20 +107,47 @@ impl CanonicalJoin {
         if self.swap_inputs { DataFusionJoinSide::Right } else { DataFusionJoinSide::Left }
     }
 
-    pub(super) const fn native_join_type(self) -> NativeJoinType {
-        self.join_type
+    pub(super) const fn kind(self) -> CanonicalJoinKind {
+        self.kind
+    }
+
+    /// The native join type with its type-specific state. DataFusion marks
+    /// only anti joins null-aware, and a mark join always names its mark
+    /// column in the lowered output.
+    fn native_join_type(self, null_aware: bool, mark_column: Option<&str>) -> Result<NativeJoinType, LoweringFailure> {
+        if null_aware && self.kind != CanonicalJoinKind::LeftAnti {
+            return Err(CapabilityReason::UnsupportedOperator.into());
+        }
+        Ok(match self.kind {
+            CanonicalJoinKind::Inner => NativeJoinType::Inner,
+            CanonicalJoinKind::Left => NativeJoinType::Left,
+            CanonicalJoinKind::Full => NativeJoinType::Full,
+            CanonicalJoinKind::LeftSemi => NativeJoinType::LeftSemi,
+            CanonicalJoinKind::LeftAnti => NativeJoinType::LeftAnti { null_aware },
+            CanonicalJoinKind::Cross => NativeJoinType::Cross,
+            CanonicalJoinKind::LeftMark => {
+                let mark_column = mark_column.ok_or_else(|| {
+                    LoweringFailure::Invalid(QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "algeon_datafusion.native_lowering.join",
+                        "a lowered left mark join has no mark column in its output",
+                    ))
+                })?;
+                NativeJoinType::LeftMark { mark_column: mark_column.to_string() }
+            },
+        })
     }
 
     const fn build_side(self) -> NativeJoinSide {
         // Use right-build orientation whenever join semantics allow it so
         // left-deep joined streams can remain on the probe side.
-        match self.join_type {
-            NativeJoinType::Left | NativeJoinType::LeftSemi | NativeJoinType::LeftAnti | NativeJoinType::LeftMark => {
-                NativeJoinSide::Right
-            },
-            NativeJoinType::Inner => NativeJoinSide::Right,
-            NativeJoinType::Full => NativeJoinSide::Left,
-            NativeJoinType::Cross => NativeJoinSide::Left,
+        match self.kind {
+            CanonicalJoinKind::Left
+            | CanonicalJoinKind::LeftSemi
+            | CanonicalJoinKind::LeftAnti
+            | CanonicalJoinKind::LeftMark
+            | CanonicalJoinKind::Inner => NativeJoinSide::Right,
+            CanonicalJoinKind::Full | CanonicalJoinKind::Cross => NativeJoinSide::Left,
         }
     }
 }
@@ -453,10 +495,10 @@ pub(super) fn lower_hash_join_input(
     let (native_left, native_right) = canonical.order_inputs(left, right);
     let build_side = native_join_build_side(canonical, keys.len(), residual.is_some());
     let datafusion_order_preserved_side = datafusion_hash_join_order_preserved_side(join, build_side);
-    let mut spec = NativeJoinSpec::new(canonical.join_type, keys)
+    let join_type = canonical.native_join_type(join.join.null_aware, output_columns.mark_column_name.as_deref())?;
+    let mut spec = NativeJoinSpec::new(join_type, keys)
         .with_output_projection(output_columns.projection)
         .with_null_equality(lower_join_null_equality(join.join.null_equality()))
-        .with_null_aware(join.join.null_aware)
         .with_build_side(build_side)
         .with_datafusion_order_preserved_side(datafusion_order_preserved_side);
     if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {
@@ -465,12 +507,7 @@ pub(super) fn lower_hash_join_input(
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
-    if canonical.join_type == NativeJoinType::LeftMark
-        && let Some(mark_name) = output_columns.mark_column_name.as_deref()
-    {
-        spec = spec.with_mark_column_name(mark_name);
-    }
-    if matches!(canonical.join_type, NativeJoinType::Inner | NativeJoinType::Left)
+    if matches!(canonical.kind, CanonicalJoinKind::Inner | CanonicalJoinKind::Left)
         && let Some(bounded_side) = inferred_lookup_side
     {
         spec = spec.with_at_most_one_match_per_bounded_row(bounded_side);
@@ -573,7 +610,8 @@ pub(super) fn lower_nested_loop_join_input(
     };
     let (native_left, native_right) = canonical.order_inputs(left, right);
     let build_side = native_join_build_side(canonical, 0, residual.is_some());
-    let mut spec = NativeJoinSpec::new(canonical.join_type, Vec::new())
+    let join_type = canonical.native_join_type(false, output_columns.mark_column_name.as_deref())?;
+    let mut spec = NativeJoinSpec::new(join_type, Vec::new())
         .with_output_projection(output_columns.projection)
         .with_build_side(build_side);
     if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {
@@ -591,7 +629,7 @@ pub(super) fn lower_cross_join_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, LoweringFailure> {
-    let canonical = CanonicalJoin::new(NativeJoinType::Cross, false);
+    let canonical = CanonicalJoin::new(CanonicalJoinKind::Cross, false);
     let output_requests = cross_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
@@ -643,7 +681,10 @@ fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residu
     // emitting build-side rows.
     if key_count == 0
         && has_residual
-        && matches!(canonical.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti | NativeJoinType::LeftMark)
+        && matches!(
+            canonical.kind,
+            CanonicalJoinKind::LeftSemi | CanonicalJoinKind::LeftAnti | CanonicalJoinKind::LeftMark
+        )
     {
         NativeJoinSide::Left
     } else {
@@ -679,25 +720,25 @@ fn nested_loop_join_canonical(
     // inner joins may swap when only DataFusion-right columns are required,
     // which keeps the output side compact while preserving DataFusion schema.
     if join.join.filter().is_none() && matches!(join.join.join_type(), JoinType::Inner) {
-        return Ok(CanonicalJoin::new(NativeJoinType::Cross, false));
+        return Ok(CanonicalJoin::new(CanonicalJoinKind::Cross, false));
     }
     if join.join.filter().is_none()
         && matches!(join.join.join_type(), JoinType::Left)
         && normalized_input_is_scalar_single_row(&join.right)
     {
-        return Ok(CanonicalJoin::new(NativeJoinType::Cross, false));
+        return Ok(CanonicalJoin::new(CanonicalJoinKind::Cross, false));
     }
     if join.join.filter().is_none()
         && matches!(join.join.join_type(), JoinType::Right)
         && normalized_input_is_scalar_single_row(&join.left)
     {
-        return Ok(CanonicalJoin::new(NativeJoinType::Cross, false));
+        return Ok(CanonicalJoin::new(CanonicalJoinKind::Cross, false));
     }
     let canonical = canonical_join(join.join.join_type())?;
     if matches!(join.join.join_type(), JoinType::Inner)
         && nested_loop_join_required_outputs_are_right_only(join, required_output_fields)?
     {
-        Ok(CanonicalJoin::new(NativeJoinType::Inner, true))
+        Ok(CanonicalJoin::new(CanonicalJoinKind::Inner, true))
     } else {
         Ok(canonical)
     }
@@ -717,7 +758,7 @@ fn nested_loop_join_residual(
         return Ok(Some(residual));
     }
     if matches!(join.join_type(), JoinType::Inner)
-        || matches!(canonical.join_type, NativeJoinType::Cross | NativeJoinType::Left | NativeJoinType::Full)
+        || matches!(canonical.kind, CanonicalJoinKind::Cross | CanonicalJoinKind::Left | CanonicalJoinKind::Full)
     {
         return Ok(None);
     }
@@ -775,16 +816,16 @@ fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, LoweringFailure
     // joins become left joins with swapped inputs, and right semi/anti become
     // left semi/anti with swapped inputs.
     match join_type {
-        JoinType::Inner => Ok(CanonicalJoin::new(NativeJoinType::Inner, false)),
-        JoinType::Left => Ok(CanonicalJoin::new(NativeJoinType::Left, false)),
-        JoinType::Right => Ok(CanonicalJoin::new(NativeJoinType::Left, true)),
-        JoinType::Full => Ok(CanonicalJoin::new(NativeJoinType::Full, false)),
-        JoinType::LeftSemi => Ok(CanonicalJoin::new(NativeJoinType::LeftSemi, false)),
-        JoinType::RightSemi => Ok(CanonicalJoin::new(NativeJoinType::LeftSemi, true)),
-        JoinType::LeftAnti => Ok(CanonicalJoin::new(NativeJoinType::LeftAnti, false)),
-        JoinType::RightAnti => Ok(CanonicalJoin::new(NativeJoinType::LeftAnti, true)),
-        JoinType::LeftMark => Ok(CanonicalJoin::new(NativeJoinType::LeftMark, false)),
-        JoinType::RightMark => Ok(CanonicalJoin::new(NativeJoinType::LeftMark, true)),
+        JoinType::Inner => Ok(CanonicalJoin::new(CanonicalJoinKind::Inner, false)),
+        JoinType::Left => Ok(CanonicalJoin::new(CanonicalJoinKind::Left, false)),
+        JoinType::Right => Ok(CanonicalJoin::new(CanonicalJoinKind::Left, true)),
+        JoinType::Full => Ok(CanonicalJoin::new(CanonicalJoinKind::Full, false)),
+        JoinType::LeftSemi => Ok(CanonicalJoin::new(CanonicalJoinKind::LeftSemi, false)),
+        JoinType::RightSemi => Ok(CanonicalJoin::new(CanonicalJoinKind::LeftSemi, true)),
+        JoinType::LeftAnti => Ok(CanonicalJoin::new(CanonicalJoinKind::LeftAnti, false)),
+        JoinType::RightAnti => Ok(CanonicalJoin::new(CanonicalJoinKind::LeftAnti, true)),
+        JoinType::LeftMark => Ok(CanonicalJoin::new(CanonicalJoinKind::LeftMark, false)),
+        JoinType::RightMark => Ok(CanonicalJoin::new(CanonicalJoinKind::LeftMark, true)),
     }
 }
 

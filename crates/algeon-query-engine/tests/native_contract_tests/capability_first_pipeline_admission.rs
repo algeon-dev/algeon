@@ -20,7 +20,10 @@ use query_engine::{
     error::Result as QueryEngineResult,
     expr::GroupingSetsSpec,
     mode::StatisticalAggregateExecutionMode,
-    pipeline::{AcceptedInputForm, PipelineTaskKind, ResidentDataForm, SinkBoundaryKind},
+    pipeline::{
+        AcceptedInputForm, AggregateInputHints, PipelineTaskKind, ResidentDataForm, SinkBoundaryKind, SourceOutput,
+        SourceReadPlan, TaskPhysical,
+    },
     plan::QueryPlan,
     policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
@@ -304,6 +307,16 @@ fn capability_admission_accepts_non_join_distinct_aggregate_with_source_stream_c
             .find(|resource| resource.producer() == source_task.id())
             .expect("source output resource");
         assert_eq!(source_resource.data_form(), ResidentDataForm::SourceStream);
+        let no_stages = AggregateInputHints { adjacent_stages: false, grouped_string_key: false };
+        assert_eq!(
+            source_task.physical(),
+            &TaskPhysical::SourceRead(SourceReadPlan {
+                output: SourceOutput::AggregateInputStream { adjacent_stages: false, chunk_hints: no_stages },
+                dynamic_filter_routes: false,
+                prefetch_eligible: false,
+            }),
+            "the aggregate pulls the deferred source read chunk by chunk"
+        );
     }
     assert!(
         decision.admission().is_some(),

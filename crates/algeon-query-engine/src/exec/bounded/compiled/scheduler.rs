@@ -689,7 +689,7 @@ mod tests {
         },
         pipeline::{
             PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, ResidentLifetime,
-            ResidentResource, SinkBoundary, SinkBoundaryKind,
+            ResidentResource, SinkBoundary, SinkBoundaryKind, SourceReadPlan, TaskPhysical,
         },
     };
 
@@ -1030,9 +1030,9 @@ mod tests {
         let gated = PipelineTaskId::new(1);
         let pipeline = CompiledPipeline::from_parts_unvalidated(
             vec![
-                PipelineTask::new(head, PipelineTaskKind::SourceRead)
+                PipelineTask::new(head, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                     .with_output_resources(vec![ResidentResourceId::new(0)]),
-                PipelineTask::new(gated, PipelineTaskKind::SourceRead)
+                PipelineTask::new(gated, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
                     .with_output_resources(vec![ResidentResourceId::new(1)]),
             ],
             vec![PipelineEdge::new(PipelineEdgeId::new(0), head, gated, PipelineEdgeKind::Control)],
@@ -1086,8 +1086,9 @@ mod tests {
         let unary_frame = ResidentResourceId::new(1);
         CompiledPipeline::from_parts_unvalidated(
             vec![
-                PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
-                PipelineTask::new(unary, PipelineTaskKind::Unary)
+                PipelineTask::new(source, TaskPhysical::SourceRead(SourceReadPlan::FRAME))
+                    .with_output_resources(vec![frame]),
+                PipelineTask::new(unary, TaskPhysical::Unary)
                     .with_input_resources(vec![frame])
                     .with_output_resources(vec![unary_frame]),
             ],

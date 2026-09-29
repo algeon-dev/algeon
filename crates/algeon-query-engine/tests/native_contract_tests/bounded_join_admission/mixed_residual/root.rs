@@ -49,7 +49,7 @@ fn bounded_mixed_residual_semi_anti_root_projects_only_left_columns() {
         left_schema,
         right_schema,
         output_schema,
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
         JoinSide::Left,
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );

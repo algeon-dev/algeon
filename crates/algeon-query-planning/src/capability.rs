@@ -39,19 +39,13 @@ pub use aggregate::{
 pub use join::KeyedHashJoinStrategyOptions;
 #[doc(hidden)]
 pub use join::{
-    JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
-    KeylessConditionalJoinKind, join_node_execution_capability, keyed_filtered_semi_anti_join_capable,
-    keyed_hash_join_build_is_large, keyed_hash_join_capable, keyed_hash_join_strategy_input_facts_for_plan,
-    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
-    keyed_residual_left_match_join_capable, keyed_residual_mixed_join_capable, partitioned_equi_join_supported,
-    partitioned_keyed_residual_join_supported,
+    JoinForm, KeyedHashJoinStrategyInputFacts, KeylessConditionalJoinKind, keyed_hash_join_build_is_large,
+    keyed_hash_join_strategy_input_facts_for_plan,
+    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
 };
-pub(crate) use join::{
-    join_residual_requires_post_join_filter, keyed_hash_join_strategy_decision_for_plan,
-    keyed_hash_join_strategy_decision_with_options, one_shot_equi_join_supported,
-};
+pub(crate) use join::{choose_join_strategy, classify_join, join_probe_streams_chunks};
 #[doc(hidden)]
-pub use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
+pub use join_strategy::{JoinStrategy, JoinStrategyChoice, JoinStrategyEvidence};
 pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionCategory, CapabilityScope,
     EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator,

@@ -696,7 +696,7 @@ fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
     let join = rewritten_native_join(&result);
     assert_right_hash_join_contract(
         join,
-        NativeJoinType::LeftAnti,
+        NativeJoinType::LEFT_ANTI,
         NativeJoinSide::Right,
         &[(NativeJoinSide::Left, "input0.key", "key"), (NativeJoinSide::Left, "input0.r_m01", "r_m01")],
     );
@@ -711,7 +711,7 @@ fn right_semi_count_star_uses_native_preserved_side_for_hidden_row_presence() {
 
 #[test]
 fn right_anti_count_star_uses_native_preserved_side_for_hidden_row_presence() {
-    assert_right_semi_anti_count_star_hidden_row_presence(JoinType::RightAnti, NativeJoinType::LeftAnti);
+    assert_right_semi_anti_count_star_hidden_row_presence(JoinType::RightAnti, NativeJoinType::LEFT_ANTI);
 }
 
 fn assert_right_semi_anti_count_star_hidden_row_presence(

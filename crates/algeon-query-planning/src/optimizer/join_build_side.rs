@@ -1,4 +1,5 @@
 use crate::{
+    capability::classify_join,
     error::{QueryError, QueryErrorCode, Result},
     expr::{ColumnRef, Expr},
     plan::{
@@ -203,7 +204,7 @@ pub(crate) fn optimize_join_build_side_selection(
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        if !join_build_side_selection_supported(join) {
+        if !join_build_side_selection_supported(node.id, join) {
             continue;
         }
 
@@ -259,18 +260,20 @@ pub(crate) fn optimize_join_build_side_selection(
     Ok(JoinBuildSideSelectionResult { plan: plan.rewrite(RewrittenNodes::in_place(nodes, root))?, change, diagnostics })
 }
 
-fn join_build_side_selection_supported(join: &JoinNode) -> bool {
-    if join.spec.keys.is_empty() || join.spec.output_projection.is_empty() || join.spec.build_artifact_id.is_some() {
+/// Keyed inner, semi, and anti joins whose build side no reusable artifact
+/// fixes are candidates when a native executor runs either direction.
+fn join_build_side_selection_supported(node_id: NodeId, join: &JoinNode) -> bool {
+    if join.spec.keys.is_empty()
+        || join.spec.build_artifact_id.is_some()
+        || !matches!(join.spec.join_type, JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti { .. })
+    {
         return false;
     }
-    match join.spec.join_type {
-        JoinType::Inner => true,
-        JoinType::LeftSemi | JoinType::LeftAnti => {
-            join.spec.residual_predicate.is_some()
-                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
-        },
-        JoinType::Left | JoinType::Full | JoinType::Cross | JoinType::LeftMark => false,
-    }
+    [JoinSide::Left, JoinSide::Right].into_iter().all(|build_side| {
+        let mut oriented = join.clone();
+        oriented.spec = oriented.spec.with_build_side(build_side);
+        classify_join(node_id, &oriented).is_ok()
+    })
 }
 
 fn select_build_side(
@@ -381,7 +384,7 @@ fn bounded_left_semijoin_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> 
             })
         }),
         PlanNode::Join(join)
-            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
         {
             estimated_output_rows(plan, join.inputs[0]).or_else(|| bounded_left_semijoin_rows(plan, join.inputs[0]))
@@ -404,7 +407,7 @@ fn bounded_left_semijoin_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64>
         PlanNode::Filter(filter) => bounded_left_semijoin_bytes(plan, filter.input),
         PlanNode::Sort(sort) => bounded_left_semijoin_bytes(plan, sort.input),
         PlanNode::Join(join)
-            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti { .. })
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
         {
             estimated_output_bytes(plan, join.inputs[0]).or_else(|| bounded_left_semijoin_bytes(plan, join.inputs[0]))

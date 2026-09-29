@@ -23,16 +23,16 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
             | JoinType::Left
             | JoinType::Full
             | JoinType::LeftSemi
-            | JoinType::LeftAnti
+            | JoinType::LeftAnti { .. }
             | JoinType::Cross
-            | JoinType::LeftMark
+            | JoinType::LeftMark { .. }
     ) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
             "query_engine.join.execute",
             "native join execution currently supports inner, left, full, left semi, left anti, left mark, and cross joins",
         )
-        .with_fact("join_type", node.spec.join_type));
+        .with_fact("join_type", &node.spec.join_type));
     }
     if node.spec.output_projection.is_empty() {
         return Err(QueryError::new(
@@ -47,7 +47,7 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
             "query_engine.join.execute",
             "native reusable hash left join execution requires the right side to be the build side",
         )
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("build_side", node.spec.build_side));
     }
     if node.spec.join_type == JoinType::Cross && node.spec.residual_predicate.is_some() {
@@ -56,7 +56,7 @@ pub(super) fn validate_executable_join_subset(node: &JoinNode) -> Result<()> {
             "query_engine.join.execute",
             "native cross join execution does not support residual predicates; use conditional join IR instead",
         )
-        .with_fact("join_type", node.spec.join_type));
+        .with_fact("join_type", &node.spec.join_type));
     }
     Ok(())
 }
@@ -85,7 +85,7 @@ pub(super) fn dataframe_mixed_join_options(
 
 pub(super) fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryError {
     cudf_query_error("query_engine.join.execute", "failed to execute algeon native join indices", error)
-        .with_fact("join_type", node.spec.join_type)
+        .with_fact("join_type", &node.spec.join_type)
         .with_fact("key_count", node.spec.keys.len())
         .with_fact("null_equality", node.spec.null_equality)
         .with_fact("build_side", node.spec.build_side)
@@ -116,7 +116,7 @@ pub(super) fn null_aware_anti_probe(
     right: &DataFrame,
     right_keys: &[String],
 ) -> Result<NullAwareAntiProbe> {
-    if !node.spec.null_aware || right.num_rows() == 0 {
+    if !node.spec.join_type.is_null_aware() || right.num_rows() == 0 {
         return Ok(NullAwareAntiProbe::Unchanged);
     }
     if frame_has_null_key(right, right_keys)? {

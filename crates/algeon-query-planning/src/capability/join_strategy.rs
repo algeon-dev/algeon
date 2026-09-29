@@ -1,133 +1,173 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    capability::{
-        JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
-        KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind, join_node_execution_capability,
-        keyed_hash_join_strategy_decision_for_plan, keyed_hash_join_strategy_decision_with_options,
-        one_shot_equi_join_supported, partitioned_keyed_residual_join_supported,
-    },
-    plan::{JoinNode, NodeId, QueryPlan},
+    capability::{KeyedHashJoinStrategyInputFacts, KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind},
+    plan::{JoinNode, JoinSide, JoinType},
 };
 
-/// Native strategy metadata for compiled join tasks.
-///
-/// This is intentionally node-local capability metadata, not a bounded
-/// family/path selector. The scheduler still executes task edges and barriers;
-/// the strategy only tells the task interpreter which retained state shape a
-/// join node produces.
+/// The executor a join node runs, named once for planning, reports, and the
+/// engine.
 #[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum CompiledJoinExecutionStrategy {
-    HashEqui,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JoinStrategy {
+    /// Prebuild and retain a hash-table artifact because the build side is
+    /// reused, explicitly materialized, or small enough to keep reusable.
+    ReusableHashEqui,
+    /// Build and probe for this join instance only, without preserving a
+    /// reusable hash-table artifact for later probes.
     OneShotEqui,
+    /// Partition a large keyed equi-join so build/probe memory is bounded by
+    /// partition-sized work units.
     PartitionedHashEqui,
+    /// Partition a keyed join whose residual predicate is evaluated within the
+    /// mixed keyed/residual path instead of as a reusable equi hash join.
     PartitionedMixedKeyedResidual,
     FilteredSemiAnti,
-    KeylessConditional { join_type: KeylessConditionalJoinKind },
+    KeylessConditional {
+        join_type: KeylessConditionalJoinKind,
+    },
     KeylessOuterCross,
     ProjectedCross,
     MixedKeyedResidual,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct CompiledJoinStrategySelection {
-    #[doc(hidden)]
-    pub strategy: CompiledJoinExecutionStrategy,
-    #[doc(hidden)]
-    pub facts: Option<BTreeMap<&'static str, String>>,
+impl JoinStrategy {
+    /// Stable diagnostic label, the `join_strategy` fact value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReusableHashEqui => "reusable_hash_equi",
+            Self::OneShotEqui => "one_shot_equi",
+            Self::PartitionedHashEqui => "partitioned_hash_equi",
+            Self::PartitionedMixedKeyedResidual => "partitioned_mixed_keyed_residual",
+            Self::FilteredSemiAnti => "filtered_semi_anti",
+            Self::KeylessConditional { .. } => "keyless_conditional",
+            Self::KeylessOuterCross => "keyless_outer_cross",
+            Self::ProjectedCross => "projected_cross",
+            Self::MixedKeyedResidual => "mixed_keyed_residual",
+        }
+    }
 }
 
-impl CompiledJoinExecutionStrategy {
-    #[doc(hidden)]
-    pub fn from_plan_join_node(
-        plan: &QueryPlan,
-        node_id: NodeId,
+/// A chosen join strategy, with the size evidence behind it when sizes
+/// decided the choice.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinStrategyChoice {
+    strategy: JoinStrategy,
+    evidence: Option<JoinStrategyEvidence>,
+}
+
+impl JoinStrategyChoice {
+    pub(crate) fn with_evidence(evidence: JoinStrategyEvidence) -> Self {
+        Self { strategy: evidence.strategy, evidence: Some(evidence) }
+    }
+
+    pub(crate) const fn without_evidence(strategy: JoinStrategy) -> Self {
+        Self { strategy, evidence: None }
+    }
+
+    pub const fn strategy(&self) -> JoinStrategy {
+        self.strategy
+    }
+
+    pub const fn evidence(&self) -> Option<&JoinStrategyEvidence> {
+        self.evidence.as_ref()
+    }
+}
+
+/// The size facts and thresholds a keyed strategy choice read, and why each
+/// alternative lost.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinStrategyEvidence {
+    strategy: JoinStrategy,
+    join_type: JoinType,
+    build_side: JoinSide,
+    key_count: usize,
+    build_artifact_id_present: bool,
+    input: KeyedHashJoinStrategyInputFacts,
+    options: KeyedHashJoinStrategyOptions,
+    reusable_rejected_reason: Option<&'static str>,
+    partitioned_rejected_reason: Option<&'static str>,
+}
+
+impl JoinStrategyEvidence {
+    pub(crate) fn new(
         join: &JoinNode,
+        input: KeyedHashJoinStrategyInputFacts,
+        strategy: JoinStrategy,
         options: &KeyedHashJoinStrategyOptions,
-    ) -> std::result::Result<Option<Self>, KeyedHashJoinStrategyDecision> {
-        match keyed_hash_join_strategy_decision_for_plan(plan, node_id, join, options) {
-            Some(decision) => Self::from_keyed_hash_strategy_decision(decision).map(Some),
-            None => Ok(Self::from_non_keyed_hash_join_node(join)),
+        reusable_rejected_reason: Option<&'static str>,
+        partitioned_rejected_reason: Option<&'static str>,
+    ) -> Self {
+        Self {
+            strategy,
+            join_type: join.spec.join_type.clone(),
+            build_side: join.spec.build_side,
+            key_count: join.spec.keys.len(),
+            build_artifact_id_present: join.spec.build_artifact_id.is_some(),
+            input,
+            options: *options,
+            reusable_rejected_reason,
+            partitioned_rejected_reason,
         }
     }
 
-    #[doc(hidden)]
-    pub fn select_from_join_node_with_strategy_facts(
-        join: &JoinNode,
-        facts: KeyedHashJoinStrategyInputFacts,
-        options: &KeyedHashJoinStrategyOptions,
-    ) -> std::result::Result<Option<CompiledJoinStrategySelection>, KeyedHashJoinStrategyDecision> {
-        if join_node_execution_capability(join) != Some(JoinExecutionCapability::KeyedHash) {
-            if one_shot_equi_join_supported(join) || partitioned_keyed_residual_join_supported(join) {
-                match keyed_hash_join_strategy_decision_with_options(join, facts, options) {
-                    decision @ KeyedHashJoinStrategyDecision::Selected {
-                        strategy: KeyedHashJoinStrategy::OneShotEqui,
-                        ..
-                    } => return Self::select_from_keyed_hash_strategy_decision(decision).map(Some),
-                    KeyedHashJoinStrategyDecision::Selected {
-                        strategy: KeyedHashJoinStrategy::ReusableHashEqui,
-                        ..
-                    } => {},
-                    KeyedHashJoinStrategyDecision::Selected {
-                        strategy: KeyedHashJoinStrategy::PartitionedHashEqui,
-                        ..
-                    } => {},
-                    decision @ KeyedHashJoinStrategyDecision::Selected {
-                        strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-                        ..
-                    } => return Self::select_from_keyed_hash_strategy_decision(decision).map(Some),
-                    rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => return Err(rejected),
-                }
-            }
-            return Ok(Self::from_non_keyed_hash_join_node(join)
-                .map(|strategy| CompiledJoinStrategySelection { strategy, facts: None }));
-        }
-        Self::select_from_keyed_hash_strategy_decision(keyed_hash_join_strategy_decision_with_options(
-            join, facts, options,
-        ))
-        .map(Some)
+    pub const fn input(&self) -> &KeyedHashJoinStrategyInputFacts {
+        &self.input
     }
 
-    fn from_keyed_hash_strategy_decision(
-        decision: KeyedHashJoinStrategyDecision,
-    ) -> std::result::Result<Self, KeyedHashJoinStrategyDecision> {
-        Self::select_from_keyed_hash_strategy_decision(decision).map(|selection| selection.strategy)
+    pub const fn reusable_rejected_reason(&self) -> Option<&'static str> {
+        self.reusable_rejected_reason
     }
 
-    fn select_from_keyed_hash_strategy_decision(
-        decision: KeyedHashJoinStrategyDecision,
-    ) -> std::result::Result<CompiledJoinStrategySelection, KeyedHashJoinStrategyDecision> {
-        match decision {
-            KeyedHashJoinStrategyDecision::Selected { strategy, facts } => match strategy {
-                KeyedHashJoinStrategy::ReusableHashEqui => {
-                    Ok(CompiledJoinStrategySelection { strategy: Self::HashEqui, facts: Some(facts) })
-                },
-                KeyedHashJoinStrategy::OneShotEqui => {
-                    Ok(CompiledJoinStrategySelection { strategy: Self::OneShotEqui, facts: Some(facts) })
-                },
-                KeyedHashJoinStrategy::PartitionedHashEqui => {
-                    Ok(CompiledJoinStrategySelection { strategy: Self::PartitionedHashEqui, facts: Some(facts) })
-                },
-                KeyedHashJoinStrategy::PartitionedMixedKeyedResidual => Ok(CompiledJoinStrategySelection {
-                    strategy: Self::PartitionedMixedKeyedResidual,
-                    facts: Some(facts),
-                }),
-            },
-            rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => Err(rejected),
-        }
+    pub const fn partitioned_rejected_reason(&self) -> Option<&'static str> {
+        self.partitioned_rejected_reason
     }
 
-    fn from_non_keyed_hash_join_node(join: &JoinNode) -> Option<Self> {
-        match join_node_execution_capability(join)? {
-            JoinExecutionCapability::KeyedHash => None,
-            JoinExecutionCapability::KeyedFilteredSemiAnti => Some(Self::FilteredSemiAnti),
-            JoinExecutionCapability::KeylessConditional(join_type) => Some(Self::KeylessConditional { join_type }),
-            JoinExecutionCapability::KeylessOuterCross => Some(Self::KeylessOuterCross),
-            JoinExecutionCapability::ProjectedCross => Some(Self::ProjectedCross),
-            JoinExecutionCapability::KeyedResidualMixed => Some(Self::MixedKeyedResidual),
-        }
+    /// The evidence as the `join_strategy` decision facts the metric rows and
+    /// diagnostics record.
+    pub fn facts(&self) -> BTreeMap<&'static str, String> {
+        let options = &self.options;
+        let input = &self.input;
+        let mut facts = BTreeMap::from([
+            ("join_strategy", self.strategy.as_str().to_string()),
+            ("join_type", self.join_type.to_string()),
+            ("build_side", self.build_side.to_string()),
+            ("key_count", self.key_count.to_string()),
+            ("probe_reuse_count", input.probe_reuse_count.to_string()),
+            ("build_artifact_id_present", self.build_artifact_id_present.to_string()),
+            ("reusable_prebuild_supported", input.reusable_prebuild_supported.to_string()),
+            ("large_keyed_hash_build_row_threshold", options.large_keyed_hash_build_row_threshold.to_string()),
+            ("large_keyed_hash_build_bytes_threshold", options.large_keyed_hash_build_bytes_threshold.to_string()),
+            ("large_keyed_hash_probe_bytes_threshold", options.large_keyed_hash_probe_bytes_threshold.to_string()),
+            ("small_reusable_hash_build_row_threshold", options.small_reusable_hash_build_row_threshold.to_string()),
+            (
+                "small_reusable_hash_build_bytes_threshold",
+                options.small_reusable_hash_build_bytes_threshold.to_string(),
+            ),
+            ("small_one_shot_probe_bytes_threshold", options.small_one_shot_probe_bytes_threshold.to_string()),
+            (
+                "max_small_probe_left_one_shot_build_row_threshold",
+                options.max_small_probe_left_one_shot_build_row_threshold.to_string(),
+            ),
+            (
+                "max_small_probe_left_one_shot_build_bytes_threshold",
+                options.max_small_probe_left_one_shot_build_bytes_threshold.to_string(),
+            ),
+        ]);
+        let optional = [
+            ("estimated_build_rows", input.estimated_build_rows.map(|rows| rows.to_string())),
+            ("observed_build_rows", input.observed_build_rows.map(|rows| rows.to_string())),
+            ("build_side_bytes", input.build_side_bytes.map(|bytes| bytes.to_string())),
+            ("probe_side_bytes", input.probe_side_bytes.map(|bytes| bytes.to_string())),
+            ("estimated_output_rows", input.estimated_output_rows.map(|rows| rows.to_string())),
+            ("estimated_output_bytes", input.estimated_output_bytes.map(|bytes| bytes.to_string())),
+            ("build_key_unique", input.build_key_unique.map(|unique| unique.to_string())),
+            ("reusable_hash_join_rejected_reason", self.reusable_rejected_reason.map(str::to_string)),
+            ("partitioned_hash_join_rejected_reason", self.partitioned_rejected_reason.map(str::to_string)),
+        ];
+        facts.extend(optional.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))));
+        facts
     }
 }

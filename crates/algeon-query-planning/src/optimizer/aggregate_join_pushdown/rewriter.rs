@@ -413,7 +413,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             preagg_id,
             &preagg_group_columns,
             &preagg_measure_states,
-            join_type,
+            join_type.clone(),
         );
         let join_schema = new_join_output_schema(
             aggregate,
@@ -421,7 +421,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             &preagg_schema,
             &preagg_measure_states,
             preagg_side,
-            join_type,
+            &join_type,
         )?;
         let join_id = self.push_node(PlanNode::Join(new_join), PlanFacts::new(join_schema));
         let final_input = if coalesce_preagg_nulls_to_zero {
@@ -504,11 +504,9 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             residual_predicate: None,
             output_projection,
             null_equality: join.spec.null_equality,
-            null_aware: join.spec.null_aware,
             build_side: join.spec.build_side,
             datafusion_order_preserved_side: join.spec.datafusion_order_preserved_side,
             build_artifact_id: None,
-            mark_column_name: None,
             at_most_one_match_side: None,
             advisory_output_statistics: None,
         };
@@ -535,7 +533,6 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         if input_join.spec.join_type != JoinType::Inner
             || input_join.spec.residual_predicate.is_some()
             || input_join.spec.build_artifact_id.is_some()
-            || input_join.spec.mark_column_name.is_some()
         {
             return None;
         }

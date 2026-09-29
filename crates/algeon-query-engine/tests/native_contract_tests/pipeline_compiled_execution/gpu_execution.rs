@@ -529,6 +529,22 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         (fact.data_form(), fact.sharing()),
         (ResidentDataForm::SourceStream, ResourceSharing::IndependentCursorStream)
     );
+    let fact_read = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.id() == fact.producer())
+        .expect("the fact source task exists")
+        .physical();
+    let no_stages = AggregateInputHints { adjacent_stages: false, grouped_string_key: false };
+    assert_eq!(
+        fact_read,
+        &TaskPhysical::SourceRead(SourceReadPlan {
+            output: SourceOutput::SharedJoinAggregateStream { adjacent_stages: false, chunk_hints: no_stages },
+            dynamic_filter_routes: false,
+            prefetch_eligible: false,
+        }),
+        "a source shared by a join build and an aggregate reads one stream shaped for both"
+    );
     assert_eq!(
         source_row_groups_read(&plan, metrics, &fact_path),
         4,
@@ -948,7 +964,7 @@ fn single_sink_output_pipeline(
                 .iter()
                 .filter_map(|(producer, resource)| (*producer == *task).then_some(*resource))
                 .collect();
-            PipelineTask::new(*task, PipelineTaskKind::SourceRead).with_output_resources(outputs)
+            PipelineTask::new(*task, TaskPhysical::SourceRead(SourceReadPlan::FRAME)).with_output_resources(outputs)
         })
         .collect::<Vec<_>>();
     let resources = sink_outputs

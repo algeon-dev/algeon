@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{consumers_by_node, rewrite};
 use crate::{
+    capability::{classify_join, join_probe_streams_chunks},
     error::Result,
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, QueryNode, QueryPlan, RewrittenNodes},
 };
@@ -209,7 +210,7 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
         let PlanNode::Join(join) = &node.kind else {
             continue;
         };
-        if !join_probe_stream_capable(join) {
+        if !join_probe_stream_capable(node.id, join) {
             continue;
         }
         let probe_input = join.inputs[probe_input_index(join)];
@@ -226,13 +227,15 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
         .collect()
 }
 
-fn join_probe_stream_capable(join: &JoinNode) -> bool {
+/// Whether the join's probe pulls its input chunk by chunk under every
+/// strategy that can execute it. Joins with a residual stay out of the rule
+/// even when their probe streams: replaying the shared lineitem probe of
+/// TPC-H SF10 Q21's residual semi and anti joins read 4656 row groups instead
+/// of 3189 and took about 450 ms instead of 314 ms.
+fn join_probe_stream_capable(node_id: NodeId, join: &JoinNode) -> bool {
     join.spec.residual_predicate.is_none()
-        && match join.spec.join_type {
-            JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => true,
-            JoinType::Left => join.spec.build_side == JoinSide::Right,
-            JoinType::Full | JoinType::Cross => false,
-        }
+        && classify_join(node_id, join)
+            .is_ok_and(|form| form.strategies().iter().all(|strategy| join_probe_streams_chunks(join, form, *strategy)))
 }
 
 fn probe_input_index(join: &JoinNode) -> usize {

@@ -444,7 +444,7 @@ fn native_query_executes_left_anti_join_with_left_only_projection() {
             left,
             right,
             JoinSpec::new(
-                JoinType::LeftAnti,
+                JoinType::LEFT_ANTI,
                 vec![JoinKey::new(
                     ColumnRef::input(0, "order_id", "left_order_id"),
                     ColumnRef::input(1, "order_id", "right_order_id"),
@@ -521,13 +521,12 @@ fn null_aware_anti_join_output_qtys<C: TestExecutionContext + ?Sized>(
             left,
             right,
             JoinSpec::new(
-                JoinType::LeftAnti,
+                JoinType::LeftAnti { null_aware: true },
                 vec![JoinKey::new(ColumnRef::input(0, "key", "left_key"), ColumnRef::input(1, "key", "right_key"))],
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right)
-            .with_null_aware(true),
+            .with_build_side(JoinSide::Right),
             Arc::clone(&output_schema),
         )
         .unwrap();
@@ -600,7 +599,7 @@ fn native_query_executes_left_mark_join_with_boolean_mark_column() {
             left,
             right,
             JoinSpec::new(
-                JoinType::LeftMark,
+                JoinType::LeftMark { mark_column: "mark".to_string() },
                 vec![JoinKey::new(
                     ColumnRef::input(0, "order_id", "left_order_id"),
                     ColumnRef::input(1, "order_id", "right_order_id"),
@@ -608,8 +607,7 @@ fn native_query_executes_left_mark_join_with_boolean_mark_column() {
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right)
-            .with_mark_column_name("mark"),
+            .with_build_side(JoinSide::Right),
             Arc::clone(&output_schema),
         )
         .unwrap();
@@ -677,7 +675,7 @@ fn native_query_executes_left_mark_join_with_no_matches() {
             left,
             right,
             JoinSpec::new(
-                JoinType::LeftMark,
+                JoinType::LeftMark { mark_column: "exists".to_string() },
                 vec![JoinKey::new(
                     ColumnRef::input(0, "order_id", "left_order_id"),
                     ColumnRef::input(1, "order_id", "right_order_id"),
@@ -685,8 +683,7 @@ fn native_query_executes_left_mark_join_with_no_matches() {
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty")])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right)
-            .with_mark_column_name("exists"),
+            .with_build_side(JoinSide::Right),
             Arc::clone(&output_schema),
         )
         .unwrap();

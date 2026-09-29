@@ -49,7 +49,7 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         .add_join(
             semi_join,
             anti_orders,
-            JoinSpec::new(JoinType::LeftAnti, vec![join_order_id_key()])
+            JoinSpec::new(JoinType::LEFT_ANTI, vec![join_order_id_key()])
                 .with_residual_predicate(qty_gt_right_order_id_times_ten())
                 .with_output_projection(vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
@@ -279,7 +279,7 @@ fn shared_leaf_inner_probe_anti_build_plan(
             inner,
             keys,
             JoinSpec::new(
-                JoinType::LeftAnti,
+                JoinType::LEFT_ANTI,
                 vec![JoinKey::new(
                     ColumnRef::input(0, "order_id", "order_id"),
                     ColumnRef::input(1, "order_id", "order_id"),

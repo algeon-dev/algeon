@@ -603,14 +603,13 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggrega
                 grouped_projection,
                 customer,
                 JoinSpec::new(
-                    JoinType::LeftMark,
+                    JoinType::LeftMark { mark_column: "mark".to_string() },
                     vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
                 )
                 .with_output_projection(vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                     JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
                 ])
-                .with_mark_column_name("mark")
                 .with_build_side(JoinSide::Right),
                 key_value_mark_schema("mark"),
             )
@@ -638,7 +637,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(variant: RootTopKJoinAggrega
                 grouped_projection,
                 customer,
                 JoinSpec::new(
-                    JoinType::LeftAnti,
+                    JoinType::LEFT_ANTI,
                     vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
                 )
                 .with_output_projection(vec![

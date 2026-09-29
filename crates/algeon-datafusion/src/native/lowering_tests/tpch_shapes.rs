@@ -317,7 +317,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         "q21 should lower its EXISTS branch to a right-build native left-semi residual join"
     );
     assert!(
-        joins.iter().any(|join| q21_left_only_mixed_residual_join_matches(join, NativeJoinType::LeftAnti)),
+        joins.iter().any(|join| q21_left_only_mixed_residual_join_matches(join, NativeJoinType::LEFT_ANTI)),
         "q21 should lower its NOT EXISTS branch to a right-build native left-anti residual join"
     );
 
@@ -332,7 +332,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         let mut nodes = optimized.plan.nodes().to_vec();
         for node in &mut nodes {
             if let PlanNode::Join(join) = &mut node.kind
-                && matches!(join.spec.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti)
+                && matches!(join.spec.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti { .. })
                 && join.spec.residual_predicate.is_some()
             {
                 join.spec.build_side = build_side;
@@ -1002,7 +1002,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
     let joins = native_joins(plan);
     assert_eq!(joins.len(), 2, "q16 should lower the part/partsupp join plus anti supplier branch");
     assert!(joins.iter().any(|join| join.spec.join_type == NativeJoinType::Inner));
-    assert!(joins.iter().any(|join| join.spec.join_type == NativeJoinType::LeftAnti));
+    assert!(joins.iter().any(|join| join.spec.join_type == NativeJoinType::LEFT_ANTI));
     for join in joins {
         for input in join.inputs {
             assert_q16_join_leaf_subtree_has_no_aggregate_sort_or_limit(plan, input);

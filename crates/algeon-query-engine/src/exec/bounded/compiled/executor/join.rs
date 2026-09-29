@@ -3,7 +3,7 @@ use super::{
     admission::{JoinBuildStreamEstimate, settle_partitioned_join_build},
 };
 use crate::{
-    capability::keyed_hash_join_capable,
+    capability::JoinForm,
     error::Result,
     exec::bounded::{
         BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt,
@@ -13,6 +13,7 @@ use crate::{
             ResidentFrameStreamPayload,
             helpers::{
                 attach_task_facts, invalid, join_node, plan_node, single_input_resource, single_output_resource,
+                task_join_plan,
             },
             resource::CompiledGpuResourcePayload,
         },
@@ -67,13 +68,14 @@ impl CompiledGpuTaskExecutor<'_> {
         input_frame: ResidentGpuFrame,
     ) -> Result<BoundedCompiledJoinBuildState> {
         self.produce_hash_join_build_dynamic_filters(node_id, node, &[input_frame.frame.frame()])?;
-        let strategy =
+        let choice =
             self.select_join_build_strategy(task, node_id, node, &input_frame.frame, input_frame.device_bytes())?;
         execute_bounded_compiled_join_build_from_resident_frame(
             &mut self.execution,
             node_id,
             node,
-            strategy.strategy,
+            task_join_plan(task, node_id)?.form(),
+            choice.strategy(),
             self.policy.keyed_hash_join,
             input_frame,
         )
@@ -132,7 +134,7 @@ impl CompiledGpuTaskExecutor<'_> {
     ) -> Result<BoundedCompiledJoinBuildState> {
         let plan = self.plan;
         let options = self.policy.keyed_hash_join;
-        let keyed_hash_inputs = keyed_hash_join_capable(node);
+        let keyed_hash_inputs = task_join_plan(task, node_id)?.form() == JoinForm::KeyedEqui;
         let mut settle = |execution: &mut BoundedExecutionAttempt<'_>,
                           observation: Option<BoundedJoinBuildStreamObservation>| {
             settle_partitioned_join_build(plan, options, task, node_id, estimate, execution, observation)

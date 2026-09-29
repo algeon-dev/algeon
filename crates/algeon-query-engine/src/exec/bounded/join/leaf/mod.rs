@@ -4,14 +4,14 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, ExecutionMetrics, FilterNode, GpuDataFrame,
-    GpuResidentInputMap, Instant, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode, QueryError,
-    ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk, SourceChunkBatch,
-    SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
-    apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts, cudf_query_error, execute_filter_with_budget,
-    execute_projection_with_budget, execution_overrides, is_retryable_chunk_error, join_leaf_prefetch_admitted,
-    observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
-    read_gpu_resident_source, read_literal_batch_source, record_bounded_parquet_source_metrics,
-    record_chunk_retry_error, split_retryable_chunk, validate_local_parquet_source,
+    Instant, LocalParquetSource, MemoryControlPolicy, NodeId, ProjectionNode, QueryError, ResidentGpuFrame, Result,
+    SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
+    annotate_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts,
+    cudf_query_error, execute_filter_with_budget, execute_projection_with_budget, execution_overrides,
+    is_retryable_chunk_error, join_leaf_prefetch_admitted, observe_device_memory_bytes,
+    plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
+    record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
+    validate_local_parquet_source,
 };
 use crate::{
     chunk::{
@@ -34,7 +34,7 @@ use crate::{
     metrics::DynamicFilterSourceSnapshot,
     plan::AggregateNode,
     rapids_backend::rapids_analysis_context,
-    source::{ParquetReadStrategy, SourceFooterFacts, SourceNode},
+    source::{ParquetReadStrategy, SourceFooterFacts},
 };
 
 mod batching;
@@ -393,29 +393,6 @@ fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource)
             .all(|file| matches!(file.resolved_source.read_strategy(), ParquetReadStrategy::RemoteDirect))
 }
 
-pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    source: &SourceNode,
-    node_id: NodeId,
-    gpu_inputs: &GpuResidentInputMap,
-) -> Result<ResidentGpuFrame> {
-    match source {
-        SourceNode::LocalParquet(source) => {
-            validate_local_parquet_source(source, rapids_analysis_context(execution.context().planning_policy()))?;
-            execute_bounded_join_leaf_local_parquet_source(execution, source, node_id)
-        },
-        SourceNode::GpuResident(source) => {
-            let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics())?;
-            let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
-            Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))
-        },
-        SourceNode::LiteralBatch(source) => {
-            let frame = read_literal_batch_source(execution.context(), source, execution.metrics())?;
-            let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
-            Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))
-        },
-    }
-}
 pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_source_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
@@ -485,22 +462,6 @@ where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
     stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
-}
-
-fn execute_bounded_join_leaf_local_parquet_source(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    source: &LocalParquetSource,
-    node_id: NodeId,
-) -> Result<ResidentGpuFrame> {
-    let stream = plan_bounded_join_leaf_local_parquet_source_stream(
-        execution.context(),
-        source,
-        node_id,
-        false,
-        execution.metrics(),
-    )?;
-    let chunks = read_join_leaf_source_stream_chunks(execution, &stream)?;
-    concatenate_join_source_chunks(execution, node_id, chunks)
 }
 
 fn read_join_leaf_source_stream_chunks(

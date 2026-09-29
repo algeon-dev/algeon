@@ -206,7 +206,7 @@ struct SharedPartsuppDynamicFilterPlan {
     part_partsupp_join: NodeId,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SharedPartsuppDynamicFilterPlanOptions {
     extra_unconstrained_partsupp_consumer: bool,
     final_join_type: JoinType,

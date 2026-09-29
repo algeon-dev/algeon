@@ -1030,7 +1030,7 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
         ("inner-nulls-match", JoinType::Inner, JoinSide::Right, JoinNullEquality::NullsMatch, false),
         ("left", JoinType::Left, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
         ("semi", JoinType::LeftSemi, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
-        ("anti", JoinType::LeftAnti, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
+        ("anti", JoinType::LEFT_ANTI, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
         ("full", JoinType::Full, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, false),
         ("inner-residual", JoinType::Inner, JoinSide::Right, JoinNullEquality::NullsDoNotMatch, true),
     ] {
@@ -1044,7 +1044,7 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
             vec![right_batch.clone()],
         )));
         let (projection, output_schema) = match join_type {
-            JoinType::LeftSemi | JoinType::LeftAnti => (
+            JoinType::LeftSemi | JoinType::LeftAnti { .. } => (
                 vec![
                     JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
                     JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
@@ -1060,11 +1060,13 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
                 Arc::clone(&kvw_schema),
             ),
         };
-        let mut spec =
-            JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
-                .with_output_projection(projection)
-                .with_null_equality(null_eq)
-                .with_build_side(build_side);
+        let mut spec = JoinSpec::new(
+            join_type.clone(),
+            vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+        )
+        .with_output_projection(projection)
+        .with_null_equality(null_eq)
+        .with_build_side(build_side);
         if residual {
             spec = spec.with_residual_predicate(Expr::binary(
                 Expr::input_column(0, "v", "v"),
@@ -1078,7 +1080,7 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
         let (serial, resident) = execute_pair(&plan);
 
         match join_type {
-            JoinType::LeftSemi | JoinType::LeftAnti => {
+            JoinType::LeftSemi | JoinType::LeftAnti { .. } => {
                 let expected = int32_int64_pairs_sorted(&serial, 0, 1);
                 assert_eq!(
                     int32_int64_pairs_sorted(&resident, 0, 1),
@@ -1146,13 +1148,12 @@ fn host_and_resident_sinks_preserve_join_kinds_with_nulls_duplicates_and_residua
             left,
             right,
             JoinSpec::new(
-                JoinType::LeftMark,
+                JoinType::LeftMark { mark_column: "mark".to_string() },
                 vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
             )
             .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k")])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-            .with_build_side(JoinSide::Right)
-            .with_mark_column_name("mark"),
+            .with_build_side(JoinSide::Right),
             Arc::clone(&mark_schema),
         )
         .unwrap();

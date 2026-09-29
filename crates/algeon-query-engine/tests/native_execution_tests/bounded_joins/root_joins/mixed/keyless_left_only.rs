@@ -23,7 +23,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_only_joins_with_l
         &right_path,
         &left_schema,
         &right_schema,
-        JoinType::LeftAnti,
+        JoinType::LEFT_ANTI,
         JoinSide::Left,
     );
 

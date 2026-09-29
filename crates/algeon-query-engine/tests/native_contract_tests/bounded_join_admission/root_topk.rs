@@ -460,6 +460,37 @@ fn bounded_compositional_admission_ignores_identity_projection_variants() {
         compositional_join_build_input_form(&projected),
         "identity projections must not change the recorded join input contract"
     );
+    // Each source reads as a join leaf. The projections become stages the
+    // leaf applies, and a source that no longer feeds its join directly
+    // cannot start the join prefetch.
+    for (label, plan, adjacent_stages) in [("plain", &plain, false), ("projected", &projected, true)] {
+        let reads = compiled_source_read_plans(plan);
+        assert_eq!(reads.len(), 2, "{label}: both join inputs read a source");
+        for read in reads {
+            assert_eq!(
+                read,
+                SourceReadPlan {
+                    output: SourceOutput::JoinLeafStream { adjacent_stages },
+                    dynamic_filter_routes: false,
+                    prefetch_eligible: !adjacent_stages,
+                },
+                "{label}"
+            );
+        }
+    }
+}
+
+fn compiled_source_read_plans(plan: &QueryPlan) -> Vec<SourceReadPlan> {
+    let analysis = plan.capability_analysis(rapids_analysis_context(PlanningPolicy::default()));
+    let pipeline = compile_pipeline(plan, &analysis).expect("fixture should compile");
+    pipeline
+        .tasks()
+        .iter()
+        .filter_map(|task| match task.physical() {
+            TaskPhysical::SourceRead(read) => Some(*read),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The [`compositional_inner_join_base`] fragment with an alias-only projection

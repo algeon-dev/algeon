@@ -265,6 +265,7 @@ fn validate_node(
             let left_available = available_columns(available_columns_by_node, join.inputs[0])?;
             let right_available = available_columns(available_columns_by_node, join.inputs[1])?;
             validate_join_capability(
+                node.id,
                 join,
                 left.output_schema(),
                 left_available,

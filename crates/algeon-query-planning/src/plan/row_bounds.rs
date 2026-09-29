@@ -86,7 +86,7 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
         PlanNode::Join(join) => {
             let left_rows = input_bound(join.inputs[0])?.0;
             let rows = match join.spec.join_type {
-                JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => Some(left_rows),
+                JoinType::LeftSemi | JoinType::LeftAnti { .. } | JoinType::LeftMark { .. } => Some(left_rows),
                 JoinType::Inner
                     if !join.spec.keys.is_empty()
                         && join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) =>
