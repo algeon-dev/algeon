@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use rapids_interop::{CompletionWitnessBackend, InteropError, InteropErrorKind, LeaseExportContext, LeaseReadiness};
+use rapids_interop::{CompletionWitnessBackend, InteropError, InteropErrorKind, ProducerReadiness};
 
 use super::{SHARED_COMPLETION_WITNESS_READY_OP, SHARED_COMPLETION_WITNESS_SYNC_OP};
 use crate::{
@@ -41,10 +41,6 @@ impl CompletionWitnessBackend for SharedCudaCompletionWitnessState {
             map_cudf_error(InteropErrorKind::ReadinessUnavailable, SHARED_COMPLETION_WITNESS_SYNC_OP, error)
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 /// # Safety
@@ -59,36 +55,20 @@ pub(super) enum ProducerReadinessBinding {
     Event { raw: *mut c_void, device: DeviceId },
 }
 
-impl ProducerReadinessBinding {
-    pub(super) fn device(self) -> DeviceId {
-        match self {
-            Self::Stream { device, .. } | Self::Event { device, .. } => device,
-        }
-    }
-}
-
-pub(super) fn producer_readiness_binding_from_export(
-    export: &LeaseExportContext,
+pub(super) fn producer_readiness_binding(
+    readiness: ProducerReadiness<'_>,
     operation: &'static str,
 ) -> std::result::Result<ProducerReadinessBinding, InteropError> {
-    match export.readiness() {
-        LeaseReadiness::DeviceStreamOrdered { raw, device } => {
-            let device = DeviceId::new(device as usize)
-                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-            Ok(ProducerReadinessBinding::Stream { raw, device })
+    let device = DeviceId::new(readiness.device() as usize)
+        .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+    Ok(match readiness {
+        ProducerReadiness::DeviceStreamOrdered { stream } => {
+            ProducerReadinessBinding::Stream { raw: stream.as_raw(), device }
         },
-        LeaseReadiness::HostVisible => Err(InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "shared CUDA prepared leases require explicit device-ordered producer readiness",
-        )
-        .with_context("operation", operation)
-        .with_context("readiness", "host_visible")),
-        LeaseReadiness::DeviceEventOrdered { raw, device } => {
-            let device = DeviceId::new(device as usize)
-                .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
-            Ok(ProducerReadinessBinding::Event { raw, device })
+        ProducerReadiness::DeviceEventOrdered { event } => {
+            ProducerReadinessBinding::Event { raw: event.as_raw(), device }
         },
-    }
+    })
 }
 
 pub(super) fn create_producer_owned_event(producer_device: DeviceId) -> Result<CudaEvent> {

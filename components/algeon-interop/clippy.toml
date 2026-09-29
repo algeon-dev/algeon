@@ -1,3 +1,0 @@
-too-many-arguments-threshold = 10
-absolute-paths-max-segments = 2
-absolute-paths-allowed-crates = ["std", "core", "alloc"]

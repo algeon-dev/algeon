@@ -7,15 +7,12 @@ use std::{
 };
 
 use rapids_interop::{
-    ActiveLeaseBackend, BorrowedColumnView, BorrowedTableView, BoundBytes, BufferBinding, BufferId, ColumnId,
-    ColumnLayout, CompletionAuthority, CompletionBinding, CudaEventHandle, CudaStreamHandle, DataType,
-    DeviceMemoryResourceHandle, ExecutionBinding, ExportDiagnostics, ExportProfile, IncompleteDropBehavior,
-    LeaseBackend, LeaseCompletionResult, LeaseExportContext, OwnedColumnTransfer, OwnedTableTransfer, PhysicalValidity,
-    Placement, PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
-    ReleaseContract, ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId,
-    TransferCompletionRule, TypeId,
+    ActiveLeaseBackend, BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority,
+    CompletionWitness, CudaEventHandle, CudaStreamHandle, DataType, DeviceMemoryResourceHandle, ExecutionBinding,
+    LeaseBackend, PhysicalValidity, Placement, PreparedAccess, PreparedColumnExport, PreparedTableExport,
+    ProducerReadiness, ReadStartAuthority, SemanticColumn, SemanticTable, TypeId,
 };
-use static_assertions::{assert_impl_all, assert_not_impl_any};
+use static_assertions::assert_impl_all;
 
 assert_impl_all!(CudaStreamHandle<'static>: Send, Sync);
 assert_impl_all!(CudaEventHandle<'static>: Send, Sync);
@@ -24,15 +21,11 @@ assert_impl_all!(BoundBytes<'static>: Send, Sync);
 assert_impl_all!(BufferBinding<'static>: Send, Sync);
 assert_impl_all!(ExecutionBinding<'static>: Send, Sync);
 assert_impl_all!(ProducerReadiness<'static>: Send, Sync);
+assert_impl_all!(PreparedAccess<'static>: Send, Sync);
 assert_impl_all!(ReadStartAuthority<'static>: Send, Sync);
 assert_impl_all!(CompletionAuthority<'static>: Send, Sync);
-assert_impl_all!(OwnedColumnTransfer: Send, Sync);
-assert_impl_all!(OwnedTableTransfer: Send, Sync);
 assert_impl_all!(PreparedColumnExport<'static>: Send, Sync);
 assert_impl_all!(PreparedTableExport<'static>: Send, Sync);
-
-assert_not_impl_any!(BorrowedColumnView<'static>: Send, Sync);
-assert_not_impl_any!(BorrowedTableView<'static>: Send, Sync);
 
 /// Sentinel address for contract tests; never dereferenced, only used to
 /// satisfy non-null validation in `BoundBytes` / `CudaStreamHandle` constructors.
@@ -54,12 +47,11 @@ fn prepared_readiness() -> ProducerReadiness<'static> {
     }
 }
 
-fn prepared_diagnostics() -> ExportDiagnostics {
-    ExportDiagnostics::new(ExportProfile::PreparedDeviceExport)
-}
-
-fn owned_transfer_diagnostics() -> ExportDiagnostics {
-    ExportDiagnostics::new(ExportProfile::OwnedDeviceTransfer)
+fn device_access(readiness: ProducerReadiness<'static>) -> PreparedAccess<'static> {
+    PreparedAccess::Device {
+        readiness,
+        backend: LeaseBackend::new(DropCountingBackend { drop_calls: Arc::default(), complete_calls: Arc::default() }),
+    }
 }
 
 fn fixed_width_column(id: u32, values: u32, len: usize, offset: usize) -> SemanticColumn {
@@ -69,27 +61,8 @@ fn fixed_width_column(id: u32, values: u32, len: usize, offset: usize) -> Semant
         len,
         offset,
         PhysicalValidity::NoValidityBuffer,
-        SchemaNullability::Unknown,
         ColumnLayout::FixedWidth { values: BufferId::new(values) },
     )
-}
-
-fn release_contract(device: i32) -> ReleaseContract {
-    ReleaseContract::new(
-        device,
-        TransferCompletionRule::CallerMustReleaseAfterConsumerWorkCompletes,
-        ReleaseSynchronization::MaySynchronizeInternally,
-    )
-}
-
-struct DropCounterOwner {
-    drops: Arc<AtomicUsize>,
-}
-
-impl Drop for DropCounterOwner {
-    fn drop(&mut self) {
-        self.drops.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 #[derive(Debug)]
@@ -99,32 +72,19 @@ struct DropCountingBackend {
 }
 
 impl ActiveLeaseBackend for DropCountingBackend {
-    fn activate(
-        &self,
-        _export: &LeaseExportContext,
-        _read_start: ReadStartBinding,
-        _completion: CompletionBinding,
-    ) -> rapids_interop::Result<rapids_interop::LeaseActivation> {
-        Ok(rapids_interop::LeaseActivation::noop())
-    }
-
-    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
-        IncompleteDropBehavior::GuaranteedFallback
-    }
-
     fn complete(
         &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
-    ) -> rapids_interop::Result<LeaseCompletionResult> {
+        _readiness: ProducerReadiness<'_>,
+        _completion: CompletionAuthority<'_>,
+    ) -> rapids_interop::Result<Option<CompletionWitness>> {
         self.complete_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(LeaseCompletionResult::FallbackSynchronized)
+        Ok(None)
     }
 
     fn drop_incomplete(
         &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
+        _readiness: ProducerReadiness<'_>,
+        _completion: CompletionAuthority<'_>,
     ) -> rapids_interop::Result<()> {
         self.drop_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -132,38 +92,22 @@ impl ActiveLeaseBackend for DropCountingBackend {
 }
 
 #[test]
-fn owned_column_transfer_owner_drops_once_after_cross_thread_handoff() {
-    let drops = Arc::new(AtomicUsize::new(0));
-    let transfer = OwnedColumnTransfer::try_new(
-        fixed_width_column(1, 11, 3, 0),
-        vec![device_binding(11, 0x1000, 12, 0)],
-        prepared_readiness(),
-        owned_transfer_diagnostics(),
-        release_contract(0),
-        DropCounterOwner { drops: Arc::clone(&drops) },
-    )
-    .unwrap();
-
-    thread::spawn(move || drop(transfer)).join().unwrap();
-
-    assert_eq!(drops.load(Ordering::SeqCst), 1);
-}
-
-#[test]
 fn prepared_column_export_drop_on_worker_thread_runs_fallback_once_and_releases_root() {
     let drop_calls = Arc::new(AtomicUsize::new(0));
     let complete_calls = Arc::new(AtomicUsize::new(0));
     let export = PreparedColumnExport::try_new(
-        fixed_width_column(1, 11, 3, 0),
+        ColumnId::new(1),
+        vec![fixed_width_column(1, 11, 3, 0)],
         vec![device_binding(11, 0x1000, 12, 0)],
-        prepared_readiness(),
-        prepared_diagnostics(),
+        PreparedAccess::Device {
+            readiness: prepared_readiness(),
+            backend: LeaseBackend::new(DropCountingBackend {
+                drop_calls: Arc::clone(&drop_calls),
+                complete_calls: Arc::clone(&complete_calls),
+            }),
+        },
     )
-    .unwrap()
-    .with_lease_backend(LeaseBackend::new(DropCountingBackend {
-        drop_calls: Arc::clone(&drop_calls),
-        complete_calls: Arc::clone(&complete_calls),
-    }));
+    .unwrap();
 
     thread::scope(|scope| {
         scope
@@ -186,7 +130,7 @@ fn prepared_column_export_drop_on_worker_thread_runs_fallback_once_and_releases_
     let reacquired = export
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
-    assert_eq!(reacquired.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+    assert!(reacquired.complete().unwrap().is_ready().unwrap());
     assert_eq!(drop_calls.load(Ordering::SeqCst), 1);
     assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
 }
@@ -194,11 +138,10 @@ fn prepared_column_export_drop_on_worker_thread_runs_fallback_once_and_releases_
 #[test]
 fn prepared_table_export_can_be_completed_from_worker_thread() {
     let export = PreparedTableExport::try_new(
-        SemanticTable::new(TableId::new(9), 3, vec![ColumnId::new(1)], None),
+        SemanticTable::new(3, vec![ColumnId::new(1)], None),
         vec![fixed_width_column(1, 11, 3, 0)],
         vec![device_binding(11, 0x1000, 12, 0)],
-        prepared_readiness(),
-        prepared_diagnostics(),
+        device_access(prepared_readiness()),
     )
     .unwrap();
 
@@ -211,7 +154,7 @@ fn prepared_table_export_can_be_completed_from_worker_thread() {
                         CompletionAuthority::SynchronousByReturn,
                     )
                     .unwrap();
-                assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+                assert!(lease.complete().unwrap().is_ready().unwrap());
             })
             .join()
             .unwrap();

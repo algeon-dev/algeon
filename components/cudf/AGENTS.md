@@ -30,9 +30,8 @@ over libcudf. Query planning and runtime ownership follow the root
 - Keep runtime device, stream, memory-resource, and execution provenance
   explicit across every GPU boundary. Do not silently fall back to ambient
   state where a runtime-bound API exists.
-- Distinguish borrowed views, retained shared ownership, owned transfers,
-  device copies, and host materialization. Preserve prepared-read completion
-  and release ordering.
+- Distinguish prepared exports, retained shared ownership, device copies, and
+  host materialization. Preserve prepared-read completion ordering.
 - Preserve device-aware destruction and the existing `Send`/`Sync` contract for
   each owned, borrowed, runtime, and interop type. Re-audit `algeon-cudf-sys/SAFETY.md` when
   changing unsafe code, lifetimes, raw handles, or thread traits.

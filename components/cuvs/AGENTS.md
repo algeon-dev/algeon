@@ -36,8 +36,9 @@ execution follow the root `algeon-datafusion` ownership map.
   `!Send` and `!Sync`. Do not weaken those markers without a demonstrated native
   concurrency contract.
 - Prepared cuDF reads carry explicit producer ownership, completion witnesses,
-  and incomplete-drop behavior. Complete reads only after cuVS work is enqueued;
-  never release producer storage before the consumer fence permits it.
+  and a drop-time fallback for leases that are not completed. Complete reads
+  only after cuVS work is enqueued; never release producer storage before the
+  consumer fence permits it.
 - Checked-in bindings come only from the pinned cuVS revision through
   `scripts/dev/bindings.sh cuvs`. Normal library builds, docs, and lints must
   not regenerate bindings or gain a bindgen build dependency.
@@ -87,8 +88,9 @@ validation.
   `algeon-cuvs-sys` imports as `cuvs_sys`, and the sys crate keeps
   `links = "cuvs_c"`.
 - Preserve `CuvsResources` execution-binding identity and the ownership and
-  completion semantics of `PreparedTensorLease`,
-  `PreparedValidatedTensorLease`, and `PreparedReadCompletion`.
+  completion semantics of `PreparedTensorLease` and
+  `PreparedValidatedTensorLease`. Their `complete` returns the
+  `algeon-interop` `LeaseCompletion`, which owns the retained-owner rule.
 - Keep `ErrorKind`, `ErrorStatus`, operation, context, and source errors
   structured. Consumers must not need to parse display-message text.
 - Preserve native metadata consumed through `DEP_CUVS_C_*`, especially runtime

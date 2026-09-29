@@ -37,8 +37,7 @@ use cudf_sys::test_support::{
     cudf_test_event_synchronize_call_count_for_event_handle_raw,
 };
 use rapids_interop::{
-    BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, PreparedColumnExport, SchemaNullability,
-    SemanticColumn,
+    BufferBinding, ColumnLayout, PhysicalValidity, PreparedColumnExport, PreparedExportProfile, SemanticColumn,
 };
 use tempfile::TempDir;
 
@@ -193,25 +192,6 @@ fn assert_validity_equivalent(
     }
 }
 
-fn schema_nullability_is_elidable(
-    source: &SemanticColumn,
-    imported: &SemanticColumn,
-    source_bindings: &HashMap<u32, &BufferBinding<'_>>,
-    imported_bindings: &HashMap<u32, &BufferBinding<'_>>,
-) -> bool {
-    match (source.schema_nullability(), imported.schema_nullability()) {
-        (SchemaNullability::Nullable, SchemaNullability::NonNullable) => {
-            validity_mask_is_elidable(source.validity(), source_bindings)
-                && matches!(imported.validity(), PhysicalValidity::NoValidityBuffer)
-        },
-        (SchemaNullability::NonNullable, SchemaNullability::Nullable) => {
-            matches!(source.validity(), PhysicalValidity::NoValidityBuffer)
-                && validity_mask_is_elidable(imported.validity(), imported_bindings)
-        },
-        _ => false,
-    }
-}
-
 fn assert_semantic_column_equivalent(
     source: &SemanticColumn,
     imported: &SemanticColumn,
@@ -223,12 +203,6 @@ fn assert_semantic_column_equivalent(
     assert_eq!(source.data_type(), imported.data_type());
     assert_eq!(source.len(), imported.len());
     assert_eq!(source.offset(), imported.offset());
-    if source.schema_nullability() != imported.schema_nullability() {
-        assert!(
-            schema_nullability_is_elidable(source, imported, source_bindings, imported_bindings),
-            "schema nullability mismatch: source={source:?} imported={imported:?}"
-        );
-    }
     assert_validity_equivalent(source.validity(), imported.validity(), source_bindings, imported_bindings);
 
     match (source.layout(), imported.layout()) {
@@ -306,8 +280,8 @@ fn assert_host_column_exports_structurally_equivalent(
     source_export: &PreparedColumnExport<'_>,
     imported_export: &PreparedColumnExport<'_>,
 ) {
-    assert_eq!(source_export.diagnostics().profile(), ExportProfile::PreparedHostExport);
-    assert_eq!(imported_export.diagnostics().profile(), ExportProfile::PreparedHostExport);
+    assert_eq!(source_export.profile(), PreparedExportProfile::Host);
+    assert_eq!(imported_export.profile(), PreparedExportProfile::Host);
 
     let source_columns = semantic_column_map(source_export.semantic_columns());
     let imported_columns = semantic_column_map(imported_export.semantic_columns());
@@ -334,8 +308,8 @@ fn assert_host_table_exports_equivalent(source: &Table, imported: &Table) {
     let source_export = source.try_prepare_host_table_export().unwrap();
     let imported_export = imported.try_prepare_host_table_export().unwrap();
 
-    assert_eq!(source_export.diagnostics().profile(), ExportProfile::PreparedHostExport);
-    assert_eq!(imported_export.diagnostics().profile(), ExportProfile::PreparedHostExport);
+    assert_eq!(source_export.profile(), PreparedExportProfile::Host);
+    assert_eq!(imported_export.profile(), PreparedExportProfile::Host);
     assert_eq!(source_export.table().num_rows(), imported_export.table().num_rows());
     assert_eq!(source_export.table().columns().len(), imported_export.table().columns().len());
 

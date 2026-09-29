@@ -24,7 +24,7 @@ pub use forest_inference::{
 };
 pub use hdbscan::{ClusterSelectionMethod, HdbscanFit, HdbscanOutputBuffers, HdbscanParams};
 pub use logistic::{LogisticRegressionFit, LogisticRegressionModel, LogisticRegressionParams};
-pub use prepared::{PreparedMatrixLease, PreparedReadCompletion};
+pub use prepared::PreparedMatrixLease;
 pub use random_forest::{RandomForestClassifier, RandomForestParams, RandomForestRegressor, SplitCriterion};
 pub use resources::{CumlResources, TrainingStreams};
 pub use umap::{UmapInit, UmapModel, UmapParams};

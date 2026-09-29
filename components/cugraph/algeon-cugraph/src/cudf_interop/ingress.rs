@@ -267,7 +267,6 @@ fn build_graph_from_owned_dataframe_raw<T: Transposition>(
     let export = df
         .try_prepare_device_table_export()
         .map_err(|error| map_prepared_projection_interop_error(error, operation))?;
-    let retained_owner = export.clone_retained_owner();
     let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
     let lease = export
         .try_activate_read_lease(read_start, completion)
@@ -287,7 +286,7 @@ fn build_graph_from_owned_dataframe_raw<T: Transposition>(
     };
 
     let graph_result = build_graph_from_prepared_edge_list_raw(handle, &edge_list, properties, renumber, operation);
-    let lease_complete = complete_prepared_lease(lease.complete(), retained_owner, operation);
+    let lease_complete = complete_prepared_lease(lease.complete(), operation);
 
     finish_prepared_graph_result(graph_result, [lease_complete])
 }
@@ -363,10 +362,10 @@ pub fn graph_from_prepared_columns<T: Transposition>(
     options: &PreparedGraphOptions,
 ) -> Result<Graph<T>> {
     let operation = "graph_from_prepared_columns";
-    prepared_profile_supported(src.diagnostics().profile(), operation)?;
-    prepared_profile_supported(dst.diagnostics().profile(), operation)?;
+    prepared_profile_supported(src.profile(), operation)?;
+    prepared_profile_supported(dst.profile(), operation)?;
     if let Some(weights) = weights {
-        prepared_profile_supported(weights.diagnostics().profile(), operation)?;
+        prepared_profile_supported(weights.profile(), operation)?;
     }
 
     if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
@@ -383,9 +382,6 @@ pub fn graph_from_prepared_columns<T: Transposition>(
     }
 
     let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
-    let src_retained_owner = src.clone_retained_owner();
-    let dst_retained_owner = dst.clone_retained_owner();
-    let wgt_retained_owner = weights.and_then(|weights| weights.clone_retained_owner());
     let mut src_lease = Some(
         src.try_activate_read_lease(read_start, completion)
             .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?,
@@ -425,20 +421,11 @@ pub fn graph_from_prepared_columns<T: Transposition>(
         build_graph_from_prepared_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation)
     })();
 
-    let src_complete = src_lease
-        .take()
-        .map(|lease| complete_prepared_lease(lease.complete(), src_retained_owner, operation))
-        .unwrap_or(Ok(None));
-    let dst_complete = dst_lease
-        .take()
-        .map(|lease| complete_prepared_lease(lease.complete(), dst_retained_owner, operation))
-        .unwrap_or(Ok(None));
-    let wgt_complete = wgt_lease
-        .take()
-        .map(|lease| complete_prepared_lease(lease.complete(), wgt_retained_owner, operation))
-        .unwrap_or(Ok(None));
+    let src_complete = src_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation));
+    let dst_complete = dst_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation));
+    let wgt_complete = wgt_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation));
 
-    finish_prepared_graph_result(graph_result, [src_complete, dst_complete, wgt_complete])
+    finish_prepared_graph_result(graph_result, [src_complete, dst_complete, wgt_complete].into_iter().flatten())
 }
 
 /// Create explicit cuGraph [`VertexPairs`] directly from two prepared-device
@@ -461,12 +448,10 @@ pub fn vertex_pairs_from_prepared_columns<T: Transposition>(
     second: &PreparedColumnExport<'_>,
 ) -> Result<VertexPairs> {
     let operation = "vertex_pairs_from_prepared_columns";
-    prepared_profile_supported(first.diagnostics().profile(), operation)?;
-    prepared_profile_supported(second.diagnostics().profile(), operation)?;
+    prepared_profile_supported(first.profile(), operation)?;
+    prepared_profile_supported(second.profile(), operation)?;
 
     let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
-    let first_retained_owner = first.clone_retained_owner();
-    let second_retained_owner = second.clone_retained_owner();
     let mut first_lease = Some(
         first
             .try_activate_read_lease(read_start, completion)
@@ -496,16 +481,10 @@ pub fn vertex_pairs_from_prepared_columns<T: Transposition>(
             .map_err(|error| error.with_operation(operation))
     })();
 
-    let first_complete = first_lease
-        .take()
-        .map(|lease| complete_prepared_lease(lease.complete(), first_retained_owner, operation))
-        .unwrap_or(Ok(None));
-    let second_complete = second_lease
-        .take()
-        .map(|lease| complete_prepared_lease(lease.complete(), second_retained_owner, operation))
-        .unwrap_or(Ok(None));
+    let first_complete = first_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation));
+    let second_complete = second_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation));
 
-    finish_prepared_vertex_pairs_result(pairs_result, [first_complete, second_complete])
+    finish_prepared_vertex_pairs_result(pairs_result, [first_complete, second_complete].into_iter().flatten())
 }
 
 fn validate_prepared_table_column_selection(
@@ -554,11 +533,10 @@ pub fn vertex_pairs_from_prepared_table_export<T: Transposition>(
     options: &TableVertexPairOptions,
 ) -> Result<VertexPairs> {
     let operation = "vertex_pairs_from_prepared_table_export";
-    prepared_profile_supported(export.diagnostics().profile(), operation)?;
+    prepared_profile_supported(export.profile(), operation)?;
     validate_prepared_vertex_pair_table_column_selection(export.columns().len(), options, operation)?;
 
     let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
-    let retained_owner = export.clone_retained_owner();
     let lease = export
         .try_activate_read_lease(read_start, completion)
         .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
@@ -571,7 +549,7 @@ pub fn vertex_pairs_from_prepared_table_export<T: Transposition>(
     };
     let pairs_result = build_vertex_pairs_from_prepared_columns(handle, graph, &pairs, operation)
         .map_err(|error| error.with_operation(operation));
-    let lease_complete = complete_prepared_lease(lease.complete(), retained_owner, operation);
+    let lease_complete = complete_prepared_lease(lease.complete(), operation);
 
     finish_prepared_vertex_pairs_result(pairs_result, [lease_complete])
 }
@@ -588,7 +566,7 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
     options: &TableGraphOptions,
 ) -> Result<Graph<T>> {
     let operation = "graph_from_prepared_table_export";
-    prepared_profile_supported(export.diagnostics().profile(), operation)?;
+    prepared_profile_supported(export.profile(), operation)?;
     validate_prepared_table_column_selection(export.columns().len(), options, operation)?;
 
     if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
@@ -614,7 +592,6 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
     }
 
     let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
-    let retained_owner = export.clone_retained_owner();
     let lease = export
         .try_activate_read_lease(read_start, completion)
         .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
@@ -630,7 +607,7 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 
     let graph_result =
         build_graph_from_prepared_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation);
-    let lease_complete = complete_prepared_lease(lease.complete(), retained_owner, operation);
+    let lease_complete = complete_prepared_lease(lease.complete(), operation);
 
     finish_prepared_graph_result(graph_result, [lease_complete])
 }

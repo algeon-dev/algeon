@@ -14,8 +14,7 @@ use cudf::{
     testing::prelude::*,
 };
 use rapids_interop::{
-    BufferBinding, ColumnLayout, ExportProfile, PhysicalValidity, SchemaNullability, SemanticColumn,
-    TypeId as InteropTypeId,
+    BufferBinding, ColumnLayout, PhysicalValidity, PreparedExportProfile, SemanticColumn, TypeId as InteropTypeId,
 };
 use tempfile::TempDir;
 
@@ -144,20 +143,6 @@ fn assert_validity_equivalent(
     }
 }
 
-fn schema_nullability_is_elidable(source: &SemanticColumn, copied: &SemanticColumn) -> bool {
-    match (source.schema_nullability(), copied.schema_nullability()) {
-        (SchemaNullability::Nullable, SchemaNullability::NonNullable) => {
-            validity_mask_is_elidable(source.validity())
-                && matches!(copied.validity(), PhysicalValidity::NoValidityBuffer)
-        },
-        (SchemaNullability::NonNullable, SchemaNullability::Nullable) => {
-            matches!(source.validity(), PhysicalValidity::NoValidityBuffer)
-                && validity_mask_is_elidable(copied.validity())
-        },
-        _ => false,
-    }
-}
-
 fn assert_semantic_column_equivalent(
     source: &SemanticColumn,
     copied: &SemanticColumn,
@@ -169,12 +154,6 @@ fn assert_semantic_column_equivalent(
     assert_eq!(source.data_type(), copied.data_type());
     assert_eq!(source.len(), copied.len());
     assert_eq!(source.offset(), copied.offset());
-    if source.schema_nullability() != copied.schema_nullability() {
-        assert!(
-            schema_nullability_is_elidable(source, copied),
-            "schema nullability mismatch: source={source:?} copied={copied:?}"
-        );
-    }
     assert_validity_equivalent(source.validity(), copied.validity(), source_bindings, copied_bindings);
 
     match (source.layout(), copied.layout()) {
@@ -239,8 +218,8 @@ fn assert_series_host_export_equivalent(expected: &Series, actual: &Series) {
     let expected_export = expected.try_prepare_host_column_export().unwrap();
     let actual_export = actual.try_prepare_host_column_export().unwrap();
 
-    assert_eq!(expected_export.diagnostics().profile(), ExportProfile::PreparedHostExport);
-    assert_eq!(actual_export.diagnostics().profile(), ExportProfile::PreparedHostExport);
+    assert_eq!(expected_export.profile(), PreparedExportProfile::Host);
+    assert_eq!(actual_export.profile(), PreparedExportProfile::Host);
 
     let expected_columns = semantic_column_map(expected_export.semantic_columns());
     let actual_columns = semantic_column_map(actual_export.semantic_columns());

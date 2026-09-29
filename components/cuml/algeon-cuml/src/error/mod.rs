@@ -168,8 +168,7 @@ pub(crate) fn from_cudf(op: &'static str, e: cudf::Error) -> Error {
         CudfErrorCode::FatalCuda => ErrorCode::FatalCuda,
         CudfErrorCode::CrossDeviceInputs
         | CudfErrorCode::RuntimeBindingMismatch
-        | CudfErrorCode::ExecutionBindingUnavailable
-        | CudfErrorCode::LeaseAlreadyActive => ErrorCode::RuntimeBindingMismatch,
+        | CudfErrorCode::ExecutionBindingUnavailable => ErrorCode::RuntimeBindingMismatch,
         CudfErrorCode::UnsupportedOperation => ErrorCode::ForeignUnsupported,
         _ if e.kind() == cudf::ErrorKind::InvalidInput => ErrorCode::ForeignInvalidArgument,
         _ => ErrorCode::ForeignUnknown,
@@ -216,8 +215,7 @@ pub(crate) fn from_interop(op: &'static str, e: InteropError) -> Error {
         InteropErrorKind::ExecutionBindingUnavailable
         | InteropErrorKind::ExecutionBindingMismatch
         | InteropErrorKind::ReadinessUnavailable
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => ErrorCode::RuntimeBindingMismatch,
+        | InteropErrorKind::ReadinessMismatch => ErrorCode::RuntimeBindingMismatch,
         _ => ErrorCode::ForeignInvalidArgument,
     };
     let mut out = Error::new(code, FailurePhase::Preflight, op, e.message());

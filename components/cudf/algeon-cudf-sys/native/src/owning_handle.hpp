@@ -109,20 +109,6 @@ std::unique_ptr<cudf_column_handle_state> cudf_take_column_state(cudf_column_han
 
 std::unique_ptr<cudf_table_handle_state> cudf_take_table_state(cudf_table_handle handle);
 
-std::unique_ptr<cudf_column_handle_state> cudf_make_foreign_column_handle_state(
-  uint32_t root_column_id,
-  cudf_interop_semantic_column_t const* semantic_columns,
-  int32_t num_semantic_columns,
-  cudf_interop_buffer_binding_t const* bindings,
-  int32_t num_bindings);
-
-std::unique_ptr<cudf_table_handle_state> cudf_make_foreign_table_handle_state(
-  cudf_interop_semantic_table_t const* table,
-  cudf_interop_semantic_column_t const* semantic_columns,
-  int32_t num_semantic_columns,
-  cudf_interop_buffer_binding_t const* bindings,
-  int32_t num_bindings);
-
 std::unique_ptr<cudf_table_handle_state> cudf_make_table_handle_state_from_columns(
   cudf::size_type num_rows, std::vector<std::unique_ptr<cudf_column_handle_state>> columns);
 

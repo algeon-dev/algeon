@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     ops::Deref,
     sync::{
         Arc,
@@ -17,15 +16,12 @@ use cudf::{
     DataFrame, DeviceMemoryResource, ErrorCode, Runtime, TypeId,
     core::Table,
     frame::dataframe::GpuRecordBatch,
-    interop::{
-        contract::{
-            ActiveLeaseBackend, CompletionBinding, CompletionWitness, CompletionWitnessBackend, CompletionWitnessKind,
-            IncompleteDropBehavior, LeaseActivation, LeaseBackend, LeaseCompletionResult, LeaseExportContext,
-            ReadStartBinding, Result as InteropResult,
-        },
-        cuda_explicit_completion_required_lease_backend,
+    interop::contract::{
+        ActiveLeaseBackend, CompletionAuthority, CompletionWitness, CompletionWitnessBackend, LeaseBackend,
+        ProducerReadiness, Result as InteropResult,
     },
     runtime::stream::CudaStream,
+    testing::interop::{column_export_with_lease_backend_for_test, table_export_with_lease_backend_for_test},
 };
 use cuvs::{
     BruteForceIndex, CagraBuildAlgo, CagraElement, CagraIndex, CagraIndexParams, CagraSearchParams, CuvsResources,
@@ -49,10 +45,6 @@ impl CompletionWitnessBackend for TrackingWitness {
         self.synchronizations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 #[derive(Debug)]
@@ -61,31 +53,21 @@ struct TrackingLeaseBackend {
 }
 
 impl ActiveLeaseBackend for TrackingLeaseBackend {
-    fn activate(
-        &self,
-        _export: &LeaseExportContext,
-        _read_start: ReadStartBinding,
-        _completion: CompletionBinding,
-    ) -> InteropResult<LeaseActivation> {
-        Ok(LeaseActivation::noop())
-    }
-
-    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
-        IncompleteDropBehavior::GuaranteedFallback
-    }
-
     fn complete(
         &self,
-        _export: &LeaseExportContext,
-        _completion: CompletionBinding,
-    ) -> InteropResult<LeaseCompletionResult> {
-        Ok(LeaseCompletionResult::Completed(CompletionWitness::with_backend(
-            CompletionWitnessKind::ConsumerStream,
-            Arc::new(TrackingWitness { synchronizations: Arc::clone(&self.synchronizations) }),
-        )))
+        _readiness: ProducerReadiness<'_>,
+        _completion: CompletionAuthority<'_>,
+    ) -> InteropResult<Option<CompletionWitness>> {
+        Ok(Some(CompletionWitness::new(Arc::new(TrackingWitness {
+            synchronizations: Arc::clone(&self.synchronizations),
+        }))))
     }
 
-    fn drop_incomplete(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> InteropResult<()> {
+    fn drop_incomplete(
+        &self,
+        _readiness: ProducerReadiness<'_>,
+        _completion: CompletionAuthority<'_>,
+    ) -> InteropResult<()> {
         self.synchronizations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -189,8 +171,6 @@ fn prepared_tensor_completion_and_incomplete_drop_are_safe() {
     let lease = resources.activate_prepared_tensor::<f32>(&export, &[2, 2], None).expect("activate prepared tensor");
     assert_eq!(lease.tensor().shape(), &[2, 2]);
     let completion = lease.complete().expect("complete prepared tensor");
-    assert!(completion.witness().is_none());
-    assert!(!completion.retains_producer_owner());
     assert!(completion.is_ready().expect("completed read readiness"));
 
     let abandoned = resources.activate_prepared_tensor::<f32>(&export, &[4], None).expect("activate abandoned tensor");
@@ -205,17 +185,17 @@ fn prepared_completion_retains_owner_until_drop_and_synchronizes_before_release(
         cudf::Series::from_column(runtime.column_from_slice(&[1.0_f32, 2.0]).expect("column")).expect("series");
     let marker = Arc::new(());
     let synchronizations = Arc::new(AtomicUsize::new(0));
-    let export = series
-        .try_prepare_device_column_export()
-        .expect("prepared export")
-        .with_retained_owner_arc(Arc::clone(&marker))
-        .with_lease_backend(LeaseBackend::new(TrackingLeaseBackend {
-            synchronizations: Arc::clone(&synchronizations),
-        }));
+    let export = column_export_with_lease_backend_for_test(
+        &series
+            .try_prepare_device_column_export()
+            .expect("prepared export")
+            .with_retained_owner(Arc::<()>::clone(&marker)),
+        LeaseBackend::new(TrackingLeaseBackend { synchronizations: Arc::clone(&synchronizations) }),
+    )
+    .expect("lease backend");
 
     let completion =
         resources.activate_prepared_tensor::<f32>(&export, &[2], None).expect("activate").complete().expect("complete");
-    assert!(completion.retains_producer_owner());
     assert_eq!(synchronizations.load(Ordering::SeqCst), 0);
     drop(export);
     drop(series);
@@ -231,15 +211,15 @@ fn prepared_completion_without_retained_owner_synchronizes_before_return() {
     let (runtime, resources, _reservation) = resources();
     let column = runtime.column_from_slice(&[1.0_f32, 2.0]).expect("column");
     let synchronizations = Arc::new(AtomicUsize::new(0));
-    let export = column.try_prepare_device_column_export().expect("prepared export").with_lease_backend(
+    let export = column_export_with_lease_backend_for_test(
+        &column.try_prepare_device_column_export().expect("prepared export"),
         LeaseBackend::new(TrackingLeaseBackend { synchronizations: Arc::clone(&synchronizations) }),
-    );
-    assert!(export.clone_retained_owner().is_none());
+    )
+    .expect("lease backend");
 
     let completion =
         resources.activate_prepared_tensor::<f32>(&export, &[2], None).expect("activate").complete().expect("complete");
-    assert!(completion.witness().is_none());
-    assert!(!completion.retains_producer_owner());
+    assert!(completion.is_ready().expect("completed read readiness"));
     assert_eq!(synchronizations.load(Ordering::SeqCst), 1);
 }
 
@@ -348,9 +328,11 @@ fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
     ])
     .expect("table");
     let synchronizations = Arc::new(AtomicUsize::new(0));
-    let export = table.try_prepare_device_table_export().expect("prepared table").with_lease_backend(
+    let export = table_export_with_lease_backend_for_test(
+        &table.try_prepare_device_table_export().expect("prepared table"),
         LeaseBackend::new(TrackingLeaseBackend { synchronizations: Arc::clone(&synchronizations) }),
-    );
+    )
+    .expect("lease backend");
 
     let matrix = resources.pack_prepared_table::<f32>(&export, MatrixLayout::RowMajor).expect("packed prepared table");
     assert_eq!(matrix.rows(), 3);
@@ -463,22 +445,6 @@ fn integer_list_exports_activate_and_pack_with_their_element() {
     let packed = resources.pack_validated_uniform_list::<u8>(&validated, MatrixLayout::ColumnMajor).unwrap();
     assert!(packed.is_input_validated());
     assert_eq!(packed.as_validated_tensor(&resources).unwrap().strides(), Some([1, 2].as_slice()));
-}
-
-#[test]
-fn prepared_tensor_rejects_exports_without_incomplete_drop_fallback() {
-    let (runtime, resources, _reservation) = resources();
-    let column = runtime.column_from_slice(&[1.0_f32, 2.0, 3.0, 4.0]).expect("column");
-    let export = column
-        .try_prepare_device_column_export()
-        .expect("prepared export")
-        .with_lease_backend(cuda_explicit_completion_required_lease_backend());
-
-    let error = resources
-        .activate_prepared_tensor::<f32>(&export, &[2, 2], None)
-        .expect_err("explicit-completion-only export must be rejected");
-    assert_eq!(error.kind(), ErrorKind::InvalidInput);
-    assert!(error.message().contains("must guarantee safe fallback"));
 }
 
 #[test]

@@ -1,13 +1,7 @@
 #[path = "arrow_device_tests.rs"]
 mod arrow_device_tests;
-#[path = "borrowed_view_tests.rs"]
-mod borrowed_view_tests;
 #[path = "import_tests.rs"]
 mod import_tests;
-#[path = "owned_transfer_tests.rs"]
-mod owned_transfer_tests;
-#[path = "partitioned_export_tests.rs"]
-mod partitioned_export_tests;
 #[path = "prepared_export_tests.rs"]
 mod prepared_export_tests;
 #[path = "runtime_execution_binding_tests.rs"]

@@ -1,51 +1,7 @@
-use core::{any::Any, ffi::c_void, fmt};
+use core::fmt;
 use std::sync::Arc;
 
-use crate::{LeaseReadiness, ReadStartBinding, types::Result};
-
-/// Backend-facing producer export facts retained for the lifetime of an active
-/// lease.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LeaseExportContext {
-    producer_device: Option<i32>,
-    readiness: LeaseReadiness,
-}
-
-impl LeaseExportContext {
-    pub const fn new(producer_device: Option<i32>, readiness: LeaseReadiness) -> Self {
-        Self { producer_device, readiness }
-    }
-
-    pub fn producer_device(&self) -> Option<i32> {
-        self.producer_device
-    }
-
-    pub fn readiness(&self) -> LeaseReadiness {
-        self.readiness
-    }
-}
-
-/// Backend-facing completion authority captured on an active lease.
-///
-/// # Safety
-///
-/// The `raw` pointers are lifetime-erased CUDA stream/event handles.  They
-/// are valid only while the `'consumer` lifetime on the enclosing
-/// `ActiveColumnReadLease` / `ActiveTableReadLease` is alive.  Do not store
-/// these bindings beyond the lease's lifetime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionBinding {
-    SynchronousByReturn,
-    SameDeviceStream { raw: *mut c_void, device: i32 },
-    CrossDeviceEvent { raw: *mut c_void, device: i32 },
-}
-
-/// Classification of the completion witness produced by a finished lease.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionWitnessKind {
-    ConsumerStream,
-    ConsumerEvent,
-}
+use crate::{CompletionAuthority, ProducerReadiness, ReadStartAuthority, types::Result};
 
 /// Backend operations supported by a producer-owned completion witness.
 ///
@@ -69,46 +25,17 @@ pub trait CompletionWitnessBackend: Send + Sync {
     /// `Ok(())` establishes completion. `Err` means completion was not
     /// established, so it does not authorize releasing producer storage.
     fn synchronize(&self) -> Result<()>;
-
-    #[doc(hidden)]
-    fn as_any(&self) -> &dyn Any;
-}
-
-#[derive(Debug)]
-struct ReadyCompletionWitnessBackend;
-
-impl CompletionWitnessBackend for ReadyCompletionWitnessBackend {
-    fn is_ready(&self) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn synchronize(&self) -> Result<()> {
-        Ok(())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 /// Producer-owned completion witness returned by a completed lease.
 #[derive(Clone)]
 pub struct CompletionWitness {
-    kind: CompletionWitnessKind,
     backend: Arc<dyn CompletionWitnessBackend>,
 }
 
 impl CompletionWitness {
-    pub fn new(kind: CompletionWitnessKind) -> Self {
-        Self { kind, backend: Arc::new(ReadyCompletionWitnessBackend) }
-    }
-
-    pub fn with_backend(kind: CompletionWitnessKind, backend: Arc<dyn CompletionWitnessBackend>) -> Self {
-        Self { kind, backend }
-    }
-
-    pub const fn kind(&self) -> CompletionWitnessKind {
-        self.kind
+    pub fn new(backend: Arc<dyn CompletionWitnessBackend>) -> Self {
+        Self { backend }
     }
 
     pub fn is_ready(&self) -> Result<bool> {
@@ -118,37 +45,12 @@ impl CompletionWitness {
     pub fn synchronize(&self) -> Result<()> {
         self.backend.synchronize()
     }
-
-    #[doc(hidden)]
-    pub fn downcast_backend_ref<T: CompletionWitnessBackend + 'static>(&self) -> Option<&T> {
-        self.backend.as_any().downcast_ref::<T>()
-    }
 }
 
 impl fmt::Debug for CompletionWitness {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CompletionWitness").field("kind", &self.kind).finish()
+        f.debug_struct("CompletionWitness").finish_non_exhaustive()
     }
-}
-
-/// Semantic equality: two witnesses are equal when they represent the same
-/// completion outcome (`kind`).  The backend that produced the witness is
-/// intentionally ignored because backends are trait objects without identity
-/// equality; what matters to consumers is the observable completion state.
-impl PartialEq for CompletionWitness {
-    fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind
-    }
-}
-
-impl Eq for CompletionWitness {}
-
-/// Describes how a backend handles active leases that are dropped before
-/// explicit completion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IncompleteDropBehavior {
-    GuaranteedFallback,
-    ExplicitCompletionRequired,
 }
 
 /// Backend-owned activation state retained for the lifetime of one active
@@ -187,7 +89,9 @@ impl fmt::Debug for LeaseActivation {
 ///
 /// One backend is shared by every lease of a prepared export and its clones,
 /// and it is called from whichever thread activates, completes, or drops a
-/// lease.
+/// lease. Every call receives the export's producer readiness and the lease's
+/// consumer authorities, which stay borrowed for the lease's lifetime. The
+/// producer CUDA device is `readiness.device()`.
 ///
 /// # Lease lifecycle
 ///
@@ -200,80 +104,45 @@ impl fmt::Debug for LeaseActivation {
 ///    The lease is marked completed only when it returns `Ok`.
 /// 3. A lease dropped without being marked completed, including one whose
 ///    `complete` returned `Err`, calls
-///    [`drop_incomplete`](Self::drop_incomplete) from `Drop` when
-///    [`incomplete_drop_behavior`](Self::incomplete_drop_behavior) is
-///    [`IncompleteDropBehavior::GuaranteedFallback`], and calls nothing for
-///    [`IncompleteDropBehavior::ExplicitCompletionRequired`]. A
-///    `GuaranteedFallback` backend must therefore handle a fallback after
-///    `complete` has done part of its work and failed.
+///    [`drop_incomplete`](Self::drop_incomplete) from `Drop`. The backend must
+///    therefore handle a fallback after `complete` has done part of its work
+///    and failed.
 pub trait ActiveLeaseBackend: Send + Sync {
     /// Starts consumer access for one lease.
     ///
-    /// `read_start` orders consumer reads after producer readiness, and
-    /// `completion` is the binding later passed to `complete` or
-    /// `drop_incomplete` for the same lease. The returned [`LeaseActivation`]
-    /// is retained until the lease is dropped. The default performs no backend
-    /// work and retains no state.
+    /// `read_start` orders consumer reads after `readiness`, and `completion`
+    /// is the authority later passed to `complete` or `drop_incomplete` for the
+    /// same lease. The returned [`LeaseActivation`] is retained until the lease
+    /// is dropped. The default performs no backend work and retains no state.
     fn activate(
         &self,
-        _export: &LeaseExportContext,
-        _read_start: ReadStartBinding,
-        _completion: CompletionBinding,
+        _readiness: ProducerReadiness<'_>,
+        _read_start: ReadStartAuthority<'_>,
+        _completion: CompletionAuthority<'_>,
     ) -> Result<LeaseActivation> {
         Ok(LeaseActivation::noop())
     }
 
-    /// How a lease using this backend behaves when dropped without successful
-    /// completion. The lease reads it at drop time, so it must not change over
-    /// the backend's lifetime.
-    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior;
-
     /// Establishes completion for one lease.
     ///
-    /// [`LeaseCompletionResult::Completed`] means a completion witness was
-    /// recorded, not that consumer device work has finished; the caller still
-    /// releases producer storage according to the witness and the producer
-    /// owner's release contract. [`LeaseCompletionResult::FallbackSynchronized`]
-    /// means completion was established before returning. `Err` leaves the
-    /// lease incomplete.
-    fn complete(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<LeaseCompletionResult>;
+    /// `Some(witness)` means a completion point was recorded, not that
+    /// consumer device work has finished; the lease holds the export's retained
+    /// owner until the witness is synchronized. `None` means completion was
+    /// established before returning. `Err` leaves the lease incomplete.
+    fn complete(
+        &self,
+        readiness: ProducerReadiness<'_>,
+        completion: CompletionAuthority<'_>,
+    ) -> Result<Option<CompletionWitness>>;
 
     /// Drop-time fallback for a lease that was not completed.
     ///
-    /// Called only for [`IncompleteDropBehavior::GuaranteedFallback`], from the
-    /// lease's `Drop`, which may run during unwinding; it must not panic. The
-    /// lease discards the returned `Result`. The fallback guarantee holds only
-    /// when this returns `Ok`: after `Err`, consumer completion is not
-    /// established even though the lease, and with it the borrow of the
+    /// Called from the lease's `Drop`, which may run during unwinding; it must
+    /// not panic. The lease discards the returned `Result`. Completion is
+    /// established only when this returns `Ok`: after `Err`, consumer reads may
+    /// still be pending even though the lease, and with it the borrow of the
     /// prepared export, has ended.
-    fn drop_incomplete(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<()>;
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SemanticLeaseBackend {
-    incomplete_drop_behavior: IncompleteDropBehavior,
-}
-
-impl ActiveLeaseBackend for SemanticLeaseBackend {
-    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
-        self.incomplete_drop_behavior
-    }
-
-    fn complete(&self, _export: &LeaseExportContext, completion: CompletionBinding) -> Result<LeaseCompletionResult> {
-        Ok(match completion {
-            CompletionBinding::SynchronousByReturn => LeaseCompletionResult::FallbackSynchronized,
-            CompletionBinding::SameDeviceStream { .. } => {
-                LeaseCompletionResult::Completed(CompletionWitness::new(CompletionWitnessKind::ConsumerStream))
-            },
-            CompletionBinding::CrossDeviceEvent { .. } => {
-                LeaseCompletionResult::Completed(CompletionWitness::new(CompletionWitnessKind::ConsumerEvent))
-            },
-        })
-    }
-
-    fn drop_incomplete(&self, _export: &LeaseExportContext, _completion: CompletionBinding) -> Result<()> {
-        Ok(())
-    }
+    fn drop_incomplete(&self, readiness: ProducerReadiness<'_>, completion: CompletionAuthority<'_>) -> Result<()>;
 }
 
 /// Shared backend descriptor attached to prepared exports.
@@ -288,205 +157,42 @@ impl LeaseBackend {
         Self { inner: Arc::new(backend) }
     }
 
-    /// Built-in shared backend that treats incomplete lease drop as safely
-    /// fallback-completable.
-    pub fn semantic_guaranteed_fallback() -> Self {
-        Self::new(SemanticLeaseBackend { incomplete_drop_behavior: IncompleteDropBehavior::GuaranteedFallback })
-    }
-
-    /// Built-in shared backend that requires explicit lease completion and
-    /// performs no drop-time fallback.
-    pub fn semantic_explicit_completion_required() -> Self {
-        Self::new(SemanticLeaseBackend { incomplete_drop_behavior: IncompleteDropBehavior::ExplicitCompletionRequired })
-    }
-
-    pub fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
-        self.inner.incomplete_drop_behavior()
-    }
-
     pub(crate) fn activate(
         &self,
-        export: &LeaseExportContext,
-        read_start: ReadStartBinding,
-        completion: CompletionBinding,
+        readiness: ProducerReadiness<'_>,
+        read_start: ReadStartAuthority<'_>,
+        completion: CompletionAuthority<'_>,
     ) -> Result<LeaseActivation> {
-        self.inner.activate(export, read_start, completion)
+        self.inner.activate(readiness, read_start, completion)
     }
 
     pub(crate) fn complete(
         &self,
-        export: &LeaseExportContext,
-        completion: CompletionBinding,
-    ) -> Result<LeaseCompletionResult> {
-        self.inner.complete(export, completion)
+        readiness: ProducerReadiness<'_>,
+        completion: CompletionAuthority<'_>,
+    ) -> Result<Option<CompletionWitness>> {
+        self.inner.complete(readiness, completion)
     }
 
-    pub(crate) fn drop_incomplete(&self, export: &LeaseExportContext, completion: CompletionBinding) -> Result<()> {
-        self.inner.drop_incomplete(export, completion)
+    pub(crate) fn drop_incomplete(
+        &self,
+        readiness: ProducerReadiness<'_>,
+        completion: CompletionAuthority<'_>,
+    ) -> Result<()> {
+        self.inner.drop_incomplete(readiness, completion)
     }
 }
 
 impl fmt::Debug for LeaseBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LeaseBackend").field("incomplete_drop_behavior", &self.incomplete_drop_behavior()).finish()
+        f.debug_struct("LeaseBackend").finish_non_exhaustive()
     }
 }
 
-/// Shared completion outcome for an active read lease.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LeaseCompletionResult {
-    Completed(CompletionWitness),
-    FallbackSynchronized,
-}
-
-/// Minimal diagnostics surface for the interop boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportProfile {
-    BorrowedDeviceCompatibility,
-    PreparedDeviceExport,
-    PreparedHostExport,
-    OwnedDeviceTransfer,
-}
-
-/// The prepared-export subset of [`ExportProfile`].
+/// Placement of a prepared export's bytes, derived from its
+/// [`PreparedAccess`](crate::PreparedAccess).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreparedExportProfile {
     Device,
     Host,
-}
-
-impl PreparedExportProfile {
-    pub fn diagnostics(self) -> ExportDiagnostics {
-        ExportDiagnostics::new(self.into())
-    }
-}
-
-impl From<PreparedExportProfile> for ExportProfile {
-    fn from(profile: PreparedExportProfile) -> Self {
-        match profile {
-            PreparedExportProfile::Device => ExportProfile::PreparedDeviceExport,
-            PreparedExportProfile::Host => ExportProfile::PreparedHostExport,
-        }
-    }
-}
-
-/// Minimal profile/debug metadata for an export root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExportDiagnostics {
-    profile: ExportProfile,
-}
-
-impl ExportDiagnostics {
-    pub fn new(profile: ExportProfile) -> Self {
-        Self { profile }
-    }
-
-    pub fn profile(&self) -> ExportProfile {
-        self.profile
-    }
-
-    pub fn prepared_profile(&self) -> Option<PreparedExportProfile> {
-        match self.profile {
-            ExportProfile::PreparedDeviceExport => Some(PreparedExportProfile::Device),
-            ExportProfile::PreparedHostExport => Some(PreparedExportProfile::Host),
-            ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => None,
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct RetainedHostBuffers {
-    buffers: Vec<Arc<[u8]>>,
-}
-
-impl RetainedHostBuffers {
-    pub(crate) fn new(buffers: Vec<Arc<[u8]>>) -> Self {
-        Self { buffers }
-    }
-}
-
-impl fmt::Debug for RetainedHostBuffers {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RetainedHostBuffers").field("count", &self.buffers.len()).finish()
-    }
-}
-
-/// Declares who is responsible for establishing that consumer work is complete
-/// before an owned-transfer release may finish.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferCompletionRule {
-    /// The caller must determine that consumer work has completed before it
-    /// begins release.
-    CallerMustReleaseAfterConsumerWorkCompletes,
-    /// The release path itself waits on a consumer-provided completion signal.
-    ReleaseWaitsOnConsumerSignal,
-}
-
-/// Declares whether owned-transfer release may block internally or requires
-/// synchronization outside the release call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseSynchronization {
-    /// Release proceeds asynchronously once started.
-    Asynchronous,
-    /// Release may block internally while carrying out the release contract.
-    MaySynchronizeInternally,
-    /// The caller must perform any required synchronization before release.
-    RequiresCallerSynchronization,
-}
-
-/// Shared semantic release contract for an ownership-bearing device transfer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReleaseContract {
-    release_device: i32,
-    completion: TransferCompletionRule,
-    synchronization: ReleaseSynchronization,
-}
-
-impl ReleaseContract {
-    /// Build a plain release-contract value. Semantic validation happens when
-    /// the contract is used to construct an owned transfer root.
-    pub fn new(
-        release_device: i32,
-        completion: TransferCompletionRule,
-        synchronization: ReleaseSynchronization,
-    ) -> Self {
-        Self { release_device, completion, synchronization }
-    }
-
-    pub fn release_device(&self) -> i32 {
-        self.release_device
-    }
-
-    pub fn completion(&self) -> TransferCompletionRule {
-        self.completion
-    }
-
-    pub fn synchronization(&self) -> ReleaseSynchronization {
-        self.synchronization
-    }
-}
-
-pub(crate) struct OwnedTransferOwner {
-    state: Box<dyn Any + Send + Sync>,
-}
-
-impl OwnedTransferOwner {
-    pub(crate) fn new<Owner>(owner: Owner) -> Self
-    where Owner: Send + Sync + 'static {
-        Self { state: Box::new(owner) }
-    }
-
-    pub(crate) fn try_into<Owner>(self) -> core::result::Result<Owner, Self>
-    where Owner: Send + Sync + 'static {
-        match self.state.downcast::<Owner>() {
-            Ok(owner) => Ok(*owner),
-            Err(state) => Err(Self { state }),
-        }
-    }
-}
-
-impl fmt::Debug for OwnedTransferOwner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OwnedTransferOwner").finish()
-    }
 }

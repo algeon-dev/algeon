@@ -25,8 +25,6 @@ pub enum BoundaryKind {
     DeviceAbiHandoff,
     /// A prepared interop export was activated as a read lease.
     InteropLease,
-    /// Ownership was transferred through a RAPIDS interop owned-transfer root.
-    OwnedTransfer,
     /// Device-resident evidence was reduced to one bounded host-visible
     /// control scalar without materializing the input payload.
     BoundedControlScalar,

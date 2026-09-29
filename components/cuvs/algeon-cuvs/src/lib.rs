@@ -29,6 +29,6 @@ pub use ivf_pq::{IvfPqCodebookKind, IvfPqIndex, IvfPqIndexParams, IvfPqSearchPar
 pub use kmeans::{KMeansFit, KMeansInit, KMeansMetric, KMeansModel, KMeansParams, KMeansPrediction};
 pub use pairwise::pairwise_distance_into;
 pub use pca::{PcaFitTransform, PcaOutputBuffers, PcaParams, PcaSolver, fit_transform_owned};
-pub use prepared::{PreparedReadCompletion, PreparedTensorLease, PreparedValidatedTensorLease};
+pub use prepared::{PreparedTensorLease, PreparedValidatedTensorLease};
 pub use resources::{CuvsResources, StreamPoolCoverage};
 pub use select_k::select_k_into;

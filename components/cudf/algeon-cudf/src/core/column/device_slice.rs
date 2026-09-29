@@ -16,9 +16,9 @@ use crate::core::types::TypeId;
 /// that produced it, so the descriptor cannot outlive the allocation it points
 /// to.
 ///
-/// This is a low-level raw-pointer helper. For borrowed interop across crates,
-/// prefer [`rapids_interop::BorrowedColumnView`] via
-/// [`Column::try_borrow_column_view`](crate::core::Column::try_borrow_column_view),
+/// This is a low-level raw-pointer helper. For interop across crates, prefer
+/// [`rapids_interop::PreparedColumnExport`] via
+/// [`Column::try_prepare_device_column_export`](crate::core::Column::try_prepare_device_column_export),
 /// which also carries null-mask semantics, base-pointer-plus-offset behavior,
 /// and execution provenance.
 #[derive(Debug)]

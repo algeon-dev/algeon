@@ -504,10 +504,10 @@ fn pack_validated_list_child_into_runtime(
         )
     }?;
     // The runtime's resolved execution domain has already installed the
-    // reverse consumer-completion fence on the producer domain. Completing
-    // the prepared lease records its stream witness, but no host wait is
-    // needed before returning the independently owned packed allocation.
-    let _completion = lease.complete().map_err(|error| error::from_interop_in(error, operation))?;
+    // reverse consumer-completion fence on the producer domain, so releasing
+    // the producer owner is stream-ordered after the pack and needs no host
+    // wait before returning the independently owned packed allocation.
+    lease.complete().map_err(|error| error::from_interop_in(error, operation))?.release_stream_ordered();
     Ok(packed)
 }
 

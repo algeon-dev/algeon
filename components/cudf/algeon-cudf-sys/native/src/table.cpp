@@ -168,26 +168,6 @@ cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_table_create_from_owned_device_transfer(
-  cudf_interop_semantic_table_t const* table,
-  cudf_interop_semantic_column_t const* semantic_columns,
-  int32_t num_semantic_columns,
-  cudf_interop_buffer_binding_t const* bindings,
-  int32_t num_bindings,
-  cudf_table_handle* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_TRY
-  {
-    auto state = cudf_make_foreign_table_handle_state(
-      table, semantic_columns, num_semantic_columns, bindings, num_bindings);
-    *out = cudf_release_table_handle(std::move(state));
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
-}
-
 cudf_status_t cudf_table_payload_size_ex(cudf_table_handle handle,
                                          cudf_exec_options_t const* options,
                                          size_t* out)

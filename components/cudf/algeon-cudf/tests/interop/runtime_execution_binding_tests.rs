@@ -52,8 +52,7 @@ fn order_after_execution_binding_noops_for_same_stream_different_memory_resource
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
     let alternate_mr_runtime = Runtime::builder().build().unwrap();
-    let producer = ExecutionBinding::explicit(
-        runtime.device().ordinal() as i32,
+    let producer = ExecutionBinding::new(
         CudaStreamHandle::from_raw_on_device(
             runtime.stream().testing_raw_handle_value() as *mut std::ffi::c_void,
             runtime.device().ordinal() as i32,
@@ -103,8 +102,7 @@ fn order_after_execution_binding_rejects_cross_device_bindings_before_cuda_order
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
     let binding = runtime.execution_binding().unwrap();
-    let cross_device = ExecutionBinding::explicit(
-        binding.device() + 1,
+    let cross_device = ExecutionBinding::new(
         CudaStreamHandle::from_raw_on_device(binding.cuda_stream().as_raw(), binding.device() + 1).unwrap(),
         binding.memory_resource(),
     );

@@ -202,16 +202,3 @@ pub(super) fn prepared_device_import_table_graph(
         operation,
     )
 }
-
-pub(super) fn owned_device_import_table_graph(
-    transfer: &OwnedTableTransfer,
-    operation: &'static str,
-) -> Result<PreparedDeviceImportTableGraph, InteropError> {
-    prepared_device_import_table_graph_from_parts(
-        transfer.table().num_rows(),
-        transfer.table().columns().iter().map(|column| column.get()),
-        transfer.semantic_columns(),
-        transfer.bindings(),
-        operation,
-    )
-}

@@ -7,10 +7,6 @@ pub(crate) mod testing_hooks;
 
 use support::*;
 
-fn schema_nullability(nullable: bool) -> SchemaNullability {
-    if nullable { SchemaNullability::Nullable } else { SchemaNullability::NonNullable }
-}
-
 pub(super) fn prepared_column_projection_from_view<'a>(
     view: &ColumnView<'a>,
     operation: &'static str,

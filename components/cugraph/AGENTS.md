@@ -38,8 +38,8 @@ SQL planning, runtime admission, and query execution follow the root
   without a second RAFT stream pool. Public active GPU wrappers preserve the
   `!Send + !Sync` assertions in `type_threading_contract_cpu`; `ParkedGraph` remains
   `Send + !Sync`.
-- Preserve borrowed, prepared, shared-owner, and owned-transfer cuDF interop
-  paths, including their completion ordering.
+- Preserve prepared and shared-owner cuDF interop paths, including their
+  completion ordering.
 - Preserve native ownership, graph type-state, null checks, and result dtype
   decoding across FFI boundaries.
 - Checked-in bindings are generated only by `scripts/dev/bindings.sh cugraph`;

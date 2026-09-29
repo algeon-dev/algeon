@@ -244,7 +244,6 @@ pub(crate) fn from_cudf(operation: &'static str, error: cudf::Error) -> Error {
         | ErrorCode::RuntimeBindingMismatch
         | ErrorCode::ReadinessUnavailable
         | ErrorCode::ExecutionBindingUnavailable
-        | ErrorCode::LeaseAlreadyActive
         | ErrorCode::InvariantViolation
         | ErrorCode::ForeignInvariantViolation => ErrorKind::InvalidState,
         ErrorCode::CudaRuntime
@@ -280,12 +279,10 @@ pub(crate) fn from_interop(operation: &'static str, error: InteropError) -> Erro
         InteropErrorKind::ExecutionBindingUnavailable
         | InteropErrorKind::ExecutionBindingMismatch
         | InteropErrorKind::ReadinessUnavailable
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => ErrorKind::InvalidState,
-        InteropErrorKind::NotFound
-        | InteropErrorKind::NullMaskUnsupported
-        | InteropErrorKind::InvalidView
-        | InteropErrorKind::MixedDeviceUnsupported => ErrorKind::InvalidInput,
+        | InteropErrorKind::ReadinessMismatch => ErrorKind::InvalidState,
+        InteropErrorKind::NotFound | InteropErrorKind::InvalidView | InteropErrorKind::MixedDeviceUnsupported => {
+            ErrorKind::InvalidInput
+        },
     };
     let mut mapped = Error::new(kind, operation)
         .with_message(error.message())

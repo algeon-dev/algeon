@@ -41,16 +41,14 @@
 //! ```
 
 use std::{
-    any::Any,
     cell::{Cell, RefCell},
     marker::PhantomData,
     mem::ManuallyDrop,
     ptr,
-    sync::Arc,
 };
 
 use cudf::{
-    interop::contract::{CompletionWitness, InteropError},
+    interop::contract::{InteropError, LeaseCompletion},
     runtime::{CudaEvent, ExecutionBindingId},
 };
 use cugraph_sys::{cugraph_decompress_to_edgelist, cugraph_edgelist_t, cugraph_error_t, cugraph_graph_t};
@@ -165,30 +163,23 @@ pub struct Graph<T = Forward> {
 }
 
 pub(crate) struct DeferredInputCompletion {
-    _owners: Vec<Arc<dyn Any + Send + Sync>>,
-    witnesses: Vec<CompletionWitness>,
+    completions: Vec<LeaseCompletion>,
 }
 
 impl DeferredInputCompletion {
-    pub(crate) fn new(owners: Vec<Arc<dyn Any + Send + Sync>>, witnesses: Vec<CompletionWitness>) -> Option<Self> {
-        if owners.is_empty() || witnesses.is_empty() {
+    pub(crate) fn new(completions: Vec<LeaseCompletion>) -> Option<Self> {
+        if completions.is_empty() {
             return None;
         }
 
-        Some(Self { _owners: owners, witnesses })
+        Some(Self { completions })
     }
 
-    pub(crate) fn synchronize_witnesses(&self, operation: &'static str) -> Result<()> {
-        for witness in &self.witnesses {
-            witness.synchronize().map_err(|error| map_completion_witness_error(error, operation))?;
+    pub(crate) fn synchronize(&mut self, operation: &'static str) -> Result<()> {
+        for completion in &mut self.completions {
+            completion.synchronize().map_err(|error| map_completion_witness_error(error, operation))?;
         }
         Ok(())
-    }
-
-    pub(crate) fn synchronize(self) {
-        for witness in &self.witnesses {
-            let _ = witness.synchronize();
-        }
     }
 }
 
@@ -290,8 +281,8 @@ impl<T> Graph<T> {
         let operation = "Graph::park";
         self.validate_runtime_bound_transfer(handle, operation)?;
 
-        if let Some(pending) = self.pending_input_completion.as_ref() {
-            pending.synchronize_witnesses(operation)?;
+        if let Some(pending) = self.pending_input_completion.as_mut() {
+            pending.synchronize(operation)?;
         }
         drop(self.pending_input_completion.take());
 
@@ -341,8 +332,8 @@ impl<T> Graph<T> {
                 .with_context("handle_binding_id", entering.to_string()));
         }
         let mut this = self;
-        if let Some(pending) = this.pending_input_completion.as_ref() {
-            pending.synchronize_witnesses(operation)?;
+        if let Some(pending) = this.pending_input_completion.as_mut() {
+            pending.synchronize(operation)?;
         }
         // Release the witnesses before the park event is recorded: a parked
         // graph outlives this call, so retaining them would keep its input
@@ -643,9 +634,9 @@ fn free_graph_raw_with_leases(
 
 impl<T> Drop for Graph<T> {
     fn drop(&mut self) {
-        if let Some(pending) = self.pending_input_completion.take() {
-            pending.synchronize();
-        }
+        // Fence input reads before native teardown; a failed fence leaks the
+        // input owners (see `LeaseCompletion`).
+        drop(self.pending_input_completion.take());
         free_graph_raw_with_leases(&mut self.raw, self.device, "Graph::drop", self.resource_handle_leases.get_mut());
     }
 }

@@ -5,8 +5,6 @@ mod dataframe_merge_allocation_tests;
 #[path = "../ops/sorting/dataframe_sort_values_allocation_tests.rs"]
 mod dataframe_sort_values_allocation_tests;
 
-use rapids_interop::ProducerReadiness;
-
 use crate::{
     allocation::allocation_count_delta,
     common::{column_from_slice, dataframe_from_columns},
@@ -33,7 +31,6 @@ fn dataframe_prepare_host_export_does_not_allocate_extra_device_memory_when_colu
         let export = baseline.try_prepare_host_table_export().unwrap();
         assert_eq!(export.table().num_rows(), 3);
         assert_eq!(export.table().names().unwrap(), &["id".to_string(), "value".to_string()]);
-        assert_eq!(export.readiness(), &ProducerReadiness::HostVisible);
         export
     });
 
@@ -41,7 +38,6 @@ fn dataframe_prepare_host_export_does_not_allocate_extra_device_memory_when_colu
         let export = shared.try_prepare_host_table_export().unwrap();
         assert_eq!(export.table().num_rows(), 3);
         assert_eq!(export.table().names().unwrap(), &["id".to_string(), "value".to_string()]);
-        assert_eq!(export.readiness(), &ProducerReadiness::HostVisible);
         export
     });
 

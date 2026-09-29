@@ -1405,11 +1405,16 @@ fn with_relation_tensor<E: DeviceElement, T>(
             };
             guard.finish(Some(input_rows as u64), Some(packed_bytes));
             let result = body(lease.tensor());
-            let completion = lease.complete().and_then(|completion| completion.release()).map_err(|error| {
-                cuvs_query_error(PACK_OPERATION, "failed to complete the FixedSizeList producer read lifetime", error)
-                    .with_fact("node_id", node_id)
-                    .with_fact("relation_role", role)
-            });
+            let message = "failed to complete the FixedSizeList producer read lifetime";
+            let completion = lease
+                .complete()
+                .map_err(|error| cuvs_query_error(PACK_OPERATION, message, error))
+                .and_then(|mut completion| {
+                    completion.synchronize().map_err(|error| {
+                        cudf_interop_query_error(PACK_OPERATION, message, format!("{:?}", error.kind()), error)
+                    })
+                })
+                .map_err(|error| error.with_fact("node_id", node_id).with_fact("relation_role", role));
             match (result, completion) {
                 (Err(error), _) => Err(error),
                 (Ok(value), Ok(())) => Ok(value),
@@ -1539,12 +1544,18 @@ fn with_uniform_list_relation_tensor<E: DeviceElement, T>(
     };
     guard.finish(Some(rows as u64), Some(packed_bytes));
     let result = body(lease.tensor());
-    let completion = lease.complete().and_then(|completion| completion.release()).map_err(|error| {
-        cuvs_query_error(PACK_OPERATION, "failed to complete the uniform List producer read lifetime", error)
-            .with_fact("node_id", node_id)
-            .with_fact("relation_role", role)
-            .with_fact("column", column)
-    });
+    let message = "failed to complete the uniform List producer read lifetime";
+    let completion = lease
+        .complete()
+        .map_err(|error| cuvs_query_error(PACK_OPERATION, message, error))
+        .and_then(|mut completion| {
+            completion.synchronize().map_err(|error| {
+                cudf_interop_query_error(PACK_OPERATION, message, format!("{:?}", error.kind()), error)
+            })
+        })
+        .map_err(|error| {
+            error.with_fact("node_id", node_id).with_fact("relation_role", role).with_fact("column", column)
+        });
     match (result, completion) {
         (Err(error), _) => Err(error),
         (Ok(value), Ok(())) => Ok(value),
