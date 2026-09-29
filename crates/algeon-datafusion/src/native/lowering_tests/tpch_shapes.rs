@@ -16,6 +16,72 @@ use super::*;
 #[path = "tpch_shapes/q22.rs"]
 mod q22;
 
+/// The native optimizer's rule rows for every lowered TPC-H fixture plan. A
+/// change to a rule's decisions, its candidate order, or which passes run
+/// shows up as a line diff against the golden.
+#[tokio::test]
+async fn tpch_native_optimizer_rule_rows_match_golden() {
+    let dir = unique_temp_dir("algeon-datafusion-native-lowering-tpch-optimizer-golden");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let dataset = dir.display().to_string();
+
+    let mut rows = Vec::new();
+    for item in &items {
+        let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &item.input else {
+            panic!("{} should produce a physical plan", item.query_id);
+        };
+        let lowered = lower_physical_plan_to_native(Arc::clone(plan)).unwrap();
+        for (fragment, native_plan) in lowered.plans.iter().enumerate() {
+            let optimized = optimize_query_plan(
+                native_plan.clone(),
+                &NativeOptimizerOptions::default(),
+                rapids_analysis_context(PlanningPolicy::default()),
+                local_dimension_pruning_resolver(),
+            )
+            .unwrap();
+            for row in optimized.diagnostics.stable_rule_rows() {
+                rows.push(format!("{}\t{fragment}\t{}", item.query_id, normalized_rule_row(&row, &dataset)));
+            }
+        }
+    }
+    let actual = rows.join("\n") + "\n";
+    assert_eq!(actual, include_str!("goldens/tpch_optimizer_rule_rows.txt"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Replaces the run-specific parts of a rule row: the temporary dataset
+/// directory, file modification times, and hashes of file locations.
+fn normalized_rule_row(row: &str, dataset: &str) -> String {
+    let mut row = row.replace(dataset, "<dataset>");
+    row = replace_after(&row, "mtime=", usize::MAX, |c| c.is_ascii_digit() || matches!(c, '-' | 'T' | ':' | '.' | '+'));
+    for prefix in ["fnv64:", "fnv64-", "fnv1a64:"] {
+        row = replace_after(&row, prefix, 16, |c| c.is_ascii_hexdigit());
+    }
+    row
+}
+
+/// Replaces up to `limit` characters `keep` accepts after each `prefix` with
+/// `<run>`.
+fn replace_after(text: &str, prefix: &str, limit: usize, keep: impl Fn(char) -> bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find(prefix) {
+        out.push_str(&rest[..index + prefix.len()]);
+        rest = &rest[index + prefix.len()..];
+        let end = rest
+            .char_indices()
+            .take(limit)
+            .find(|(_, c)| !keep(*c))
+            .map_or_else(|| rest.char_indices().nth(limit).map_or(rest.len(), |(end, _)| end), |(end, _)| end);
+        out.push_str("<run>");
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[tokio::test]
 async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let dir = unique_temp_dir("algeon-datafusion-native-lowering-tpch-recent-topologies");

@@ -191,7 +191,7 @@ fn record_dimension_pruning_candidate(
 }
 
 #[doc(hidden)]
-pub fn optimize_dimension_derived_row_group_pruning(
+pub(crate) fn optimize_dimension_derived_row_group_pruning(
     plan: QueryPlan,
     options: &DimensionDerivedRowGroupPruningOptions,
     ctx: AnalysisContext<'_>,

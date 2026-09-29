@@ -7,40 +7,43 @@ use std::collections::BTreeMap;
 use arrow::datatypes::{DataType as ArrowDataType, Schema as ArrowSchema};
 
 use super::{
-    AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinForm, JoinNode, LimitNode, NodeId,
-    PlanNode, QueryNode, QueryPlan, SourceNode,
+    AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinForm, JoinNode, NodeId, PlanNode, QueryNode,
+    QueryPlan, SourceNode,
     aggregate::aggregate_state_contract,
     classify_join,
     expr::{
         expression_rejection_decision, validate_aggregate_expr_capability, validate_column_expr_capability,
         validate_general_expr_capability, validate_join_residual_expr_capability,
-        validate_named_column_expr_capability, validate_post_join_residual_expr_capability, validation_result_decision,
+        validate_named_column_expr_capability, validate_post_join_residual_expr_capability,
     },
     model::{
         AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ResidualRequirement,
         SourceFormatCapability,
     },
     rejection::{Reason, UnsupportedPart},
-    validate_local_parquet_source,
 };
 use crate::{
     backend::AnalysisContext,
-    ml_validation::validate_ml_algorithm_node_contract,
+    error::{QueryError, Result},
+    ml_validation::validate_ml_algorithm_node,
     plan::{
         AggregateNode, EdgeNormalizeNode, EdgeWeightCombiner, GraphAlgorithmNode, GraphAlgorithmParams,
-        GraphVertexPairInput, SortNode, VectorAlgorithmNode, WindowFrame, WindowFunction, WindowNode,
-        graph_result_schema_for_vertex_type,
+        GraphVertexPairInput, SortNode, graph_result_schema_for_vertex_type,
     },
-    source::validate_literal_batch_source,
-    validation::algorithm_input,
-    vector_validation::validate_vector_algorithm_node_contract,
+    validation::{PlanColumns, algorithm_input, check_node},
+    vector_validation::validate_vector_algorithm_node,
 };
 
-pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisContext<'_>) -> NodeCapability {
+pub(super) fn analyze_node(
+    plan: &QueryPlan,
+    node: &QueryNode,
+    columns: &PlanColumns,
+    ctx: AnalysisContext<'_>,
+) -> NodeCapability {
     let node_id = node.id;
     let kind = &node.kind;
     let operator = node_operator(kind);
-    let executable = node_executable_decision(plan, node, ctx);
+    let executable = node_executable_decision(plan, node, columns, ctx);
     let aggregate_state = match kind {
         PlanNode::Aggregate(aggregate) => aggregate_state_contract(&aggregate.spec),
         _ => None,
@@ -133,103 +136,81 @@ pub(super) fn source_format_capability(source: &SourceNode) -> SourceFormatCapab
     }
 }
 
-fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisContext<'_>) -> CapabilityDecision {
+fn node_executable_decision(
+    plan: &QueryPlan,
+    node: &QueryNode,
+    columns: &PlanColumns,
+    ctx: AnalysisContext<'_>,
+) -> CapabilityDecision {
     match &node.kind {
-        PlanNode::Source(source) => source_node_executable_decision(source, ctx),
+        PlanNode::Source(_) | PlanNode::Projection(_) | PlanNode::Window(_) | PlanNode::Limit(_) => {
+            checked_node_decision(node.id, check_node(plan, node, columns, ctx))
+        },
         PlanNode::Filter(filter) => expression_node_decision(
             node.id,
             Reason::UnsupportedFilterExpressionCapability,
             std::iter::once(&filter.predicate),
         ),
-        PlanNode::Projection(projection) => {
-            let mut decision = expression_node_decision(
-                node.id,
-                Reason::UnsupportedProjectionExpressionCapability,
-                projection.expressions(),
-            );
-            if matches!(decision, CapabilityDecision::Satisfied)
-                && projection.outputs.len() != node.output_schema().fields().len()
-            {
-                decision = CapabilityDecision::rejected(
-                    Reason::UnsupportedProjectionNodeCapability,
-                    [
-                        ("node_id", node.id.to_string()),
-                        ("projection_output_count", projection.outputs.len().to_string()),
-                        ("schema_field_count", node.output_schema().fields().len().to_string()),
-                    ],
-                );
-            }
-            decision
-        },
         PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(plan, node.id, aggregate),
-        PlanNode::Window(window) => window_node_executable_decision(node.id, window),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
-        PlanNode::Limit(limit) => limit_node_executable_decision(node.id, limit),
-        PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join, ctx),
+        PlanNode::Join(join) => match join_node_executable_decision(node.id, join) {
+            CapabilityDecision::Satisfied => checked_node_decision(node.id, check_node(plan, node, columns, ctx)),
+            rejected => rejected,
+        },
         PlanNode::Union(_) => CapabilityDecision::Satisfied,
         PlanNode::EdgeNormalize(edge_normalize) => {
             edge_normalize_node_executable_decision(plan, node.id, edge_normalize)
         },
         PlanNode::GraphAlgorithm(graph) => graph_algorithm_node_executable_decision(plan, node.id, graph),
-        PlanNode::VectorAlgorithm(vector) => vector_algorithm_node_executable_decision(plan, node.id, vector),
-        PlanNode::MlAlgorithm(ml) => match validate_ml_algorithm_node_contract(ml, plan, node.id) {
-            Ok(()) => CapabilityDecision::Satisfied,
-            Err(error) => {
-                let mut facts =
-                    error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
-                facts.entry("node_id").or_insert_with(|| node.id.to_string());
-                facts.entry("algorithm").or_insert_with(|| ml.spec.algorithm.as_str().to_string());
-                facts.insert("validation_code", error.code().to_string());
-                facts.insert("validation_operation", error.operation().to_string());
-                CapabilityDecision::Rejected {
-                    reason: Reason::UnsupportedMlAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())),
-                    facts,
-                }
-            },
+        PlanNode::VectorAlgorithm(vector) => algorithm_node_decision(
+            node.id,
+            vector.spec.algorithm.as_str(),
+            validate_vector_algorithm_node(vector, plan, columns.available_by_node(), node.id),
+            Reason::UnsupportedVectorAlgorithmNodeCapability,
+        ),
+        PlanNode::MlAlgorithm(ml) => algorithm_node_decision(
+            node.id,
+            ml.spec.algorithm.as_str(),
+            validate_ml_algorithm_node(ml, plan, columns.available_by_node(), node.id),
+            Reason::UnsupportedMlAlgorithmNodeCapability,
+        ),
+    }
+}
+
+/// The decision for a node [`check_node`] checks: a failed rule rejects the
+/// node with the reason admission gives the same validation failure.
+fn checked_node_decision(node_id: NodeId, result: Result<()>) -> CapabilityDecision {
+    match result {
+        Ok(()) => CapabilityDecision::Satisfied,
+        Err(error) => CapabilityDecision::Rejected {
+            reason: Reason::PlanValidation(UnsupportedPart::from_code(error.code())),
+            facts: validation_error_facts(node_id, &error),
         },
     }
 }
 
-fn vector_algorithm_node_executable_decision(
-    plan: &QueryPlan,
+fn algorithm_node_decision(
     node_id: NodeId,
-    vector: &VectorAlgorithmNode,
+    algorithm: &str,
+    result: Result<()>,
+    reason: fn(UnsupportedPart) -> Reason,
 ) -> CapabilityDecision {
-    match validate_vector_algorithm_node_contract(vector, plan, node_id) {
+    match result {
         Ok(()) => CapabilityDecision::Satisfied,
         Err(error) => {
-            let mut facts =
-                error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
-            facts.entry("node_id").or_insert_with(|| node_id.to_string());
-            facts.entry("algorithm").or_insert_with(|| vector.spec.algorithm.as_str().to_string());
-            facts.insert("validation_code", error.code().to_string());
-            facts.insert("validation_operation", error.operation().to_string());
-            CapabilityDecision::Rejected {
-                reason: Reason::UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())),
-                facts,
-            }
+            let mut facts = validation_error_facts(node_id, &error);
+            facts.entry("algorithm").or_insert_with(|| algorithm.to_string());
+            CapabilityDecision::Rejected { reason: reason(UnsupportedPart::from_code(error.code())), facts }
         },
     }
 }
 
-pub(super) fn source_node_executable_decision(source: &SourceNode, ctx: AnalysisContext<'_>) -> CapabilityDecision {
-    match source {
-        SourceNode::LocalParquet(source) => validation_result_decision(
-            validate_local_parquet_source(source, ctx),
-            Reason::UnsupportedLocalParquetSourceCapability,
-            [("source_format", "local_parquet".to_string())],
-        ),
-        SourceNode::GpuResident(source) if source.input_name.is_empty() => CapabilityDecision::rejected(
-            Reason::UnsupportedGpuResidentSourceCapability,
-            [("reason", "empty_input_name".to_string()), ("source_format", "gpu_resident".to_string())],
-        ),
-        SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
-        SourceNode::LiteralBatch(source) => validation_result_decision(
-            validate_literal_batch_source(source, ctx),
-            Reason::UnsupportedLiteralBatchSourceCapability,
-            [("source_format", "literal_batch".to_string())],
-        ),
-    }
+fn validation_error_facts(node_id: NodeId, error: &QueryError) -> BTreeMap<&'static str, String> {
+    let mut facts = error.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+    facts.entry("node_id").or_insert_with(|| node_id.to_string());
+    facts.insert("validation_code", error.code().to_string());
+    facts.insert("validation_operation", error.operation().to_string());
+    facts
 }
 
 fn expression_node_decision<'a>(
@@ -358,123 +339,6 @@ pub fn is_cudf_median_input_type(data_type: &ArrowDataType) -> bool {
     )
 }
 
-fn window_node_executable_decision(node_id: NodeId, window: &WindowNode) -> CapabilityDecision {
-    if window.spec.functions.is_empty() {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedWindowNodeCapability,
-            [("node_id", node_id.to_string()), ("reason", "empty_functions".to_string())],
-        );
-    }
-    for expr in &window.spec.partition_by {
-        if let Err(rejection) = validate_column_expr_capability(expr) {
-            return expression_rejection_decision(
-                node_id,
-                Reason::UnsupportedWindowPartitionExpressionCapability,
-                expr,
-                rejection,
-            );
-        }
-    }
-    for sort_expr in &window.spec.order_by {
-        if let Err(rejection) = validate_column_expr_capability(&sort_expr.expr) {
-            return expression_rejection_decision(
-                node_id,
-                Reason::UnsupportedWindowOrderExpressionCapability,
-                &sort_expr.expr,
-                rejection,
-            );
-        }
-    }
-    for function in &window.spec.functions {
-        match function {
-            WindowFunction::Aggregate { function, expr, frame, .. } => {
-                match frame {
-                    WindowFrame::WholePartition => {
-                        if window.spec.partition_by.is_empty() {
-                            return CapabilityDecision::rejected(
-                                Reason::UnsupportedWindowNodeCapability,
-                                [
-                                    ("node_id", node_id.to_string()),
-                                    ("reason", "whole_partition_aggregate_window_requires_partition_by".to_string()),
-                                ],
-                            );
-                        }
-                        if !window.spec.order_by.is_empty() {
-                            return CapabilityDecision::rejected(
-                                Reason::UnsupportedWindowNodeCapability,
-                                [
-                                    ("node_id", node_id.to_string()),
-                                    ("reason", "whole_partition_aggregate_window_requires_no_order_by".to_string()),
-                                ],
-                            );
-                        }
-                    },
-                    WindowFrame::RowsUnboundedPrecedingToCurrent => {
-                        if window.spec.order_by.is_empty() {
-                            return CapabilityDecision::rejected(
-                                Reason::UnsupportedWindowNodeCapability,
-                                [
-                                    ("node_id", node_id.to_string()),
-                                    ("reason", "cumulative_aggregate_window_requires_order_by".to_string()),
-                                ],
-                            );
-                        }
-                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
-                        {
-                            return CapabilityDecision::rejected(
-                                Reason::UnsupportedWindowNodeCapability,
-                                [
-                                    ("node_id", node_id.to_string()),
-                                    ("reason", "cumulative_aggregate_window_function_unsupported".to_string()),
-                                    ("function", format!("{function:?}")),
-                                ],
-                            );
-                        }
-                    },
-                }
-                let aggregate_expr = AggregateExpr::new(*function, expr.clone(), "__window_aggregate");
-                if let Err(rejection) = validate_aggregate_expr_capability(&aggregate_expr, false) {
-                    return expression_rejection_decision(
-                        node_id,
-                        Reason::UnsupportedWindowAggregateExpressionCapability,
-                        expr,
-                        rejection,
-                    );
-                }
-            },
-            WindowFunction::Rank { .. } if window.spec.order_by.is_empty() => {
-                return CapabilityDecision::rejected(
-                    Reason::UnsupportedWindowNodeCapability,
-                    [("node_id", node_id.to_string()), ("reason", "rank_requires_order_by".to_string())],
-                );
-            },
-            WindowFunction::Rank { .. } => {},
-            WindowFunction::RowNumber { .. } => {},
-            WindowFunction::LagLead { expr, .. } if window.spec.order_by.is_empty() => {
-                return CapabilityDecision::rejected(
-                    Reason::UnsupportedWindowNodeCapability,
-                    [
-                        ("node_id", node_id.to_string()),
-                        ("reason", "lag_lead_requires_order_by".to_string()),
-                        ("expression", format!("{expr}")),
-                    ],
-                );
-            },
-            WindowFunction::LagLead { expr, .. } => {
-                if let Err(rejection) = validate_column_expr_capability(expr) {
-                    return expression_rejection_decision(
-                        node_id,
-                        Reason::UnsupportedWindowLagLeadExpressionCapability,
-                        expr,
-                        rejection,
-                    );
-                }
-            },
-        }
-    }
-    CapabilityDecision::Satisfied
-}
-
 fn validate_grouping_sets_capability(
     spec: &AggregateSpec,
     grouping_sets: &GroupingSetsSpec,
@@ -520,57 +384,18 @@ fn sort_node_executable_decision(node_id: NodeId, sort: &SortNode) -> Capability
     CapabilityDecision::Satisfied
 }
 
-fn limit_node_executable_decision(node_id: NodeId, limit: &LimitNode) -> CapabilityDecision {
-    if let Some(fetch) = limit.spec.fetch
-        && limit.spec.skip.checked_add(fetch).is_none()
-    {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedLimitNodeCapability,
-            [
-                ("node_id", node_id.to_string()),
-                ("reason", "skip_fetch_overflow".to_string()),
-                ("skip", limit.spec.skip.to_string()),
-                ("fetch", fetch.to_string()),
-            ],
-        );
-    }
-    CapabilityDecision::Satisfied
-}
-
-fn join_node_executable_decision(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    join: &JoinNode,
-    ctx: AnalysisContext<'_>,
-) -> CapabilityDecision {
-    let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
-        return CapabilityDecision::rejected(
-            Reason::UnsupportedJoinNodeCapability,
-            [("node_id", node_id.to_string()), ("reason", "missing_join_node".to_string())],
-        );
-    };
+/// Whether a join executor form runs the join and evaluates its residual.
+/// The IR and type rules every node meets come from [`check_node`] after it.
+fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
     // A residual that only a post-join filter evaluates rejects a non-inner
-    // join after the output types and the residual expression are checked;
-    // every other structural miss rejects first.
+    // join after the residual expression is checked; every other structural
+    // miss rejects first.
     let form = match classify_join(node_id, join) {
         Err(rejection) if rejection.reason != Reason::PostJoinResidualFilterRequiresOneShotEquiJoin => {
             return CapabilityDecision::Rejected { reason: rejection.reason, facts: rejection.facts };
         },
         form => form,
     };
-    for (field_index, field) in output_schema.fields().iter().enumerate() {
-        if !ctx.backend().supports_type(field.data_type()) {
-            return CapabilityDecision::rejected(
-                Reason::UnsupportedJoinOutputDtype,
-                [
-                    ("node_id", node_id.to_string()),
-                    ("field_index", field_index.to_string()),
-                    ("field_name", field.name().to_string()),
-                    ("dtype", field.data_type().to_string()),
-                ],
-            );
-        }
-    }
     if let Some(predicate) = &join.spec.residual_predicate {
         let residual_capability = validate_join_residual_expr_capability(predicate).or_else(|rejection| {
             if matches!(form, Ok(JoinForm::KeyedEquiPostFilter)) {

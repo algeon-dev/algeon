@@ -469,6 +469,55 @@ fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
 }
 
 #[test]
+fn native_query_truncates_nanosecond_timestamps_to_fixed_duration_fields() {
+    let dir = unique_temp_dir("query-engine-native-execution-date-trunc-fixed-duration");
+    let path = dir.join("tpch-like.parquet");
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
+    let input_schema = write_scalar_expression_parquet(&runtime, &path);
+    let nanoseconds = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("to_nanosecond", nanoseconds.clone(), false),
+        Field::new("to_microsecond", nanoseconds.clone(), false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["event_ts".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder
+        .add_projection(
+            source,
+            projection_outputs(
+                vec![
+                    Expr::date_trunc(DatePart::Nanosecond, Expr::column("event_ts"), nanoseconds.clone())
+                        .alias("to_nanosecond"),
+                    Expr::date_trunc(DatePart::Microsecond, Expr::column("event_ts"), nanoseconds)
+                        .alias("to_microsecond"),
+                ],
+                output_schema,
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(projection).unwrap();
+
+    let result = execute_query_plan(&context, &plan).expect("cuDF floors timestamps to fixed-duration fields");
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let values = |column: usize| {
+        batch.column(column).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap().values().to_vec()
+    };
+    assert_eq!(values(0), vec![100, 200, 300, 400]);
+    assert_eq!(values(1), vec![0, 0, 0, 0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() {
     let dir = unique_temp_dir("query-engine-native-execution-date-trunc-output-unit-reject");
     let path = dir.join("tpch-like.parquet");

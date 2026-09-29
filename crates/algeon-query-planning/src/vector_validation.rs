@@ -578,20 +578,6 @@ fn validate_registry_maximum(
     Ok(())
 }
 
-pub(crate) fn validate_vector_algorithm_node_contract(
-    vector: &VectorAlgorithmNode,
-    plan: &QueryPlan,
-    node_id: NodeId,
-) -> Result<()> {
-    let available_columns_by_node = plan
-        .nodes()
-        .iter()
-        .take(node_id.index())
-        .map(|node| schema_column_names(node.output_schema()))
-        .collect::<Vec<_>>();
-    validate_vector_algorithm_node(vector, plan, &available_columns_by_node, node_id)
-}
-
 pub(crate) struct DenseRelationValidation {
     pub(crate) id_type: DataType,
     pub(crate) dimension: Option<usize>,
@@ -912,10 +898,6 @@ fn available_columns(columns_by_node: &[BTreeSet<String>], input: NodeId) -> Res
     })
 }
 
-fn schema_column_names(schema: &SchemaRef) -> BTreeSet<String> {
-    schema.fields().iter().map(|field| field.name().clone()).collect()
-}
-
 fn vector_algorithm_error(message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidPlan, "query_engine.vector_algorithm.validate", message)
 }
@@ -933,6 +915,7 @@ mod tests {
             VectorIvfPqParams, VectorPairwiseDistanceParams, VectorPcaParams, VectorTopKParams,
         },
         source::{GpuResidentSource, SourceNode},
+        validation::PlanColumns,
     };
 
     #[test]
@@ -970,7 +953,9 @@ mod tests {
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
-        let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed element types");
+        let error =
+            validate_vector_algorithm_node(vector, &plan, PlanColumns::for_plan(&plan).available_by_node(), root)
+                .expect_err("mixed element types");
         assert_eq!(error.fact_value("reason"), Some("unsupported_feature_type"));
         assert_eq!(error.fact_value("data_type"), Some("Float64"));
     }
@@ -1007,7 +992,9 @@ mod tests {
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
-        let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("mixed pairwise elements");
+        let error =
+            validate_vector_algorithm_node(vector, &plan, PlanColumns::for_plan(&plan).available_by_node(), root)
+                .expect_err("mixed pairwise elements");
         assert_eq!(error.fact_value("reason"), Some("vector_element_type_mismatch"));
     }
 
@@ -1043,7 +1030,9 @@ mod tests {
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("vector root")
         };
-        let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("integer cosine");
+        let error =
+            validate_vector_algorithm_node(vector, &plan, PlanColumns::for_plan(&plan).available_by_node(), root)
+                .expect_err("integer cosine");
         assert_eq!(error.fact_value("reason"), Some("unsupported_vector_element_metric"));
         assert_eq!(error.fact_value("supported_metrics"), Some("l2_expanded, l2_sqrt_expanded, inner_product"));
     }
@@ -1077,7 +1066,9 @@ mod tests {
             let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
                 panic!("vector root")
             };
-            let error = validate_vector_algorithm_node_contract(vector, &plan, root).expect_err("invalid k");
+            let error =
+                validate_vector_algorithm_node(vector, &plan, PlanColumns::for_plan(&plan).available_by_node(), root)
+                    .expect_err("invalid k");
             assert_eq!(error.fact_value("reason"), Some(reason));
         }
     }
@@ -1102,12 +1093,7 @@ mod tests {
             )
             .unwrap();
         let plan = builder.finish_with_host_sink(root).unwrap();
-        let mut available_columns_by_node = plan
-            .nodes()
-            .iter()
-            .take(root.index())
-            .map(|node| schema_column_names(node.output_schema()))
-            .collect::<Vec<_>>();
+        let mut available_columns_by_node = PlanColumns::for_plan(&plan).available_by_node().to_vec();
         assert!(available_columns_by_node[input.index()].remove("x"));
         let PlanNode::VectorAlgorithm(vector) = &plan.node(root).expect("vector root").kind else {
             panic!("root must be a vector algorithm");

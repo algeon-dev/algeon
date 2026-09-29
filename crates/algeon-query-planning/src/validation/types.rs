@@ -124,8 +124,8 @@ pub(crate) fn require_compatible_types(
         .with_fact("reason", carry_operand_rejection_reason(left, right, "operator")));
     }
     if left == right
-        || is_supported_arrow_implicit_cast(right, left, ctx)
-        || is_supported_arrow_implicit_cast(left, right, ctx)
+        || is_supported_arrow_implicit_cast(right, left, ctx.backend())
+        || is_supported_arrow_implicit_cast(left, right, ctx.backend())
     {
         Ok(())
     } else {

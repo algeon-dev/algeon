@@ -1088,7 +1088,7 @@ fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
 }
 
 #[test]
-fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_pruning_applies() {
+fn dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_pruning_applies() {
     let dir = unique_contract_temp_dir("dimension-pruning-routes");
     let fact_path = dir.join("fact.parquet");
     let dim_path = dir.join("dim.parquet");
@@ -1118,15 +1118,19 @@ fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_
     let route = test_dynamic_filter_route(fact);
     let plan = builder.finish_with_host_sink(join).unwrap().with_dynamic_filter_routes(vec![route.clone()]);
 
-    let result = optimize_dimension_derived_row_group_pruning(
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    let result = optimize_query_plan(
         plan,
-        &DimensionDerivedRowGroupPruningOptions::default(),
+        &options,
         rapids_analysis_context(PlanningPolicy::default()),
         local_dimension_pruning_resolver(),
     ).unwrap();
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
-    assert_eq!(result.diagnostics.applied_count, 1);
+    assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 1);
     assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
     let source = local_parquet_source(&result.plan, fact).unwrap();
     assert_eq!(source.files[0].row_groups, Some(vec![1]));

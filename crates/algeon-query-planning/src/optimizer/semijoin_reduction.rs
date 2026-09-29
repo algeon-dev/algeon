@@ -62,7 +62,7 @@ impl Default for SemijoinReductionOptions {
 
 /// Result for one semijoin-reduction optimizer pass invocation.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SemijoinReductionResult {
+pub(crate) struct SemijoinReductionResult {
     /// Plan returned after the pass, rewritten only when the pass was kept.
     pub plan: QueryPlan,
     /// Whether this pass changed the plan.
@@ -218,7 +218,7 @@ pub enum SemijoinReductionRejectedReason {
 }
 
 /// Runs the semijoin-reduction pass.
-pub fn optimize_semijoin_reduction(
+pub(crate) fn optimize_semijoin_reduction(
     plan: QueryPlan,
     options: &SemijoinReductionOptions,
 ) -> Result<SemijoinReductionResult> {

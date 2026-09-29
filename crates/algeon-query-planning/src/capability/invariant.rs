@@ -413,48 +413,6 @@ pub(super) fn solve_residual_uses_both_inputs_invariant(join_id: NodeId, join: &
 }
 
 pub(super) fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
-    match expr {
-        Expr::Column(column) => {
-            matches!(column.qualifier(), Some(ColumnQualifier::Input { index }) if *index == input_index)
-        },
-        Expr::Literal(_) => false,
-        Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::TryCast { expr, .. }
-        | Expr::Alias { expr, .. } => expr_references_input(expr, input_index),
-        Expr::Binary { left, right, .. } => {
-            expr_references_input(left, input_index) || expr_references_input(right, input_index)
-        },
-        Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Trim { expr, .. }
-        | Expr::LTrim { expr, .. }
-        | Expr::RTrim { expr, .. }
-        | Expr::StringContains { expr, .. }
-        | Expr::StartsWith { expr, .. }
-        | Expr::EndsWith { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::UnaryMath { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. } => expr_references_input(expr, input_index),
-        Expr::Concat(exprs) => exprs.iter().any(|expr| expr_references_input(expr, input_index)),
-        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
-            expr_references_input(left, input_index) || expr_references_input(right, input_index)
-        },
-        Expr::InList { expr, list, .. } => {
-            expr_references_input(expr, input_index) || list.iter().any(|item| expr_references_input(item, input_index))
-        },
-        Expr::Case { branches, else_expr } => {
-            branches.iter().any(|branch| {
-                expr_references_input(&branch.when, input_index) || expr_references_input(&branch.then, input_index)
-            }) || expr_references_input(else_expr, input_index)
-        },
-    }
+    expr.columns()
+        .any(|column| matches!(column.qualifier(), Some(ColumnQualifier::Input { index }) if *index == input_index))
 }

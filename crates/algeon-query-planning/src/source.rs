@@ -63,6 +63,16 @@ pub(crate) use reader_predicate_literals::{
 pub use validation::validate_literal_batch_source;
 pub use validation::validate_local_parquet_source;
 
+/// Names of the columns in a local Parquet source's execution frame. A frame
+/// column missing from the source schema is still named here; source
+/// validation reports the missing field.
+pub(crate) fn local_parquet_execution_frame_columns(source: &LocalParquetSource) -> BTreeSet<String> {
+    local_parquet_execution_frame_schema(source).map_or_else(
+        |_| source.projected_output_columns.iter().chain(&source.pure_filter_columns).cloned().collect(),
+        |schema| schema.fields().iter().map(|field| field.name().clone()).collect(),
+    )
+}
+
 #[doc(hidden)]
 pub fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> Result<SchemaRef> {
     if source.is_zero_column_count_source() {

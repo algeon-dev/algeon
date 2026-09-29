@@ -44,12 +44,8 @@ impl UnsupportedPart {
 pub enum Reason {
     UnsupportedAggregateGroupingSetsCapability,
     UnsupportedAggregateNodeCapability,
-    UnsupportedGpuResidentSourceCapability,
     UnsupportedJoinNodeCapability,
-    UnsupportedLimitNodeCapability,
-    UnsupportedProjectionNodeCapability,
     UnsupportedSortNodeCapability,
-    UnsupportedWindowNodeCapability,
     PostJoinResidualFilterRequiresOneShotEquiJoin,
     LargeKeyedHashJoinStrategyUnsupported,
     UnsupportedEdgeNormalizeNodeCapability(UnsupportedPart),
@@ -58,17 +54,9 @@ pub enum Reason {
     UnsupportedMlAlgorithmNodeCapability(UnsupportedPart),
     UnsupportedAggregateExpressionCapability,
     UnsupportedFilterExpressionCapability,
-    UnsupportedProjectionExpressionCapability,
     UnsupportedAggregateGroupExpressionCapability,
     UnsupportedJoinResidualExpressionCapability,
     UnsupportedSortExpressionCapability,
-    UnsupportedWindowAggregateExpressionCapability,
-    UnsupportedWindowLagLeadExpressionCapability,
-    UnsupportedWindowOrderExpressionCapability,
-    UnsupportedWindowPartitionExpressionCapability,
-    UnsupportedLiteralBatchSourceCapability,
-    UnsupportedLocalParquetSourceCapability,
-    UnsupportedJoinOutputDtype,
     LeftAntiBuildRequiresDedupAggregate,
     LeftAntiProbeRequiresDedupProvenInput,
     MissingEdgeProducer,
@@ -135,12 +123,8 @@ impl Reason {
         match self {
             Self::UnsupportedAggregateGroupingSetsCapability => "unsupported_aggregate_grouping_sets_capability",
             Self::UnsupportedAggregateNodeCapability => "unsupported_aggregate_node_capability",
-            Self::UnsupportedGpuResidentSourceCapability => "unsupported_gpu_resident_source_capability",
             Self::UnsupportedJoinNodeCapability => "unsupported_join_node_capability",
-            Self::UnsupportedLimitNodeCapability => "unsupported_limit_node_capability",
-            Self::UnsupportedProjectionNodeCapability => "unsupported_projection_node_capability",
             Self::UnsupportedSortNodeCapability => "unsupported_sort_node_capability",
-            Self::UnsupportedWindowNodeCapability => "unsupported_window_node_capability",
             Self::PostJoinResidualFilterRequiresOneShotEquiJoin => {
                 "post_join_residual_filter_requires_one_shot_equi_join"
             },
@@ -151,21 +135,9 @@ impl Reason {
             Self::UnsupportedMlAlgorithmNodeCapability(_) => "unsupported_ml_algorithm_node_capability",
             Self::UnsupportedAggregateExpressionCapability => "unsupported_aggregate_expression_capability",
             Self::UnsupportedFilterExpressionCapability => "unsupported_filter_expression_capability",
-            Self::UnsupportedProjectionExpressionCapability => "unsupported_projection_expression_capability",
             Self::UnsupportedAggregateGroupExpressionCapability => "unsupported_aggregate_group_expression_capability",
             Self::UnsupportedJoinResidualExpressionCapability => "unsupported_join_residual_expression_capability",
             Self::UnsupportedSortExpressionCapability => "unsupported_sort_expression_capability",
-            Self::UnsupportedWindowAggregateExpressionCapability => {
-                "unsupported_window_aggregate_expression_capability"
-            },
-            Self::UnsupportedWindowLagLeadExpressionCapability => "unsupported_window_lag_lead_expression_capability",
-            Self::UnsupportedWindowOrderExpressionCapability => "unsupported_window_order_expression_capability",
-            Self::UnsupportedWindowPartitionExpressionCapability => {
-                "unsupported_window_partition_expression_capability"
-            },
-            Self::UnsupportedLiteralBatchSourceCapability => "unsupported_literal_batch_source_capability",
-            Self::UnsupportedLocalParquetSourceCapability => "unsupported_local_parquet_source_capability",
-            Self::UnsupportedJoinOutputDtype => "unsupported_join_output_dtype",
             Self::LeftAntiBuildRequiresDedupAggregate => "left_anti_build_requires_dedup_aggregate",
             Self::LeftAntiProbeRequiresDedupProvenInput => "left_anti_probe_requires_dedup_proven_input",
             Self::MissingEdgeProducer => "missing_edge_producer",
@@ -246,12 +218,8 @@ impl Reason {
         match self {
             Self::UnsupportedAggregateGroupingSetsCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedAggregateNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedGpuResidentSourceCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedJoinNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedLimitNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedProjectionNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedSortNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedWindowNodeCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::PostJoinResidualFilterRequiresOneShotEquiJoin => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::LargeKeyedHashJoinStrategyUnsupported => CapabilityRejectionCategory::UnsupportedNodeOperator,
             Self::UnsupportedEdgeNormalizeNodeCapability(part) => part.category(),
@@ -260,7 +228,6 @@ impl Reason {
             Self::UnsupportedMlAlgorithmNodeCapability(part) => part.category(),
             Self::UnsupportedAggregateExpressionCapability => CapabilityRejectionCategory::UnsupportedExpressionFamily,
             Self::UnsupportedFilterExpressionCapability => CapabilityRejectionCategory::UnsupportedExpressionFamily,
-            Self::UnsupportedProjectionExpressionCapability => CapabilityRejectionCategory::UnsupportedExpressionFamily,
             Self::UnsupportedAggregateGroupExpressionCapability => {
                 CapabilityRejectionCategory::UnsupportedExpressionFamily
             },
@@ -268,21 +235,6 @@ impl Reason {
                 CapabilityRejectionCategory::UnsupportedExpressionFamily
             },
             Self::UnsupportedSortExpressionCapability => CapabilityRejectionCategory::UnsupportedExpressionFamily,
-            Self::UnsupportedWindowAggregateExpressionCapability => {
-                CapabilityRejectionCategory::UnsupportedExpressionFamily
-            },
-            Self::UnsupportedWindowLagLeadExpressionCapability => {
-                CapabilityRejectionCategory::UnsupportedExpressionFamily
-            },
-            Self::UnsupportedWindowOrderExpressionCapability => {
-                CapabilityRejectionCategory::UnsupportedExpressionFamily
-            },
-            Self::UnsupportedWindowPartitionExpressionCapability => {
-                CapabilityRejectionCategory::UnsupportedExpressionFamily
-            },
-            Self::UnsupportedLiteralBatchSourceCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedLocalParquetSourceCapability => CapabilityRejectionCategory::UnsupportedNodeOperator,
-            Self::UnsupportedJoinOutputDtype => CapabilityRejectionCategory::UnsupportedArrowDtype,
             Self::LeftAntiBuildRequiresDedupAggregate => CapabilityRejectionCategory::MissingEdgeContract,
             Self::LeftAntiProbeRequiresDedupProvenInput => CapabilityRejectionCategory::MissingEdgeContract,
             Self::MissingEdgeProducer => CapabilityRejectionCategory::MissingEdgeContract,

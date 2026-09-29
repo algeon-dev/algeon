@@ -49,6 +49,26 @@ fn native_optimizer_discovers_repeated_grouped_aggregate_materialization_family(
 }
 
 #[test]
+fn native_optimizer_reports_shared_subplan_families_in_plan_order() {
+    // Each family key hashes the family's source location. Swapping which
+    // file the plan reads first must swap the report order, whatever the keys.
+    for (first, second) in [("county_sales_a", "county_sales_b"), ("county_sales_b", "county_sales_a")] {
+        let result = optimize_query_plan(
+            two_grouped_aggregate_families_plan([first, second]),
+            &NativeOptimizerOptions::default(),
+            rapids_analysis_context(PlanningPolicy::default()),
+            local_dimension_pruning_resolver(),
+        )
+        .unwrap();
+
+        let candidates = &result.diagnostics.shared_subplan_materialization.candidates;
+        assert_eq!(candidates.len(), 2, "{first} then {second}");
+        let first_aggregates = candidates.iter().map(|candidate| candidate.aggregate_node_ids[0]).collect::<Vec<_>>();
+        assert!(first_aggregates[0] < first_aggregates[1], "{first} then {second}: {first_aggregates:?}");
+    }
+}
+
+#[test]
 fn native_optimizer_materializes_aliased_grouped_aggregates_when_branch_replay_is_unneeded() {
     let plan = repeated_aliased_grouped_aggregate_materialization_plan();
 
@@ -807,7 +827,9 @@ fn native_optimizer_derives_scalar_sum_from_grouped_sum_with_permuted_source_fil
     assert_ne!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.shared_subplan_materialization;
-    assert_eq!(diagnostics.considered_count, 1);
+    // Scalar derivation considers the family once, and the later family pass
+    // considers the grouped aggregate that remains.
+    assert_eq!(diagnostics.considered_count, 2);
     assert_eq!(diagnostics.candidate_count, 1);
     assert_eq!(diagnostics.applied_count, 1);
     let candidate = &diagnostics.candidates[0];
@@ -879,6 +901,39 @@ fn repeated_grouped_aggregate_materialization_plan() -> QueryPlan {
             Arc::clone(&aggregate_schema),
         ).unwrap();
         aggregates.push(aggregate);
+    }
+    let union = builder.add_union(aggregates, aggregate_schema).unwrap();
+    builder.finish_gpu_resident(union).unwrap()
+}
+
+/// Two shared grouped-aggregate families, one per file, read in `files` order.
+fn two_grouped_aggregate_families_plan(files: [&str; 2]) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema = schema(&["county", "store_sales"]);
+    let mut aggregates = Vec::new();
+    for file in files {
+        for quarter in 1..=2 {
+            let source = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+                file,
+                file,
+                &["county", "quarter", "sales"],
+                512 * 1024 * 1024,
+                10_000_000,
+                Expr::binary(Expr::column("quarter"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(quarter))),
+            ));
+            aggregates.push(
+                builder
+                    .add_aggregate(
+                        source,
+                        AggregateSpec::new(
+                            vec![Expr::column("county")],
+                            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "store_sales")],
+                        ),
+                        Arc::clone(&aggregate_schema),
+                    )
+                    .unwrap(),
+            );
+        }
     }
     let union = builder.add_union(aggregates, aggregate_schema).unwrap();
     builder.finish_gpu_resident(union).unwrap()

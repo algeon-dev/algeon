@@ -4,6 +4,10 @@ use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef};
 
 use crate::{
     backend::{AnalysisContext, ExpressionUse},
+    capability::{
+        require_expression_capability, validate_aggregate_expr_capability, validate_column_expr_capability,
+        validate_general_expr_capability,
+    },
     datatypes::{arrow_data_types_match_except_list_child_names, is_supported_arrow_implicit_cast},
     error::{QueryError, QueryErrorCode, QueryErrorKind, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue},
@@ -11,8 +15,8 @@ use crate::{
     plan::{
         AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
         GraphEdgePredicateInput, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2VertexAttributesInput,
-        GraphPageRankPersonalizationInput, GraphPredicateInput, GraphVertexPairInput, JoinSide, NodeId, PlanNode,
-        QueryNode, QueryPlan, SortNode, UnionNode, WindowFrame, WindowFunction, WindowNode,
+        GraphPageRankPersonalizationInput, GraphPredicateInput, GraphVertexPairInput, JoinSide, LimitNode, NodeId,
+        PlanNode, QueryNode, QueryPlan, SortNode, UnionNode, WindowFrame, WindowFunction, WindowNode,
         graph_result_schema_for_vertex_type,
     },
     prepared::{
@@ -20,7 +24,8 @@ use crate::{
         aggregate_spec_has_floating_statistical_aggregate, lower_column_expr, lower_named_column_expr, lower_sort_spec,
     },
     source::{
-        SourceNode, local_parquet_execution_frame_schema, validate_literal_batch_source, validate_local_parquet_source,
+        SourceNode, local_parquet_execution_frame_columns, local_parquet_execution_frame_schema,
+        validate_literal_batch_source, validate_local_parquet_source,
     },
     vector_validation::{
         validate_schema_supported_with_vector_ingress, validate_vector_algorithm_node,
@@ -93,8 +98,7 @@ pub fn topk_candidate_rows(spec: LimitSpec) -> Result<usize> {
 
 #[doc(hidden)]
 pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result<()> {
-    let mut available_columns_by_node = Vec::with_capacity(plan.node_count());
-    let vector_ingress_columns = vector_ingress_columns_by_input(plan);
+    let columns = PlanColumns::for_plan(plan);
     // An unsupported node is reported only after every node and the sink are
     // known to be well formed: a malformed plan is an error, while an
     // unsupported one is a rejection a frontend may fall back from, so the
@@ -102,27 +106,52 @@ pub fn validate_query_plan(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Result
     let mut first_unsupported = None;
 
     for node in plan.nodes() {
-        validate_node_references(plan, node, &available_columns_by_node)?;
-        let available_columns =
-            match validate_node(plan, node, &available_columns_by_node, &vector_ingress_columns, ctx) {
-                Ok(available_columns) => available_columns,
-                Err(error) => {
-                    defer_unsupported(error, &mut first_unsupported)?;
-                    match declared_available_columns(node, &available_columns_by_node) {
-                        Ok(available_columns) => available_columns,
-                        Err(error) => {
-                            defer_unsupported(error, &mut first_unsupported)?;
-                            schema_column_names(node.output_schema())
-                        },
-                    }
-                },
-            };
-        available_columns_by_node.push(available_columns);
+        validate_node_references(plan, node, columns.available_by_node())?;
+        if let Err(error) = check_node(plan, node, &columns, ctx) {
+            defer_unsupported(error, &mut first_unsupported)?;
+        }
     }
-    if let Err(error) = validate_sink(plan, &available_columns_by_node, ctx) {
+    if let Err(error) = validate_sink(plan, columns.available_by_node(), ctx) {
         defer_unsupported(error, &mut first_unsupported)?;
     }
     first_unsupported.map_or(Ok(()), Err)
+}
+
+/// Column facts every node rule reads, derived once per plan from the node
+/// structure alone.
+pub(crate) struct PlanColumns {
+    available: Vec<BTreeSet<String>>,
+    vector_ingress: BTreeMap<NodeId, BTreeSet<String>>,
+}
+
+impl PlanColumns {
+    pub(crate) fn for_plan(plan: &QueryPlan) -> Self {
+        let mut available = Vec::<BTreeSet<String>>::with_capacity(plan.node_count());
+        for node in plan.nodes() {
+            let columns = match &node.kind {
+                PlanNode::Source(source) => match source.as_ref() {
+                    SourceNode::LocalParquet(source) => local_parquet_execution_frame_columns(source),
+                    SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => {
+                        schema_column_names(node.output_schema())
+                    },
+                },
+                // Plan construction orders every input before its consumers.
+                PlanNode::Filter(FilterNode { input, .. })
+                | PlanNode::Sort(SortNode { input, .. })
+                | PlanNode::Limit(LimitNode { input, .. }) => {
+                    filter_available_columns(&available[input.index()], node.output_schema())
+                },
+                _ => schema_column_names(node.output_schema()),
+            };
+            available.push(columns);
+        }
+        Self { available, vector_ingress: vector_ingress_columns_by_input(plan) }
+    }
+
+    /// The columns each node makes available to its consumers, by node id.
+    pub(crate) fn available_by_node(&self) -> &[BTreeSet<String>] {
+        &self.available
+    }
 }
 
 /// Returns `error` unless the backend merely cannot run the plan, in which
@@ -135,13 +164,17 @@ fn defer_unsupported(error: QueryError, first_unsupported: &mut Option<QueryErro
     Ok(())
 }
 
-fn validate_node(
+/// Checks one node against the IR rules and the backend support every layer
+/// applies to it. Validation and capability analysis both run it, so each
+/// rule has one copy.
+pub(crate) fn check_node(
     plan: &QueryPlan,
     node: &QueryNode,
-    available_columns_by_node: &[BTreeSet<String>],
-    vector_ingress_columns: &BTreeMap<NodeId, BTreeSet<String>>,
+    columns: &PlanColumns,
     ctx: AnalysisContext<'_>,
-) -> Result<BTreeSet<String>> {
+) -> Result<()> {
+    let available_columns_by_node = columns.available_by_node();
+    let vector_ingress_columns = &columns.vector_ingress;
     validate_schema_supported_with_vector_ingress(
         node.output_schema(),
         "query_engine.plan.validate_schema",
@@ -149,7 +182,7 @@ fn validate_node(
         ctx,
     )?;
     validate_output_names_unique(node)?;
-    Ok(match &node.kind {
+    match &node.kind {
         PlanNode::Source(source) => validate_source_node(source, ctx)?,
         PlanNode::Filter(filter) => {
             let input = input_node(plan, filter.input, node.id)?;
@@ -157,7 +190,6 @@ fn validate_node(
             let predicate_type = validate_expr(&filter.predicate, input.output_schema(), input_available, ctx)?;
             require_boolean(&predicate_type, "filter predicate")?;
             ctx.backend().check_expression(&filter.predicate, ExpressionUse::FilterPredicate)?;
-            filter_available_columns(input_available, node.output_schema())
         },
         PlanNode::Projection(projection) => {
             let input = input_node(plan, projection.input, node.id)?;
@@ -179,7 +211,7 @@ fn validate_node(
                 };
                 let expected_type = output.field.data_type();
                 if !arrow_data_types_match_except_list_child_names(&actual_type, expected_type)
-                    && !is_supported_arrow_implicit_cast(&actual_type, expected_type, ctx)
+                    && !is_supported_arrow_implicit_cast(&actual_type, expected_type, ctx.backend())
                 {
                     return Err(projection_schema_mismatch_error(
                         field_index,
@@ -192,8 +224,20 @@ fn validate_node(
             }
             for output in &projection.outputs {
                 ctx.backend().check_projection_output(output)?;
+                require_expression_capability(validate_general_expr_capability(&output.expr), &output.expr)?;
             }
-            schema_column_names(node.output_schema())
+            // `outputs` is a public field, so a caller can change it after
+            // construction derived the schema from it.
+            if projection.outputs.len() != node.output_schema().fields().len() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "query_engine.plan.validate_projection",
+                    "projection outputs do not match the projection schema",
+                )
+                .with_fact("node_id", node.id)
+                .with_fact("projection_output_count", projection.outputs.len())
+                .with_fact("schema_field_count", node.output_schema().fields().len()));
+            }
         },
         PlanNode::Aggregate(aggregate) => {
             let input = input_node(plan, aggregate.input, node.id)?;
@@ -212,7 +256,6 @@ fn validate_node(
                 }
             }
             validate_aggregate_capability(aggregate, node.output_schema(), ctx)?;
-            schema_column_names(node.output_schema())
         },
         PlanNode::Window(window) => {
             let input = input_node(plan, window.input, node.id)?;
@@ -239,7 +282,24 @@ fn validate_node(
                 }
             }
             validate_window_capability(window)?;
-            schema_column_names(node.output_schema())
+            // The window kernel keys partitions, orderings, and LAG / LEAD
+            // inputs by input columns.
+            let keys = window.spec.partition_by.iter().chain(window.spec.order_by.iter().map(|key| &key.expr));
+            for expr in keys {
+                require_expression_capability(validate_column_expr_capability(expr), expr)?;
+            }
+            for function in &window.spec.functions {
+                match function {
+                    WindowFunction::Aggregate { function, expr, .. } => {
+                        let aggregate = AggregateExpr::new(*function, expr.clone(), "__window_aggregate");
+                        require_expression_capability(validate_aggregate_expr_capability(&aggregate, false), expr)?;
+                    },
+                    WindowFunction::LagLead { expr, .. } => {
+                        require_expression_capability(validate_column_expr_capability(expr), expr)?;
+                    },
+                    WindowFunction::Rank { .. } | WindowFunction::RowNumber { .. } => {},
+                }
+            }
         },
         PlanNode::Sort(sort) => {
             let input = input_node(plan, sort.input, node.id)?;
@@ -249,15 +309,11 @@ fn validate_node(
                 require_timezone_free_operator_key(&data_type, "sort key")?;
             }
             lower_sort_spec(&sort.spec)?;
-            filter_available_columns(input_available, node.output_schema())
         },
         PlanNode::Limit(limit) => {
-            let input = input_node(plan, limit.input, node.id)?;
             if limit.spec.fetch.is_some() {
                 topk_candidate_rows(limit.spec)?;
             }
-            let input_available = available_columns(available_columns_by_node, limit.input)?;
-            filter_available_columns(input_available, input.output_schema())
         },
         PlanNode::Join(join) => {
             let left = input_node(plan, join.inputs[0], node.id)?;
@@ -274,53 +330,29 @@ fn validate_node(
                 node.output_schema(),
                 ctx,
             )?;
-            schema_column_names(node.output_schema())
         },
         PlanNode::Union(union) => {
             validate_union_node(union, node.id, plan, available_columns_by_node)?;
-            schema_column_names(node.output_schema())
         },
         PlanNode::EdgeNormalize(edge_normalize) => {
             let input = input_node(plan, edge_normalize.input, node.id)?;
             let input_available = available_columns(available_columns_by_node, edge_normalize.input)?;
             validate_edge_normalize_node(edge_normalize, input.output_schema(), input_available, node.output_schema())?;
-            schema_column_names(node.output_schema())
         },
         PlanNode::GraphAlgorithm(graph) => {
             let input = input_node(plan, graph.edge_input(), node.id)?;
             let input_available = available_columns(available_columns_by_node, graph.edge_input())?;
             validate_graph_algorithm_node(graph, input.output_schema(), input_available, node.output_schema())?;
             validate_graph_algorithm_side_inputs(graph, plan, available_columns_by_node, node.id)?;
-            schema_column_names(node.output_schema())
         },
         PlanNode::VectorAlgorithm(vector) => {
             validate_vector_algorithm_node(vector, plan, available_columns_by_node, node.id)?;
-            schema_column_names(node.output_schema())
         },
         PlanNode::MlAlgorithm(ml) => {
             validate_ml_algorithm_node(ml, plan, available_columns_by_node, node.id)?;
-            schema_column_names(node.output_schema())
         },
-    })
-}
-
-/// The columns `node` makes available to its consumers, derived from its
-/// declared output alone. Validation uses it to keep checking the consumers of
-/// a node the backend cannot run.
-fn declared_available_columns(
-    node: &QueryNode,
-    available_columns_by_node: &[BTreeSet<String>],
-) -> Result<BTreeSet<String>> {
-    Ok(match &node.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LocalParquet(source) => schema_column_names(&local_parquet_execution_frame_schema(source)?),
-            SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => schema_column_names(node.output_schema()),
-        },
-        PlanNode::Filter(FilterNode { input, .. }) | PlanNode::Sort(SortNode { input, .. }) => {
-            filter_available_columns(available_columns(available_columns_by_node, *input)?, node.output_schema())
-        },
-        _ => schema_column_names(node.output_schema()),
-    })
+    }
+    Ok(())
 }
 
 /// Checks that every column `node` reads is produced by the input it reads,
@@ -430,11 +462,11 @@ fn validate_sink(
     validate_schema_supported(schema, "query_engine.plan.validate_sink_schema", ctx)
 }
 
-fn validate_source_node(source: &SourceNode, ctx: AnalysisContext<'_>) -> Result<BTreeSet<String>> {
+fn validate_source_node(source: &SourceNode, ctx: AnalysisContext<'_>) -> Result<()> {
     match source {
         SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source, ctx)?;
-            Ok(schema_column_names(&local_parquet_execution_frame_schema(source)?))
+            local_parquet_execution_frame_schema(source).map(|_| ())
         },
         SourceNode::GpuResident(source) => {
             if source.input_name.is_empty() {
@@ -445,12 +477,9 @@ fn validate_source_node(source: &SourceNode, ctx: AnalysisContext<'_>) -> Result
                 )
                 .with_fact("reason", "empty_input_name"));
             }
-            Ok(schema_column_names(&source.schema))
+            Ok(())
         },
-        SourceNode::LiteralBatch(source) => {
-            validate_literal_batch_source(source, ctx)?;
-            Ok(schema_column_names(&source.schema))
-        },
+        SourceNode::LiteralBatch(source) => validate_literal_batch_source(source, ctx),
     }
 }
 

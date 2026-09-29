@@ -21,7 +21,7 @@ use query_engine::{
     },
     policy::PlanningPolicy,
     rapids_backend::rapids_analysis_context,
-    source::{GpuResidentSource, SourceNode},
+    source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
 #[test]
@@ -527,6 +527,47 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
     assert_eq!(reason, Reason::UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart::DataType));
     assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_feature_type"));
     assert_eq!(facts.get("validation_code").map(String::as_str), Some("unsupported_type"));
+}
+
+#[test]
+fn vector_feature_missing_from_the_source_execution_frame_is_rejected_by_validation_and_capability() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("x", DataType::Float64, false),
+        Field::new("y", DataType::Float64, false),
+    ]));
+    // The source declares `y` but its execution frame reads only `id` and `x`.
+    let source = LocalParquetSource::new("/tmp/vector-execution-frame.parquet", schema, vec!["id".into(), "x".into()]);
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::LocalParquet(source));
+    let params = VectorPcaParams::new(
+        VectorRelationBinding::new(0, VectorRowIdBinding::column("id"), vec!["x".to_string(), "y".to_string()]),
+        1,
+    );
+    let root = builder
+        .add_vector_algorithm(
+            vec![input],
+            VectorAlgorithmSpec::new(
+                VectorAlgorithm::Pca,
+                VectorAlgorithmParams::Pca(params),
+                vector_pca_output_schema(DataType::Int64, 1),
+            ),
+        )
+        .unwrap();
+    let plan = builder.finish_with_host_sink(root).unwrap();
+
+    let error = preflight_query_plan(&plan).expect_err("validation reads the source's execution frame");
+    let capability = plan
+        .capability_analysis(rapids_analysis_context(PlanningPolicy::default()))
+        .nodes
+        .into_iter()
+        .find(|node| node.node_id == root)
+        .unwrap();
+    let CapabilityDecision::Rejected { reason, facts } = capability.executable else {
+        panic!("capability must read the same execution frame as validation");
+    };
+    assert_eq!(reason, Reason::UnsupportedVectorAlgorithmNodeCapability(UnsupportedPart::from_code(error.code())));
+    assert_eq!(facts.get("validation_operation").map(String::as_str), Some(error.operation()));
 }
 
 #[test]

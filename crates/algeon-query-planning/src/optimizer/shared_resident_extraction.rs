@@ -111,7 +111,7 @@ pub struct SharedResidentPlan {
 }
 
 /// Runs the shared-resident extraction stage for a composed native plan.
-pub fn optimize_shared_resident_extraction(plan: QueryPlan) -> Result<SharedResidentPlan> {
+pub(crate) fn optimize_shared_resident_extraction(plan: QueryPlan) -> Result<SharedResidentPlan> {
     if !plan.nodes().iter().any(|node| {
         matches!(
             &node.kind,

@@ -221,25 +221,13 @@ pub query_planning::capability::Reason::UnsupportedAggregateGroupingSetsCapabili
 pub query_planning::capability::Reason::UnsupportedAggregateNodeCapability
 pub query_planning::capability::Reason::UnsupportedEdgeNormalizeNodeCapability(query_planning::capability::UnsupportedPart)
 pub query_planning::capability::Reason::UnsupportedFilterExpressionCapability
-pub query_planning::capability::Reason::UnsupportedGpuResidentSourceCapability
 pub query_planning::capability::Reason::UnsupportedGraphAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
 pub query_planning::capability::Reason::UnsupportedJoinNodeCapability
-pub query_planning::capability::Reason::UnsupportedJoinOutputDtype
 pub query_planning::capability::Reason::UnsupportedJoinResidualExpressionCapability
-pub query_planning::capability::Reason::UnsupportedLimitNodeCapability
-pub query_planning::capability::Reason::UnsupportedLiteralBatchSourceCapability
-pub query_planning::capability::Reason::UnsupportedLocalParquetSourceCapability
 pub query_planning::capability::Reason::UnsupportedMlAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
-pub query_planning::capability::Reason::UnsupportedProjectionExpressionCapability
-pub query_planning::capability::Reason::UnsupportedProjectionNodeCapability
 pub query_planning::capability::Reason::UnsupportedSortExpressionCapability
 pub query_planning::capability::Reason::UnsupportedSortNodeCapability
 pub query_planning::capability::Reason::UnsupportedVectorAlgorithmNodeCapability(query_planning::capability::UnsupportedPart)
-pub query_planning::capability::Reason::UnsupportedWindowAggregateExpressionCapability
-pub query_planning::capability::Reason::UnsupportedWindowLagLeadExpressionCapability
-pub query_planning::capability::Reason::UnsupportedWindowNodeCapability
-pub query_planning::capability::Reason::UnsupportedWindowOrderExpressionCapability
-pub query_planning::capability::Reason::UnsupportedWindowPartitionExpressionCapability
 pub query_planning::capability::Reason::WindowInputOrderingNotEstablished
 impl query_planning::capability::Reason
 pub const fn query_planning::capability::Reason::as_str(self) -> &'static str
@@ -471,7 +459,7 @@ impl core::default::Default for query_planning::chunk::SourceChunkPlanningPolicy
 pub fn query_planning::chunk::SourceChunkPlanningPolicy::default() -> Self
 pub struct query_planning::chunk::SourceReadSizing<'a>
 impl<'a> query_planning::chunk::SourceReadSizing<'a>
-pub const fn query_planning::chunk::SourceReadSizing<'a>::new(query_planning::backend::AnalysisContext<'a>, u64) -> Self
+pub const fn query_planning::chunk::SourceReadSizing<'a>::new(&'a dyn query_planning::backend::BackendCapabilities, u64) -> Self
 pub struct query_planning::chunk::SourceTaskMemoryModel
 impl query_planning::chunk::SourceTaskMemoryModel
 pub const fn query_planning::chunk::SourceTaskMemoryModel::aggregate_pipeline(bool) -> Self
@@ -526,8 +514,8 @@ pub fn query_planning::datatypes::arrow_fixed_width_byte_size(&arrow_schema::dat
 pub fn query_planning::datatypes::diagnostic_arrow_type(&arrow_schema::datatype::DataType) -> alloc::string::String
 pub fn query_planning::datatypes::is_arrow_fixed_width(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_narrow_decimal_carry_type(&arrow_schema::datatype::DataType) -> bool
-pub fn query_planning::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, query_planning::backend::AnalysisContext<'_>) -> bool
-pub fn query_planning::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, query_planning::backend::AnalysisContext<'_>) -> bool
+pub fn query_planning::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
+pub fn query_planning::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType, &dyn query_planning::backend::BackendCapabilities) -> bool
 pub fn query_planning::datatypes::is_supported_list_carry_type(&arrow_schema::datatype::DataType) -> bool
 pub fn query_planning::datatypes::is_timestamp_with_timezone(&arrow_schema::datatype::DataType) -> bool
 pub mod query_planning::dynamic_filter
@@ -829,6 +817,11 @@ pub query_planning::expr::DatePart::Month
 pub query_planning::expr::DatePart::Nanosecond
 pub query_planning::expr::DatePart::Second
 pub query_planning::expr::DatePart::Year
+impl query_planning::expr::DatePart
+pub const query_planning::expr::DatePart::DATE_TRUNC_FIELDS: [Self; 7]
+pub const query_planning::expr::DatePart::EXTRACT_FIELDS: [Self; 4]
+pub const query_planning::expr::DatePart::POST_JOIN_EXTRACT_FIELDS: [Self; 3]
+pub fn query_planning::expr::DatePart::from_sql_name(&str) -> core::option::Option<Self>
 impl core::fmt::Display for query_planning::expr::DatePart
 pub fn query_planning::expr::DatePart::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum query_planning::expr::Expr
@@ -921,6 +914,7 @@ pub query_planning::expr::Expr::Upper(alloc::boxed::Box<query_planning::expr::Ex
 impl query_planning::expr::Expr
 pub fn query_planning::expr::Expr::abs(Self) -> Self
 pub fn query_planning::expr::Expr::alias(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn query_planning::expr::Expr::any(&self, impl core::ops::function::FnMut(&query_planning::expr::Expr) -> bool) -> bool
 pub fn query_planning::expr::Expr::binary(Self, query_planning::expr::BinaryOp, Self) -> Self
 pub fn query_planning::expr::Expr::binary_with_output_type(Self, query_planning::expr::BinaryOp, Self, arrow_schema::datatype::DataType) -> Self
 pub fn query_planning::expr::Expr::case(alloc::vec::Vec<query_planning::expr::CaseWhen>, Self) -> Self
@@ -1540,10 +1534,6 @@ pub fn query_planning::optimizer::SemijoinReductionOptions::disabled() -> Self
 pub fn query_planning::optimizer::SemijoinReductionOptions::validate(&self) -> query_planning::error::Result<()>
 impl core::default::Default for query_planning::optimizer::SemijoinReductionOptions
 pub fn query_planning::optimizer::SemijoinReductionOptions::default() -> Self
-pub struct query_planning::optimizer::SemijoinReductionResult
-pub query_planning::optimizer::SemijoinReductionResult::change: query_planning::optimizer::NativeOptimizerChange
-pub query_planning::optimizer::SemijoinReductionResult::diagnostics: query_planning::optimizer::SemijoinReductionDiagnostics
-pub query_planning::optimizer::SemijoinReductionResult::plan: query_planning::plan::QueryPlan
 pub struct query_planning::optimizer::SharedSubplanMaterializationCandidateDiagnostics
 pub query_planning::optimizer::SharedSubplanMaterializationCandidateDiagnostics::aggregate_exprs: alloc::vec::Vec<alloc::string::String>
 pub query_planning::optimizer::SharedSubplanMaterializationCandidateDiagnostics::aggregate_node_ids: alloc::vec::Vec<query_planning::plan::NodeId>
@@ -1617,7 +1607,6 @@ pub fn query_planning::optimizer::discover_dimension_derived_pruning_requests(&q
 pub fn query_planning::optimizer::local_parquet_source(&query_planning::plan::QueryPlan, query_planning::plan::NodeId) -> core::option::Option<&query_planning::source::LocalParquetSource>
 pub async fn query_planning::optimizer::optimize_lakehouse_footer_pruning<R>(query_planning::plan::QueryPlan, query_planning::optimizer::LakehouseFooterPruningOptions, &mut R, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::optimizer::LakehouseFooterPruningResult> where R: query_planning::optimizer::LakehouseFooterPruningResolver + ?core::marker::Sized
 pub fn query_planning::optimizer::optimize_query_plan(query_planning::plan::QueryPlan, &query_planning::optimizer::NativeOptimizerOptions, query_planning::backend::AnalysisContext<'_>, &dyn query_planning::optimizer::LocalParquetPruningResolver) -> query_planning::error::Result<query_planning::optimizer::NativeOptimizerResult>
-pub fn query_planning::optimizer::optimize_semijoin_reduction(query_planning::plan::QueryPlan, &query_planning::optimizer::SemijoinReductionOptions) -> query_planning::error::Result<query_planning::optimizer::SemijoinReductionResult>
 pub fn query_planning::optimizer::seed_dimension_derived_reader_predicates(query_planning::plan::QueryPlan, query_planning::backend::AnalysisContext<'_>) -> query_planning::error::Result<query_planning::plan::QueryPlan>
 pub mod query_planning::parquet_stats
 pub enum query_planning::parquet_stats::ColumnByteKind

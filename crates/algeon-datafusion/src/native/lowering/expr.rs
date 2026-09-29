@@ -338,17 +338,10 @@ fn lower_extract_function(
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [field, expr] = function.args() else { unreachable!("validated EXTRACT must have two arguments") };
-    let field = match literal_string(field)
-        .expect("validated EXTRACT field must be a string literal")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "year" => NativeDatePart::Year,
-        "month" => NativeDatePart::Month,
-        "day" => NativeDatePart::Day,
-        "minute" => NativeDatePart::Minute,
-        _ => unreachable!("validated EXTRACT field must be supported"),
-    };
+    let field = NativeDatePart::from_sql_name(
+        &literal_string(field).expect("validated EXTRACT field must be a string literal"),
+    )
+    .expect("validated EXTRACT field must name a date part");
     Ok(NativeExpr::extract(field, lower_validated_child_expr_with_bindings(expr, validated, bindings)?))
 }
 
@@ -358,23 +351,12 @@ fn lower_date_trunc_function(
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, LoweringRejection> {
     let [field, expr] = function.args() else { unreachable!("validated DATE_TRUNC must have two arguments") };
-    let field = lower_validated_date_trunc_field(
-        &literal_string(field).expect("validated DATE_TRUNC field must be a string literal").to_ascii_lowercase(),
-    );
+    let field = NativeDatePart::from_sql_name(
+        &literal_string(field).expect("validated DATE_TRUNC field must be a string literal"),
+    )
+    .expect("validated DATE_TRUNC field must name a date part");
     let output_type = validated_scalar_output_type(function, validated);
     Ok(NativeExpr::date_trunc(field, lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
-}
-
-fn lower_validated_date_trunc_field(field: &str) -> NativeDatePart {
-    match field {
-        "day" => NativeDatePart::Day,
-        "hour" => NativeDatePart::Hour,
-        "minute" => NativeDatePart::Minute,
-        "second" => NativeDatePart::Second,
-        "millisecond" => NativeDatePart::Millisecond,
-        "microsecond" => NativeDatePart::Microsecond,
-        _ => unreachable!("validated DATE_TRUNC field must be supported"),
-    }
 }
 
 fn lower_to_timestamp_seconds_function(

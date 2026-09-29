@@ -133,48 +133,33 @@ pub(crate) fn validate_expr(
         },
         Expr::Extract { field, expr } => {
             let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
-            match field {
-                DatePart::Year | DatePart::Month | DatePart::Day => {
-                    require_date_or_timestamp(&data_type, "EXTRACT input")?
-                },
-                DatePart::Minute => {
-                    validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns, ctx)?
-                },
-                DatePart::Hour
-                | DatePart::Second
-                | DatePart::Millisecond
-                | DatePart::Microsecond
-                | DatePart::Nanosecond => {
-                    return Err(QueryError::new(
-                        QueryErrorCode::UnsupportedExpression,
-                        "query_engine.plan.validate_expr",
-                        "native EXTRACT does not support this field",
-                    )
-                    .with_fact("field", field.to_string()));
-                },
+            if !DatePart::EXTRACT_FIELDS.contains(field) {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "query_engine.plan.validate_expr",
+                    "native EXTRACT does not support this field",
+                )
+                .with_fact("field", field.to_string()));
+            }
+            if *field == DatePart::Minute {
+                validate_timestamp_second_integer_cast_expr(expr, input_schema, available_columns, ctx)?;
+            } else {
+                require_date_or_timestamp(&data_type, "EXTRACT input")?;
             }
             Ok(ArrowDataType::Int32)
         },
         Expr::DateTrunc { field, expr, output_type } => {
             let data_type = validate_expr(expr, input_schema, available_columns, ctx)?;
-            match field {
-                DatePart::Day
-                | DatePart::Hour
-                | DatePart::Minute
-                | DatePart::Second
-                | DatePart::Millisecond
-                | DatePart::Microsecond
-                | DatePart::Nanosecond => {
-                    require_timestamp_preserving_output(&data_type, output_type, "DATE_TRUNC input/output")?;
-                    Ok(output_type.clone())
-                },
-                DatePart::Year | DatePart::Month => Err(QueryError::new(
+            if !DatePart::DATE_TRUNC_FIELDS.contains(field) {
+                return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "query_engine.plan.validate_expr",
                     "native DATE_TRUNC does not support this field",
                 )
-                .with_fact("field", field.to_string())),
+                .with_fact("field", field.to_string()));
             }
+            require_timestamp_preserving_output(&data_type, output_type, "DATE_TRUNC input/output")?;
+            Ok(output_type.clone())
         },
         Expr::Alias { expr, .. } => validate_expr(expr, input_schema, available_columns, ctx),
     }
@@ -212,7 +197,7 @@ fn validate_cast_expr(
     ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     let source_type = validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns, ctx)?;
-    if !is_supported_arrow_cast(&source_type, target_type, ctx)
+    if !is_supported_arrow_cast(&source_type, target_type, ctx.backend())
         && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
     {
         return Err(QueryError::new(

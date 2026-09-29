@@ -13,10 +13,8 @@ use crate::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnQualifier, Expr, GroupingSetsSpec,
         LiteralValue,
     },
-    plan::{
-        GraphAlgorithm, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink,
-    },
-    source::{SourceNode, validate_local_parquet_source},
+    plan::{GraphAlgorithm, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan, ResultSink},
+    source::SourceNode,
 };
 
 mod aggregate;
@@ -35,6 +33,11 @@ mod rejection;
 pub use aggregate::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateStateContract, AggregateStrategyCandidateRejection,
     AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision,
+};
+pub(crate) use edge::input_role;
+pub(crate) use expr::{
+    require_expression_capability, validate_aggregate_expr_capability, validate_column_expr_capability,
+    validate_general_expr_capability,
 };
 pub use join::KeyedHashJoinStrategyOptions;
 #[doc(hidden)]

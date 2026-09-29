@@ -5,7 +5,7 @@ use super::{
     model::CapabilityAnalysis,
     node::analyze_node,
 };
-use crate::backend::AnalysisContext;
+use crate::{backend::AnalysisContext, validation::PlanColumns};
 
 impl QueryPlan {
     /// Runs bounded capability analysis for diagnostics, report projection, and
@@ -18,7 +18,8 @@ impl QueryPlan {
 /// Runs bounded capability analysis for diagnostics, report projection, and
 /// native bounded-join admission.
 pub(crate) fn analyze_query_capabilities(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> CapabilityAnalysis {
-    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node, ctx)).collect::<Vec<_>>();
+    let columns = PlanColumns::for_plan(plan);
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node, &columns, ctx)).collect::<Vec<_>>();
     let mut edges =
         plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
     edges.push(analyze_sink_edge(plan));
