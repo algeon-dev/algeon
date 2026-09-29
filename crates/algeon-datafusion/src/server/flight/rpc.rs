@@ -1,8 +1,9 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use arrow_flight::{Result as FlightResult, sql::metadata::GetCatalogsBuilder};
 use futures::stream::{iter, once, unfold};
 use prost::bytes::Bytes;
+use tokio::task::spawn_blocking;
 
 use super::*;
 use crate::server::{attempt::AttemptOptions, error::adapter_error_to_status, observability::RedactedSql};
@@ -963,9 +964,15 @@ impl FlightSqlService for DatafusionAlgeonFlightSqlService {
             return Err(Status::invalid_argument("GetQueryStats query_id body is empty"));
         }
         self.ownership.authorize(query_id, &caller)?;
-        let response = self
-            .coordinator
-            .lease_query_stats(query_id)
+        // `lease_query_stats` waits on a `std` Condvar while another query
+        // renders its stats. Run it on the blocking pool so this handler
+        // never parks a tokio worker on another query's render.
+        let coordinator = Arc::clone(&self.coordinator);
+        let owned_query_id = query_id.to_string();
+        let leased = spawn_blocking(move || coordinator.lease_query_stats(&owned_query_id))
+            .await
+            .map_err(|error| Status::internal(format!("GetQueryStats blocking task failed: {error}")))?;
+        let response = leased
             .map_err(|error| {
                 adapter_error_to_status(&error.adapter_error("algeon_datafusion.server.flight.get_query_stats.egress"))
             })?

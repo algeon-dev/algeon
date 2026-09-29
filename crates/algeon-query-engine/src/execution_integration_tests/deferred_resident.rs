@@ -242,6 +242,61 @@ fn empty_resident_handle(
         .expect("resident handle")
 }
 
+fn resident_handle_with_rows(
+    context: &runtime::ExecutionContext,
+    schema: &Arc<ArrowSchema>,
+    producer_plan: Option<&plan::QueryPlan>,
+    rows: Vec<i32>,
+) -> runtime::resident::GpuResultHandle {
+    let runtime = context.runtime().expect("attempt runtime");
+    let batch =
+        RecordBatch::try_new(Arc::clone(schema), vec![Arc::new(Int32Array::from(rows))]).expect("input batch");
+    let mut frame = runtime::resident::GpuDataFrame::new(
+        CudfDataFrame::from_record_batch(&runtime, &batch).expect("resident frame"),
+    );
+    if let Some(producer_plan) = producer_plan {
+        frame =
+            frame.with_producer_execution_scope(admission::canonical_execution_scope_fingerprint(producer_plan));
+    }
+    runtime::resident::GpuResultHandle::new(context, frame, Arc::clone(schema))
+        .expect("resident handle")
+}
+
+#[test]
+fn leased_context_preserves_activated_deferred_resident_phase() {
+    let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();
+    let evidence = composed_provenance_evidence(&consumer, &[("left", &producer_a), ("right", &producer_b)]);
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let attempt = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
+        .expect("deferred attempt admission");
+    let admitted = attempt.acquire_context().expect("admitted context");
+    let context = admitted.context();
+    let mut first = runtime::resident::GpuResidentInputMap::new();
+    first.insert("left".to_string(), empty_resident_handle(context, &schema, Some(&producer_a)));
+    first.insert("right".to_string(), empty_resident_handle(context, &schema, Some(&producer_b)));
+    let activated = context.with_admitted_gpu_inputs(&consumer, &first).expect("activation");
+
+    let lease = activated.acquire_attempt_work_lease(None).expect("attempt work lease");
+    let leased = lease.context();
+    leased
+        .validate_admitted_plan_capabilities_with_gpu_inputs(&consumer, &first)
+        .expect("same frames validate on the leased context");
+
+    let mut second = runtime::resident::GpuResidentInputMap::new();
+    second.insert("left".to_string(), resident_handle_with_rows(context, &schema, Some(&producer_a), vec![0]));
+    second.insert("right".to_string(), resident_handle_with_rows(context, &schema, Some(&producer_b), vec![0]));
+    let error = leased
+        .validate_admitted_plan_capabilities_with_gpu_inputs(&consumer, &second)
+        .expect_err("leased context must keep the activated frame identities");
+    assert_eq!(error.fact_value("reason"), Some("deferred_graph_input_identity_mismatch"));
+    drop(first);
+    drop(second);
+    drop(lease);
+    drop(admitted);
+    attempt.finish();
+}
+
 #[test]
 fn deferred_resident_activation_rejects_same_schema_producer_substitution() {
     let (consumer, producer_a, producer_b, schema) = same_schema_provenance_fixture();

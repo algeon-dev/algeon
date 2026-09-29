@@ -1,11 +1,31 @@
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::{
     common::ScalarValue,
-    logical_expr::Operator,
+    functions::{
+        core::nullif::NullIfFunc,
+        datetime::{date_part::DatePartFunc, date_trunc::DateTruncFunc, to_timestamp::ToTimestampSecondsFunc},
+        math::{self, abs::AbsFunc, round::RoundFunc},
+        regex::regexpreplace::RegexpReplaceFunc,
+        string::{
+            btrim::BTrimFunc, concat::ConcatFunc, contains::ContainsFunc, ends_with::EndsWithFunc, lower::LowerFunc,
+            ltrim::LtrimFunc, rtrim::RtrimFunc, starts_with::StartsWithFunc, upper::UpperFunc,
+        },
+        unicode::{character_length::CharacterLengthFunc, substr::SubstrFunc},
+    },
+    functions_aggregate::{
+        average::Avg,
+        count::Count,
+        median::Median,
+        min_max::{Max, Min},
+        stddev::{Stddev, StddevPop},
+        sum::Sum,
+        variance::{VariancePopulation, VarianceSample},
+    },
+    logical_expr::{AggregateUDF, Operator, ScalarUDF},
     physical_expr::{
-        PhysicalExpr,
+        PhysicalExpr, ScalarFunctionExpr,
         expressions::{BinaryExpr, CastExpr, Literal},
     },
 };
@@ -13,7 +33,7 @@ use query_engine::{
     datatypes::{
         is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
-    expr::UnaryMathOp,
+    expr::{AggregateFunction as NativeAggregateFunction, UnaryMathOp},
     rapids_backend::rapids_analysis_context,
     validation::{is_integral_type, is_string_type, target_integral_max},
 };
@@ -122,32 +142,96 @@ pub(in crate::native) enum ScalarFunctionKind {
 }
 
 impl ScalarFunctionKind {
-    pub(in crate::native) fn from_name(name: &str) -> Result<Self, ExpressionRejection> {
-        match name.to_ascii_lowercase().as_str() {
-            "substring" | "substr" => Ok(Self::Substring),
-            "date_part" | "extract" => Ok(Self::Extract),
-            "date_trunc" => Ok(Self::DateTrunc),
-            "to_timestamp_seconds" => Ok(Self::ToTimestampSeconds),
-            "lower" => Ok(Self::Lower),
-            "upper" => Ok(Self::Upper),
-            "trim" | "btrim" => Ok(Self::Trim),
-            "ltrim" => Ok(Self::LeftTrim),
-            "rtrim" => Ok(Self::RightTrim),
-            "contains" => Ok(Self::Contains),
-            "starts_with" => Ok(Self::StartsWith),
-            "ends_with" => Ok(Self::EndsWith),
-            "character_length" | "length" => Ok(Self::StringLength),
-            "regexp_replace" => Ok(Self::RegexpReplace),
-            "concat" => Ok(Self::Concat),
-            "abs" => Ok(Self::Abs),
-            "sqrt" => Ok(Self::UnaryMath(UnaryMathOp::Sqrt)),
-            "ln" => Ok(Self::UnaryMath(UnaryMathOp::Ln)),
-            "exp" => Ok(Self::UnaryMath(UnaryMathOp::Exp)),
-            "round" => Ok(Self::Round),
-            "nullif" => Ok(Self::NullIf),
-            _ => Err(ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunction)
-                .with_subject(ExpressionRejectionSubject::ScalarFunction(name.to_string()))),
+    /// Identifies a scalar function by its implementation type, not its name:
+    /// a user UDF registered under a builtin name must not inherit the
+    /// builtin's validation and lowering.
+    pub(in crate::native) fn from_scalar_function(function: &ScalarFunctionExpr) -> Result<Self, ExpressionRejection> {
+        let implementation = function.fun().inner().as_ref() as &dyn Any;
+        if implementation.is::<SubstrFunc>() {
+            Ok(Self::Substring)
+        } else if implementation.is::<DatePartFunc>() {
+            Ok(Self::Extract)
+        } else if implementation.is::<DateTruncFunc>() {
+            Ok(Self::DateTrunc)
+        } else if implementation.is::<ToTimestampSecondsFunc>() {
+            Ok(Self::ToTimestampSeconds)
+        } else if implementation.is::<LowerFunc>() {
+            Ok(Self::Lower)
+        } else if implementation.is::<UpperFunc>() {
+            Ok(Self::Upper)
+        } else if implementation.is::<BTrimFunc>() {
+            Ok(Self::Trim)
+        } else if implementation.is::<LtrimFunc>() {
+            Ok(Self::LeftTrim)
+        } else if implementation.is::<RtrimFunc>() {
+            Ok(Self::RightTrim)
+        } else if implementation.is::<ContainsFunc>() {
+            Ok(Self::Contains)
+        } else if implementation.is::<StartsWithFunc>() {
+            Ok(Self::StartsWith)
+        } else if implementation.is::<EndsWithFunc>() {
+            Ok(Self::EndsWith)
+        } else if implementation.is::<CharacterLengthFunc>() {
+            Ok(Self::StringLength)
+        } else if implementation.is::<RegexpReplaceFunc>() {
+            Ok(Self::RegexpReplace)
+        } else if implementation.is::<ConcatFunc>() {
+            Ok(Self::Concat)
+        } else if implementation.is::<AbsFunc>() {
+            Ok(Self::Abs)
+        } else if function.name().eq_ignore_ascii_case("sqrt") && is_builtin_scalar_impl(function.fun(), &math::sqrt())
+        {
+            Ok(Self::UnaryMath(UnaryMathOp::Sqrt))
+        } else if function.name().eq_ignore_ascii_case("ln") && is_builtin_scalar_impl(function.fun(), &math::ln()) {
+            Ok(Self::UnaryMath(UnaryMathOp::Ln))
+        } else if function.name().eq_ignore_ascii_case("exp") && is_builtin_scalar_impl(function.fun(), &math::exp()) {
+            Ok(Self::UnaryMath(UnaryMathOp::Exp))
+        } else if implementation.is::<RoundFunc>() {
+            Ok(Self::Round)
+        } else if implementation.is::<NullIfFunc>() {
+            Ok(Self::NullIf)
+        } else {
+            Err(ExpressionRejection::unsupported_expression(ExpressionCapability::ScalarFunction)
+                .with_subject(ExpressionRejectionSubject::ScalarFunction(function.name().to_string())))
         }
+    }
+}
+
+/// Compares a scalar implementation against a freshly built builtin by
+/// `TypeId`. Used only for builtins whose implementation types are private to
+/// `datafusion-functions` (`sqrt`, `ln`, `exp`); everything else downcasts to
+/// a named type above.
+fn is_builtin_scalar_impl(fun: &ScalarUDF, builtin: &ScalarUDF) -> bool {
+    (fun.inner().as_ref() as &dyn Any).type_id() == (builtin.inner().as_ref() as &dyn Any).type_id()
+}
+
+/// Maps an aggregate function to its native lowering by implementation type,
+/// not by name: a user UDAF registered under a builtin name resolves to
+/// `None` and falls back to CPU.
+pub(in crate::native) fn native_aggregate_function_kind(fun: &AggregateUDF) -> Option<NativeAggregateFunction> {
+    let implementation = fun.inner().as_ref() as &dyn Any;
+    if implementation.is::<Sum>() {
+        Some(NativeAggregateFunction::Sum)
+    } else if implementation.is::<Min>() {
+        Some(NativeAggregateFunction::Min)
+    } else if implementation.is::<Max>() {
+        Some(NativeAggregateFunction::Max)
+    } else if implementation.is::<Count>() {
+        Some(NativeAggregateFunction::Count)
+    } else if implementation.is::<Avg>() {
+        Some(NativeAggregateFunction::Avg)
+    } else if implementation.is::<Median>() {
+        Some(NativeAggregateFunction::Median)
+    } else if implementation.is::<Stddev>() {
+        Some(NativeAggregateFunction::StddevSamp)
+    } else if implementation.is::<StddevPop>() {
+        Some(NativeAggregateFunction::StddevPop)
+    } else if implementation.is::<VarianceSample>() {
+        Some(NativeAggregateFunction::VarSamp)
+    } else if implementation.is::<VariancePopulation>() {
+        Some(NativeAggregateFunction::VarPop)
+    } else {
+        None
     }
 }
 

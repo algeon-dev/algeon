@@ -369,7 +369,7 @@ impl DataFrame {
         } else {
             Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::to_table_copy"))?
         };
-        Ok(table.with_execution_domain(Arc::clone(&self.domain)))
+        Ok(table)
     }
 
     /// Ensure this DataFrame is placed in the target runtime.
@@ -434,7 +434,6 @@ impl DataFrame {
         } else {
             Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::try_into_table"))?
         };
-        let table = table.with_execution_domain(Arc::clone(&self.domain));
         Ok((table, names))
     }
 

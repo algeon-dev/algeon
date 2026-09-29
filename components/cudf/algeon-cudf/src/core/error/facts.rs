@@ -298,21 +298,7 @@ pub(crate) const FACT_CONTROL_PLANE_SCALAR_BYTES: FactKey<usize> = FactKey::new(
 
 // -- Facts container --------------------------------------------------------
 
-/// Error returned when a fact key is inserted twice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DuplicateFactError {
-    pub(crate) key: FactKeyName,
-}
-
-impl fmt::Display for DuplicateFactError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "duplicate fact key: {}", self.key)
-    }
-}
-
-impl std::error::Error for DuplicateFactError {}
-
-/// Container for canonical facts. Keys are unique.
+/// Container for canonical facts. Keys are unique; the first value wins.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     inner: IndexMap<FactKeyName, FactValue>,
@@ -343,29 +329,18 @@ impl Facts {
         self.inner.iter().map(|(k, v)| (*k, v))
     }
 
-    /// Fallible insertion; returns `Err` if `key` is already present.
+    /// Leaf-wins insertion; used by typed `with_fact(FactKey<T>, T)`.
     ///
-    /// Also asserts the key/value variant pairing to catch any bulk-insertion
-    /// miswiring at runtime (defense in depth; the typed `with_fact` API
-    /// already makes this unrepresentable).
-    pub(crate) fn try_insert(&mut self, key: FactKeyName, value: FactValue) -> Result<(), DuplicateFactError> {
-        assert_eq!(
+    /// The first value bound to a key is kept and later duplicates are
+    /// dropped. Wrappers add context through the call chain and details
+    /// instead of overwriting the leaf error's facts.
+    pub(crate) fn insert(&mut self, key: FactKeyName, value: FactValue) {
+        debug_assert_eq!(
             FactValueVariant::of_value(&value),
             key.legal_variant(),
-            "cudf internal error: {key} bound to wrong FactValue variant",
+            "{key} bound to wrong FactValue variant"
         );
-        if self.inner.contains_key(&key) {
-            return Err(DuplicateFactError { key });
-        }
-        self.inner.insert(key, value);
-        Ok(())
-    }
-
-    /// Panicking insertion; used by typed `with_fact(FactKey<T>, T)`.
-    pub(crate) fn insert(&mut self, key: FactKeyName, value: FactValue) {
-        if let Err(err) = self.try_insert(key, value) {
-            panic!("cudf internal error: {err}");
-        }
+        self.inner.entry(key).or_insert(value);
     }
 }
 
@@ -390,7 +365,7 @@ mod tests {
     //!
     //! These were previously in `tests/core/error_truthful_contract_tests.rs`.
     //! They moved here when the writer surface became `pub(crate)`.
-    //! Duplicate-insert and wrong-variant behavior are crate-internal
+    //! Leaf-wins insertion and wrong-variant behavior are crate-internal
     //! invariants, so the tests must live inside the crate too.
 
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -398,23 +373,18 @@ mod tests {
     use super::{FactKeyName, FactValue, Facts};
 
     #[test]
-    fn try_insert_rejects_duplicate_key_without_overwriting_first_value() {
+    fn insert_keeps_first_value_on_duplicate_key() {
         let mut facts = Facts::new();
-        facts.try_insert(FactKeyName::ExpectedRows, FactValue::Usize(3)).expect("first insert should succeed");
-
-        let duplicate = facts
-            .try_insert(FactKeyName::ExpectedRows, FactValue::Usize(99))
-            .expect_err("duplicate fact insertion must fail");
-
-        assert_eq!(duplicate.key, FactKeyName::ExpectedRows);
+        facts.insert(FactKeyName::ExpectedRows, FactValue::Usize(3));
+        facts.insert(FactKeyName::ExpectedRows, FactValue::Usize(99));
         assert_eq!(facts.get(FactKeyName::ExpectedRows), Some(&FactValue::Usize(3)));
     }
 
     #[test]
-    fn try_insert_panics_on_wrong_value_variant() {
+    fn insert_panics_on_wrong_value_variant() {
         let panic = catch_unwind(AssertUnwindSafe(|| {
             let mut facts = Facts::new();
-            let _ = facts.try_insert(FactKeyName::ExpectedRows, FactValue::Str("3".into()));
+            facts.insert(FactKeyName::ExpectedRows, FactValue::Str("3".into()));
         }));
 
         assert!(panic.is_err(), "wrong FactValue variant must panic instead of smuggling numbers through strings");

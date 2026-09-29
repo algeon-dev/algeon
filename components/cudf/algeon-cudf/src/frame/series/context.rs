@@ -337,8 +337,7 @@ impl Series {
             SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             options.stable,
             SortExecution::new(&output_domain, exec_options.options(), operation),
-        )?
-        .with_execution_domain(output_domain);
+        )?;
         let mut cols = sorted.into_columns()?;
         Series::from_column(cols.remove(0))
     }

@@ -194,7 +194,7 @@ pub struct ExecutionContext {
 }
 
 #[derive(Debug)]
-struct ActivatedDeferredResidentPhase {
+pub(super) struct ActivatedDeferredResidentPhase {
     consumer_execution_scope_fingerprint: String,
     inputs: Vec<ActivatedDeferredResidentInput>,
     capability_evidence: AttemptCapabilityEvidence,
@@ -202,7 +202,7 @@ struct ActivatedDeferredResidentPhase {
 }
 
 #[derive(Debug)]
-struct ActivatedDeferredResidentInput {
+pub(super) struct ActivatedDeferredResidentInput {
     producer_execution_scope_fingerprint: String,
     input_name: String,
     input_schema: SchemaRef,
@@ -402,6 +402,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) attempt_allocation_domain: Option<AttemptAllocationDomain>,
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
     pub(super) admitted_capability_evidence: Option<Arc<AttemptCapabilityEvidence>>,
+    pub(super) activated_deferred_resident_phase: Option<Arc<ActivatedDeferredResidentPhase>>,
     pub(super) attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
@@ -482,6 +483,7 @@ impl ExecutionContext {
             attempt_allocation_domain: None,
             attempt_auxiliary_slots: None,
             admitted_capability_evidence: None,
+            activated_deferred_resident_phase: None,
             attempt_member_lease: None,
             attempt_stream_provider_route: None,
             attempt_stream_provider_alias: None,
@@ -536,7 +538,7 @@ impl ExecutionContext {
             attempt_allocation_domain: parts.attempt_allocation_domain,
             attempt_auxiliary_slots: parts.attempt_auxiliary_slots,
             admitted_capability_evidence: parts.admitted_capability_evidence,
-            activated_deferred_resident_phase: None,
+            activated_deferred_resident_phase: parts.activated_deferred_resident_phase,
             attempt_member_lease: parts.attempt_member_lease,
             attempt_stream_provider_route: parts.attempt_stream_provider_route,
             _attempt_stream_provider_alias: parts.attempt_stream_provider_alias,

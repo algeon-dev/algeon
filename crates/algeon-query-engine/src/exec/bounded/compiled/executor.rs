@@ -182,25 +182,28 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         let ResidentGpuFrame { frame, .. } = *frame;
-        let frame = if self.aggregate_dispatch.is_some() {
-            // Lane leases remain live through this handoff; the resident result
-            // must not retain columns backed by a leased worker stream. The
-            // adoption runs whenever the run owns a dispatcher, even if this
-            // task fell back to serial work: lane-backed content can reach
-            // the sink through sibling tasks sharing the same run (join probe
-            // chunks, aggregate source chunks), and tracking every producer
-            // is more coupling than one output-sized copy.
-            let root_runtime = self.execution.context().runtime()?;
-            let adopted = frame.frame().copy_into_runtime(&root_runtime).map_err(|error| {
-                cudf_query_error(
-                    "query_engine.compiled_gpu_sink.root_adoption",
-                    "failed to adopt aggregate output onto the root query runtime",
-                    error,
-                )
-            })?;
-            GpuDataFrame::try_new_with_source_residency(adopted, &frame)?
-        } else {
-            frame
+        let frame = match self.aggregate_dispatch.as_ref() {
+            Some(dispatch) if dispatch.has_lanes() => {
+                // Lane leases remain live through this handoff; the resident result
+                // must not retain columns backed by a leased worker stream. The
+                // adoption runs whenever the run owns lanes, even if this task
+                // fell back to serial work: lane-backed content can reach the
+                // sink through sibling tasks sharing the same run (join probe
+                // chunks, aggregate source chunks), and tracking every producer
+                // is more coupling than one output-sized copy. A lane-less run
+                // executes everything on the root context, so it returns the
+                // frame as produced instead of doubling device usage at the sink.
+                let root_runtime = self.execution.context().runtime()?;
+                let adopted = frame.frame().copy_into_runtime(&root_runtime).map_err(|error| {
+                    cudf_query_error(
+                        "query_engine.compiled_gpu_sink.root_adoption",
+                        "failed to adopt aggregate output onto the root query runtime",
+                        error,
+                    )
+                })?;
+                GpuDataFrame::try_new_with_source_residency(adopted, &frame)?
+            },
+            _ => frame,
         };
         let output_bytes = frame.device_allocated_size_bytes()?;
         let resident_owner = self.execution.context().retain_resident_output_owner(output_bytes)?;

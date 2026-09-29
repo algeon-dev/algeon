@@ -83,7 +83,7 @@ impl CugraphLogicalNode {
             }
         }
         validate_contract_column_uniqueness(algorithm, &inputs, &roles)?;
-        let (mut graph_options, mut params) = options::default_options(algorithm, config, source);
+        let (mut graph_options, mut params) = options::default_options(algorithm, config, source)?;
         let edge_schema = inputs[0].schema();
         let has_weight = edge_schema.field_with_unqualified_name("weight").is_ok();
         let has_edge_id = edge_schema.field_with_unqualified_name("edge_id").is_ok();

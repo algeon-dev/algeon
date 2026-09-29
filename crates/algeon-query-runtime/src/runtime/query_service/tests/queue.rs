@@ -350,14 +350,38 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(error.fact_value("queued_queries"), Some("1"));
     assert_eq!(
         QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
         QueryAdmissionOutcome::Capacity {
-            queued_queries: Some(0),
+            queued_queries: Some(1),
             queue_capacity: Some(8),
             max_queue_wait: Some(Duration::from_millis(20)),
         }
     );
+}
+
+#[test]
+fn queue_timeout_reports_the_queue_length_at_sweep() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
+        250,
+        1,
+        2,
+    );
+    let _active = service.admit_query().unwrap();
+    let mut first = service.enqueue_admission().unwrap();
+    let mut second = service.enqueue_admission().unwrap();
+    service.expire_waiter(&mut first);
+    service.expire_waiter(&mut second);
+
+    for waiter in [&mut first, &mut second] {
+        let error = waiter.try_admit().unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+        assert_eq!(error.fact_value("queued_queries"), Some("2"));
+    }
 }
 
 #[test]

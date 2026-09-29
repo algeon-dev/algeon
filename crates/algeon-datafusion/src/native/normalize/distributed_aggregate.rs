@@ -6,10 +6,12 @@ use datafusion::{
         aggregates::{AggregateExec, AggregateMode},
     },
 };
-use query_engine::datatypes::is_supported_arrow_type;
+use query_engine::{datatypes::is_supported_arrow_type, expr::AggregateFunction as NativeAggregateFunction};
 
 use super::{NativePlanRejection, peel_repartition};
-use crate::{capability::CapabilityReason, report::GpuCandidate};
+use crate::{
+    capability::CapabilityReason, native::expression_contract::native_aggregate_function_kind, report::GpuCandidate,
+};
 
 #[derive(Debug, Clone)]
 pub(in crate::native) struct DistributedAggregatePeel<'a> {
@@ -64,11 +66,14 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
         && distributed_aggregate_filters_are_native_safe(final_aggregate, partial_aggregate)
         && distributed_group_exprs_are_native_safe(final_aggregate, partial_aggregate)
         && final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()).all(|(final_expr, partial_expr)| {
-            final_expr.fun().name().eq_ignore_ascii_case(partial_expr.fun().name())
-                && distributed_aggregate_function_is_native_safe(final_expr.fun().name())
-                && distributed_final_output_is_native_safe(final_aggregate, final_expr.name(), final_expr.fun().name())
+            let kind = native_aggregate_function_kind(final_expr.fun());
+            matches!(
+                (kind, native_aggregate_function_kind(partial_expr.fun())),
+                (Some(final_kind), Some(partial_kind)) if final_kind == partial_kind
+            ) && distributed_aggregate_function_is_native_safe(kind)
+                && distributed_final_output_is_native_safe(final_aggregate, final_expr.name(), kind)
                 && final_expr.is_distinct() == partial_expr.is_distinct()
-                && (!final_expr.is_distinct() || final_expr.fun().name().eq_ignore_ascii_case("count"))
+                && (!final_expr.is_distinct() || matches!(kind, Some(NativeAggregateFunction::Count)))
                 && final_expr.order_bys().is_empty()
                 && partial_expr.order_bys().is_empty()
         })
@@ -137,15 +142,20 @@ fn partial_group_output_names(partial_aggregate: &AggregateExec) -> Vec<String> 
         .collect()
 }
 
-fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {
+fn distributed_aggregate_function_is_native_safe(kind: Option<NativeAggregateFunction>) -> bool {
     // AVG is allowed only because the state schema checks below require
     // DataFusion's explicit sum/count state layout and the final output check
     // requires a floating result. It is not an average-of-averages shortcut.
-    name.eq_ignore_ascii_case("sum")
-        || name.eq_ignore_ascii_case("min")
-        || name.eq_ignore_ascii_case("max")
-        || name.eq_ignore_ascii_case("count")
-        || name.eq_ignore_ascii_case("avg")
+    matches!(
+        kind,
+        Some(
+            NativeAggregateFunction::Sum
+                | NativeAggregateFunction::Min
+                | NativeAggregateFunction::Max
+                | NativeAggregateFunction::Count
+                | NativeAggregateFunction::Avg
+        )
+    )
 }
 
 fn distributed_aggregate_state_exprs_are_native_safe(
@@ -191,7 +201,7 @@ fn distributed_state_fields_match_schema(
 fn distributed_final_output_is_native_safe(
     final_aggregate: &AggregateExec,
     aggregate_name: &str,
-    function_name: &str,
+    kind: Option<NativeAggregateFunction>,
 ) -> bool {
     // AVG finalization consumes numeric state and produces a floating value;
     // other distributed functions use the normal native type whitelist.
@@ -199,7 +209,7 @@ fn distributed_final_output_is_native_safe(
     let Ok(field) = schema.field_with_name(aggregate_name) else {
         return false;
     };
-    if function_name.eq_ignore_ascii_case("avg") {
+    if matches!(kind, Some(NativeAggregateFunction::Avg)) {
         matches!(field.data_type(), DataType::Float32 | DataType::Float64 | DataType::Decimal128(_, _))
     } else {
         is_supported_arrow_type(field.data_type())

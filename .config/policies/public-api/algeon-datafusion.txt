@@ -535,10 +535,10 @@ pub fn algeon_datafusion::cuml_sql::CumlExtensionPlanner::plan_extension<'life0,
 pub struct algeon_datafusion::cuml_sql::CumlLogicalNode
 impl algeon_datafusion::cuml_sql::CumlLogicalNode
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::model(&self) -> core::option::Option<&alloc::sync::Arc<query_planning::plan::ml_forest::MlForestModelSnapshot>>
-pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::operation(&self) -> query_planning::plan::ml_algorithm::CumlOperation
+pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::operation(&self) -> query_planning::plan::ml_algorithm::definition::CumlOperation
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::output_schema(&self) -> arrow_schema::schema::SchemaRef
-pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::try_new(query_planning::plan::ml_algorithm::CumlOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
-pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::try_new_with_model(query_planning::plan::ml_algorithm::CumlOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str, core::option::Option<alloc::sync::Arc<query_planning::plan::ml_forest::MlForestModelSnapshot>>) -> datafusion_common::error::Result<Self>
+pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::try_new(query_planning::plan::ml_algorithm::definition::CumlOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
+pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::try_new_with_model(query_planning::plan::ml_algorithm::definition::CumlOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str, core::option::Option<alloc::sync::Arc<query_planning::plan::ml_forest::MlForestModelSnapshot>>) -> datafusion_common::error::Result<Self>
 pub fn algeon_datafusion::cuml_sql::CumlLogicalNode::validated_options(&self) -> &algeon_datafusion::cuml_sql::CumlValidatedOptions
 impl core::cmp::Eq for algeon_datafusion::cuml_sql::CumlLogicalNode
 impl core::cmp::PartialEq for algeon_datafusion::cuml_sql::CumlLogicalNode
@@ -566,7 +566,7 @@ impl algeon_datafusion::cuml_sql::CumlRelationBinding
 pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::features(&self) -> &query_planning::plan::gpu_function_options::DenseVectorBinding
 pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::id(&self) -> &str
 pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::label(&self) -> core::option::Option<&str>
-pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::relation_role(&self) -> query_planning::plan::ml_algorithm::MlRelationRole
+pub fn algeon_datafusion::cuml_sql::CumlRelationBinding::relation_role(&self) -> query_planning::plan::ml_algorithm::definition::MlRelationRole
 pub struct algeon_datafusion::cuml_sql::CumlRelationPlanner
 impl datafusion_expr::planner::RelationPlanner for algeon_datafusion::cuml_sql::CumlRelationPlanner
 pub fn algeon_datafusion::cuml_sql::CumlRelationPlanner::plan_relation(&self, sqlparser::ast::query::TableFactor, &mut dyn datafusion_expr::planner::RelationPlannerContext) -> datafusion_common::error::Result<datafusion_expr::planner::RelationPlanning>
@@ -577,7 +577,7 @@ impl algeon_datafusion::cuml_sql::CumlValidatedOptions
 pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::bindings(&self) -> &[algeon_datafusion::cuml_sql::CumlRelationBinding]
 pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::canonical_json(&self) -> &str
 pub fn algeon_datafusion::cuml_sql::CumlValidatedOptions::n_components(&self) -> core::option::Option<usize>
-pub fn algeon_datafusion::cuml_sql::cuml_options_json_schema(query_planning::plan::ml_algorithm::CumlOperation) -> serde_json::value::Value
+pub fn algeon_datafusion::cuml_sql::cuml_options_json_schema(query_planning::plan::ml_algorithm::definition::CumlOperation) -> serde_json::value::Value
 pub fn algeon_datafusion::cuml_sql::cuml_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub type algeon_datafusion::cuml_sql::CumlAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuml_sql::exec::node::CumlRelationFunctionSpec>
 pub mod algeon_datafusion::cuvs_sql
@@ -607,9 +607,9 @@ impl datafusion_session::planner::ExtensionPlanner for algeon_datafusion::cuvs_s
 pub fn algeon_datafusion::cuvs_sql::CuvsExtensionPlanner::plan_extension<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'life6, 'life7, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::planner::PhysicalPlanner, &'life2 dyn datafusion_expr::logical_plan::extension::UserDefinedLogicalNode, &'life3 [&'life4 datafusion_expr::logical_plan::plan::LogicalPlan], &'life5 [alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>], &'life6 dyn datafusion_session::session::Session, &'life7 datafusion_expr::physical_planning_context::PhysicalPlanningContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait, 'life6: 'async_trait, 'life7: 'async_trait
 pub struct algeon_datafusion::cuvs_sql::CuvsLogicalNode
 impl algeon_datafusion::cuvs_sql::CuvsLogicalNode
-pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::operation(&self) -> query_planning::plan::vector_algorithm::CuvsOperation
+pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::operation(&self) -> query_planning::plan::vector_algorithm::definition::CuvsOperation
 pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::output_schema(&self) -> arrow_schema::schema::SchemaRef
-pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::try_new(query_planning::plan::vector_algorithm::CuvsOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
+pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::try_new(query_planning::plan::vector_algorithm::definition::CuvsOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
 pub fn algeon_datafusion::cuvs_sql::CuvsLogicalNode::validated_options(&self) -> &algeon_datafusion::cuvs_sql::CuvsValidatedOptions
 impl core::cmp::Eq for algeon_datafusion::cuvs_sql::CuvsLogicalNode
 impl core::cmp::PartialEq for algeon_datafusion::cuvs_sql::CuvsLogicalNode
@@ -640,9 +640,9 @@ pub fn algeon_datafusion::cuvs_sql::CuvsValidatedOptions::top_k_k(&self) -> core
 pub struct algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding
 impl algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding
 pub fn algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding::id(&self) -> &str
-pub fn algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding::relation_role(&self) -> query_planning::plan::vector_algorithm::CuvsRelationRole
+pub fn algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding::relation_role(&self) -> query_planning::plan::vector_algorithm::definition::CuvsRelationRole
 pub fn algeon_datafusion::cuvs_sql::CuvsVectorRelationBinding::vector(&self) -> &query_planning::plan::gpu_function_options::DenseVectorBinding
-pub fn algeon_datafusion::cuvs_sql::cuvs_options_json_schema(query_planning::plan::vector_algorithm::CuvsOperation) -> serde_json::value::Value
+pub fn algeon_datafusion::cuvs_sql::cuvs_options_json_schema(query_planning::plan::vector_algorithm::definition::CuvsOperation) -> serde_json::value::Value
 pub fn algeon_datafusion::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub type algeon_datafusion::cuvs_sql::CuvsAlgoExec = algeon_datafusion::native_exec::relation_function::RelationFunctionExec<algeon_datafusion::cuvs_sql::exec::node::CuvsRelationFunctionSpec>
 pub mod algeon_datafusion::error

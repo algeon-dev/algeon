@@ -330,8 +330,7 @@ impl DataFrame {
                 options.stable,
                 sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
             )?
-        }
-        .with_execution_domain(output_domain);
+        };
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -398,8 +397,7 @@ impl DataFrame {
             &keys_table,
             sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
-        )?
-        .with_execution_domain(output_domain);
+        )?;
         let sorted_order = Series::from_column(sorted_order)
             .map_err(|error| error.reanchor(operation).with_detail("resource", "sorted_order"))?;
 

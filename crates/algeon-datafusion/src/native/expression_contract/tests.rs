@@ -2,10 +2,14 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, IntervalMonthDayNanoType, Schema, TimeUnit};
 use datafusion::{
-    common::{JoinSide, ScalarValue},
+    common::{JoinSide, Result as DataFusionResult, ScalarValue},
     config::ConfigOptions,
     functions::{core, datetime, math, regex, string, unicode},
-    logical_expr::{Operator, ScalarUDF},
+    functions_aggregate::median::Median,
+    logical_expr::{
+        Accumulator, AggregateUDF, AggregateUDFImpl, ColumnarValue, Operator, ScalarFunctionArgs, ScalarUDF,
+        ScalarUDFImpl, Signature, Volatility, function::AccumulatorArgs,
+    },
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
@@ -15,12 +19,14 @@ use datafusion::{
     },
     physical_plan::joins::utils::{ColumnIndex, JoinFilter},
 };
-use query_engine::expr::{BinaryOp as NativeBinaryOp, Expr as NativeExpr, UnaryMathOp};
+use query_engine::expr::{
+    AggregateFunction as NativeAggregateFunction, BinaryOp as NativeBinaryOp, Expr as NativeExpr, UnaryMathOp,
+};
 
 use super::{
     ExpressionCapability, ScalarFunctionKind, SupportedBinaryOperator,
-    join_residual::validate_join_residual_scalar_function, join_residual_cast_mode, validate_join_residual,
-    validate_physical_expr_contract,
+    join_residual::validate_join_residual_scalar_function, join_residual_cast_mode, native_aggregate_function_kind,
+    validate_join_residual, validate_physical_expr_contract,
 };
 use crate::{capability::CapabilityReason, native::lowering::lower_physical_expr_for_test};
 
@@ -305,7 +311,79 @@ fn every_supported_scalar_function_kind_validates_then_lowers() {
 
     for (kind, expr) in functions {
         let function = expr.downcast_ref::<ScalarFunctionExpr>().unwrap();
-        assert_eq!(ScalarFunctionKind::from_name(function.name()).unwrap(), kind);
+        assert_eq!(ScalarFunctionKind::from_scalar_function(function).unwrap(), kind);
         assert_validation_lowering_parity(function.name(), &expr, &schema);
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct ShadowingScalarFunc {
+    signature: Signature,
+}
+
+impl ScalarUDFImpl for ShadowingScalarFunc {
+    fn name(&self) -> &str {
+        "upper"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, _args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        unreachable!("shadowing test UDFs are never executed")
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct ShadowingMedianFunc {
+    signature: Signature,
+}
+
+impl AggregateUDFImpl for ShadowingMedianFunc {
+    fn name(&self) -> &str {
+        "median"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
+        Ok(DataType::Float64)
+    }
+
+    fn accumulator(&self, _args: AccumulatorArgs) -> DataFusionResult<Box<dyn Accumulator>> {
+        unreachable!("shadowing test UDAFs are never executed")
+    }
+}
+
+#[test]
+fn scalar_function_shadowed_by_name_is_rejected() {
+    let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, true)]));
+    let shadowing = Arc::new(ScalarUDF::new_from_impl(ShadowingScalarFunc {
+        signature: Signature::string(1, Volatility::Immutable),
+    }));
+    let expr = scalar_function("upper", shadowing, vec![col("text", &schema).unwrap()], DataType::Utf8);
+    let function = expr.downcast_ref::<ScalarFunctionExpr>().unwrap();
+    assert_eq!(function.name(), "upper");
+    assert!(ScalarFunctionKind::from_scalar_function(function).is_err());
+    assert!(validate_physical_expr_contract(&expr, &schema).is_err());
+}
+
+#[test]
+fn aggregate_function_shadowed_by_name_resolves_to_no_native_kind() {
+    let shadowing = AggregateUDF::new_from_impl(ShadowingMedianFunc {
+        signature: Signature::uniform(1, vec![DataType::Float64], Volatility::Immutable),
+    });
+    assert_eq!(shadowing.name(), "median");
+    assert_eq!(native_aggregate_function_kind(&shadowing), None);
+    assert_eq!(
+        native_aggregate_function_kind(&AggregateUDF::new_from_impl(Median::default())),
+        Some(NativeAggregateFunction::Median)
+    );
 }

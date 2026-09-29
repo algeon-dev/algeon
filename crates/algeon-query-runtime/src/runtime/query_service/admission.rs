@@ -17,9 +17,9 @@ use super::{
 use crate::{
     attempt::{AttemptFinalizer, AttemptFinalizerSlot, AttemptLifecycleError},
     observability::{
-        AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionWaitFact, AttemptFailureSummary, AttemptId,
-        AttemptTerminalCommit, QueryCleanupSealDelivery, RuntimeObservationHandle, RuntimeObservationOwner,
-        RuntimeTerminalOutcome,
+        AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionWaitFact, AttemptFailureOperation,
+        AttemptFailureSummary, AttemptId, AttemptTerminalCommit, QueryCleanupSealDelivery, RuntimeObservationHandle,
+        RuntimeObservationOwner, RuntimeTerminalOutcome,
     },
     runtime::{
         ExecutionCancellation, MemoryGrant,
@@ -371,7 +371,8 @@ impl QueuedAdmissionTerminal {
     /// disposition that must finish the removed request's completion payload.
     pub(super) fn record(&self, error: QueryError) -> RuntimeTerminalOutcome {
         let disposition = RuntimeTerminalOutcome::from_query_error(&error);
-        let primary_failure = RuntimeTerminalOutcome::primary_failure_from_query_error(&error);
+        let primary_failure =
+            RuntimeTerminalOutcome::primary_failure_from_query_error(&error, AttemptFailureOperation::Admission);
         let mut terminal = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if terminal.error.is_none() {
             terminal.primary_failure = primary_failure;
@@ -543,7 +544,9 @@ impl QueryCompletion {
         // still borrowed. `finish` deliberately consumes only its closed
         // terminal projection, so doing this afterwards would lose operation,
         // allowlisted facts, and redacted text from an attempt report.
-        if let Some(summary) = RuntimeTerminalOutcome::primary_failure_from_query_error(error) {
+        if let Some(summary) =
+            RuntimeTerminalOutcome::primary_failure_from_query_error(error, AttemptFailureOperation::Admission)
+        {
             self.record_primary_failure(summary);
         }
         self.finish(RuntimeTerminalOutcome::from_query_error(error));

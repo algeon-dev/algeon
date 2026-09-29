@@ -182,7 +182,7 @@ fn validate_join_residual_expr(expr: &Arc<dyn PhysicalExpr>, filter: &JoinFilter
         return Ok(());
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
-        validate_join_residual_scalar_function(ScalarFunctionKind::from_name(function.name())?).map_err(
+        validate_join_residual_scalar_function(ScalarFunctionKind::from_scalar_function(function)?).map_err(
             |rejection| rejection.with_subject(ExpressionRejectionSubject::ScalarFunction(function.name().to_string())),
         )?;
         join_filter_expr_single_side(expr, filter)?;

@@ -142,6 +142,7 @@ impl ExecutionContext {
             attempt_allocation_domain: self.attempt_allocation_domain.clone(),
             attempt_auxiliary_slots: self.attempt_auxiliary_slots.as_ref().map(Arc::clone),
             admitted_capability_evidence: self.admitted_capability_evidence.clone(),
+            activated_deferred_resident_phase: self.activated_deferred_resident_phase.clone(),
             attempt_member_lease,
             attempt_stream_provider_route: self.attempt_stream_provider_route.as_ref().map(Arc::clone),
             attempt_stream_provider_alias,

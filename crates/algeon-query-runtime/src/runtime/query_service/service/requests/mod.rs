@@ -679,8 +679,9 @@ impl QueryService {
             Ok(completion) => completion,
             Err(error) => {
                 // A duplicate binding cannot manufacture a second post-cleanup
-                // finalizer. The provisional envelope must roll back and the
-                // fleet closes before its grant can wake another admission.
+                // finalizer. The provisional envelope rolls back and the
+                // admission is rejected; missing bookkeeping never closes the
+                // fleet, which only CUDA fault evidence can do.
                 envelope.preaccount_rollback_cleanup(&mut state);
                 record_admission_lifecycle(
                     &observation,
@@ -692,7 +693,6 @@ impl QueryService {
                 );
                 self.inner.notify_admission_available();
                 drop(state);
-                self.inner.close_unknown_isolation_admission("attempt finalizer unavailable during admission publish");
                 pause_after_rollback_accounting(probe.as_deref());
                 drop(envelope);
                 self.inner.notify_admission_available();

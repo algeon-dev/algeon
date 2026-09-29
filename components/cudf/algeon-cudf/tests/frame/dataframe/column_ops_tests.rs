@@ -329,7 +329,7 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
-fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
+fn test_with_columns_with_budget_case_report_records_output() {
     let df = dataframe_from_columns(
         vec!["score".to_string(), "fallback".to_string()],
         vec![column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap(), column_from_slice(&[1.0f64, 9.0, 3.0]).unwrap()],
@@ -345,15 +345,10 @@ fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
     let outcome = df.with_columns_with_budget([("derived_score", expr)], &token).unwrap();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(outcome.value());
-    let facts = report.context_facts();
-    let retained_preflight = facts["expression_output_dataframe_retained_preflight_bytes"].parse::<usize>().unwrap();
 
-    assert_eq!(facts["expression_preflight_contract"], "libcudf_dataframe_expression_allocation_preflight_v1");
-    assert!(facts["expression_boolean_equality_output_bytes"].parse::<usize>().unwrap() > 0);
-    assert!(facts["expression_null_float64_literal_bytes"].parse::<usize>().unwrap() > 0);
-    assert!(facts["expression_copy_if_else_output_bytes"].parse::<usize>().unwrap() > 0);
-    assert!(output_bytes <= retained_preflight);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(3));
     assert_eq!(outcome.value().series("derived_score").unwrap().null_count(), 1);
 }
 
@@ -519,8 +514,8 @@ fn column_ops_tests_cases() {
             test_with_columns_with_budget_reports_output_and_routes_allocator,
         ),
         (
-            "test_with_columns_with_budget_case_report_uses_owner_preflight",
-            test_with_columns_with_budget_case_report_uses_owner_preflight,
+            "test_with_columns_with_budget_case_report_records_output",
+            test_with_columns_with_budget_case_report_records_output,
         ),
         (
             "test_cast_column_with_budget_reports_output_and_routes_allocator",

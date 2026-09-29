@@ -5,13 +5,13 @@
 use std::{fmt, sync::Arc};
 
 use super::{
-    AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, MlAlgorithmNode, PlanFacts,
-    ProjectionNode, ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode,
+    AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, MlAlgorithmNode, NodeRemap,
+    PlanFacts, ProjectionNode, ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode,
     VectorAlgorithmNode, WindowNode,
 };
 use crate::{
     capability::KeyedHashJoinStrategyOptions,
-    dynamic_filter::{DynamicFilterExecutionOptions, DynamicFilterRoute},
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterExecutionOptions, DynamicFilterProducer, DynamicFilterRoute},
 };
 
 /// Query plan consumed by the native cuDF execution engine.
@@ -128,6 +128,26 @@ impl QueryPlan {
         self
     }
 
+    /// Returns this plan with the source plan's dynamic-filter routes,
+    /// translated through a renumbering rewrite.
+    ///
+    /// A route survives only when every endpoint node is kept and still
+    /// matches its source occurrence; removed or rewritten endpoints drop the
+    /// route so compilation never wires a filter to the wrong join.
+    pub(crate) fn with_dynamic_filter_state_from_remapped(mut self, source: &Self, remap: &NodeRemap) -> Self {
+        self.dynamic_filter_routes = source
+            .dynamic_filter_routes
+            .iter()
+            .filter_map(|route| {
+                let producer = remap_route_producer(&route.producer, remap, source, &self)?;
+                let consumer = remap_route_consumer(&route.consumer, remap, source, &self)?;
+                Some(DynamicFilterRoute { producer, consumer, ..route.clone() })
+            })
+            .collect();
+        self.dynamic_filter_execution_options = source.dynamic_filter_execution_options;
+        self
+    }
+
     /// Returns this plan with rewrite-preserved execution policy state copied
     /// from another plan.
     #[doc(hidden)]
@@ -139,12 +159,59 @@ impl QueryPlan {
         rewritten.with_advisory_outputs_from(source)
     }
 
+    /// Returns this plan with rewrite-preserved execution policy state
+    /// translated through a renumbering rewrite.
+    pub(crate) fn with_rewrite_state_from_remapped(self, source: &Self, remap: &NodeRemap) -> Self {
+        let mut rewritten = self
+            .with_dynamic_filter_state_from_remapped(source, remap)
+            .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options);
+        rewritten.deferred_host_sink_schema = source.deferred_host_sink_schema.clone();
+        rewritten.with_advisory_outputs_from_remapped(source, remap)
+    }
+
+    /// Returns this plan with the source plan's frontend advisory volumes,
+    /// translated through a renumbering rewrite and invalidating every binding
+    /// whose node or dependency changed.
+    ///
+    /// Bindings whose node was removed are dropped; the survivors keep their
+    /// statistics only when the renumbered node and its subtree still match
+    /// the source occurrence.
+    pub(crate) fn with_advisory_outputs_from_remapped(mut self, source: &Self, remap: &NodeRemap) -> Self {
+        let mut unchanged = vec![false; self.node_count()];
+        for node in self.nodes() {
+            unchanged[node.id.index()] =
+                remap.old_id(node.id).and_then(|old_id| source.node(old_id)).is_some_and(|old_node| {
+                    remap.try_translate_inputs(&old_node.kind).as_ref() == Some(&node.kind)
+                        && old_node.facts == node.facts
+                        && node.input_ids().iter().all(|input| unchanged[input.index()])
+                });
+        }
+        self.advisory_outputs = source
+            .advisory_outputs
+            .iter()
+            .filter_map(|binding| {
+                let node = self.node(remap.remap(binding.node)?)?;
+                let mut binding = binding.clone();
+                binding.node = node.id;
+                if !unchanged[node.id.index()] {
+                    binding.invalidate(super::AdvisoryUnknownReason::RewrittenSubtree);
+                    binding.schema = Arc::clone(node.output_schema());
+                }
+                Some(binding)
+            })
+            .collect();
+        self
+    }
+
     /// Returns this plan with the source plan's frontend advisory volumes,
     /// invalidating every binding whose node or dependency changed.
     ///
-    /// Advisory volumes are diagnostic only, so a rewrite that preserves no
-    /// other state still carries them; they never reach capability, admission,
-    /// execution identity, or any plan decision.
+    /// These records are diagnostic input and low-priority optimizer hints. Build-side
+    /// selection may use them only among executable alternatives when stronger
+    /// native evidence does not determine a choice. They are not native bounds and
+    /// cannot justify capability, admission, or grant size. A chosen executable
+    /// strategy is recorded in the compiled plan. Rewrites invalidate a record when
+    /// its occurrence, schema, or dependencies change.
     #[doc(hidden)]
     pub fn with_advisory_outputs_from(mut self, source: &Self) -> Self {
         let mut unchanged = vec![false; self.node_count()];
@@ -485,5 +552,69 @@ impl PlanNode {
             Self::VectorAlgorithm(node) => &node.inputs,
             Self::MlAlgorithm(node) => &node.inputs,
         }
+    }
+}
+
+/// Translates one route endpoint through a renumbering rewrite.
+///
+/// Returns the new id only when the node is kept and still matches its source
+/// occurrence; anything else drops the route.
+fn remapped_route_endpoint(
+    old: NodeId,
+    remap: &NodeRemap,
+    source: &QueryPlan,
+    rewritten: &QueryPlan,
+) -> Option<NodeId> {
+    let new = remap.remap(old)?;
+    let (Some(old_node), Some(new_node)) = (source.node(old), rewritten.node(new)) else {
+        return None;
+    };
+    (remap.try_translate_inputs(&old_node.kind).as_ref() == Some(&new_node.kind) && old_node.facts == new_node.facts)
+        .then_some(new)
+}
+
+fn remap_route_producer(
+    producer: &DynamicFilterProducer,
+    remap: &NodeRemap,
+    source: &QueryPlan,
+    rewritten: &QueryPlan,
+) -> Option<DynamicFilterProducer> {
+    match producer {
+        DynamicFilterProducer::HashJoinBuild { join_node_id, build_side, build_input } => {
+            Some(DynamicFilterProducer::HashJoinBuild {
+                join_node_id: remapped_route_endpoint(*join_node_id, remap, source, rewritten)?,
+                build_side: *build_side,
+                build_input: remapped_route_endpoint(*build_input, remap, source, rewritten)?,
+            })
+        },
+        DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } => {
+            Some(DynamicFilterProducer::AggregateGroupKeys {
+                aggregate_node_id: remapped_route_endpoint(*aggregate_node_id, remap, source, rewritten)?,
+            })
+        },
+    }
+}
+
+fn remap_route_consumer(
+    consumer: &DynamicFilterConsumer,
+    remap: &NodeRemap,
+    source: &QueryPlan,
+    rewritten: &QueryPlan,
+) -> Option<DynamicFilterConsumer> {
+    match consumer {
+        DynamicFilterConsumer::LocalParquetSource { source_node_id } => {
+            Some(DynamicFilterConsumer::LocalParquetSource {
+                source_node_id: remapped_route_endpoint(*source_node_id, remap, source, rewritten)?,
+            })
+        },
+        DynamicFilterConsumer::HashJoinProbe { join_node_id, probe_side } => {
+            Some(DynamicFilterConsumer::HashJoinProbe {
+                join_node_id: remapped_route_endpoint(*join_node_id, remap, source, rewritten)?,
+                probe_side: *probe_side,
+            })
+        },
+        DynamicFilterConsumer::Filter { filter_node_id } => Some(DynamicFilterConsumer::Filter {
+            filter_node_id: remapped_route_endpoint(*filter_node_id, remap, source, rewritten)?,
+        }),
     }
 }

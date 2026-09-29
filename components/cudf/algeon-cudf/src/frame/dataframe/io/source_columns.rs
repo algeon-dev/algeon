@@ -311,10 +311,7 @@ fn materialize_one_missing_null_column(
             .with_column(name.to_string())
     })?;
     frame.with_column(name, series).map_err(|error| {
-        error
-            .reanchor("dataframe::read_parquet_source")
-            .with_detail("reason", "missing_null_column_insert_failed")
-            .with_column(name.to_string())
+        error.reanchor("dataframe::read_parquet_source").with_detail("reason", "missing_null_column_insert_failed")
     })
 }
 
@@ -364,10 +361,7 @@ fn materialize_one_all_null_read_column(
             .with_column(name.to_string())
     })?;
     frame.with_column(name, series).map_err(|error| {
-        error
-            .reanchor("dataframe::read_parquet_source")
-            .with_detail("reason", "all_null_read_column_insert_failed")
-            .with_column(name.to_string())
+        error.reanchor("dataframe::read_parquet_source").with_detail("reason", "all_null_read_column_insert_failed")
     })
 }
 

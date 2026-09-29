@@ -443,7 +443,7 @@ fn lower_join_filter_side_scalar_function_expr(
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, LoweringRejection> {
-    match ScalarFunctionKind::from_name(function.name()).expect("validated join residual scalar function") {
+    match ScalarFunctionKind::from_scalar_function(function).expect("validated join residual scalar function") {
         ScalarFunctionKind::Substring => {
             lower_join_filter_side_substring_function(function, context, side_schema, side, required)
         },

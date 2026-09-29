@@ -1091,16 +1091,11 @@ fn root_topk_join_aggregate_rejection_projects_before_root_join(decision: &Capab
         decision.rejection_reason(),
         Some(
             "root_topk_join_aggregate_requires_fetch_limit"
-                | "root_topk_join_aggregate_rejects_distinct_subcontract"
                 | "root_topk_join_aggregate_rejects_rollup_subcontract"
-                | "root_topk_join_aggregate_rejects_window_subcontract"
                 | "root_topk_join_aggregate_requires_grouped_aggregate_fragment"
                 | "root_topk_join_aggregate_requires_ordered_window_input"
                 | "root_topk_join_aggregate_rejects_nested_blocking_or_branch_node"
-                | "root_topk_join_aggregate_rejects_shared_or_fanout_subplan"
-                | "root_topk_join_aggregate_rejects_sort_fetch_hash_join_input_subcontract"
                 | "root_topk_join_aggregate_rejects_sort_fetch_hash_join_aggregate_subcontract"
-                | "root_topk_join_aggregate_requires_keyed_inner_hash_join"
                 | "root_topk_join_aggregate_requires_supported_join_state"
                 | "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join"
                 | "root_topk_join_aggregate_rejects_keyless_outer_cross_subcontract"

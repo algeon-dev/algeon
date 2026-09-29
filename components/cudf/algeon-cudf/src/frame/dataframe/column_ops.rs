@@ -265,67 +265,15 @@ impl DataFrame {
         let operation = "dataframe::with_columns_with_budget";
         let ctx = token.execution_overrides();
         let exprs = resolve_with_column_exprs(exprs, operation)?;
-        let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
-        let relocation_required = !ExecutionDomain::same_provenance(self.execution_domain(), &output_domain);
-        let input_columns = self.expression_preflight_input_columns(operation)?;
-        let preflight = ops::expr::dataframe_expression_allocation_preflight_for_metadata(
-            self.num_rows(),
-            &input_columns,
-            &exprs,
-            relocation_required,
-        );
         let output = self
             .with_resolved_columns_in_context(&exprs, &ctx, operation)
             .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
         let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
-        let mut report = token
+        let report = token
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output.num_rows());
-        match preflight {
-            Ok(preflight) => {
-                if output_bytes > preflight.output_dataframe_retained_bytes() {
-                    return Err(annotate_dataframe_budget_execution_error(
-                        Error::new_with(
-                            ErrorCode::ForeignInvariantViolation,
-                            operation,
-                            "expression output exceeded its metadata allocation preflight",
-                        )
-                        .with_detail("resource", "output_dataframe_retained_bytes")
-                        .with_detail("reason", "runtime_output_exceeded_preflight")
-                        .with_detail("preflight_bytes", preflight.output_dataframe_retained_bytes().to_string())
-                        .with_detail("actual_bytes", output_bytes.to_string()),
-                        token,
-                        operation,
-                    ));
-                }
-                report = report.with_context_facts([
-                    (
-                        "expression_preflight_contract",
-                        ops::expr::DATAFRAME_EXPRESSION_ALLOCATION_PREFLIGHT_CONTRACT.to_string(),
-                    ),
-                    ("expression_boolean_equality_output_bytes", preflight.boolean_equality_output_bytes().to_string()),
-                    (
-                        "expression_fixed_width_arithmetic_output_bytes",
-                        preflight.fixed_width_arithmetic_output_bytes().to_string(),
-                    ),
-                    ("expression_null_float64_literal_bytes", preflight.null_float64_literal_bytes().to_string()),
-                    ("expression_copy_if_else_output_bytes", preflight.copy_if_else_output_bytes().to_string()),
-                    (
-                        "expression_output_dataframe_retained_preflight_bytes",
-                        preflight.output_dataframe_retained_bytes().to_string(),
-                    ),
-                    (
-                        "expression_unchanged_column_relocation_bytes",
-                        preflight.unchanged_column_relocation_bytes().to_string(),
-                    ),
-                    ("expression_active_phase_peak_bytes", preflight.active_phase_peak_bytes().to_string()),
-                ]);
-            },
-            Err(error) if error.code() == ErrorCode::UnsupportedOperation => {},
-            Err(error) => return Err(annotate_dataframe_budget_execution_error(error, token, operation)),
-        }
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
@@ -358,24 +306,6 @@ impl DataFrame {
             output_domain,
             operation,
         )
-    }
-
-    fn expression_preflight_input_columns(
-        &self,
-        operation: &'static str,
-    ) -> Result<Vec<ops::expr::DataFrameExpressionInputColumn>> {
-        self.columns
-            .iter()
-            .map(|(name, column)| {
-                let view = column.view().map_err(|error| error.reanchor_if_needed(operation))?;
-                Ok(ops::expr::DataFrameExpressionInputColumn::new(
-                    name,
-                    view.data_type().map_err(|error| error.reanchor_if_needed(operation))?,
-                    view.nullable().map_err(|error| error.reanchor_if_needed(operation))?,
-                    column.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?,
-                ))
-            })
-            .collect()
     }
 
     fn assemble_with_columns_in_domain(

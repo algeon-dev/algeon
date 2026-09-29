@@ -4,6 +4,7 @@
 //! deliberately keeps native parameter defaults behind typed resolvers so the
 //! metadata and binder surfaces do not copy numbers from the native defaults.
 
+use datafusion::common::Result;
 use serde_json::{Value, json};
 
 use super::{
@@ -148,7 +149,7 @@ impl CugraphDefaultValue {
             Self::GraphDirected => Some(json!(algorithm.effective_default_graph_options(defaults).directed)),
             Self::GraphRenumber => Some(json!(defaults.renumber)),
             Self::GraphConstructionPolicy => Some(json!(defaults.construction_policy.as_str())),
-            Self::Native(field) => Some(native_default(field, algorithm)),
+            Self::Native(field) => native_default(field, algorithm).ok(),
         }
     }
 }
@@ -1295,10 +1296,11 @@ pub fn arguments_for_algorithm(algorithm: CugraphAlgorithm) -> &'static [Cugraph
     definition_for_algorithm(algorithm).arguments
 }
 
-fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> Value {
+fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> Result<Value> {
     use CugraphAlgorithmParams::*;
 
-    match (field, CugraphAlgorithmParams::from_native_defaults(algorithm, None)) {
+    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None)?;
+    Ok(match (field, params) {
         (CugraphNativeDefault::Alpha, PageRank(params)) => json!(params.alpha),
         (CugraphNativeDefault::Alpha, PersonalizedPageRank(params)) => json!(params.pagerank.alpha),
         (CugraphNativeDefault::Alpha, KatzCentrality(params)) => json!(params.alpha),
@@ -1377,5 +1379,5 @@ fn native_default(field: CugraphNativeDefault, algorithm: CugraphAlgorithm) -> V
         (CugraphNativeDefault::Gravity, ForceAtlas2(params)) => json!(params.gravity),
         (CugraphNativeDefault::Verbose, ForceAtlas2(params)) => json!(params.verbose),
         (field, params) => panic!("cuGraph argument default {field:?} is not defined for {params:?}"),
-    }
+    })
 }

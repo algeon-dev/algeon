@@ -167,25 +167,23 @@ impl CacheFillByteBudget {
         }
     }
 
-    fn grow_permit(&self, permit: &mut CacheFillBytePermit, new_bytes: u64) -> Result<()> {
+    fn try_grow_permit(&self, permit: &mut CacheFillBytePermit, new_bytes: u64) -> Result<bool> {
         if new_bytes <= permit.bytes {
-            return Ok(());
+            return Ok(true);
         }
         validate_request_bytes(new_bytes, self.budget_bytes())?;
         let delta = new_bytes - permit.bytes;
         let mut state = self.lock_state("query_engine.lakehouse_cache.fill_budget.grow")?;
-        while !bytes_fit(state.in_flight_bytes, delta, self.budget_bytes()) {
-            state = self.inner.available.wait(state).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "query_engine.lakehouse_cache.fill_budget.grow",
-                    "lakehouse cache fill byte-budget mutex was poisoned while waiting for growth",
-                )
-            })?;
+        // Growth never waits: two fills that each hold part of the budget and
+        // wait for the remainder deadlock while holding their shares and the
+        // object-store worker. A fill that cannot grow abandons its cache
+        // write instead; the reader still gets its data.
+        if !bytes_fit(state.in_flight_bytes, delta, self.budget_bytes()) {
+            return Ok(false);
         }
         state.in_flight_bytes = state.in_flight_bytes.saturating_add(delta);
         permit.bytes = new_bytes;
-        Ok(())
+        Ok(true)
     }
 
     fn release(&self, bytes: u64) {
@@ -223,9 +221,12 @@ impl CacheFillBytePermit {
         self.bytes
     }
 
-    pub fn grow_to(&mut self, new_bytes: u64) -> Result<()> {
+    /// Grows this permit without waiting. Returns `false` when the budget
+    /// cannot cover the growth; the caller abandons its cache write and the
+    /// reader still gets its data.
+    pub fn try_grow(&mut self, new_bytes: u64) -> Result<bool> {
         let budget = self.budget.clone();
-        budget.grow_permit(self, new_bytes)
+        budget.try_grow_permit(self, new_bytes)
     }
 }
 

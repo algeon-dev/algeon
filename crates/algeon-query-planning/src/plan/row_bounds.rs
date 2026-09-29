@@ -98,11 +98,14 @@ pub fn hard_row_upper_bound_with_resident_rows(
             .iter()
             .try_fold(0_u64, |total, input| input_bound(*input)?.0.checked_add(total))
             .map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound)),
-        PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
-            Some((1, RowBoundProvenance::PlanExact))
-        },
         PlanNode::Aggregate(aggregate) => {
-            input_bound(aggregate.input).map(|(rows, _)| (rows, RowBoundProvenance::PlanHardUpperBound))
+            let sets = aggregate.spec.grouping_sets.as_ref().map_or(1, |sets| sets.groups.len() as u64);
+            if aggregate.spec.group_exprs.is_empty() && aggregate.spec.grouping_sets.is_none() {
+                Some((1, RowBoundProvenance::PlanExact))
+            } else {
+                let (rows, _) = input_bound(aggregate.input)?;
+                rows.checked_mul(sets).map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound))
+            }
         },
         PlanNode::Join(join) => {
             let left_rows = input_bound(join.inputs[0])?.0;
@@ -140,5 +143,46 @@ pub fn hard_row_upper_bound_with_resident_rows(
         // provable row bound.
         PlanNode::GraphAlgorithm(_) => None,
         PlanNode::EdgeNormalize(_) | PlanNode::VectorAlgorithm(_) | PlanNode::MlAlgorithm(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::Int32Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+
+    use super::query_plan_hard_row_upper_bound;
+    use crate::{
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec},
+        plan::QueryPlanBuilder,
+        source::{LiteralBatchSource, SourceNode},
+    };
+
+    #[test]
+    fn hard_row_bound_counts_every_grouping_set() {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![0]))]).unwrap();
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(input_schema, vec![batch])));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("a")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("a"), "count")],
+            )
+            .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "grouping_id")),
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new("count", DataType::UInt64, false),
+            ])),
+        );
+        let plan = builder.finish_with_host_sink(aggregate);
+
+        assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(2));
     }
 }

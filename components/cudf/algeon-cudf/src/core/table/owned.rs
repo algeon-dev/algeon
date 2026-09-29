@@ -242,11 +242,6 @@ impl Table {
         Self::from_handle_with_domain(handle, domain)
     }
 
-    pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
-        self.domain = domain;
-        self
-    }
-
     pub(crate) unsafe fn from_raw_with_domain_and_owners(
         handle: cudf_sys::cudf_table_handle,
         domain: Arc<ExecutionDomain>,

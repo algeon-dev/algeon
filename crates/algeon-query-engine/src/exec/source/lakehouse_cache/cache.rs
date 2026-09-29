@@ -776,7 +776,7 @@ fn enqueue_background_lakehouse_cache_entry_fill(
         },
         move |fill_result| {
             match fill_result.value {
-                Ok(bytes) => {
+                Ok(Some(bytes)) => {
                     event_sink.record(LakehouseCacheFillEvent {
                         outcome: LakehouseCacheFillOutcome::Completed,
                         bytes: Some(bytes),
@@ -797,6 +797,26 @@ fn enqueue_background_lakehouse_cache_entry_fill(
                         optional_usize_log(callback_chunk_index),
                     );
                     evict_lakehouse_cache(cache_root.as_deref(), &cache_path, cache_max_bytes);
+                },
+                Ok(None) => {
+                    event_sink.record(LakehouseCacheFillEvent {
+                        outcome: LakehouseCacheFillOutcome::Abandoned,
+                        bytes: None,
+                        elapsed: fill_result.elapsed,
+                        cache_path_hash: callback_cache_path_hash.clone(),
+                        stable_id_hash: callback_stable_id_hash.clone(),
+                        file_index: callback_file_index,
+                        chunk_index: callback_chunk_index,
+                        error: None,
+                    });
+                    eprintln!(
+                        "[query-engine] lakehouse_cache_background_fill outcome=abandoned elapsed_ns={} cache_path_hash={} stable_id_hash={} file_index={} chunk_index={}",
+                        fill_result.elapsed.as_nanos().min(u128::from(u64::MAX)),
+                        callback_cache_path_hash,
+                        callback_stable_id_hash,
+                        optional_usize_log(callback_file_index),
+                        optional_usize_log(callback_chunk_index),
+                    );
                 },
                 Err(error) => {
                     event_sink.record(LakehouseCacheFillEvent {
@@ -1206,10 +1226,10 @@ async fn stream_lakehouse_cache_fill(
     sidecar_content_identity: String,
     estimated_fetch_bytes: Option<u64>,
     mut budget_permit: CacheFillBytePermit,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     let _lock = lock_guard;
     if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {
-        return Ok(0);
+        return Ok(Some(0));
     }
     let result = store.get(&location).await.map_err(|error| {
         lakehouse_cache_object_store_error(
@@ -1264,13 +1284,20 @@ async fn stream_lakehouse_cache_fill(
                 )
             })?;
         if total_bytes > budget_permit.bytes() {
-            budget_permit.grow_to(total_bytes).map_err(|error| {
+            let grew = budget_permit.try_grow(total_bytes).map_err(|error| {
                 let _ = fs::remove_file(&temp_path);
                 error
                     .with_fact_if_absent("path", lakehouse_cache_path_fact(&cache_path))
                     .with_fact_if_absent("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
                     .with_fact_if_absent("background_fill_bytes", total_bytes)
             })?;
+            if !grew {
+                // Another fill holds the budget: abandon this cache write
+                // rather than wait for it. The temp file goes away, nothing
+                // is published, and the reader already has its own data path.
+                let _ = fs::remove_file(&temp_path);
+                return Ok(None);
+            }
         }
         if let Err(error) = temp_file.write_all(&chunk) {
             let _ = fs::remove_file(&temp_path);
@@ -1328,7 +1355,7 @@ async fn stream_lakehouse_cache_fill(
         .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
     }
     let _ = write_parquet_footer_sidecar_from_file(&cache_path, sidecar_content_identity.as_str());
-    Ok(total_bytes)
+    Ok(Some(total_bytes))
 }
 
 fn lakehouse_cache_object_store_error(

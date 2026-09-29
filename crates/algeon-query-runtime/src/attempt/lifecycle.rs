@@ -3,8 +3,8 @@ use std::{error::Error, fmt};
 
 use crate::observability::{
     AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
-    AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
-    CleanupFailureSummary, RuntimeTerminalOutcome,
+    AttemptFailureOperation, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
+    COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1, CleanupFailureSummary, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
 use crate::observability::{
@@ -371,6 +371,23 @@ impl AttemptLifecycle {
         }
     }
 
+    /// Classifies a failure committed now by the lifecycle stage reached.
+    /// Later stages win: admission implies planning is over even when its
+    /// timestamps were never recorded.
+    pub(crate) fn failure_operation(&self) -> AttemptFailureOperation {
+        if self.cleanup.is_some() {
+            AttemptFailureOperation::Cleanup
+        } else if self.admitted.is_some() {
+            AttemptFailureOperation::Execution
+        } else if self.admission_requested.is_some() {
+            AttemptFailureOperation::Admission
+        } else if self.planning_finished.is_none() {
+            AttemptFailureOperation::Planning
+        } else {
+            AttemptFailureOperation::Execution
+        }
+    }
+
     /// Retains only the first cleanup failure while accounting every observed
     /// cleanup failure. Overflow is marked incomplete rather than published as
     /// a saturated exact value.
@@ -506,6 +523,22 @@ mod tests {
 
     fn fact() -> AttemptAdmissionFact {
         AttemptAdmissionFact { admission_sequence: 7, admission_wait_ns: 3, device_ordinal: 2, grant_bytes: 4096 }
+    }
+
+    #[test]
+    fn failure_operation_follows_lifecycle_stage() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Planning);
+        lifecycle.planning_finished(1).unwrap();
+        assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Execution);
+        lifecycle.disposition(AttemptDisposition::Native).unwrap();
+        lifecycle.admission_requested(2).unwrap();
+        assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Admission);
+        lifecycle.admitted(fact(), 3).unwrap();
+        assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Execution);
+        lifecycle.terminalize(RuntimeTerminalOutcome::Cancelled, 4).unwrap();
+        lifecycle.cleanup(5).unwrap();
+        assert_eq!(lifecycle.failure_operation(), AttemptFailureOperation::Cleanup);
     }
 
     fn projection() -> AttemptComposedScheduleProjection {

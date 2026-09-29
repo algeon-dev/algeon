@@ -405,6 +405,7 @@ impl QueryService {
         let mut expired = Vec::new();
         let mut cancelled = Vec::new();
         let mut queued = state.take_queued_requests();
+        let queued_before_sweep = queued.len();
         let mut retained = VecDeque::with_capacity(queued.len());
         while let Some(request) = queued.pop_front() {
             if request.execution_cancellation.is_cancelled() {
@@ -414,7 +415,7 @@ impl QueryService {
             } else if request.deadline <= now {
                 let disposition = request.terminal.record(service_overloaded_error(
                     "queue_wait_elapsed",
-                    state.queued.len(),
+                    queued_before_sweep,
                     self.inner.queue_bounds.max_waiters,
                 ));
                 expired.push((request, disposition));

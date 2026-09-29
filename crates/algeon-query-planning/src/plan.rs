@@ -28,6 +28,7 @@ mod ml_algorithm;
 mod ml_forest;
 mod nodes;
 mod preference;
+mod remap;
 pub mod row_bounds;
 mod sink;
 mod vector_algorithm;
@@ -91,6 +92,7 @@ pub use nodes::{
 pub use preference::{
     NativePlanCostDecision, NativePlanCostFacts, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
 };
+pub(crate) use remap::{NodeRemap, clone_plan_node_with_inputs, remap_plan_node_inputs};
 pub use sink::ResultSink;
 pub use vector_algorithm::{
     CUVS_BRUTE_FORCE_KNN_FUNCTION, CUVS_CAGRA_FUNCTION, CUVS_IVF_FLAT_FUNCTION, CUVS_IVF_PQ_FUNCTION,

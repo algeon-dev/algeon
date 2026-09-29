@@ -1091,7 +1091,7 @@ pub const fn query_runtime::observability::AttemptFailureSummary::backend_closin
 pub const fn query_runtime::observability::AttemptFailureSummary::code(&self) -> query_planning::error::AttemptFailureCode
 pub const fn query_runtime::observability::AttemptFailureSummary::datafusion_fallback() -> Self
 pub fn query_runtime::observability::AttemptFailureSummary::facts(&self) -> &[query_runtime::observability::AttemptFailureFact]
-pub fn query_runtime::observability::AttemptFailureSummary::from_native_error(&query_planning::error::QueryError) -> Self
+pub fn query_runtime::observability::AttemptFailureSummary::from_native_error(&query_planning::error::QueryError, query_runtime::observability::AttemptFailureOperation) -> Self
 pub const fn query_runtime::observability::AttemptFailureSummary::operation(&self) -> query_runtime::observability::AttemptFailureOperation
 pub const fn query_runtime::observability::AttemptFailureSummary::origin(&self) -> query_runtime::observability::AttemptFailureOrigin
 pub const fn query_runtime::observability::AttemptFailureSummary::status(&self) -> query_runtime::observability::AttemptFailureStatus
@@ -2318,7 +2318,7 @@ pub fn query_runtime::runtime::CacheFillByteBudget::default() -> Self
 pub struct query_runtime::runtime::CacheFillBytePermit
 impl query_runtime::runtime::CacheFillBytePermit
 pub fn query_runtime::runtime::CacheFillBytePermit::bytes(&self) -> u64
-pub fn query_runtime::runtime::CacheFillBytePermit::grow_to(&mut self, u64) -> query_planning::error::Result<()>
+pub fn query_runtime::runtime::CacheFillBytePermit::try_grow(&mut self, u64) -> query_planning::error::Result<bool>
 impl core::ops::drop::Drop for query_runtime::runtime::CacheFillBytePermit
 pub fn query_runtime::runtime::CacheFillBytePermit::drop(&mut self)
 pub struct query_runtime::runtime::DeploymentIoCapability

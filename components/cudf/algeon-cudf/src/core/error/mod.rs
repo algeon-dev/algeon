@@ -150,7 +150,7 @@ impl Error {
         }
     }
 
-    /// Internal: insert a typed fact, panicking on duplicate or wrong pairing.
+    /// Internal: insert a typed fact; a duplicate key keeps the leaf error's value.
     #[must_use]
     pub(crate) fn with_fact<T>(mut self, key: FactKey<T>, value: T) -> Self
     where T: IntoFactValue {
@@ -166,10 +166,9 @@ impl Error {
 
     /// Internal: append a diagnostic detail. Repeated keys are allowed.
     ///
-    /// Panics if `key` is a canonical fact snake_case name; such keys must be
-    /// written via [`with_fact`](Self::with_fact), never through the detail
-    /// path. The check is structural so overlap-rule violations cannot be
-    /// introduced by reviewer inattention.
+    /// Debug-asserts if `key` is a canonical fact snake_case name; such keys
+    /// must be written via [`with_fact`](Self::with_fact), never through the
+    /// detail path.
     #[must_use]
     pub(crate) fn with_detail(mut self, key: &'static str, value: impl Into<String>) -> Self {
         assert_canonical_key_not_used_as_detail(key);
@@ -193,7 +192,7 @@ impl Error {
 
     /// Internal: append several diagnostic details.
     ///
-    /// Panics if any `key` is a canonical fact snake_case name. See
+    /// Debug-asserts if any `key` is a canonical fact snake_case name. See
     /// [`with_detail`](Self::with_detail).
     #[must_use]
     pub(crate) fn with_details<I>(mut self, details: I) -> Self
@@ -483,12 +482,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// cannot be violated by reviewer inattention. A violation is a crate-internal
 /// bug and panics in every build profile.
 fn assert_canonical_key_not_used_as_detail(key: &'static str) {
-    if FactKeyName::from_snake_case(key).is_some() {
-        panic!(
-            "cudf internal error: canonical fact key `{key}` written through the detail path; \
-             use `with_fact` instead",
-        );
-    }
+    debug_assert!(
+        FactKeyName::from_snake_case(key).is_none(),
+        "cudf internal error: canonical fact key `{key}` written through the detail path; \
+         use `with_fact` instead",
+    );
 }
 
 fn diagnostic_quote(input: &str) -> String {
@@ -1034,5 +1032,18 @@ mod ffi_detail_tests {
         assert_eq!(error.code(), ErrorCode::OutOfMemory);
         assert_eq!(error.ffi_detail(), Some(&detail));
         assert!(error.diagnostic_string().contains("failure_source=RESERVATION_LIMIT"));
+    }
+}
+
+#[cfg(test)]
+mod duplicate_fact_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_column_fact_keeps_first_value() {
+        let error = Error::new_with(ErrorCode::ColumnLengthMismatch, "test::duplicate_fact", "lengths differ")
+            .with_column("a")
+            .with_column("a");
+        assert_eq!(error.fact_value(FactKeyName::ColumnName), Some(&FactValue::Str("a".into())));
     }
 }

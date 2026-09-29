@@ -20,19 +20,20 @@ use super::{
 #[cfg(test)]
 use crate::observability::{
     AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptFailureCode, AttemptFailureFactKey, AttemptFailureFactValue,
-    AttemptFailureOperation, AttemptFailureOrigin, AttemptFailureStatus, AttemptFaultIsolation,
-    AttemptFinalDomainUsage, AttemptHealthTransition, AttemptNativeFault, AttemptNativeFaultEvidence,
-    AttemptNativeFaultKind, AttemptNativeStatus, AttemptTeardownHealth, QueryBoundaryKind,
+    AttemptFailureOrigin, AttemptFailureStatus, AttemptFaultIsolation, AttemptFinalDomainUsage,
+    AttemptHealthTransition, AttemptNativeFault, AttemptNativeFaultEvidence, AttemptNativeFaultKind,
+    AttemptNativeStatus, AttemptTeardownHealth, QueryBoundaryKind,
 };
 use crate::{
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptAlternateDeviceEligibility, AttemptCapacityDisposition,
-        AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureSummary,
-        AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit, AttemptTraceContext, CleanupFailurePhase,
-        CleanupFailureSummary, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeCleanupFailureObservation,
-        RuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle,
-        RuntimeObservationOwner, RuntimeObservationPayload, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
-        SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
+        AttemptCleanupDisposition, AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureOperation,
+        AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit,
+        AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary, QUERY_ATTEMPT_REPORT_SCHEMA_V1,
+        QueryAttemptReport, RuntimeCleanupFailureObservation, RuntimeObservationClock, RuntimeObservationConfig,
+        RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
+        RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
+        SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
 };
@@ -715,9 +716,12 @@ impl AttemptOwner {
     /// closed terminal outcome. The caller retains the untouched error and
     /// its complete source chain.
     pub fn commit_query_error(&self, error: &QueryError) -> Result<(), AttemptLifecycleError> {
-        let admitted = self.0.core.lock_lifecycle().admitted.is_some();
+        let (admitted, operation) = {
+            let lifecycle = self.0.core.lock_lifecycle();
+            (lifecycle.admitted.is_some(), lifecycle.failure_operation())
+        };
         let outcome = RuntimeTerminalOutcome::from_query_error(error);
-        let terminal = match RuntimeTerminalOutcome::primary_failure_from_query_error(error) {
+        let terminal = match RuntimeTerminalOutcome::primary_failure_from_query_error(error, operation) {
             Some(summary) => self.0.core.terminalize_for_release_with_primary_failure(outcome, summary)?,
             None => self.0.core.terminalize_for_release(outcome)?,
         };
@@ -832,13 +836,16 @@ impl AttemptAdmissionRejection {
         let (outcome, summary) = if let Some(cancellation_error) = cancellation_error {
             (
                 RuntimeTerminalOutcome::Cancelled,
-                RuntimeTerminalOutcome::primary_failure_from_query_error(&cancellation_error),
+                RuntimeTerminalOutcome::primary_failure_from_query_error(
+                    &cancellation_error,
+                    AttemptFailureOperation::Admission,
+                ),
             )
         } else {
             let summary = if error.fact_value("reason") == Some("backend_closing") {
                 Some(AttemptFailureSummary::backend_closing())
             } else {
-                RuntimeTerminalOutcome::primary_failure_from_query_error(error)
+                RuntimeTerminalOutcome::primary_failure_from_query_error(error, AttemptFailureOperation::Admission)
             };
             (RuntimeTerminalOutcome::from_query_error(error), summary)
         };
@@ -1028,7 +1035,8 @@ impl AttemptHandle {
     /// the original error to the attempt owner.  The full error remains on
     /// that returned path; this records only its bounded stable summary.
     pub fn record_native_failure(&self, error: &QueryError) {
-        if let Some(summary) = RuntimeTerminalOutcome::primary_failure_from_query_error(error) {
+        let operation = self.0.lock_lifecycle().failure_operation();
+        if let Some(summary) = RuntimeTerminalOutcome::primary_failure_from_query_error(error, operation) {
             self.0.lock_lifecycle().primary_failure(summary);
         }
     }
@@ -1472,6 +1480,35 @@ mod tests {
     }
 
     #[test]
+    fn contended_completion_push_blocks_for_capacity_instead_of_reporting_overflow() {
+        let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
+        let (begin, _clock, _counters) =
+            test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
+        drop(begin.completion.completion());
+        begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
+        let report = queue.drain(8).pop().expect("abandoned report");
+        // Hold the queue mutex while a pusher arrives: with spare capacity
+        // the push must wait for the lock, not fail as if the queue were
+        // full. The barrier plus hold window prove the pusher attempted its
+        // push while contended.
+        let guard = queue.hold_lock_for_test();
+        let barrier = sync::Barrier::new(2);
+        let (pushed_tx, pushed_rx) = sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                pushed_tx.send(queue.try_push(Arc::clone(&report))).expect("push result");
+            });
+            barrier.wait();
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(pushed_rx.try_recv().is_err(), "contended push must block, not fail fast");
+            drop(guard);
+            assert!(pushed_rx.recv().expect("push result after release"));
+        });
+        assert_eq!(queue.drain(8).len(), 1);
+    }
+
+    #[test]
     fn held_receivers_do_not_route_to_the_abandoned_queue() {
         let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
         let (begin, _clock, counters) =
@@ -1613,11 +1650,50 @@ mod tests {
         let summary = report.primary_failure.as_ref().expect("captured native primary summary");
         assert_eq!(summary.code(), AttemptFailureCode::CudfTemporaryFailure);
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
-        assert_eq!(summary.operation(), AttemptFailureOperation::Admission);
+        assert_eq!(summary.operation(), AttemptFailureOperation::Execution);
         assert_eq!(summary.facts().len(), 1);
         assert_eq!(summary.facts()[0].key(), AttemptFailureFactKey::Reason);
         assert_eq!(summary.facts()[0].value(), AttemptFailureFactValue::DeadlineExpired);
         assert!(summary.text().is_none());
+    }
+
+    #[test]
+    fn execution_failure_with_plan_in_operation_seals_as_execution() {
+        let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+        native_disposition(&begin);
+        let handle = begin.owner.handle();
+        let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
+        handle.record_admission_requested().unwrap();
+        handle
+            .record_admitted(AttemptAdmissionFact {
+                admission_sequence: 1,
+                admission_wait_ns: 0,
+                device_ordinal: 0,
+                grant_bytes: 1,
+            })
+            .unwrap();
+
+        let error = QueryError::new(
+            QueryErrorCode::CudfTemporaryFailure,
+            "query_engine.exec.execute_query_plan",
+            "execution failure",
+        );
+        handle.record_native_failure(&error);
+
+        let finalizer = finalizer_slot.take_for_admission().expect("admitted finalizer");
+        let terminal = finalizer.terminalize_for_release(RuntimeTerminalOutcome::Dropped).unwrap();
+        finalizer
+            .finalize_admitted(AttemptTerminalCommit::new(
+                AttemptCapacityDisposition::Released,
+                None,
+                AttemptHealthTransition::HealthyReuse,
+            ))
+            .unwrap();
+        begin.owner.observation_owner_for_test().finish_query(Some(terminal));
+
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
+        let summary = report.primary_failure.as_ref().expect("captured native primary summary");
+        assert_eq!(summary.operation(), AttemptFailureOperation::Execution);
     }
 
     #[test]

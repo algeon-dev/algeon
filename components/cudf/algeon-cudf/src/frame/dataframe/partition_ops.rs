@@ -85,8 +85,7 @@ impl DataFrame {
             operation,
         )?;
         let (table, offsets) = partitioned.into_parts();
-        let dataframe =
-            Self::from_table_with_names(table.with_execution_domain(output_domain), self.column_names_owned())?;
+        let dataframe = Self::from_table_with_names(table, self.column_names_owned())?;
         Ok(HashPartitionedDataFrame { dataframe, offsets })
     }
 }

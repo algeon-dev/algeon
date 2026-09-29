@@ -128,10 +128,11 @@ pub fn optimize_count_non_null_column_pruning(
         return CountNonNullColumnPruningResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
+    let (compacted, remap) = rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink());
     CountNonNullColumnPruningResult {
-        plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink())
+        plan: compacted
             .with_keyed_hash_join_strategy_options_from(&plan)
-            .with_advisory_outputs_from(&plan),
+            .with_advisory_outputs_from_remapped(&plan, &remap),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

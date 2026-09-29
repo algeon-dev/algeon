@@ -5399,33 +5399,6 @@ pub cudf::ops::expr::StringOperator::Slice(cudf::ops::strings::StringSliceOption
 pub cudf::ops::expr::StringOperator::StartsWith(alloc::string::String)
 pub cudf::ops::expr::StringOperator::Strip(alloc::string::String)
 pub cudf::ops::expr::StringOperator::Upper
-pub struct cudf::ops::expr::DataFrameExpressionAllocationPreflight
-impl cudf::ops::expr::DataFrameExpressionAllocationPreflight
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::active_phase_peak_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::boolean_equality_output_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::copy_if_else_output_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::fixed_width_arithmetic_output_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::null_float64_literal_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::output_dataframe_retained_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::peak_groups(&self) -> &[cudf::ops::expr::DataFrameExpressionPeakGroup; 2]
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::temporary_workspace_peak_bytes(&self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::unchanged_column_relocation_bytes(&self) -> usize
-pub struct cudf::ops::expr::DataFrameExpressionInputColumn
-impl cudf::ops::expr::DataFrameExpressionInputColumn
-pub fn cudf::ops::expr::DataFrameExpressionInputColumn::dtype(&self) -> cudf::core::types::DataType
-pub fn cudf::ops::expr::DataFrameExpressionInputColumn::name(&self) -> &str
-pub fn cudf::ops::expr::DataFrameExpressionInputColumn::new(impl core::convert::Into<alloc::string::String>, cudf::core::types::DataType, bool, usize) -> Self
-pub fn cudf::ops::expr::DataFrameExpressionInputColumn::nullable(&self) -> bool
-pub fn cudf::ops::expr::DataFrameExpressionInputColumn::retained_bytes(&self) -> usize
-pub struct cudf::ops::expr::DataFrameExpressionPeakGroup
-impl cudf::ops::expr::DataFrameExpressionPeakGroup
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::boolean_equality_output_bytes(self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::copy_if_else_output_bytes(self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::fixed_width_arithmetic_output_bytes(self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::null_float64_literal_bytes(self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::peak_bytes(self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::referenced_input_relocation_bytes(self) -> usize
-pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::unchanged_column_relocation_bytes(self) -> usize
 pub struct cudf::ops::expr::ExprAggNamespace(_)
 impl cudf::ops::expr::ExprAggNamespace
 pub fn cudf::ops::expr::ExprAggNamespace::all(self) -> cudf::Expr
@@ -5471,7 +5444,6 @@ pub fn cudf::ops::expr::ThenBuilder::otherwise(self, impl cudf::ops::expr::IntoE
 pub struct cudf::ops::expr::WhenBuilder(_)
 impl cudf::ops::expr::WhenBuilder
 pub fn cudf::ops::expr::WhenBuilder::then(self, impl cudf::ops::expr::IntoExpr) -> cudf::ops::expr::ThenBuilder
-pub const cudf::ops::expr::DATAFRAME_EXPRESSION_ALLOCATION_PREFLIGHT_CONTRACT: &str
 pub trait cudf::ops::expr::IntoExpr
 pub fn cudf::ops::expr::IntoExpr::into_expr(self) -> cudf::Expr
 impl cudf::ops::expr::IntoExpr for cudf::Expr
@@ -5488,7 +5460,6 @@ impl<T: cudf::core::types::CudfType + core::marker::Send + core::marker::Sync> c
 pub fn T::into_lit(self) -> cudf::Expr
 pub fn cudf::ops::expr::col(impl core::convert::Into<alloc::string::String>) -> cudf::Expr
 pub fn cudf::ops::expr::concat(alloc::vec::Vec<cudf::Expr>) -> cudf::Expr
-pub fn cudf::ops::expr::dataframe_expression_allocation_preflight_for_metadata(usize, &[cudf::ops::expr::DataFrameExpressionInputColumn], &[(alloc::string::String, cudf::Expr)], bool) -> cudf::core::error::Result<cudf::ops::expr::DataFrameExpressionAllocationPreflight>
 pub fn cudf::ops::expr::lit<L: cudf::ops::expr::IntoLit>(L) -> cudf::Expr
 pub fn cudf::ops::expr::lit_decimal128_raw(i128, i32) -> cudf::Expr
 pub fn cudf::ops::expr::lit_decimal32_raw(i32, i32) -> cudf::Expr
