@@ -12,9 +12,8 @@ use super::{
     observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
     partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
     record_partitioned_join_operator_metrics, record_streamed_partitioned_hash_join_metrics,
-    release_partitioned_join_side, release_streamed_join_outputs_reverse, run_partitioned_join_driver,
-    stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
-    validate_partitioned_hash_equi_join,
+    release_partitioned_join_side, run_partitioned_join_driver, stream_bounded_join_leaf_local_parquet_source_serial,
+    unsupported_bounded_shape, validate_partitioned_hash_equi_join,
 };
 use crate::exec::bounded::{compiled::lanes::AggregateLaneDispatch, release_bounded_compiled_join_probe_state};
 
@@ -295,7 +294,6 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             })
         },
         Err(error) => {
-            release_streamed_join_outputs_reverse(outputs);
             release_partitioned_join_side(build_partitioned);
             Err(error)
         },
@@ -647,7 +645,7 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
     }
 
     fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        release_streamed_join_outputs_reverse(self.pending_outputs.drain(..).collect());
+        self.pending_outputs.clear();
         self.release_active_probe_partitioned();
         self.pending_probe_chunk = None;
         if let Some(input) = self.inputs.take() {

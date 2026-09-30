@@ -1,6 +1,6 @@
 //! Integration tests for DeviceBuffer and zero-copy Column adoption.
 use cudf::{
-    BoundaryKind, ErrorCode, ErrorKind, Runtime, TypeId,
+    ErrorCode, ErrorKind, Runtime, TypeId,
     core::error::{FactKeyName, FactValue},
     testing::prelude::*,
 };
@@ -64,10 +64,6 @@ fn float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding() 
     assert_eq!(validated.as_ptr().unwrap(), raw);
     assert_eq!(validated.binding_id(), rt.binding_id());
     assert_eq!(validated.placement(), rt.placement());
-    assert_eq!(validated.observation().kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(validated.observation().rows, 3);
-    assert_eq!(validated.observation().columns, 1);
-    assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
 fn float32_device_buffer_finite_proof_rejects_nan_and_infinities() {
@@ -107,12 +103,10 @@ fn typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs()
     {
         let finite = buf.validate_finite_float32().unwrap();
         assert!(finite.is_empty());
-        assert_eq!(finite.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
     }
 
     let range = buf.validate_int64_range(0, 1).unwrap();
     assert!(range.is_empty());
-    assert_eq!(range.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
 fn int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding() {
@@ -128,8 +122,6 @@ fn int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding() {
     assert_eq!(validated.as_ptr().unwrap(), raw);
     assert_eq!(validated.binding_id(), rt.binding_id());
     assert_eq!(validated.placement(), rt.placement());
-    assert_eq!(validated.observation().kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
 fn int64_device_buffer_range_proof_rejects_both_bound_violations() {

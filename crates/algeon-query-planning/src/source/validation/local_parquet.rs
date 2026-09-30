@@ -6,10 +6,10 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
     source::{
-        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,
-        PredicateDisposition, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
-        ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, local_parquet_file_row_group_metadata_count,
-        parquet_file_path_fact, parquet_file_stable_id_fact,
+        ByteRangeDisposition, LocalParquetSource, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
+        ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN,
+        ZeroColumnCountDisposition, local_parquet_file_row_group_metadata_count, parquet_file_path_fact,
+        parquet_file_stable_id_fact,
     },
 };
 
@@ -45,76 +45,6 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource, ctx: AnalysisC
                 "local parquet source path must not be empty",
             )
             .with_fact("file_index", file_index));
-        }
-        if file.has_position_delete_files() {
-            validate_position_delete_row_group_selection(file, file_index)?;
-        }
-        for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
-            if delete_file.stable_id.is_empty() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.local_parquet_source.validate",
-                    "position delete file must have a stable identity",
-                )
-                .with_fact("reason", "empty_position_delete_stable_id")
-                .with_fact("file_index", file_index)
-                .with_fact("delete_index", delete_index));
-            }
-            if delete_file.path.as_os_str().is_empty() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.local_parquet_source.validate",
-                    "position delete source path must not be empty",
-                )
-                .with_fact("reason", "empty_position_delete_path")
-                .with_fact("file_index", file_index)
-                .with_fact("delete_index", delete_index));
-            }
-        }
-        for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
-            if delete_file.stable_id.is_empty() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.local_parquet_source.validate",
-                    "equality delete file must have a stable identity",
-                )
-                .with_fact("reason", "empty_equality_delete_stable_id")
-                .with_fact("file_index", file_index)
-                .with_fact("delete_index", delete_index));
-            }
-            if delete_file.path.as_os_str().is_empty() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.local_parquet_source.validate",
-                    "equality delete source path must not be empty",
-                )
-                .with_fact("reason", "empty_equality_delete_path")
-                .with_fact("file_index", file_index)
-                .with_fact("delete_index", delete_index));
-            }
-            if delete_file.equality_columns.is_empty() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "query_engine.local_parquet_source.validate",
-                    "equality delete file must name at least one equality column",
-                )
-                .with_fact("reason", "empty_equality_delete_columns")
-                .with_fact("file_index", file_index)
-                .with_fact("delete_index", delete_index));
-            }
-            for column in &delete_file.equality_columns {
-                if !source.read_columns.iter().any(|read_column| read_column == column) {
-                    return Err(QueryError::new(
-                        QueryErrorCode::InvalidPlan,
-                        "query_engine.local_parquet_source.validate",
-                        "equality delete key columns must be present in the source read projection",
-                    )
-                    .with_fact("reason", "missing_equality_delete_read_column")
-                    .with_fact("file_index", file_index)
-                    .with_fact("delete_index", delete_index)
-                    .with_fact("column", column.as_str()));
-                }
-            }
         }
         if file.partition_values.len() != source.partition_columns.len() {
             return Err(QueryError::new(
@@ -166,22 +96,6 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource, ctx: AnalysisC
                 .with_fact("stable_id", parquet_file_stable_id_fact(file)));
             }
         }
-    }
-    if source.files.iter().any(LocalParquetFile::has_row_delete_files) && source.read_columns.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.local_parquet_source.validate",
-            "Iceberg row deletes require at least one physical data column",
-        )
-        .with_fact("reason", "row_deletes_require_data_column"));
-    }
-    if source.files.iter().any(LocalParquetFile::has_row_delete_files) && source.reader_predicate.is_some() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.local_parquet_source.validate",
-            "Iceberg row deletes must be applied before source filtering",
-        )
-        .with_fact("reason", "row_deletes_reject_reader_predicate"));
     }
     if let Some(predicate) = &source.reader_predicate
         && !source.reader_predicate_is_supported(predicate, ctx)
@@ -306,57 +220,6 @@ fn validate_unique_key_columns(source: &LocalParquetSource) -> Result<()> {
                 .with_fact("column", column.as_str()));
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_position_delete_row_group_selection(file: &LocalParquetFile, file_index: usize) -> Result<()> {
-    let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty()) else {
-        return Ok(());
-    };
-    let mut previous = row_groups[0];
-    validate_position_delete_row_group_index(file, file_index, 0, previous)?;
-    for (row_group_position, row_group) in row_groups.iter().copied().enumerate().skip(1) {
-        validate_position_delete_row_group_index(file, file_index, row_group_position, row_group)?;
-        if previous.checked_add(1) != Some(row_group) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.local_parquet_source.validate",
-                "local parquet source with Iceberg position deletes requires contiguous row-group selections",
-            )
-            .with_fact("reason", "position_deletes_require_contiguous_row_groups")
-            .with_fact("file_index", file_index)
-            .with_fact("path", parquet_file_path_fact(file))
-            .with_fact("stable_id", parquet_file_stable_id_fact(file))
-            .with_fact("previous_row_group", previous)
-            .with_fact("row_group", row_group));
-        }
-        previous = row_group;
-    }
-    Ok(())
-}
-
-fn validate_position_delete_row_group_index(
-    file: &LocalParquetFile,
-    file_index: usize,
-    row_group_position: usize,
-    row_group: usize,
-) -> Result<()> {
-    if let Some(row_group_rows) = file.row_group_rows.as_ref()
-        && row_group >= row_group_rows.len()
-    {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "query_engine.local_parquet_source.validate",
-            "local parquet source with Iceberg position deletes selected a row group outside row-count metadata",
-        )
-        .with_fact("reason", "position_deletes_row_group_outside_row_count_metadata")
-        .with_fact("file_index", file_index)
-        .with_fact("path", parquet_file_path_fact(file))
-        .with_fact("stable_id", parquet_file_stable_id_fact(file))
-        .with_fact("row_group_position", row_group_position)
-        .with_fact("row_group", row_group)
-        .with_fact("row_group_count", row_group_rows.len()));
     }
     Ok(())
 }
@@ -511,14 +374,6 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: Anal
         SchemaMappingDisposition::DirectByName => {
             if !source.missing_columns.is_empty() {
                 return Err(unsupported_source_contract_fact("schema_mapping", "diagnostic_direct_but_missing"));
-            }
-        },
-        SchemaMappingDisposition::FieldIdBindings => {
-            if source.files.iter().all(|file| file.field_id_read_bindings.is_empty()) {
-                return Err(unsupported_source_contract_fact(
-                    "schema_mapping",
-                    "diagnostic_field_id_but_bindings_empty",
-                ));
             }
         },
         SchemaMappingDisposition::MissingNullableColumns => validate_represented_missing_columns(source, ctx)?,

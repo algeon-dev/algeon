@@ -44,11 +44,10 @@ use query_engine::{
     runtime::{ExecutionCancellation, MemoryControlPolicy, ReservationKind, SourceSchedulerPolicy},
     source::{
         CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus,
-        LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetEqualityDeleteFile,
-        ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
-        PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-        ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef, SourceNode,
-        ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, validate_local_parquet_source,
+        LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetReaderDecimalType,
+        ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
+        RejectedSourceFeature, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
+        SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, validate_local_parquet_source,
     },
 };
 

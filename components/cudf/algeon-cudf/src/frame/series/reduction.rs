@@ -5,6 +5,8 @@
 //! avoiding an explicit drop into [`Scalar`](crate::core::Scalar).
 
 use super::{context::default_execution_context, owned::Series};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::Runtime;
 use crate::{
     core::{
         error::{self, Error, ErrorCode, ErrorKind, FACT_TYPE_ID, Result},
@@ -15,7 +17,7 @@ use crate::{
         reduction::{ReduceAgg, ScanAgg, ScanType},
         unary::UnaryOperator,
     },
-    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, Runtime},
+    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides},
 };
 
 /// Conservative output-shape facts for a prepared scalar reduction.
@@ -221,6 +223,7 @@ fn negative_distinct_count_error(operation: &'static str, count: i32) -> Error {
     .with_detail("distinct_count", count.to_string())
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_nunique_negative_distinct_count_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
     let scalar = runtime.scalar(-1i32)?;

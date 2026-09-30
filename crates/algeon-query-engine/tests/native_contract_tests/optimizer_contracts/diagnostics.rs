@@ -142,7 +142,7 @@ fn native_optimizer_stable_rule_rows_project_aggregate_join_pushdown_candidates(
                 aggregate_node_id: join,
                 join_node_id: Some(join),
                 applied: false,
-                rejected_reason: Some(AggregateJoinPushdownRejectedReason::GroupingSetsRequired),
+                rejected_reason: Some(AggregateJoinPushdownRejectedReason::UnsupportedJoinType),
             }],
         },
         ..Default::default()
@@ -151,7 +151,7 @@ fn native_optimizer_stable_rule_rows_project_aggregate_join_pushdown_candidates(
     assert_eq!(
         diagnostics.stable_rule_rows(),
         vec![
-            "rule=aggregate_join_pushdown,considered_count=1,applied_count=0,candidates=rule=aggregate_join_pushdown,aggregate_node_id=n2,join_node_id=n2,applied=false,rejected_reason=GroupingSetsRequired".to_string()
+            "rule=aggregate_join_pushdown,considered_count=1,applied_count=0,candidates=rule=aggregate_join_pushdown,aggregate_node_id=n2,join_node_id=n2,applied=false,rejected_reason=UnsupportedJoinType".to_string()
         ]
     );
 }

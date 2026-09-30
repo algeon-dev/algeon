@@ -4,7 +4,7 @@ use crate::metrics::QueryMetrics;
 
 impl QueryMetrics {
     /// Builds a compact triage summary from runtime metrics.
-    pub fn triage_summary(&self) -> TriageSummary {
+    pub(crate) fn triage_summary(&self) -> TriageSummary {
         let mut signals = Vec::new();
         if self.retry_resource_exhausted_count > 0 {
             signals.push(TriageSignal::new(

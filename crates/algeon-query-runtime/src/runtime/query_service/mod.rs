@@ -4,23 +4,23 @@ use std::sync::Mutex;
 
 use query_planning::{
     admission::AttemptRequirement,
-    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
-    dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
     mode::StatisticalAggregateExecutionMode,
 };
 #[cfg(test)]
+use query_planning::{capability::KeyedHashJoinStrategyOptions, dynamic_filter::DynamicFilterExecutionOptions};
+#[cfg(test)]
 use tokio::time;
 
 #[cfg(test)]
-use super::{
-    DeploymentIoCapability, DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-};
+use super::LakehouseCacheFillConfig;
+#[cfg(test)]
+use super::{DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 use super::{
     DeviceRegistry, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
-    LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, SourceChunkPlanningMode,
-    SourceSchedulerPolicy,
+    MemoryControlPolicy, MemoryGrant, SourceChunkPlanningMode, SourceSchedulerPolicy,
     cache_events::LakehouseCacheFillEventSink,
     context::{ExecutionContextParts, QueryServiceEpochUser, validate_service_stream_pool_device},
 };
@@ -49,17 +49,17 @@ use device_waiters::{PendingDeviceSlotNotifications, notify_shared_device_admiss
 pub use handle::{AdmittedQueryContext, QueryHandle};
 #[cfg(feature = "qualification")]
 pub use service::DeviceQuarantineInjection;
+#[cfg(test)]
+pub(crate) use service::QueryAdmissionOutcome;
 #[doc(hidden)]
 pub use service::QueryService;
 use service::QueryServiceInner;
 pub use service::{
-    QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
-    QueryServiceDeviceAdmissionSnapshot,
+    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum QueryServiceDrainPhase {
+pub(crate) enum QueryServiceDrainPhase {
     StreamPoolClose,
     AdmissionQuiescence,
     ExecutionPoolQuiescence,
@@ -69,8 +69,7 @@ pub enum QueryServiceDrainPhase {
 }
 
 impl QueryServiceDrainPhase {
-    #[doc(hidden)]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::StreamPoolClose => "stream_pool_close",
             Self::AdmissionQuiescence => "admission_quiescence",
@@ -83,10 +82,22 @@ impl QueryServiceDrainPhase {
 }
 
 #[derive(Debug)]
-pub enum QueryServiceDrainPhaseOutcome {
-    Quiescent { phase: QueryServiceDrainPhase },
-    DeadlineElapsed { phase: QueryServiceDrainPhase, error: QueryError },
-    PermanentFailure { phase: QueryServiceDrainPhase, error: QueryError },
+pub(crate) enum QueryServiceDrainPhaseOutcome {
+    Quiescent {
+        phase: QueryServiceDrainPhase,
+    },
+    DeadlineElapsed {
+        phase: QueryServiceDrainPhase,
+        #[cfg_attr(
+            not(any(test, feature = "test-hooks")),
+            expect(dead_code, reason = "read only by into_result under test-hooks")
+        )]
+        error: QueryError,
+    },
+    PermanentFailure {
+        phase: QueryServiceDrainPhase,
+        error: QueryError,
+    },
 }
 
 impl QueryServiceDrainPhaseOutcome {
@@ -98,8 +109,7 @@ impl QueryServiceDrainPhaseOutcome {
         }
     }
 
-    #[doc(hidden)]
-    pub const fn phase(&self) -> QueryServiceDrainPhase {
+    pub(crate) const fn phase(&self) -> QueryServiceDrainPhase {
         match self {
             Self::Quiescent { phase } | Self::DeadlineElapsed { phase, .. } | Self::PermanentFailure { phase, .. } => {
                 *phase
@@ -107,8 +117,7 @@ impl QueryServiceDrainPhaseOutcome {
         }
     }
 
-    #[doc(hidden)]
-    pub const fn is_quiescent(&self) -> bool {
+    pub(crate) const fn is_quiescent(&self) -> bool {
         matches!(self, Self::Quiescent { .. })
     }
 }
@@ -120,8 +129,7 @@ impl QueryServiceDrainPhaseOutcome {
 /// the cleanup executors must remain available for anchors released after an
 /// earlier bounded admission wait times out.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct QueryServiceDrainOutcome {
+pub(crate) struct QueryServiceDrainOutcome {
     phases: Vec<QueryServiceDrainPhaseOutcome>,
 }
 
@@ -130,8 +138,7 @@ impl QueryServiceDrainOutcome {
         Self { phases }
     }
 
-    #[doc(hidden)]
-    pub fn phases(&self) -> &[QueryServiceDrainPhaseOutcome] {
+    pub(crate) fn phases(&self) -> &[QueryServiceDrainPhaseOutcome] {
         &self.phases
     }
 

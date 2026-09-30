@@ -52,10 +52,10 @@ pub struct ShadowResourceModel {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowResourceLifetime {
-    pub resource: usize,
-    pub producer: usize,
-    pub consumers: Vec<usize>,
-    pub sink_output: bool,
+    pub(crate) resource: usize,
+    pub(crate) producer: usize,
+    pub(crate) consumers: Vec<usize>,
+    pub(crate) sink_output: bool,
     pub model: ShadowResourceModel,
 }
 
@@ -73,8 +73,8 @@ pub struct ShadowTaskEnvelope {
 /// Independent diagnostic artifact; none of these quantities is an admission input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowPipelineEstimate {
-    pub schema: String,
-    pub execution_scope: String,
+    pub(crate) schema: String,
+    pub(crate) execution_scope: String,
     pub query_owned_peak: ShadowBytes,
     pub borrowed_resident_peak: ShadowBytes,
     pub task_workspace: Vec<ShadowBytes>,

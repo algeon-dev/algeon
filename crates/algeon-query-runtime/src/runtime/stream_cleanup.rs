@@ -165,8 +165,7 @@ type StreamCleanupTailCallback = Box<dyn FnOnce() + Send>;
 
 /// Typed evidence handed to the pre-quiescence cleanup callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum StreamCleanupOutcome {
+pub(crate) enum StreamCleanupOutcome {
     Completed,
     StreamSynchronizationFailed,
     CallbackAbandoned,
@@ -1202,8 +1201,7 @@ pub(super) fn probe_cleanup_job_for_test(done: mpsc::Sender<thread::ThreadId>) -
 }
 
 #[cfg(test)]
-#[doc(hidden)]
-pub struct StreamCleanupBlocker {
+pub(crate) struct StreamCleanupBlocker {
     release: Option<Arc<Barrier>>,
 }
 
@@ -1217,8 +1215,7 @@ impl Drop for StreamCleanupBlocker {
 }
 
 #[cfg(test)]
-#[doc(hidden)]
-pub fn block_stream_cleanup_thread_for_test(pool: &ServiceStreamPool) -> StreamCleanupBlocker {
+pub(crate) fn block_stream_cleanup_thread_for_test(pool: &ServiceStreamPool) -> StreamCleanupBlocker {
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     pool.inner

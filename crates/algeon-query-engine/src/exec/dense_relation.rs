@@ -16,11 +16,11 @@ use crate::{
 };
 
 pub(super) struct DenseRelationOperations {
-    pub pack: &'static str,
-    pub before_pack: &'static str,
-    pub before_uniform_list_pack: &'static str,
-    pub execute: &'static str,
-    pub assemble: &'static str,
+    pub(super) pack: &'static str,
+    pub(super) before_pack: &'static str,
+    pub(super) before_uniform_list_pack: &'static str,
+    pub(super) execute: &'static str,
+    pub(super) assemble: &'static str,
 }
 
 pub(super) const VECTOR_OPERATIONS: DenseRelationOperations = DenseRelationOperations {

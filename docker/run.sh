@@ -74,43 +74,16 @@ DATAFUSION_EXECUTION_TARGET_PARTITIONS="${DATAFUSION_EXECUTION_TARGET_PARTITIONS
 DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"
 
 # ---------------------------------------------------------------------------
-# Iceberg REST, AWS Glue, or local Glue-compatible catalog
-#
-# ALGEON_ICEBERG_CATALOG_KIND   Catalog backend: rest or glue
-# ALGEON_ICEBERG_CATALOG_NAME   DataFusion catalog name (first segment of catalog.ns.table)
-# ALGEON_ICEBERG_NAMESPACE      Iceberg namespace / Glue database name
-# ALGEON_ICEBERG_WAREHOUSE      S3 warehouse root
-# ALGEON_ICEBERG_TABLES         Pre-load list: "alias=table,table2"
-#                                        Omit (empty) → all tables served dynamically
-# ALGEON_ICEBERG_GLUE_CATALOG_ID  AWS Glue catalog account ID (omit = caller's account or local mock)
-# ALGEON_ICEBERG_REST_URI      Local REST fixture endpoint when kind=rest
-# ALGEON_ICEBERG_GLUE_URI      Local Moto endpoint when kind=glue
-# ALGEON_ICEBERG_S3_*          RustFS/S3-compatible endpoint and credentials
+# S3 region
 #
 # AWS_DEFAULT_REGION   REQUIRED for KvikIO S3 (KvikIO reads ONLY this var;
 #                      AWS_REGION alone → silent unsigned requests → 403 on private buckets)
-# AWS_REGION           Used by iceberg-rust catalog; set both.
+# AWS_REGION           Read by the query engine for S3 source metadata; set both.
 #
 # Real AWS credentials, when used, must be passed from the host environment.
-# The defaults below target the public local lakehouse fixture namespace. Set
-# before running against real AWS:
+# Set before running against real AWS:
 #   export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...  AWS_SESSION_TOKEN=...
 # ---------------------------------------------------------------------------
-ICEBERG_CATALOG_KIND="${ALGEON_ICEBERG_CATALOG_KIND:-rest}"
-ICEBERG_CATALOG_NAME="${ALGEON_ICEBERG_CATALOG_NAME:-lake}"
-ICEBERG_NAMESPACE="${ALGEON_ICEBERG_NAMESPACE:-tpch_sf1}"
-ICEBERG_WAREHOUSE="${ALGEON_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
-ICEBERG_TABLES="${ALGEON_ICEBERG_TABLES:-}"                 # empty = dynamic; e.g. "lineitem,orders"
-ICEBERG_GLUE_CATALOG_ID="${ALGEON_ICEBERG_GLUE_CATALOG_ID:-}" # empty = use caller's own AWS account
-ICEBERG_REST_URI="${ALGEON_ICEBERG_REST_URI:-http://localhost:8181}"
-ICEBERG_GLUE_URI="${ALGEON_ICEBERG_GLUE_URI:-}"
-ICEBERG_S3_ENDPOINT="${ALGEON_ICEBERG_S3_ENDPOINT:-http://localhost:9000}"
-ICEBERG_S3_REGION="${ALGEON_ICEBERG_S3_REGION:-us-east-1}"
-ICEBERG_S3_PATH_STYLE="${ALGEON_ICEBERG_S3_PATH_STYLE:-true}"
-ICEBERG_S3_ACCESS_KEY_ID="${ALGEON_ICEBERG_S3_ACCESS_KEY_ID:-algeonadmin}"
-ICEBERG_S3_SECRET_ACCESS_KEY="${ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY:-algeonadmin}"
-ICEBERG_S3_SESSION_TOKEN="${ALGEON_ICEBERG_S3_SESSION_TOKEN:-}"
-
 AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 
@@ -152,16 +125,7 @@ ARGS=(
     -e "DATAFUSION_EXECUTION_TARGET_PARTITIONS=${DATAFUSION_EXECUTION_TARGET_PARTITIONS}"
     -e "DATAFUSION_EXECUTION_BATCH_SIZE=${DATAFUSION_EXECUTION_BATCH_SIZE}"
 
-    # Iceberg / local REST or Glue-compatible catalog
-    -e "ALGEON_ICEBERG_CATALOG_KIND=${ICEBERG_CATALOG_KIND}"
-    -e "ALGEON_ICEBERG_CATALOG_NAME=${ICEBERG_CATALOG_NAME}"
-    -e "ALGEON_ICEBERG_NAMESPACE=${ICEBERG_NAMESPACE}"
-    -e "ALGEON_ICEBERG_WAREHOUSE=${ICEBERG_WAREHOUSE}"
-    -e "ALGEON_ICEBERG_S3_ENDPOINT=${ICEBERG_S3_ENDPOINT}"
-    -e "ALGEON_ICEBERG_S3_REGION=${ICEBERG_S3_REGION}"
-    -e "ALGEON_ICEBERG_S3_PATH_STYLE=${ICEBERG_S3_PATH_STYLE}"
-    -e "ALGEON_ICEBERG_S3_ACCESS_KEY_ID=${ICEBERG_S3_ACCESS_KEY_ID}"
-    -e "ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=${ICEBERG_S3_SECRET_ACCESS_KEY}"
+    # S3 region
     -e "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}"
     -e "AWS_REGION=${AWS_REGION}"
 
@@ -173,15 +137,6 @@ ARGS=(
     ARGS+=(-e "ALGEON_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES=${NATIVE_MAX_SOURCE_CHUNK_BYTES}")
 [[ -n "${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}" ]] &&
     ARGS+=(-e "ALGEON_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}")
-
-# Pre-load specific tables only when ICEBERG_TABLES is non-empty.
-[[ -n "${ICEBERG_TABLES}" ]] && ARGS+=(-e "ALGEON_ICEBERG_TABLES=${ICEBERG_TABLES}")
-
-# Glue catalog account ID only when explicitly set.
-[[ -n "${ICEBERG_GLUE_CATALOG_ID}" ]] && ARGS+=(-e "ALGEON_ICEBERG_GLUE_CATALOG_ID=${ICEBERG_GLUE_CATALOG_ID}")
-[[ -n "${ICEBERG_REST_URI}" ]] && ARGS+=(-e "ALGEON_ICEBERG_REST_URI=${ICEBERG_REST_URI}")
-[[ -n "${ICEBERG_GLUE_URI}" ]] && ARGS+=(-e "ALGEON_ICEBERG_GLUE_URI=${ICEBERG_GLUE_URI}")
-[[ -n "${ICEBERG_S3_SESSION_TOKEN}" ]] && ARGS+=(-e "ALGEON_ICEBERG_S3_SESSION_TOKEN=${ICEBERG_S3_SESSION_TOKEN}")
 
 # Optional cuGraph defaults.
 [[ -n "${CUGRAPH_CONSTRUCTION_POLICY}" ]] && \

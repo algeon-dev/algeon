@@ -126,6 +126,7 @@ impl CudaEvent {
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
         self.handle.raw() as usize
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_interop_raw_handle_value(&self) -> usize {
         self.interop_raw_handle().map_or(0, |raw| raw as usize)
     }

@@ -1,10 +1,12 @@
-#[cfg(not(feature = "iceberg"))]
 #[test]
-fn server_config_rejects_iceberg_env_without_iceberg_feature() {
-    let env = BTreeMap::from([(ALGEON_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string())]);
-    let error = server_config_with_default_device_profile(env).unwrap_err();
+fn server_config_rejects_settings_of_the_removed_iceberg_integration() {
+    for name in ["ALGEON_ICEBERG_NAMESPACE", "ALGEON_ICEBERG_S3_ENDPOINT", "ALGEON_LAKEHOUSE_CACHE_ROOT"] {
+        let env = BTreeMap::from([(name, "value".to_string())]);
+        let error = server_config_with_default_device_profile(env).unwrap_err();
 
-    assert!(error.to_string().contains("-p algeon-server --features iceberg"));
+        assert!(error.to_string().contains(name), "{error}");
+        assert!(error.to_string().contains("removed Iceberg integration"), "{error}");
+    }
 }
 
 #[cfg(not(feature = "cugraph"))]

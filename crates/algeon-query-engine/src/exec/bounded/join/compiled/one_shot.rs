@@ -9,8 +9,8 @@ use super::{
     materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_compiled_one_shot_residual_output,
     observe_device_memory_bytes, orient_prepared_inputs, prepare_bounded_join_side_input_from_resident_frame,
     probe_side, record_one_shot_join_chunk_metrics, record_streamed_one_shot_join_metrics,
-    release_bounded_join_side_frame, release_streamed_join_outputs_reverse,
-    stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape, validate_executable_join_subset,
+    release_bounded_join_side_frame, stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
+    validate_executable_join_subset,
 };
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
 
@@ -148,7 +148,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
     match stream_result {
         Ok(()) => Ok(BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary }),
         Err(error) => {
-            release_streamed_join_outputs_reverse(outputs);
             release_bounded_join_side_frame(build.input);
             Err(error)
         },

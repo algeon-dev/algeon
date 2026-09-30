@@ -1,13 +1,9 @@
 //! Public execution-attempt lifecycle contracts that need no CUDA device.
 //!
 //! These tests pin the attempt identity, correlation
-//! validation, report envelope, and cancellation propagation model through the
-//! crate's public API only.
-
-use std::time::{Duration, Instant};
+//! validation, and report envelope through the crate's public API only.
 
 use query_engine::{
-    attempt::{AttemptCancellationBoundary, BoundaryCancellationState, cancellation_state_at, effective_queue_expiry},
     error::QueryErrorCode,
     observability::{
         AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, MAX_ATTEMPT_QUERY_ID_BYTES,
@@ -184,64 +180,4 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     assert_eq!(decoded.gpu_dispatch_to_terminal_ns(), Some(1));
     assert_eq!(decoded.physical_execution_ns(), Some(2));
     assert_eq!(decoded.cleanup_ns(), Some(1));
-}
-
-#[test]
-fn effective_queue_expiry_is_the_earlier_deadline() {
-    let submitted = Instant::now();
-    let max_wait = Duration::from_millis(500);
-    assert_eq!(effective_queue_expiry(submitted, None, max_wait), submitted + max_wait);
-    let earlier = submitted + Duration::from_millis(10);
-    assert_eq!(effective_queue_expiry(submitted, Some(earlier), max_wait), earlier);
-    let later = submitted + Duration::from_secs(60);
-    assert_eq!(effective_queue_expiry(submitted, Some(later), max_wait), submitted + max_wait);
-}
-
-#[test]
-fn cancellation_propagation_state_covers_every_later_boundary() {
-    let submitted = Instant::now();
-    let max_wait = Duration::from_millis(500);
-    let boundaries = [
-        AttemptCancellationBoundary::Planning,
-        AttemptCancellationBoundary::AdmissionQueue,
-        AttemptCancellationBoundary::AdmissionTransaction,
-        AttemptCancellationBoundary::StreamAcquisition,
-        AttemptCancellationBoundary::WorkerJob,
-        AttemptCancellationBoundary::GpuExecutionSafeBoundary,
-        AttemptCancellationBoundary::ResultDrain,
-        AttemptCancellationBoundary::Cleanup,
-    ];
-    for boundary in boundaries {
-        let cancelled = cancellation_state_at(boundary, true, None, submitted, max_wait, submitted);
-        if matches!(boundary, AttemptCancellationBoundary::Cleanup) {
-            assert_eq!(cancelled, BoundaryCancellationState::NotRequested, "cleanup runs to completion");
-        } else {
-            assert_eq!(cancelled, BoundaryCancellationState::CancellationRequested);
-        }
-    }
-    // Queue expiry uses the configured maximum wait; other boundaries only
-    // observe the caller deadline.
-    let after_max_wait = submitted + Duration::from_secs(1);
-    assert!(matches!(
-        cancellation_state_at(
-            AttemptCancellationBoundary::AdmissionQueue,
-            false,
-            None,
-            submitted,
-            max_wait,
-            after_max_wait
-        ),
-        BoundaryCancellationState::DeadlineExpired { .. }
-    ));
-    assert_eq!(
-        cancellation_state_at(
-            AttemptCancellationBoundary::GpuExecutionSafeBoundary,
-            false,
-            None,
-            submitted,
-            max_wait,
-            after_max_wait
-        ),
-        BoundaryCancellationState::NotRequested
-    );
 }

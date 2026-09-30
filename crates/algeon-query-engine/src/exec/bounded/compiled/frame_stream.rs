@@ -22,20 +22,20 @@ use crate::{
 };
 
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
-    /// Worst-case bytes a single yielded "step" can occupy on the
-    /// device. Consumed by `resource_admission_estimate_bytes` (the
-    /// scheduler's admission input sizing).
+    /// Upper bound on the device bytes of one yielded frame. Eager payloads
+    /// carry their largest observed frame; producers carry the bound their
+    /// inputs imply. Join probe sizing and `from_producer` chains read it.
     max_per_frame_reservation_bytes: u64,
     /// Aggregate byte hint for the whole stream. Lazy transformations retain
     /// their input's hint until output frames are observed; this is not an
     /// exact final-output allocation measurement.
     aggregate_reservation_bytes: u64,
-    /// Currently-live yielded frame reservation bytes. Read by
-    /// `reclaimable_input_bytes` (`tasks.rs:reclaimable_input_bytes`).
-    /// For Vec-backed payloads this equals `aggregate_reservation_bytes`
-    /// because all frames are immediately live. Producer-owned partial state
-    /// is added separately by `live_reservation_bytes()`.
-    live_reservation_bytes: Arc<AtomicU64>,
+    /// Observed device bytes of the yielded frames that no consumer has taken
+    /// yet. Vec-backed payloads start at the sum of their frames' observed
+    /// bytes because every frame is already live; producer-backed payloads
+    /// start at 0. Storage the producer still retains is not counted here and
+    /// is added by `live_observed_device_bytes()`.
+    live_observed_device_bytes: Arc<AtomicU64>,
     aggregate_num_rows: u64,
     num_columns: usize,
     frames: VecDeque<ResidentGpuFrame>,
@@ -108,8 +108,9 @@ impl Drop for YieldedFrameReleaseGuard {
             Some(live.saturating_sub(self.contributed_bytes))
         });
         debug_assert!(
-            false,
-            "YieldedFrame dropped without explicit release; reservation bytes={} now leak the device pool",
+            std::thread::panicking(),
+            "YieldedFrame dropped without take_for_release; its {} observed device bytes left the live counter \
+             without a consumer taking the frame",
             self.contributed_bytes
         );
     }
@@ -220,7 +221,7 @@ impl ResidentFrameStreamPayload {
         Self {
             max_per_frame_reservation_bytes,
             aggregate_reservation_bytes,
-            live_reservation_bytes: Arc::new(AtomicU64::new(aggregate_reservation_bytes)),
+            live_observed_device_bytes: Arc::new(AtomicU64::new(aggregate_reservation_bytes)),
             aggregate_num_rows,
             num_columns,
             frames: frames.into(),
@@ -238,7 +239,7 @@ impl ResidentFrameStreamPayload {
         Self {
             max_per_frame_reservation_bytes,
             aggregate_reservation_bytes,
-            live_reservation_bytes: Arc::new(AtomicU64::new(0)),
+            live_observed_device_bytes: Arc::new(AtomicU64::new(0)),
             aggregate_num_rows,
             num_columns,
             frames: VecDeque::new(),
@@ -254,8 +255,8 @@ impl ResidentFrameStreamPayload {
         self.aggregate_reservation_bytes
     }
 
-    pub(in crate::exec::bounded) fn live_reservation_bytes(&self) -> u64 {
-        self.live_reservation_bytes.load(Ordering::Relaxed).saturating_add(
+    pub(in crate::exec::bounded) fn live_observed_device_bytes(&self) -> u64 {
+        self.live_observed_device_bytes.load(Ordering::Relaxed).saturating_add(
             self.producer
                 .as_ref()
                 .and_then(|producer| producer.inner.as_ref())
@@ -340,12 +341,12 @@ impl ResidentFrameStreamPayload {
             let frame = self.frames.pop_front().expect("non-empty frame stream had no front frame");
             return Some(Ok(YieldedFrame::from_existing_payload_frame(
                 frame,
-                Arc::clone(&self.live_reservation_bytes),
+                Arc::clone(&self.live_observed_device_bytes),
             )));
         }
         let producer = self.producer.as_mut()?;
         producer.next_frame(execution).map(|result| {
-            result.map(|frame| YieldedFrame::yield_from_producer(frame, Arc::clone(&self.live_reservation_bytes)))
+            result.map(|frame| YieldedFrame::yield_from_producer(frame, Arc::clone(&self.live_observed_device_bytes)))
         })
     }
 
@@ -374,7 +375,7 @@ impl ResidentFrameStreamPayload {
 
     pub(in crate::exec::bounded) fn release_remaining_frames(&mut self) {
         self.frames.clear();
-        self.live_reservation_bytes.store(0, Ordering::Relaxed);
+        self.live_observed_device_bytes.store(0, Ordering::Relaxed);
     }
 
     pub(in crate::exec::bounded) fn release_producer(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
@@ -475,7 +476,7 @@ impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
     }
 
     fn retained_device_bytes(&self) -> u64 {
-        self.input.as_ref().map_or(0, ResidentFrameStreamPayload::live_reservation_bytes)
+        self.input.as_ref().map_or(0, ResidentFrameStreamPayload::live_observed_device_bytes)
     }
 
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {

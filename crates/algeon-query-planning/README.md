@@ -21,8 +21,8 @@ frames, or graph layouts. Arrow and pure-Rust Parquet metadata types stay.
   kernel's output type. The engine implements it and passes it in explicitly as
   an `AnalysisContext`; there is no registry and no default.
 - `optimizer/` owns native IR rewrite rules and diagnostics.
-- `capability/`, `admission/`, and `graph_memory/` own capability-first proof,
-  allocation-owner evidence, and structured rejection.
+- `capability/` and `admission/` own capability-first proof and structured
+  rejection.
 - `pipeline/` compiles the single validated schedule consumed downstream.
 - `error.rs` owns the shared native `QueryError` taxonomy used by planning,
   runtime, and execution. Projecting a component's error *into* that taxonomy
@@ -43,7 +43,7 @@ observe an attempt.
 ## Validation
 
 ```bash
-cargo nextest run -p query-planning --all-features --lib
-cargo clippy -p query-planning --all-targets --all-features
+cargo nt -E 'package(algeon-query-planning)'
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 bash scripts/check_all.sh
 ```

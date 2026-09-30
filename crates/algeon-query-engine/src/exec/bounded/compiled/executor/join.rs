@@ -83,7 +83,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     node_id,
                     node,
                     &input_frame,
-                    input_payload.reservation_bytes(),
+                    input_payload.observed_device_bytes(),
                 )?;
                 execute_bounded_compiled_join_build_from_frame(
                     &mut self.execution,

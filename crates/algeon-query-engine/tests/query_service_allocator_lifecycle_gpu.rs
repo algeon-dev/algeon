@@ -5,10 +5,10 @@ use query_engine::{
     error::QueryErrorCode,
     observability::RuntimeObservationHandle,
     runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind,
-        GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig,
-        QueryHandle, QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
+        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind, GpuMemoryOwnership,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, S3SourceStorageProfile,
+        SourceStorageProfile,
     },
 };
 use tokio::{
@@ -16,14 +16,6 @@ use tokio::{
     sync::Barrier,
     time::{Instant, sleep, timeout},
 };
-
-fn non_gds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
-}
 
 fn canonical_options() -> DeviceMemoryManagerOptions {
     let total_bytes = DeviceId::current().unwrap().available_memory().unwrap().total_bytes;
@@ -64,7 +56,7 @@ fn backend_draft_with_limits_and_queue_bounds(
             )),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment())
+    GpuBackendCoreDraft::new(vec![device], controller)
 }
 
 #[test]

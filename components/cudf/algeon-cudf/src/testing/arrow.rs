@@ -1,4 +1,4 @@
-use crate::{core::Result, interop::arrow_host::testing_hooks, runtime::BoundaryObservation};
+use crate::{core::Result, interop::arrow_host::testing_hooks};
 
 /// Trigger the numeric Arrow error mapping path used by integration tests.
 pub fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
@@ -27,9 +27,9 @@ pub fn trigger_arrow_large_string_array_downcast_mismatch_for_test() -> Result<(
 ///
 /// The underlying call totals remain process-wide and monotonic so resets from
 /// parallel tests cannot rewind another thread's observation window. This
-/// snapshots the calling thread's count baselines and clears last-boundary
-/// detail only for that thread. Calls dispatched to other threads after this
-/// reset remain visible through the calling thread's counters.
+/// snapshots the calling thread's count baselines. Calls dispatched to other
+/// threads after this reset remain visible through the calling thread's
+/// counters.
 pub fn reset_arrow_host_interop_observation_for_test() {
     testing_hooks::reset_host_interop_observation_for_test();
 }
@@ -48,10 +48,4 @@ pub fn arrow_host_export_call_count_for_test() -> usize {
 /// since the calling thread last reset its observation window.
 pub fn arrow_host_import_call_count_for_test() -> usize {
     testing_hooks::host_import_call_count_for_test()
-}
-
-/// Read the current thread's last host-copy Arrow boundary observation, if one
-/// has been recorded since the last reset on this thread.
-pub fn last_arrow_host_boundary_observation_for_test() -> Option<BoundaryObservation> {
-    testing_hooks::last_host_boundary_observation_for_test()
 }

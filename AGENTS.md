@@ -124,13 +124,19 @@ compatibility belong in `crates/algeon-query-engine`.
 
 ## Build and test
 
-Use `--workspace --all-features` in every Cargo build, check, lint, and test
-command and select tests with nextest filtersets, never `-p`: one build
-configuration keeps every command warm. The only exception is the
-feature-isolation command
-`cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked --keep-going`,
-which `scripts/check_all.sh` runs as package shards and fail-closes unless their
-union matches that command's `--print-command-list` output.
+Use `--workspace --all-features` for ordinary Cargo build, check, lint, and test
+commands and select tests with nextest filtersets, never `-p`: one build
+configuration keeps those commands warm. Keep two explicit feature-coverage
+exceptions in `scripts/check_all.sh`: the existing
+`cargo hack check --workspace --each-feature --exclude-features default --all-targets --locked --keep-going`
+package shards, whose union must match that command's `--print-command-list`
+output; and a shipped server clippy lane that selects only the `algeon_server`
+binary through its manifest, with `--no-default-features`, the packaging feature
+set, `--locked`, and `-D warnings`. The shipped lane does not select tests,
+examples, or all targets, and uses its own persistent target directory.
+Packaging and this lane read the shipped feature set from one source. The full
+gate requires both exceptions to pass; focused and `--fast` runs remain partial
+validation.
 
 `cargo nt` is `cargo nextest run --workspace --all-features`.
 

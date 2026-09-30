@@ -35,22 +35,15 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
             QueryGpuRemedyKind::CudfRsGap,
             "Bounded capability admission lacks a required lower-level reservation contract for this join shape.",
         ),
-        CapabilityReason::NativeSourceNonLocalObjectStore | CapabilityReason::IcebergObjectStoreReadUnsupported => {
-            QueryGpuRemedy::new(
-                "stage_local_parquet",
-                QueryGpuRemedyKind::UserAction,
-                "Stage or cache the data as local Parquet until native object-store reads are supported.",
-            )
-        },
+        CapabilityReason::NativeSourceNonLocalObjectStore => QueryGpuRemedy::new(
+            "stage_local_parquet",
+            QueryGpuRemedyKind::UserAction,
+            "Stage or cache the data as local Parquet until native object-store reads are supported.",
+        ),
         CapabilityReason::NativeSourcePushedDownParquetPredicate => QueryGpuRemedy::new(
             "disable_parquet_pushdown",
             QueryGpuRemedyKind::ConfigAction,
             "Disable the unsupported Parquet predicate pushdown for diagnosis or rewrite the query.",
-        ),
-        CapabilityReason::IcebergDeleteFilesUnsupported => QueryGpuRemedy::new(
-            "rewrite_table_without_delete_files",
-            QueryGpuRemedyKind::UserAction,
-            "Compact or rewrite the Iceberg table so the scanned snapshot has no delete files.",
         ),
         CapabilityReason::NativeSourceExprAdapter
         | CapabilityReason::NativeSourceParquetFileReaderFactory
@@ -60,22 +53,10 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
         | CapabilityReason::NativeSourcePartitionValues
         | CapabilityReason::NativeSourceByteRange
         | CapabilityReason::NativeSourceRowSelection
-        | CapabilityReason::NativeSourceSchemaMapping
-        | CapabilityReason::TableFormatUnsupported
-        | CapabilityReason::TableFormatPlanningFailed
-        | CapabilityReason::IcebergNonParquetDataFile
-        | CapabilityReason::IcebergFieldIdMappingUnsupported
-        | CapabilityReason::IcebergNameMappingUnsupported
-        | CapabilityReason::IcebergNestedProjectionUnsupported
-        | CapabilityReason::IcebergPartitionTransformUnsupported
-        | CapabilityReason::IcebergResidualPredicateUnsupported
-        | CapabilityReason::IcebergRowSelectionUnsupported
-        | CapabilityReason::IcebergFileIoSourceAccessUnverified
-        | CapabilityReason::IcebergEncryptedFileUnsupported
-        | CapabilityReason::IcebergScalarValueUnsupported => QueryGpuRemedy::new(
+        | CapabilityReason::NativeSourceSchemaMapping => QueryGpuRemedy::new(
             "engine_gap",
             QueryGpuRemedyKind::EngineGap,
-            "This source or table-format feature is not yet representable by native lowering; rewrite or materialize a supported local Parquet snapshot, or accept the DataFusion path.",
+            "This source feature is not yet representable by native lowering; rewrite or materialize a supported local Parquet snapshot, or accept the DataFusion path.",
         ),
     }
 }
@@ -121,15 +102,11 @@ mod tests {
                 CapabilityReason::NativeBoundedJoinUnsupported => {
                     ("capability_contract_gap", QueryGpuRemedyKind::CudfRsGap)
                 },
-                CapabilityReason::NativeSourceNonLocalObjectStore
-                | CapabilityReason::IcebergObjectStoreReadUnsupported => {
+                CapabilityReason::NativeSourceNonLocalObjectStore => {
                     ("stage_local_parquet", QueryGpuRemedyKind::UserAction)
                 },
                 CapabilityReason::NativeSourcePushedDownParquetPredicate => {
                     ("disable_parquet_pushdown", QueryGpuRemedyKind::ConfigAction)
-                },
-                CapabilityReason::IcebergDeleteFilesUnsupported => {
-                    ("rewrite_table_without_delete_files", QueryGpuRemedyKind::UserAction)
                 },
                 CapabilityReason::NativeSourceExprAdapter
                 | CapabilityReason::NativeSourceParquetFileReaderFactory
@@ -139,19 +116,7 @@ mod tests {
                 | CapabilityReason::NativeSourcePartitionValues
                 | CapabilityReason::NativeSourceByteRange
                 | CapabilityReason::NativeSourceRowSelection
-                | CapabilityReason::NativeSourceSchemaMapping
-                | CapabilityReason::TableFormatUnsupported
-                | CapabilityReason::TableFormatPlanningFailed
-                | CapabilityReason::IcebergNonParquetDataFile
-                | CapabilityReason::IcebergFieldIdMappingUnsupported
-                | CapabilityReason::IcebergNameMappingUnsupported
-                | CapabilityReason::IcebergNestedProjectionUnsupported
-                | CapabilityReason::IcebergPartitionTransformUnsupported
-                | CapabilityReason::IcebergResidualPredicateUnsupported
-                | CapabilityReason::IcebergRowSelectionUnsupported
-                | CapabilityReason::IcebergFileIoSourceAccessUnverified
-                | CapabilityReason::IcebergEncryptedFileUnsupported
-                | CapabilityReason::IcebergScalarValueUnsupported => ("engine_gap", QueryGpuRemedyKind::EngineGap),
+                | CapabilityReason::NativeSourceSchemaMapping => ("engine_gap", QueryGpuRemedyKind::EngineGap),
             };
             let remedy = capability_remedy(reason);
             assert_eq!(remedy.code, expected_code, "{reason:?}");

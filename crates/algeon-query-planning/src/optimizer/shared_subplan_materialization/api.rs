@@ -21,15 +21,13 @@ impl Default for SharedSubplanMaterializationOptions {
 }
 
 /// Diagnostics for shared-subplan materialization.
-#[doc(hidden)]
-pub struct SharedSubplanMaterializationResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: SharedSubplanMaterializationDiagnostics,
+pub(crate) struct SharedSubplanMaterializationResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: SharedSubplanMaterializationDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
+pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
 ) -> SharedSubplanMaterializationResult {
@@ -44,8 +42,7 @@ pub fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
     }
 }
 
-#[doc(hidden)]
-pub fn optimize_shared_subplan_materialization_without_scalar_derivation(
+pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
 ) -> SharedSubplanMaterializationResult {

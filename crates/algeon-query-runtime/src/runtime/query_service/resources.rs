@@ -8,7 +8,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 #[cfg(feature = "cugraph")]
 use crate::runtime::cache::resident_graph::GpuResidentGraphCache;
 use crate::runtime::{
-    CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, GpuExecutionQueryTracker,
+    CacheFillByteBudget, GpuExecutionPool, GpuExecutionQueryTracker,
     cache::{
         CacheSourceEventSnapshot, DeviceCacheAllocationFactory, DeviceCacheReport,
         local_parquet::GpuLocalParquetSourceCache,
@@ -137,7 +137,6 @@ pub(super) struct QueryServiceResources {
     pub(super) lakehouse_cache_fill_concurrency: CacheFillConcurrencyGate,
     pub(super) object_store_control_runtime: Arc<TokioRuntime>,
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
-    pub(super) deployment_io_capability: DeploymentIoCapability,
 }
 
 impl QueryServiceResources {

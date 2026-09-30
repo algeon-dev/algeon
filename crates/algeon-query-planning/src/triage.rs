@@ -3,8 +3,7 @@
 use serde_json::{Value, json};
 
 use crate::{
-    capability::EdgeConsumer,
-    contract_report::{CapabilityContractReport, CapabilityDecisionOwner},
+    contract_report::CapabilityContractReport,
     correlation::{CompiledTaskId, PlanNodeId, QueryId},
     error::{QueryError, QueryErrorCode, triage_code_for_query_error},
 };
@@ -81,7 +80,7 @@ pub enum TriageVerdict {
 
 impl TriageVerdict {
     /// Stable snake-case verdict label.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
             Self::Degraded => "degraded",
@@ -107,7 +106,7 @@ pub enum TriageSeverity {
 
 impl TriageSeverity {
     /// Stable snake-case severity label.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Info => "info",
             Self::Warning => "warning",
@@ -125,11 +124,11 @@ impl std::fmt::Display for TriageSeverity {
 /// JSON evidence pointer into one diagnostic surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriageEvidenceRef {
-    pub query_id: Option<QueryId>,
-    pub plan_node_id: Option<PlanNodeId>,
-    pub compiled_task_id: Option<CompiledTaskId>,
-    pub surface: &'static str,
-    pub row_index: Option<usize>,
+    pub(crate) query_id: Option<QueryId>,
+    pub(crate) plan_node_id: Option<PlanNodeId>,
+    pub(crate) compiled_task_id: Option<CompiledTaskId>,
+    pub(crate) surface: &'static str,
+    pub(crate) row_index: Option<usize>,
 }
 
 impl TriageEvidenceRef {
@@ -151,7 +150,7 @@ impl TriageEvidenceRef {
     }
 
     /// Adds a compiled task id.
-    pub fn with_compiled_task_id(mut self, compiled_task_id: impl Into<CompiledTaskId>) -> Self {
+    pub(crate) fn with_compiled_task_id(mut self, compiled_task_id: impl Into<CompiledTaskId>) -> Self {
         self.compiled_task_id = Some(compiled_task_id.into());
         self
     }
@@ -163,7 +162,7 @@ impl TriageEvidenceRef {
     }
 
     /// Serializes the evidence reference as named JSON.
-    pub fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         json!({
             "query_id": self.query_id.as_ref().map(QueryId::as_str),
             "plan_node_id": self.plan_node_id.as_ref().map(PlanNodeId::as_str),
@@ -177,10 +176,10 @@ impl TriageEvidenceRef {
 /// One ranked triage signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriageSignal {
-    pub severity: TriageSeverity,
+    pub(crate) severity: TriageSeverity,
     pub code: TriageCode,
-    pub message: String,
-    pub evidence: Option<TriageEvidenceRef>,
+    pub(crate) message: String,
+    pub(crate) evidence: Option<TriageEvidenceRef>,
 }
 
 impl TriageSignal {
@@ -196,7 +195,7 @@ impl TriageSignal {
     }
 
     /// Serializes this signal as named JSON.
-    pub fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         json!({
             "severity": self.severity.as_str(),
             "code": self.code.as_str(),
@@ -253,44 +252,4 @@ impl QueryError {
     }
 }
 
-impl CapabilityContractReport {
-    /// Builds a compact triage summary for capability-envelope readiness.
-    pub fn triage_summary(&self) -> TriageSummary {
-        if self.is_ready() {
-            return TriageSummary::healthy();
-        }
-        let query_id = self.query_id().cloned();
-        let signals = self
-            .decision_rows()
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let mut evidence = TriageEvidenceRef::new("capability_report.decision_rows").with_row_index(index);
-                if let Some(query_id) = query_id.clone() {
-                    evidence = evidence.with_query_id(query_id);
-                }
-                if let Some(plan_node_id) = capability_owner_plan_node_id(&row.owner) {
-                    evidence = evidence.with_plan_node_id(plan_node_id);
-                }
-                TriageSignal::new(
-                    TriageSeverity::Warning,
-                    TriageCode::CapabilityEnvelopeRejected,
-                    format!("capability decision {} is {}", row.decision_id, row.status.as_str()),
-                )
-                .with_evidence(evidence)
-            })
-            .collect::<Vec<_>>();
-        TriageSummary::new(TriageVerdict::NotSelected, signals)
-    }
-}
-
-fn capability_owner_plan_node_id(owner: &CapabilityDecisionOwner) -> Option<PlanNodeId> {
-    match owner {
-        CapabilityDecisionOwner::Node(node) => Some((*node).into()),
-        CapabilityDecisionOwner::Edge { producer, consumer } => match consumer {
-            EdgeConsumer::Node(node) => Some((*node).into()),
-            EdgeConsumer::Sink(_) => Some((*producer).into()),
-        },
-        CapabilityDecisionOwner::Subgraph(_) | CapabilityDecisionOwner::Admission(_) => None,
-    }
-}
+impl CapabilityContractReport {}

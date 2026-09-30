@@ -93,9 +93,9 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    input_reserved_bytes: u64,
+    input_device_bytes: u64,
 ) -> Result<ResidentGpuFrame> {
-    let partition_count = partitioned_aggregate_partition_count(execution.context(), input_reserved_bytes);
+    let partition_count = partitioned_aggregate_partition_count(execution.context(), input_device_bytes);
     let PartitionedAggregateInput { frame: partitioned_frame, offsets, partition_count } =
         hash_partition_aggregate_input(execution, node_id, aggregate, input, partition_count)?;
 
@@ -105,7 +105,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             match slice_compiled_aggregate_partition(execution, node_id, &partitioned_frame, &offsets, partition) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    release_partials_reverse(partials);
                     return Err(error);
                 },
             };
@@ -119,7 +118,6 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
         ) {
             Ok(partial) => partials.push(partial),
             Err(error) => {
-                release_partials_reverse(partials);
                 return Err(error);
             },
         }
@@ -150,38 +148,33 @@ pub(super) fn execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks(
             match hash_partition_aggregate_input(execution, node_id, aggregate, raw.frame, partition_count) {
                 Ok(partitioned) => partitioned,
                 Err(error) => {
-                    release_nested_partials_reverse(partition_inputs);
                     return Err(error);
                 },
             };
         let PartitionedAggregateInput { frame: partitioned_frame, offsets, .. } = partitioned;
-        for partition in 0..partition_count {
+        for (partition, inputs) in partition_inputs.iter_mut().enumerate() {
             let slice =
                 match slice_compiled_aggregate_partition(execution, node_id, &partitioned_frame, &offsets, partition) {
                     Ok(slice) => slice,
                     Err(error) => {
-                        release_nested_partials_reverse(partition_inputs);
                         return Err(error);
                     },
                 };
             if slice.frame.num_rows() == 0 {
                 continue;
             }
-            partition_inputs[partition].push(CommittedPartial { frame: slice.frame, device_bytes: slice.device_bytes });
+            inputs.push(CommittedPartial { frame: slice.frame, device_bytes: slice.device_bytes });
         }
     }
 
     let mut outputs: Vec<CommittedPartial> = Vec::with_capacity(partition_count);
-    for partition in 0..partition_count {
-        let inputs = std::mem::take(&mut partition_inputs[partition]);
+    for inputs in partition_inputs {
         if inputs.is_empty() {
             continue;
         }
         let partition_input = match concatenate_partitioned_final_merge_outputs(execution, node_id, inputs) {
             Ok(input) => input,
             Err(error) => {
-                release_nested_partials_reverse(partition_inputs);
-                release_partials_reverse(outputs);
                 return Err(error);
             },
         };
@@ -199,8 +192,6 @@ pub(super) fn execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks(
                 outputs.push(CommittedPartial { frame: output.frame, device_bytes: output.device_bytes });
             },
             Err(error) => {
-                release_nested_partials_reverse(partition_inputs);
-                release_partials_reverse(outputs);
                 return Err(error);
             },
         }
@@ -229,11 +220,11 @@ pub(super) fn execute_bounded_partitioned_whole_input_aggregate_from_raw_chunks(
 pub(super) fn should_partition_whole_input_grouped_aggregate(
     context: &ExecutionContext,
     aggregate: &AggregateNode,
-    input_reserved_bytes: u64,
+    input_device_bytes: u64,
 ) -> bool {
     !aggregate.spec.group_exprs.is_empty()
         && aggregate.spec.grouping_sets.is_none()
-        && partitioned_aggregate_partition_count(context, input_reserved_bytes) > 1
+        && partitioned_aggregate_partition_count(context, input_device_bytes) > 1
 }
 
 fn slice_compiled_aggregate_partition(
@@ -276,12 +267,12 @@ fn slice_compiled_aggregate_partition(
 pub(super) fn should_partition_compiled_grouped_aggregate(
     context: &ExecutionContext,
     aggregate: &AggregateNode,
-    input_reserved_bytes: u64,
+    input_device_bytes: u64,
 ) -> bool {
     !aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec)
         && !aggregate_spec_has_median(&aggregate.spec)
         && !aggregate.spec.group_exprs.is_empty()
-        && partitioned_aggregate_partition_count(context, input_reserved_bytes) > 1
+        && partitioned_aggregate_partition_count(context, input_device_bytes) > 1
 }
 
 pub(super) fn partitioned_aggregate_partition_count(context: &ExecutionContext, input_bytes: u64) -> usize {

@@ -30,20 +30,15 @@ use crate::{
 /// finalizer receives the resulting evidence directly instead of reconstructing
 /// a fault from a later CUDA status or a report-side sample.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct CapacityCommitDecision {
-    #[doc(hidden)]
-    pub disposition: CapacityCommitDisposition,
-    #[doc(hidden)]
-    pub usage: Option<QueryMemoryDomainUsage>,
-    #[doc(hidden)]
-    pub native_fault_evidence: Option<AttemptNativeFaultEvidence>,
+pub(crate) struct CapacityCommitDecision {
+    pub(crate) disposition: CapacityCommitDisposition,
+    pub(crate) usage: Option<QueryMemoryDomainUsage>,
+    pub(crate) native_fault_evidence: Option<AttemptNativeFaultEvidence>,
 }
 
 /// How the release commit disposes of the attempt's device capacity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum CapacityCommitDisposition {
+pub(crate) enum CapacityCommitDisposition {
     /// Cleanup restored every invariant; slot and grant return for reuse
     /// after the report is published.
     HealthyReuse,
@@ -61,8 +56,7 @@ pub enum CapacityCommitDisposition {
 
 /// Cleanup-path evidence available at the release commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum CleanupEvidence {
+pub(crate) enum CleanupEvidence {
     /// The stream/domain cleanup completion ran on the device cleanup worker.
     Completed,
     /// The device's stream failed to synchronize during cleanup: device-local
@@ -88,8 +82,7 @@ impl From<StreamCleanupOutcome> for CleanupEvidence {
 /// Returns the disposition and, when the sample succeeded, the domain usage
 /// evidence (current/peak) for the health commit reason.
 #[cfg(test)]
-#[doc(hidden)]
-pub fn decide_capacity_disposition(
+pub(crate) fn decide_capacity_disposition(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
     cleanup_evidence: CleanupEvidence,
@@ -100,8 +93,7 @@ pub fn decide_capacity_disposition(
 }
 
 /// Produces the actual release decision used by finalization.
-#[doc(hidden)]
-pub fn decide_capacity_commit(
+pub(crate) fn decide_capacity_commit(
     device_ordinal: usize,
     domain: Option<&AttemptAllocationDomain>,
     cleanup_evidence: CleanupEvidence,

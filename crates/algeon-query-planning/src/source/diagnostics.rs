@@ -30,9 +30,9 @@ pub struct SelectedRowGroupStats {
     /// Total row groups represented by the source metadata.
     pub total_row_groups: usize,
     /// Selected uncompressed source-read bytes, when known.
-    pub selected_uncompressed_bytes: Option<u64>,
+    pub(crate) selected_uncompressed_bytes: Option<u64>,
     /// Total uncompressed source-read bytes, when known.
-    pub total_uncompressed_bytes: Option<u64>,
+    pub(crate) total_uncompressed_bytes: Option<u64>,
     /// Selected compressed source-read bytes, when known.
     pub selected_compressed_bytes: Option<u64>,
     /// Total compressed source-read bytes, when known.
@@ -44,11 +44,6 @@ pub struct SelectedRowGroupStats {
 }
 
 impl SelectedRowGroupStats {
-    /// Returns true when the selection covers every represented row group.
-    pub fn selects_all_row_groups(&self) -> bool {
-        self.selected_row_groups >= self.total_row_groups
-    }
-
     /// Best available selected byte evidence for source-read sizing.
     pub fn selected_source_bytes(&self) -> Option<u64> {
         self.selected_uncompressed_bytes.or(self.selected_compressed_bytes)
@@ -143,7 +138,6 @@ impl SourceDiagnostics {
         let schema_refs_are_valid = columns.read_columns.len() == columns.read_column_file_indices.len()
             && columns.projected_output_columns.len() == columns.projected_output_column_source_refs.len()
             && columns.pure_filter_columns.len() == columns.pure_filter_column_source_refs.len();
-        let has_field_id_bindings = files.iter().any(|file| !file.field_id_read_bindings.is_empty());
         let schema_mapping_disposition = if schema_refs_are_valid {
             if columns
                 .projected_output_column_source_refs
@@ -152,8 +146,6 @@ impl SourceDiagnostics {
                 .any(|source_ref| matches!(source_ref, SourceColumnRef::MissingNull(_)))
             {
                 SchemaMappingDisposition::MissingNullableColumns
-            } else if has_field_id_bindings {
-                SchemaMappingDisposition::FieldIdBindings
             } else {
                 SchemaMappingDisposition::DirectByName
             }
@@ -205,8 +197,7 @@ pub fn parquet_source_path_fact(location: &ParquetSourceLocation, path: &Path) -
     if location.is_local_path() { redacted_path_diagnostic(path) } else { location.diagnostic_location() }
 }
 
-#[doc(hidden)]
-pub fn parquet_source_stable_id_fact(location: &ParquetSourceLocation, stable_id: &str) -> String {
+pub(crate) fn parquet_source_stable_id_fact(location: &ParquetSourceLocation, stable_id: &str) -> String {
     location.diagnostic_stable_id(stable_id)
 }
 
@@ -232,8 +223,7 @@ pub fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> O
         .map(Vec::len)
 }
 
-#[doc(hidden)]
-pub fn redacted_stable_id_diagnostic(stable_id: &str) -> String {
+pub(crate) fn redacted_stable_id_diagnostic(stable_id: &str) -> String {
     redacted_location_diagnostic(stable_id).unwrap_or_else(|| stable_id.to_string())
 }
 
@@ -586,8 +576,6 @@ impl ZeroColumnCountDisposition {
 pub enum SchemaMappingDisposition {
     /// Logical columns map directly by name to file or partition columns.
     DirectByName,
-    /// Logical columns map through footer-proven table-format field ids.
-    FieldIdBindings,
     /// Nullable logical columns absent from the physical file are represented
     /// as typed null columns.
     MissingNullableColumns,
@@ -600,7 +588,6 @@ impl SchemaMappingDisposition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DirectByName => "direct_by_name",
-            Self::FieldIdBindings => "field_id_bindings",
             Self::MissingNullableColumns => "missing_nullable_columns",
             Self::Rejected => "rejected",
         }

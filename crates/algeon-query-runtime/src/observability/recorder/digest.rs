@@ -44,13 +44,6 @@ impl SourceLocationDigestKeyState {
             Self::Unavailable => None,
         }
     }
-
-    pub(super) const fn retained_id_bytes(&self) -> Option<u64> {
-        match self {
-            Self::Available(_) => Some(("source_location:blake3_keyed_256:".len() + 64) as u64),
-            Self::Unavailable => None,
-        }
-    }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]

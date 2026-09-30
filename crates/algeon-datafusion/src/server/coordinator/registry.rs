@@ -487,7 +487,7 @@ impl QueryCoordinator {
         true
     }
 
-    #[cfg(all(test, feature = "iceberg"))]
+    #[cfg(test)]
     pub(crate) fn ticket_query_ids(&self) -> Vec<String> {
         let state = self.lock_state();
         state

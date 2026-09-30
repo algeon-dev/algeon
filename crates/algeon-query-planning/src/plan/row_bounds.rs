@@ -5,29 +5,19 @@
 //! Admission may use them for resident side inputs where a wrong estimate
 //! would be unsafe; descriptive estimates remain unsuitable for that role.
 
-use std::collections::HashMap;
-
 use super::{JoinSide, JoinType, NodeId, PlanNode, QueryPlan};
 use crate::source::SourceNode;
 
 /// Provenance for a row bound returned by this module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RowBoundProvenance {
+pub(crate) enum RowBoundProvenance {
     /// The bound is an exact row count.
     PlanExact,
     /// The bound is a hard upper bound, not necessarily exact.
     PlanHardUpperBound,
 }
 
-impl RowBoundProvenance {
-    /// Stable diagnostic string for this provenance.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PlanExact => "plan_exact",
-            Self::PlanHardUpperBound => "plan_hard_upper_bound",
-        }
-    }
-}
+impl RowBoundProvenance {}
 
 /// Returns a mathematically hard upper bound on the root row count when the
 /// native plan can prove one without executing any source.
@@ -35,36 +25,19 @@ pub fn query_plan_hard_row_upper_bound(plan: &QueryPlan) -> Option<u64> {
     query_plan_node_hard_row_upper_bound(plan, plan.root_id())
 }
 
-#[doc(hidden)]
-pub fn query_plan_node_hard_row_upper_bound(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+pub(crate) fn query_plan_node_hard_row_upper_bound(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     hard_row_upper_bound_for_plan_node(plan, node_id).map(|(rows, _)| rows)
-}
-
-#[doc(hidden)]
-pub fn query_plan_node_hard_row_upper_bound_with_resident_rows(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    resident_rows: &HashMap<String, u64>,
-) -> Option<u64> {
-    hard_row_upper_bound_with_resident_rows(plan, node_id, resident_rows).map(|(rows, _)| rows)
 }
 
 /// Derive only mathematically hard cardinality evidence.  This deliberately
 /// does not reuse descriptive output-row estimates, whose contract is
 /// descriptive and unsuitable for bounded admission.
-#[doc(hidden)]
-pub fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Option<(u64, RowBoundProvenance)> {
-    hard_row_upper_bound_with_resident_rows(plan, node_id, &HashMap::new())
-}
-
-#[doc(hidden)]
-pub fn hard_row_upper_bound_with_resident_rows(
+pub(crate) fn hard_row_upper_bound_for_plan_node(
     plan: &QueryPlan,
     node_id: NodeId,
-    resident_rows: &HashMap<String, u64>,
 ) -> Option<(u64, RowBoundProvenance)> {
     let node = plan.node(node_id)?;
-    let input_bound = |input| hard_row_upper_bound_with_resident_rows(plan, input, resident_rows);
+    let input_bound = |input| hard_row_upper_bound_for_plan_node(plan, input);
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             SourceNode::LiteralBatch(source) => Some((source.row_count() as u64, RowBoundProvenance::PlanExact)),
@@ -76,11 +49,9 @@ pub fn hard_row_upper_bound_with_resident_rows(
                     RowBoundProvenance::PlanHardUpperBound,
                 ))
             },
-            SourceNode::GpuResident(source) => resident_rows
-                .get(&source.input_name)
-                .copied()
-                .or(source.row_count_upper_bound)
-                .map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound)),
+            SourceNode::GpuResident(source) => {
+                source.row_count_upper_bound.map(|rows| (rows, RowBoundProvenance::PlanHardUpperBound))
+            },
         },
         PlanNode::Projection(projection) => input_bound(projection.input),
         PlanNode::Filter(filter) => {

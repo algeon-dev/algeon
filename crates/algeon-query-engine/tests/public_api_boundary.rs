@@ -34,10 +34,9 @@ use query_engine::{
     error::Result,
     observability::RuntimeObservationHandle,
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendDeviceProfile, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryHandle, QueueBounds,
+        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease,
+        GpuMemoryOwnership, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
 };
 
@@ -88,20 +87,14 @@ fn query_executor(handle: &QueryHandle) -> Result<GpuExecutorLease> {
 
 #[test]
 fn supported_core_session_path_compiles() {
-    // `GpuBackendCoreDraft`/`GpuBackendControllerDraft`/`DeploymentIoCapability::from_probe_inputs`
-    // and `GpuBackendCore::builder` are pure in-memory construction (no cudf
+    // `GpuBackendCoreDraft`/`GpuBackendControllerDraft` and `GpuBackendCore::builder`
+    // are pure in-memory construction (no cudf
     // FFI, no device/NVML probe; verified by reading their bodies), so this
     // runs safely in the CPU lane exactly as the trybuild `pass` fixture did.
-    let deployment = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    );
     let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
     let draft = GpuBackendCoreDraft::new(
         vec![GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)],
         controller,
-        deployment,
     );
     let _builder = GpuBackendCore::builder(draft);
     let _supported_session_factory: fn(&GpuBackendCore) -> GpuBackendSession = use_session;

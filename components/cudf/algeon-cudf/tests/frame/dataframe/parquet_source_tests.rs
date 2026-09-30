@@ -11,8 +11,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    TimestampResolution, TypeId,
+    DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest, TimestampResolution, TypeId,
     core::{Column, Table},
     frame::dataframe::{GpuRecordBatch, InfoDetail, ParquetSourceChunkReadOutput},
     io::{
@@ -26,11 +25,8 @@ use cudf::{
         },
     },
     ops::ast::AstExpression,
-    runtime::{QueryStageKind, Runtime},
-    testing::{
-        boundary::{last_boundary_observation_for_test, reset_boundary_observation_for_test},
-        prelude::*,
-    },
+    runtime::Runtime,
+    testing::prelude::*,
 };
 use parquet::{
     arrow::ArrowWriter,
@@ -711,17 +707,11 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
     )
     .unwrap();
 
-    reset_boundary_observation_for_test();
     let final_frame = DataFrame::read_parquet_source(&rt, &source).unwrap();
-    let observation = last_boundary_observation_for_test().unwrap();
 
     assert_eq!(final_frame.column_names(), vec!["id_alias"]);
     assert_eq!(final_frame.num_rows(), 3);
     assert_eq!(final_frame.series("id_alias").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(observation.kind, BoundaryKind::HostToDevice);
-    assert_eq!(observation.query_stage, Some(QueryStageKind::SourceRead));
-    assert_eq!(observation.rows, 3);
-    assert_eq!(observation.columns, 1);
 
     let execution_frame =
         DataFrame::read_parquet_source_with_mode(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();

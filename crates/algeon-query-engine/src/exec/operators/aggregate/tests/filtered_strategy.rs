@@ -257,7 +257,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         observed_retained_peak_bytes: 512,
     };
     let error = QueryError::new(
-        QueryErrorCode::CudfResourceExhausted,
+        QueryErrorCode::QueryMemoryLimitExceeded,
         "query_engine.filtered_global_aggregate.filter_inputs",
         "failed while testing segmented filtered global failure reporting",
     )
@@ -307,7 +307,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     );
     assert_eq!(
         recorded.facts.get("filtered_global_segmented_failure_error_code").map(String::as_str),
-        Some("cudf_resource_exhausted")
+        Some("query_memory_limit_exceeded")
     );
     assert_eq!(recorded.facts.get("budget_status").map(String::as_str), Some("exceeded_or_lower_layer_rejected"));
     assert_eq!(recorded.facts.get("budget_operation").map(String::as_str), Some("dataframe::with_columns_with_budget"));

@@ -16,8 +16,7 @@ pub(super) fn derive_dimension_key_filter(
     resolver.dimension_key_filter(source, key_column, predicate, &projection_indices)
 }
 
-#[doc(hidden)]
-pub fn derive_i64_expr_range_from_filtered_subtree(
+pub(crate) fn derive_i64_expr_range_from_filtered_subtree(
     plan: &QueryPlan,
     node_id: NodeId,
     expr: &Expr,

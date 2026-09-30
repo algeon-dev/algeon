@@ -14,7 +14,7 @@ use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
     native_report::candidate_shape_family,
-    planner::{FinalPlanCoverage, NativePlanningDiagnostics},
+    planner::FinalPlanCoverage,
     report::{CandidateOutcome, DEFERRED_PRODUCER_BINDING_REASON_CODE, PlanningReport},
 };
 
@@ -107,21 +107,7 @@ fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKi
         | CapabilityReason::NativeSourcePartitionValues
         | CapabilityReason::NativeSourceByteRange
         | CapabilityReason::NativeSourceRowSelection
-        | CapabilityReason::NativeSourceSchemaMapping
-        | CapabilityReason::TableFormatUnsupported
-        | CapabilityReason::TableFormatPlanningFailed
-        | CapabilityReason::IcebergNonParquetDataFile
-        | CapabilityReason::IcebergDeleteFilesUnsupported
-        | CapabilityReason::IcebergFieldIdMappingUnsupported
-        | CapabilityReason::IcebergNameMappingUnsupported
-        | CapabilityReason::IcebergNestedProjectionUnsupported
-        | CapabilityReason::IcebergPartitionTransformUnsupported
-        | CapabilityReason::IcebergResidualPredicateUnsupported
-        | CapabilityReason::IcebergRowSelectionUnsupported
-        | CapabilityReason::IcebergObjectStoreReadUnsupported
-        | CapabilityReason::IcebergFileIoSourceAccessUnverified
-        | CapabilityReason::IcebergEncryptedFileUnsupported
-        | CapabilityReason::IcebergScalarValueUnsupported => QueryGpuCandidateReasonKind::Source,
+        | CapabilityReason::NativeSourceSchemaMapping => QueryGpuCandidateReasonKind::Source,
         CapabilityReason::NativeSortPreservingMergeUnsupported
         | CapabilityReason::NativeDistributedAggregateUnsupported
         | CapabilityReason::NativePartitionPreservingSortUnsupported
@@ -174,37 +160,4 @@ pub(super) fn runtime_caveats(
         ));
     }
     caveats
-}
-
-pub(super) fn planning_diagnostics_did_io(diagnostics: &NativePlanningDiagnostics) -> bool {
-    diagnostics.input_plan_root.contains("AlgeonIcebergScanExec")
-        || diagnostics.input_plan_shape.contains("AlgeonIcebergScanExec")
-        || diagnostics.report.outcomes().iter().any(|outcome| match outcome {
-            CandidateOutcome::NotSupported { capability_reason, .. } => {
-                capability_reason_is_table_format(*capability_reason)
-            },
-            CandidateOutcome::Selected { .. }
-            | CandidateOutcome::Deferred { .. }
-            | CandidateOutcome::NotSelectedByCost { .. } => false,
-        })
-}
-
-fn capability_reason_is_table_format(reason: CapabilityReason) -> bool {
-    matches!(
-        reason,
-        CapabilityReason::TableFormatUnsupported
-            | CapabilityReason::TableFormatPlanningFailed
-            | CapabilityReason::IcebergNonParquetDataFile
-            | CapabilityReason::IcebergDeleteFilesUnsupported
-            | CapabilityReason::IcebergFieldIdMappingUnsupported
-            | CapabilityReason::IcebergNameMappingUnsupported
-            | CapabilityReason::IcebergNestedProjectionUnsupported
-            | CapabilityReason::IcebergPartitionTransformUnsupported
-            | CapabilityReason::IcebergResidualPredicateUnsupported
-            | CapabilityReason::IcebergRowSelectionUnsupported
-            | CapabilityReason::IcebergObjectStoreReadUnsupported
-            | CapabilityReason::IcebergFileIoSourceAccessUnverified
-            | CapabilityReason::IcebergEncryptedFileUnsupported
-            | CapabilityReason::IcebergScalarValueUnsupported
-    )
 }

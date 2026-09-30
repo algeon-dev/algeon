@@ -55,7 +55,7 @@ impl OuterJoinNullRejectionDiagnostics {
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -66,15 +66,15 @@ impl OuterJoinNullRejectionDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OuterJoinNullRejectionCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Outer join node that may be rewritten.
     pub candidate_node_id: NodeId,
     /// Downstream join whose keys reject nulls from the outer join.
-    pub rejecting_node_id: NodeId,
+    pub(crate) rejecting_node_id: NodeId,
     /// Side of the downstream join that rejects nulls.
-    pub rejecting_join_side: JoinSide,
+    pub(crate) rejecting_join_side: JoinSide,
     /// Key columns proving null rejection.
-    pub rejecting_columns: Vec<String>,
+    pub(crate) rejecting_columns: Vec<String>,
     /// True when the returned plan contains the rewrite.
     pub applied: bool,
     /// Rejection reason when no rewrite was applied.
@@ -95,15 +95,13 @@ pub enum OuterJoinNullRejectionRejectedReason {
     LargeNullIntroducingInput,
 }
 
-#[doc(hidden)]
-pub struct OuterJoinNullRejectionResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: OuterJoinNullRejectionDiagnostics,
+pub(crate) struct OuterJoinNullRejectionResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: OuterJoinNullRejectionDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_outer_join_null_rejection(
+pub(crate) fn optimize_outer_join_null_rejection(
     plan: QueryPlan,
     options: &OuterJoinNullRejectionOptions,
 ) -> OuterJoinNullRejectionResult {

@@ -35,8 +35,11 @@ over libcudf. Query planning and runtime ownership follow the root
 - Preserve device-aware destruction and the existing `Send`/`Sync` contract for
   each owned, borrowed, runtime, and interop type. Re-audit `algeon-cudf-sys/SAFETY.md` when
   changing unsafe code, lifetimes, raw handles, or thread traits.
-- Keep host-copy Arrow interop separate from Arrow C Device and RAPIDS
-  device-resident interop paths.
+- Keep host-copy Arrow interop separate from supported RAPIDS device-resident
+  interop. Add an external device interchange API only with a supported
+  producer or consumer and end-to-end ownership, synchronization, and dtype
+  tests. Prefer the Arrow C Device interface for Arrow-compatible device data;
+  document required conversions and do not promise universal zero-copy.
 
 ## Build and test
 
@@ -72,7 +75,10 @@ native work.
   consumers through `cudf::interop::contract` without wrappers or copies.
 - Preserve `DEP_CUDF_RUST_*` native metadata and exact libcudf/RMM runtime
   identity for downstream consumers.
-- Keep structured errors, execution-boundary evidence, ownership state
-  machines, and prepared-transfer item shapes stable unless explicitly changed.
+- Keep structured errors, ownership state machines, and the item shapes and
+  completion contracts of supported prepared transfers stable unless explicitly
+  changed. Validate observable transfer and allocation behavior at their owning
+  boundaries. Query-wide observations belong to query-runtime; cuDF operations
+  do not fail solely because diagnostic evidence could not be recorded.
 - Preserve output validation before safe Rust adoption and cleanup of partially
   constructed native objects on failure.

@@ -187,7 +187,7 @@ pub(super) fn edge_decision(plan: &QueryPlan, producer: NodeId, consumer: EdgeCo
             [("producer", producer.to_string()), ("consumer", edge_consumer_fact(consumer))],
         );
     };
-    if !produced_properties(producer_node).contains(&ProducedProperty::ResidentFrame) {
+    if !produced_properties(producer_node).contains(&ProducedProperty::Resident) {
         return CapabilityDecision::rejected(
             "missing_edge_required_property",
             [

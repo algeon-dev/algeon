@@ -134,9 +134,7 @@ fn validate_local_parquet_source_uses_output_schema_override_for_available_colum
         Field::new("status", ArrowDataType::Int64, true),
     ]));
     let logical_schema = Arc::new(Schema::new(vec![Field::new("status", ArrowDataType::Int64, true)]));
-    let file = LocalParquetFile::new("/tmp/renamed.parquet").with_field_id_read_bindings(vec![
-        ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, ArrowDataType::Int64),
-    ]);
+    let file = LocalParquetFile::new("/tmp/renamed.parquet");
     let source = LocalParquetSource::from_files(vec![file], physical_schema, vec!["old_status".to_string()])
         .with_column_roles(vec!["status".to_string()], Vec::new())
         .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())

@@ -30,7 +30,6 @@ use crate::{
         gpu_resident_producer_unique_output_key,
     },
     report::GpuCandidate,
-    table_format::AlgeonIcebergScanExec,
 };
 
 mod distributed_aggregate;
@@ -49,9 +48,9 @@ pub(in crate::native) use types::{
     NormalizedNativeAggregateRoot, NormalizedNativeCrossJoin, NormalizedNativeFilter,
     NormalizedNativeGpuResidentSource, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeInputRoot,
     NormalizedNativeLimit, NormalizedNativeLiteralSource, NormalizedNativeNestedLoopJoin, NormalizedNativePlan,
-    NormalizedNativeProjection, NormalizedNativeRoot, NormalizedNativeScan, NormalizedNativeSort,
-    NormalizedNativeSortExprs, NormalizedNativeSource, NormalizedNativeUnion, NormalizedNativeWindow,
-    NormalizedNativeWindowExec, PostAggregateProjectionOrder,
+    NormalizedNativeProjection, NormalizedNativeRoot, NormalizedNativeSort, NormalizedNativeSortExprs,
+    NormalizedNativeSource, NormalizedNativeUnion, NormalizedNativeWindow, NormalizedNativeWindowExec,
+    PostAggregateProjectionOrder,
 };
 
 pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
@@ -190,7 +189,6 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         || plan.downcast_ref::<CoalescePartitionsExec>().is_some()
         || plan.downcast_ref::<CooperativeExec>().is_some()
         || gpu_resident_producer_input_name(plan).is_some()
-        || plan.downcast_ref::<AlgeonIcebergScanExec>().is_some()
     {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
         return normalize_input_root(
@@ -687,18 +685,7 @@ fn normalize_native_input(
         let normalized = if let Some(source_exec) = input.downcast_ref::<DataSourceExec>()
             && !data_source_is_memory(source_exec)
         {
-            NormalizedNativeInput::Source(NormalizedNativeSource {
-                scan: NormalizedNativeScan::LocalParquet(source_exec),
-                filter: Some(filter),
-            })
-        } else if let Some(scan_exec) = input.downcast_ref::<AlgeonIcebergScanExec>() {
-            if let Some(reason) = scan_exec.native_outcome().rejection_reason() {
-                return Err(NativePlanRejection { candidate, reason });
-            }
-            NormalizedNativeInput::Source(NormalizedNativeSource {
-                scan: NormalizedNativeScan::TableFormat(scan_exec),
-                filter: Some(filter),
-            })
+            NormalizedNativeInput::Source(NormalizedNativeSource { scan: source_exec, filter: Some(filter) })
         } else {
             let input = normalize_native_input(input, candidate, child_allows_ordered_multi_partition_memory_source)?;
             NormalizedNativeInput::Filter(NormalizedNativeFilter { filter, input: Box::new(input) })
@@ -723,25 +710,13 @@ fn normalize_native_input(
             }
             return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(source_exec)));
         }
-        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
-            scan: NormalizedNativeScan::LocalParquet(source_exec),
-            filter: None,
-        }));
+        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource { scan: source_exec, filter: None }));
     }
     if let Some(placeholder) = plan.downcast_ref::<PlaceholderRowExec>() {
         return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::PlaceholderRow(placeholder)));
     }
     if let Some(empty) = plan.downcast_ref::<EmptyExec>() {
         return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Empty(empty)));
-    }
-    if let Some(scan_exec) = plan.downcast_ref::<AlgeonIcebergScanExec>() {
-        if let Some(reason) = scan_exec.native_outcome().rejection_reason() {
-            return Err(NativePlanRejection { candidate, reason });
-        }
-        return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
-            scan: NormalizedNativeScan::TableFormat(scan_exec),
-            filter: None,
-        }));
     }
     if let Some(input_name) = gpu_resident_producer_input_name(plan) {
         return Ok(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {

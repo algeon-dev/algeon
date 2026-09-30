@@ -1,14 +1,8 @@
-use std::{
-    num::NonZeroUsize,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use cudf::{
-    BoundaryKind, BoundaryObservation, CudfAllocationAttribution, DenseMatrixLayout, QueryMemoryDomainOptions, Runtime,
-    RuntimeBuilder, Series, TypeId,
+    CudfAllocationAttribution, DenseMatrixLayout, QueryMemoryDomainOptions, Runtime, RuntimeBuilder, Series, TypeId,
+    testing::device_copy,
 };
 use cuml::{
     CumlResources, DeviceMatrix, ForestInferenceModel, RandomForestClassifier, RandomForestParams,
@@ -27,20 +21,15 @@ fn predict(
     Ok(series)
 }
 
+fn device_copies_during<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    let before = device_copy::device_to_device_copy_count_for_test();
+    let value = operation();
+    (value, device_copy::device_to_device_copy_count_for_test() - before)
+}
+
 #[test]
 fn random_forest_adopts_labels_and_targets_from_another_runtime() {
-    let copies = Arc::new(AtomicUsize::new(0));
-    let observed = Arc::clone(&copies);
-    let runtime = Arc::new(
-        RuntimeBuilder::default()
-            .with_boundary_observer(move |observation: BoundaryObservation| {
-                if observation.kind == BoundaryKind::DeviceToDeviceCopy {
-                    observed.fetch_add(1, Ordering::Relaxed);
-                }
-            })
-            .build()
-            .expect("runtime"),
-    );
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
     let other_runtime = RuntimeBuilder::default().with_device(runtime.device()).build().expect("second runtime");
     let resources = CumlResources::for_runtime(Arc::clone(&runtime)).expect("cuML resources");
     let features = (0..48).map(|i| i as f32 - 24.0).collect::<Vec<_>>();
@@ -54,12 +43,16 @@ fn random_forest_adopts_labels_and_targets_from_another_runtime() {
     let foreign_labels = other_runtime.series(&labels).expect("foreign labels");
     assert_ne!(local_labels.placement().stream_debug, foreign_labels.placement().stream_debug);
     let classifier_params = RandomForestParams { n_trees: 4, max_depth: 8, ..Default::default() };
-    let baseline = RandomForestClassifier::fit(&resources, &streams, &input, &local_labels, classifier_params)
-        .expect("baseline classifier fit");
-    assert_eq!(copies.load(Ordering::Relaxed), 0);
-    let adopted = RandomForestClassifier::fit(&resources, &streams, &input, &foreign_labels, classifier_params)
-        .expect("foreign classifier fit");
-    assert_eq!(copies.load(Ordering::Relaxed), 1, "foreign labels require a device copy");
+    let (baseline, copies) = device_copies_during(|| {
+        RandomForestClassifier::fit(&resources, &streams, &input, &local_labels, classifier_params)
+            .expect("baseline classifier fit")
+    });
+    assert_eq!(copies, 0);
+    let (adopted, copies) = device_copies_during(|| {
+        RandomForestClassifier::fit(&resources, &streams, &input, &foreign_labels, classifier_params)
+            .expect("foreign classifier fit")
+    });
+    assert_eq!(copies, 1, "foreign labels require a device copy");
     assert_eq!(
         predict(adopted.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
         predict(baseline.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<i32>().unwrap(),
@@ -70,12 +63,16 @@ fn random_forest_adopts_labels_and_targets_from_another_runtime() {
     let foreign_targets = other_runtime.series(&targets).expect("foreign targets");
     let regressor_params =
         RandomForestParams { n_trees: 4, max_depth: 8, split_criterion: SplitCriterion::Mse, ..Default::default() };
-    let baseline = RandomForestRegressor::fit(&resources, &streams, &input, &local_targets, regressor_params)
-        .expect("baseline regressor fit");
-    assert_eq!(copies.load(Ordering::Relaxed), 1);
-    let adopted = RandomForestRegressor::fit(&resources, &streams, &input, &foreign_targets, regressor_params)
-        .expect("foreign regressor fit");
-    assert_eq!(copies.load(Ordering::Relaxed), 2, "foreign targets require a device copy");
+    let (baseline, copies) = device_copies_during(|| {
+        RandomForestRegressor::fit(&resources, &streams, &input, &local_targets, regressor_params)
+            .expect("baseline regressor fit")
+    });
+    assert_eq!(copies, 0);
+    let (adopted, copies) = device_copies_during(|| {
+        RandomForestRegressor::fit(&resources, &streams, &input, &foreign_targets, regressor_params)
+            .expect("foreign regressor fit")
+    });
+    assert_eq!(copies, 1, "foreign targets require a device copy");
     assert_eq!(
         predict(adopted.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),
         predict(baseline.forest_model(&resources), &resources, &input).unwrap().to_vec_strict::<f32>().unwrap(),

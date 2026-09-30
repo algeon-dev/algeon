@@ -27,14 +27,14 @@ pub struct SourceChunkPlanningOptions {
 }
 
 impl SourceChunkPlanningOptions {
-    pub const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
-    pub const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+    pub(crate) const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
+    pub(crate) const DEFAULT_LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
-    pub fn local_parquet_throughput_max_row_groups_per_chunk(&self) -> usize {
+    pub(crate) fn local_parquet_throughput_max_row_groups_per_chunk(&self) -> usize {
         self.local_parquet_throughput_max_row_groups_per_chunk
     }
 
-    pub fn local_parquet_throughput_min_device_budget_bytes(&self) -> u64 {
+    pub(crate) fn local_parquet_throughput_min_device_budget_bytes(&self) -> u64 {
         self.local_parquet_throughput_min_device_budget_bytes
     }
 
@@ -124,7 +124,7 @@ impl SourceChunkPlanningPolicy {
         }
     }
 
-    pub fn source_chunk_planning_mode(self) -> SourceChunkPlanningMode {
+    pub(crate) fn source_chunk_planning_mode(self) -> SourceChunkPlanningMode {
         self.source_chunk_planning_mode
     }
 
@@ -134,15 +134,6 @@ impl SourceChunkPlanningPolicy {
 
     pub fn mark_downstream_cap(&mut self, reason: &'static str) {
         self.source_chunk_planning_reason = reason;
-    }
-
-    /// One-row-group chunking for scan-limited sources with Iceberg position
-    /// deletes, where execution must apply deletes before deciding whether the
-    /// source-level limit has produced enough visible rows.
-    pub fn for_position_delete_scan_limit() -> Self {
-        let mut policy = Self::new(None, 1);
-        policy.source_chunk_planning_reason = "position_delete_scan_limit";
-        policy
     }
 
     /// Derives a source-task policy from the bounded memory policy and slot model.
@@ -167,23 +158,6 @@ impl SourceChunkPlanningPolicy {
         policy.source_chunk_planning_reason =
             if task_target < max_source_chunk_bytes { "memory_cap" } else { "configured_policy" };
         policy
-    }
-
-    /// Derives a source-task policy and then applies the source chunk planning
-    /// mode for a concrete source.
-    pub fn for_source_task_with_mode(
-        source: &LocalParquetSource,
-        memory_policy: MemoryControlPolicy,
-        model: SourceTaskMemoryModel,
-        mode: SourceChunkPlanningMode,
-    ) -> Self {
-        Self::for_source_task_with_mode_and_options(
-            source,
-            memory_policy,
-            model,
-            mode,
-            SourceChunkPlanningOptions::default(),
-        )
     }
 
     /// Derives a source-task policy with explicit local-throughput planning options.

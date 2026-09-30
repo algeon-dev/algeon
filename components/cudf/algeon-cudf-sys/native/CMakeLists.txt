@@ -261,7 +261,6 @@ add_library(
   src/error.cpp
   src/handle_provenance.cpp
   src/ast.cpp
-  src/arrow_device.cpp
   src/arrow_host.cpp
   src/types.cpp
   src/owning_handle.cpp
@@ -279,8 +278,6 @@ add_library(
   src/memory/query_domain.cpp
   src/execution_context.cpp
   src/io_parquet.cpp
-  src/io_csv.cpp
-  src/io_json.cpp
   src/sorting.cpp
   src/partitioning.cpp
   src/filter.cpp

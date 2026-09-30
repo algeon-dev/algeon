@@ -19,10 +19,7 @@ use crate::{
         types::CudfType,
     },
     ops::validation::{self, FiniteValidationProof, Int64RangeValidationProof},
-    runtime::{
-        BoundaryObservation, DeviceId, ExecutionBindingId, ExecutionPlacement, Runtime,
-        execution_domain::ExecutionDomain,
-    },
+    runtime::{DeviceId, ExecutionBindingId, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain},
 };
 
 /// An owned block of GPU device memory.
@@ -90,10 +87,6 @@ impl ValidatedFloat32DeviceBuffer<'_> {
     pub fn placement(&self) -> ExecutionPlacement {
         self.proof.placement()
     }
-
-    pub fn observation(&self) -> BoundaryObservation {
-        self.proof.observation()
-    }
 }
 
 impl fmt::Debug for ValidatedFloat32DeviceBuffer<'_> {
@@ -141,10 +134,6 @@ impl ValidatedInt64DeviceBufferRange<'_> {
 
     pub fn placement(&self) -> ExecutionPlacement {
         self.proof.placement()
-    }
-
-    pub fn observation(&self) -> BoundaryObservation {
-        self.proof.observation()
     }
 }
 

@@ -1,8 +1,3 @@
-#[cfg(feature = "iceberg")]
-use std::sync::Arc;
-
-#[cfg(feature = "iceberg")]
-use datafusion::datasource::TableProvider;
 use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
@@ -16,12 +11,7 @@ use crate::server::{
     cuml_sql::CumlSqlConfig,
     error::{Result as ServerResult, ServerError},
     planner::DataFusionCpuExecutionPolicy,
-    workspace::{install_workspace_overlay, warn_if_default_schema_is_read_only},
-};
-#[cfg(feature = "iceberg")]
-use crate::server::{
-    config::IcebergCatalogBackendConfig,
-    table_format::{iceberg::AlgeonIcebergTableProvider, scan::TableFormatParquetReadStrategyConfig},
+    workspace::install_workspace_overlay,
 };
 
 pub async fn build_session_context_with_backend(
@@ -49,12 +39,9 @@ pub async fn build_session_context_with_backend(
     let state = builder.build();
     let ctx = SessionContext::new_with_state(state);
 
-    #[cfg(feature = "iceberg")]
-    register_iceberg_catalog(&ctx, &effective_config).await?;
     if let Some(workspace) = &effective_config.workspace {
         install_workspace_overlay(&ctx, workspace)?;
     }
-    warn_if_default_schema_is_read_only(&ctx, &effective_config);
 
     Ok(ctx)
 }
@@ -86,175 +73,6 @@ pub(crate) fn build_session_config(config: &ServerConfig) -> ServerResult<Sessio
 
 pub(super) fn enable_session_discovery(config: SessionConfig) -> SessionConfig {
     config.with_information_schema(true)
-}
-
-#[cfg(feature = "iceberg")]
-async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -> ServerResult<()> {
-    let Some(iceberg) = &config.iceberg else {
-        return Ok(());
-    };
-
-    // Connect the leaf catalog once. It owns catalog/FileIO credential
-    // application and returns a `ResolvedTable` that freezes the
-    // table, snapshot, schema, and source policy together.
-    let (backend, catalog_type): (Arc<iceberg_catalog::CatalogBackend>, &'static str) = match &iceberg.backend {
-        IcebergCatalogBackendConfig::Glue(glue) => {
-            let mut catalog_config = iceberg_catalog::GlueCatalogConfig::new(
-                glue.catalog_handle.clone(),
-                glue.warehouse.clone(),
-                glue.region.clone(),
-            )
-            .with_source_access_policy(iceberg.source_access_policy().clone());
-            if let Some(id) = &glue.catalog_id {
-                catalog_config = catalog_config.with_catalog_id(id.clone());
-            }
-            if let Some(profile) = &glue.profile {
-                catalog_config = catalog_config.with_profile(profile.clone());
-            }
-            if let Some(uri) = &glue.uri {
-                catalog_config = catalog_config.with_uri(uri.clone());
-            }
-            let backend = iceberg_catalog::GlueCatalogBackend::connect(catalog_config)
-                .await
-                .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?
-                .into_backend();
-            (Arc::new(backend), "glue")
-        },
-        IcebergCatalogBackendConfig::Rest(rest) => {
-            let catalog_config = rest.clone().with_source_access_policy(iceberg.source_access_policy().clone());
-            let backend = iceberg_catalog::RestCatalogBackend::connect(catalog_config)
-                .await
-                .map_err(|error| ServerError::session("failed to connect to REST Iceberg catalog backend", error))?
-                .into_backend();
-            (Arc::new(backend), "rest")
-        },
-    };
-
-    // The root catalog wrapper only adapts DataFusion identities. It delegates
-    // every table load to the leaf backend and retains the validated server
-    // read strategy; it never reconstructs storage credentials.
-    let catalog_backend: Arc<dyn crate::server::table_format::iceberg::catalog::CatalogBackend> = Arc::new(
-        crate::server::table_format::iceberg::catalog::AlgeonIcebergCatalogSource::from_shared_backend(Arc::clone(
-            &backend,
-        ))
-        .with_parquet_read_strategy_config(iceberg.parquet_read_strategy_config.clone()),
-    );
-
-    // Discover only the configured namespace scope. Individual tables are
-    // loaded lazily on first SQL access through the backend.
-    let provider_options = crate::server::table_format::iceberg::catalog::IcebergProviderOptions::default()
-        .with_scan_planning_timeout(Some(iceberg.scan_planning_timeout));
-    let catalog_provider =
-        crate::server::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend_with_options(
-            catalog_backend,
-            catalog_type,
-            &iceberg.namespace,
-            provider_options,
-        )
-        .await
-        .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from backend", error))?;
-
-    // Seed pre-declared alias mappings before registering the catalog.
-    // This makes catalog.namespace.alias resolve in addition to the real name.
-    // Loading routes through the backend-agnostic CatalogBackend so the
-    // same path serves Glue and REST.
-    for table in &iceberg.tables {
-        let table_ident = iceberg_catalog::TableIdentifier::new(
-            iceberg.namespace.split('.').map(str::to_owned).collect(),
-            table.table.clone(),
-        )
-        .map_err(|error| ServerError::session("invalid Iceberg table identifier for alias seeding", error))?;
-        let loaded_table = backend
-            .load_table(table_ident)
-            .await
-            .map_err(|error| ServerError::session("failed to load Iceberg table for alias seeding", error))?;
-        let provider = build_alias_provider(
-            loaded_table,
-            catalog_type,
-            iceberg.parquet_read_strategy_config.clone(),
-            iceberg.scan_planning_timeout,
-        )?;
-
-        // Seed both real name and alias before catalog registration so first
-        // queries reuse this load and cannot race the seed.
-        match catalog_provider.schema_concrete(&iceberg.namespace) {
-            Some(schema) => {
-                schema.seed_table(table.table.clone(), Arc::clone(&provider)).await;
-                if table.alias != table.table {
-                    schema.seed_table(table.alias.clone(), Arc::clone(&provider)).await;
-                }
-            },
-            None => {
-                tracing::warn!(
-                    df_catalog_name = iceberg.catalog_name,
-                    namespace = iceberg.namespace,
-                    table = table.table,
-                    alias = table.alias,
-                    "pre-declared Iceberg table namespace was not available in the scoped catalog provider; \
-                     three-part alias addressing will not resolve (bare alias still registered)"
-                );
-            },
-        }
-
-        // Additional bare alias for unqualified references in the default DataFusion catalog.
-        if ctx
-            .register_table(table.alias.as_str(), Arc::clone(&provider))
-            .map_err(|error| ServerError::session("failed to register Iceberg table as bare alias", error))?
-            .is_some()
-        {
-            tracing::warn!(
-                catalog_name = iceberg.catalog_name,
-                namespace = iceberg.namespace,
-                table = table.table,
-                alias = table.alias,
-                "bare alias registration replaced an existing provider; check for duplicate alias entries"
-            );
-        }
-
-        tracing::info!(
-            catalog_type,
-            df_catalog_name = iceberg.catalog_name,
-            namespace = iceberg.namespace,
-            table = table.table,
-            alias = table.alias,
-            "registered Iceberg table alias"
-        );
-    }
-
-    // Register the dynamic catalog; from this point three-part addressing
-    // (catalog_name.namespace.real_table_name) resolves through the backend.
-    ctx.register_catalog(&iceberg.catalog_name, Arc::new(catalog_provider));
-
-    tracing::info!(
-        catalog_type,
-        df_catalog_name = iceberg.catalog_name,
-        namespace = iceberg.namespace,
-        provider_mode = "dual_mode",
-        pre_declared_aliases = iceberg.tables.len(),
-        "registered dynamic Iceberg catalog provider"
-    );
-
-    Ok(())
-}
-
-/// Builds the [`datafusion::datasource::TableProvider`] used to seed a pre-declared alias.
-///
-/// Uses the same dual-mode provider as the dynamic three-part catalog path.
-#[cfg(feature = "iceberg")]
-fn build_alias_provider(
-    resolved: iceberg_catalog::ResolvedTable,
-    catalog_type: &str,
-    parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
-    scan_planning_timeout: std::time::Duration,
-) -> ServerResult<Arc<dyn TableProvider>> {
-    let provider = AlgeonIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(
-        resolved,
-        parquet_read_strategy_config,
-    )
-    .map_err(|error| ServerError::session("failed to build AlgeonIcebergTableProvider", error))?
-    .with_catalog_type(catalog_type)
-    .with_scan_planning_timeout(Some(scan_planning_timeout));
-    Ok(Arc::new(provider))
 }
 
 #[cfg(all(test, feature = "cugraph"))]

@@ -17,8 +17,7 @@ use query_engine::{
         stable_graph_result_schema,
     },
     source::{
-        CredentialMode, GpuResidentSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding,
-        ParquetPositionDeleteFile, ResolvedParquetSource, SourceNode,
+        CredentialMode, GpuResidentSource, LocalParquetFile, LocalParquetSource, ResolvedParquetSource, SourceNode,
     },
 };
 

@@ -5,7 +5,6 @@ use super::{
     ScheduledLocalParquetReadOutput, SourceChunk, SourceChunkBatch, attach_chunk_resource_facts,
     attach_source_batch_resource_facts, observe_device_memory_bytes, read_local_parquet_chunk,
     read_local_parquet_chunk_batch_required_only_no_commit, source_adjacent::execute_source_adjacent_chunk_stages,
-    source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error,
 };
 use crate::observability::SourceReadFact;
 
@@ -16,10 +15,6 @@ pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) source_rows: u64,
     /// Device bytes of the decoded source frame before source-adjacent stages ran.
     pub(in crate::exec::bounded) source_bytes: u64,
-}
-
-pub(in crate::exec::bounded::chunks) fn release_committed_partials_reverse(mut partials: Vec<CommittedPartial>) {
-    while partials.pop().is_some() {}
 }
 
 /// Reads a source chunk with its pre-aggregate filter and projection stages
@@ -34,7 +29,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
     chunk: &SourceChunk,
 ) -> Result<RawSourceInput> {
     execution.context().check_cancellation("query_engine.exec.bounded.raw_source_chunk")?;
-    let source = read_bounded_chunk_source(execution, bounded.source, chunk, 1, 1)
+    let source = read_bounded_chunk_source(execution, bounded.source, chunk)
         .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, execution.metrics()))?;
     let source_row_group_count = reported_source_chunk_read_row_groups(chunk, source.observed_row_group_count);
     let source_rows = source.frame.num_rows() as u64;
@@ -68,41 +63,18 @@ pub(in crate::exec::bounded::chunks) fn read_bounded_chunk_source(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    attempt: usize,
-    max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     execution.context().check_cancellation("query_engine.exec.bounded.source_chunk_read")?;
     execution.record_source_read(SourceReadFact::ChunkAttempted);
     let source_token_budget = execution.device_budget_bytes();
-    let frame = match read_local_parquet_chunk(
+    let frame = read_local_parquet_chunk(
         execution.context(),
         source,
         chunk,
         source_token_budget,
         "source_chunk_read",
         execution.metrics(),
-    ) {
-        Ok(frame) => frame,
-        Err(error) => {
-            match try_read_local_parquet_chunk_with_corrected_budget_after_error(
-                execution,
-                source,
-                chunk,
-                "source_chunk_read",
-                &error,
-                attempt,
-                max_attempts,
-            ) {
-                Ok(Some(frame)) => frame,
-                Ok(None) => {
-                    return Err(error);
-                },
-                Err(retry_error) => {
-                    return Err(retry_error);
-                },
-            }
-        },
-    };
+    )?;
     let mut output = ScheduledLocalParquetReadOutput {
         chunk: chunk.clone(),
         frame,

@@ -6,12 +6,14 @@ use std::{
 };
 
 mod errors;
+#[cfg(any(test, feature = "test-hooks"))]
 mod testing_hooks;
 
 use errors::{
     classify_column_view_metadata_error, classify_string_view_contract_error,
     foreign_column_view_metadata_contract_error, foreign_string_view_contract_error,
 };
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use testing_hooks::{
     adopt_owned_column_view_for_test, column_view_copy_fixed_width_to_host_for_benchmark,
     column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,

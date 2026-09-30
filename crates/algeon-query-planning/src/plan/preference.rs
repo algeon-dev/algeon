@@ -121,7 +121,7 @@ pub struct NativePlanCostFacts {
 
 impl NativePlanCostFacts {
     /// Builds cost facts from a native query plan.
-    pub fn from_plan(plan: &QueryPlan) -> Self {
+    pub(crate) fn from_plan(plan: &QueryPlan) -> Self {
         let mut facts = Self {
             node_count: plan.node_count(),
             source_count: 0,

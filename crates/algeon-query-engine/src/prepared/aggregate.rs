@@ -3,20 +3,14 @@ use super::{
     QueryErrorCode, Result, aggregate_expr_is_exact_nunique, lower_column_expr, lower_named_column_expr,
 };
 
-#[doc(hidden)]
-pub struct LoweredAggregate {
-    #[doc(hidden)]
-    pub key_columns: Vec<String>,
-    #[doc(hidden)]
-    pub output_key_names: Vec<String>,
-    #[doc(hidden)]
-    pub aggregations: Vec<CudfAggSpec>,
-    #[doc(hidden)]
-    pub output_names: Vec<String>,
+pub(crate) struct LoweredAggregate {
+    pub(crate) key_columns: Vec<String>,
+    pub(crate) output_key_names: Vec<String>,
+    pub(crate) aggregations: Vec<CudfAggSpec>,
+    pub(crate) output_names: Vec<String>,
 }
 
-#[doc(hidden)]
-pub fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+pub(crate) fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     let mut aggregate = lower_aggregate_spec_keys(spec)?;
     let aggregations = spec
         .aggr_exprs
@@ -34,8 +28,7 @@ pub fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     Ok(aggregate)
 }
 
-#[doc(hidden)]
-pub fn lower_single_stage_grouped_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+pub(crate) fn lower_single_stage_grouped_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     let mut aggregate = lower_aggregate_spec_keys(spec)?;
     let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
     let mut output_names = aggregate.output_key_names.clone();
@@ -66,8 +59,7 @@ pub fn lower_single_stage_grouped_aggregate_spec(spec: &AggregateSpec) -> Result
     Ok(aggregate)
 }
 
-#[doc(hidden)]
-pub fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+pub(crate) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     let mut aggregate = lower_aggregate_spec_keys(spec)?;
     let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
     let mut output_names = aggregate.output_key_names.clone();
@@ -106,8 +98,7 @@ pub fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggre
     Ok(aggregate)
 }
 
-#[doc(hidden)]
-pub fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+pub(crate) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     let keys = lower_aggregate_spec_keys(spec)?;
     let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
     let mut output_names = keys.output_key_names.clone();
@@ -145,8 +136,7 @@ pub fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggrega
     })
 }
 
-#[doc(hidden)]
-pub fn lower_aggregate_function(expr: &AggregateExpr) -> GroupByAgg {
+pub(crate) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupByAgg {
     if aggregate_expr_is_exact_nunique(expr) {
         return GroupByAgg::NUnique;
     }
@@ -165,8 +155,7 @@ pub fn lower_aggregate_function(expr: &AggregateExpr) -> GroupByAgg {
     }
 }
 
-#[doc(hidden)]
-pub fn lower_final_aggregate_function(function: AggregateFunction) -> GroupByAgg {
+pub(crate) fn lower_final_aggregate_function(function: AggregateFunction) -> GroupByAgg {
     match function {
         AggregateFunction::Sum => GroupByAgg::Sum,
         AggregateFunction::Min => GroupByAgg::Min,
@@ -184,8 +173,7 @@ pub fn lower_final_aggregate_function(function: AggregateFunction) -> GroupByAgg
     }
 }
 
-#[doc(hidden)]
-pub fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+pub(crate) fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     if spec.group_exprs.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,

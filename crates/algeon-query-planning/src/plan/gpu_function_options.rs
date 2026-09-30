@@ -29,16 +29,6 @@ impl RelationIdType {
             _ => None,
         }
     }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Int32 => "Int32",
-            Self::Int64 => "Int64",
-            Self::Utf8 => "Utf8",
-            Self::LargeUtf8 => "LargeUtf8",
-            Self::Utf8View => "Utf8View",
-        }
-    }
 }
 
 /// Stable order used in generated descriptions and validation diagnostics.
@@ -117,14 +107,14 @@ pub enum GpuOptionKind {
 }
 
 impl GpuOptionKind {
-    pub const fn default_u64(self) -> Option<u64> {
+    pub(crate) const fn default_u64(self) -> Option<u64> {
         match self {
             Self::Integer { default, .. } => default,
             _ => None,
         }
     }
 
-    pub const fn default_f64(self) -> Option<f64> {
+    pub(crate) const fn default_f64(self) -> Option<f64> {
         match self {
             Self::NonnegativeNumber { default }
             | Self::PositiveNumber { default }
@@ -134,14 +124,14 @@ impl GpuOptionKind {
         }
     }
 
-    pub const fn default_bool(self) -> Option<bool> {
+    pub(crate) const fn default_bool(self) -> Option<bool> {
         match self {
             Self::Boolean { default } => default,
             _ => None,
         }
     }
 
-    pub const fn default_str(self) -> Option<&'static str> {
+    pub(crate) const fn default_str(self) -> Option<&'static str> {
         match self {
             Self::Enum { default, .. } => default,
             _ => None,
@@ -461,15 +451,15 @@ pub enum DenseVectorBinding {
 }
 
 impl DenseVectorBinding {
-    pub fn columns(columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub(crate) fn columns(columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self::Columns(columns.into_iter().map(Into::into).collect())
     }
 
-    pub fn vector_column(column: impl Into<String>) -> Self {
+    pub(crate) fn vector_column(column: impl Into<String>) -> Self {
         Self::VectorColumn(column.into())
     }
 
-    pub fn display_label(&self) -> String {
+    pub(crate) fn display_label(&self) -> String {
         match self {
             Self::Columns(columns) => columns.join("|"),
             Self::VectorColumn(column) => format!("[{column}]"),

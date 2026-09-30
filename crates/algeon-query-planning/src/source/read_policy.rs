@@ -61,7 +61,7 @@ impl fmt::Debug for ResolvedParquetInput {
 }
 
 impl ResolvedParquetInput {
-    pub fn reader_location(&self) -> &str {
+    pub(crate) fn reader_location(&self) -> &str {
         match self {
             Self::LocalKvikio { reader_path } => reader_path,
             Self::RemoteKvikio { uri, .. } => uri,
@@ -196,7 +196,7 @@ impl LakehouseCacheFillMode {
 /// Resolved Parquet reader contract carried into native source execution.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedParquetSource {
-    /// Catalog or table-format location before read-strategy resolution.
+    /// Frontend-supplied file location before read-strategy resolution.
     pub original_location: String,
     /// The only data-plane input supplied to cuDF.
     pub input: ResolvedParquetInput,
@@ -415,9 +415,5 @@ impl ResolvedParquetSource {
             },
             ResolvedParquetInput::LocalKvikio { .. } => ParquetReadStrategy::LocalKvikio,
         }
-    }
-
-    pub fn is_remote_kvikio(&self) -> bool {
-        matches!(self.input, ResolvedParquetInput::RemoteKvikio { .. })
     }
 }

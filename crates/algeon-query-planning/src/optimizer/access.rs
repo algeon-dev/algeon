@@ -71,7 +71,7 @@ pub(super) fn unique_join_output_for_name<'a>(join: &'a JoinNode, output_name: &
 }
 
 /// Returns file-column projection roots needed for a key column and predicate.
-pub fn reader_projection_indices(
+pub(crate) fn reader_projection_indices(
     source: &LocalParquetSource,
     key_column: &str,
     predicate: &Expr,
@@ -114,7 +114,7 @@ pub(super) fn reader_projection_indices_for_exprs(
 }
 
 /// Returns sorted, deduplicated column names referenced by an expression.
-pub fn predicate_columns(expr: &Expr) -> Vec<String> {
+pub(crate) fn predicate_columns(expr: &Expr) -> Vec<String> {
     let mut columns = Vec::new();
     collect_expr_columns(expr, &mut columns);
     columns.sort();

@@ -1,21 +1,13 @@
 use std::time::{Duration, Instant};
 
 use query_engine::runtime::{
-    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-    GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
-    GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
+    GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+    GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    QueryExecutionConfig, QueueBounds,
 };
 
 const DEVICE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const DEVICE_QUERY_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
-
-fn nongds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
-}
 
 fn device(ordinal: usize) -> GpuBackendDeviceConfig {
     GpuBackendDeviceConfig::new(
@@ -42,10 +34,9 @@ fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback()
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2) },
     );
-    let core =
-        GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device(0), device(1)], controller, nongds_deployment()))
-            .build()
-            .expect("two-device backend builds");
+    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device(0), device(1)], controller))
+        .build()
+        .expect("two-device backend builds");
 
     let session = core.session_capability();
     let pre_ack = session.admit_query().expect("target device admits work before controlled quarantine");

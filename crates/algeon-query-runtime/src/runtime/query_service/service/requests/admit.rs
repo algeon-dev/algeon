@@ -42,7 +42,7 @@ struct QueuedAdmissionAttempt<'a> {
 
 impl QueryService {
     #[cfg(test)]
-    pub fn admit_query(&self) -> Result<QueryHandle> {
+    pub(crate) fn admit_query(&self) -> Result<QueryHandle> {
         self.admit_query_with_request(QueryAdmissionRequest::new())
     }
 
@@ -52,8 +52,7 @@ impl QueryService {
         self.admit_query_with_request_and_permits(request, None, None, None)
     }
 
-    #[doc(hidden)]
-    pub fn admit_query_with_backend_permits(
+    pub(crate) fn admit_query_with_backend_permits(
         &self,
         request: QueryAdmissionRequest,
         observation_permit: ObservationPermit,

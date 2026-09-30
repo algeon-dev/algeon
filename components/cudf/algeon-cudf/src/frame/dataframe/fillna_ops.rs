@@ -93,6 +93,7 @@ impl DropDuplicatesOptions {
     }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_dataframe_dropna_subset_count_limit_error_for_test() -> Result<()> {
     Err(schema::column_name_count_limit_error("dataframe::dropna", "subset length exceeds i32::MAX", usize::MAX))
 }

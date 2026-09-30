@@ -36,12 +36,12 @@ pub struct AggregateJoinPushdownDiagnostics {
 
 impl AggregateJoinPushdownDiagnostics {
     /// Returns true when the pass produced no candidate evidence.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -72,8 +72,6 @@ pub enum AggregateJoinPushdownRejectedReason {
     UnsupportedJoinType,
     /// The join has a residual predicate.
     JoinResidualUnsupported,
-    /// Retired: the aggregate is not a grouping-set/rollup aggregate.
-    GroupingSetsRequired,
     /// The aggregate contains an unsupported function, DISTINCT, filtered, or non-column expression.
     UnsupportedAggregateExpression,
     /// The aggregate grouping keys are not plain columns.
@@ -95,9 +93,8 @@ pub enum AggregateJoinPushdownRejectedReason {
     LeftSemiAlreadyFiltersFinalGroups,
 }
 
-#[doc(hidden)]
-pub struct AggregateJoinPushdownResult {
-    pub plan: QueryPlan,
-    pub change: NativeOptimizerChange,
-    pub diagnostics: AggregateJoinPushdownDiagnostics,
+pub(crate) struct AggregateJoinPushdownResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: NativeOptimizerChange,
+    pub(crate) diagnostics: AggregateJoinPushdownDiagnostics,
 }

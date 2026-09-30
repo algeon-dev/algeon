@@ -261,6 +261,35 @@ fn transition_snapshots_expose_budget_to_resident_boundary() {
 }
 
 #[test]
+fn grant_release_completes_after_the_ledger_lock_is_poisoned() {
+    let ledger = DeviceLedger::new(profile(1_000, 800, 2));
+    let released_live_bytes = Arc::new(Mutex::new(Vec::new()));
+    let observed_live_bytes = Arc::clone(&released_live_bytes);
+    ledger
+        .register_release_observer(Arc::new(move |transition| {
+            observed_live_bytes.lock().expect("release log").push(transition.snapshot.live_grants_bytes);
+        }))
+        .unwrap();
+    let grant = ledger.try_admit(request(1), Some(400)).unwrap().expect("grant admits");
+
+    let poisoner = ledger.clone();
+    std::thread::spawn(move || {
+        let _state = poisoner.inner.state.lock().unwrap();
+        panic!("poison the ledger state mutex");
+    })
+    .join()
+    .expect_err("the poisoning thread panics while holding the ledger lock");
+    assert!(ledger.snapshot().is_err(), "a poisoned ledger refuses snapshots and admission");
+
+    drop(grant);
+
+    let state = ledger.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+    assert!(state.grants.is_empty(), "release removes the grant despite the poisoned lock");
+    assert_eq!(ledger.snapshot_locked(&state).live_grants_bytes, 0);
+    assert_eq!(released_live_bytes.lock().unwrap().as_slice(), &[0], "release observers still wake waiters");
+}
+
+#[test]
 fn prepared_resident_transition_keeps_full_grant_until_report_publication() {
     let ledger = DeviceLedger::new(profile(1_000, 800, 1));
     let grant = ledger.try_admit(request(1), Some(800)).unwrap().expect("grant admits");

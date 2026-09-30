@@ -518,7 +518,6 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             build_artifact_id: None,
             mark_column_name: None,
             at_most_one_match_side: None,
-            total_payload_bound_preserving_outputs: Vec::new(),
             advisory_output_statistics: None,
         };
         JoinNode { inputs, spec }

@@ -1,22 +1,13 @@
 //! Service-wide lakehouse cache-fill resource policy and gates.
 
 use std::{
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::ExecutionCancellation;
-
-/// Conservative fallback when physical-memory detection is unavailable.
-pub const DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_BYTES: u64 = LakehouseCacheFillConfig::DEFAULT_BUDGET_BYTES;
-/// Auto-sizing cap so cache maintenance does not crowd other host state.
-pub const DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_CAP_BYTES: u64 = LakehouseCacheFillConfig::DEFAULT_BUDGET_CAP_BYTES;
-/// Default bounded wait for blocking cache maintenance resource acquisition.
-pub const DEFAULT_LAKEHOUSE_CACHE_FILL_ACQUIRE_TIMEOUT: Duration = LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT;
-/// Default complete-object cache maintenance concurrency.
-pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize = LakehouseCacheFillConfig::DEFAULT_MAX_CONCURRENT_OPS;
 
 /// Service-wide resources used only by complete-object lakehouse cache fills.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -30,10 +21,10 @@ pub struct LakehouseCacheFillConfig {
 }
 
 impl LakehouseCacheFillConfig {
-    pub const DEFAULT_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
-    pub const DEFAULT_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+    pub(crate) const DEFAULT_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+    pub(crate) const DEFAULT_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
     pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
-    pub const DEFAULT_MAX_CONCURRENT_OPS: usize = 4;
+    pub(crate) const DEFAULT_MAX_CONCURRENT_OPS: usize = 4;
 
     pub fn validate(&self) -> Result<()> {
         if let Some(budget_bytes) = self.budget_bytes {
@@ -71,7 +62,7 @@ impl Default for LakehouseCacheFillConfig {
     }
 }
 
-pub fn default_lakehouse_cache_fill_budget_bytes() -> u64 {
+pub(crate) fn default_lakehouse_cache_fill_budget_bytes() -> u64 {
     default_lakehouse_cache_fill_budget_bytes_from_physical_memory(detect_physical_memory_bytes())
 }
 
@@ -126,7 +117,8 @@ impl CacheFillByteBudget {
         self.inner.budget_bytes
     }
 
-    pub fn try_acquire(&self, bytes: u64) -> Result<Option<CacheFillBytePermit>> {
+    #[cfg(test)]
+    pub(crate) fn try_acquire(&self, bytes: u64) -> Result<Option<CacheFillBytePermit>> {
         validate_request_bytes(bytes, self.budget_bytes())?;
         let mut state = self.lock_state("query_engine.lakehouse_cache.fill_budget.try_acquire")?;
         if !bytes_fit(state.in_flight_bytes, bytes, self.budget_bytes()) {
@@ -187,13 +179,10 @@ impl CacheFillByteBudget {
     }
 
     fn release(&self, bytes: u64) {
-        match self.inner.state.lock() {
-            Ok(mut state) => {
-                state.in_flight_bytes = state.in_flight_bytes.saturating_sub(bytes);
-                self.inner.available.notify_all();
-            },
-            Err(_) => eprintln!("[query-engine] warning: failed to release poisoned cache fill byte budget"),
-        }
+        // The state is one integer; skipping the release on a poisoned lock would leak these bytes for good.
+        let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.in_flight_bytes = state.in_flight_bytes.saturating_sub(bytes);
+        self.inner.available.notify_all();
     }
 
     fn lock_state(&self, operation: &'static str) -> Result<std::sync::MutexGuard<'_, CacheFillByteBudgetState>> {
@@ -209,7 +198,7 @@ impl Default for CacheFillByteBudget {
     }
 }
 
-/// RAII permit for bytes charged to a [`CacheFillByteBudget`].
+/// RAII permit for bytes charged to a cache-fill byte budget.
 #[derive(Debug)]
 pub struct CacheFillBytePermit {
     budget: CacheFillByteBudget,
@@ -300,13 +289,9 @@ impl CacheFillConcurrencyGate {
     }
 
     fn release(&self) {
-        match self.inner.state.lock() {
-            Ok(mut state) => {
-                state.in_flight_ops = state.in_flight_ops.saturating_sub(1);
-                self.inner.available.notify_one();
-            },
-            Err(_) => eprintln!("[query-engine] warning: failed to release poisoned cache fill concurrency"),
-        }
+        let mut state = self.inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.in_flight_ops = state.in_flight_ops.saturating_sub(1);
+        self.inner.available.notify_one();
     }
 
     fn lock_state(&self, operation: &'static str) -> Result<std::sync::MutexGuard<'_, CacheFillConcurrencyGateState>> {
@@ -377,5 +362,36 @@ mod tests {
         assert!(budget.try_acquire(1).unwrap().is_none());
         drop(held);
         assert!(budget.try_acquire(1).unwrap().is_some());
+    }
+
+    #[test]
+    fn permits_return_their_share_after_the_state_mutex_is_poisoned() {
+        fn poison<T: Send>(mutex: &Mutex<T>) {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let _state = mutex.lock().unwrap();
+                        panic!("poison the state mutex");
+                    })
+                    .join()
+                    .expect_err("the poisoning thread panics while holding the lock");
+            });
+        }
+
+        let budget = CacheFillByteBudget::new(10).unwrap();
+        let gate = CacheFillConcurrencyGate::new(1).unwrap();
+        let bytes = budget.try_acquire(10).unwrap().unwrap();
+        let operation =
+            gate.acquire_with_timeout(&ExecutionCancellation::new(), Duration::from_secs(1), "test").unwrap().unwrap();
+        poison(&budget.inner.state);
+        poison(&gate.inner.state);
+
+        drop(bytes);
+        drop(operation);
+
+        let in_flight_bytes = budget.inner.state.lock().unwrap_or_else(PoisonError::into_inner).in_flight_bytes;
+        let in_flight_ops = gate.inner.state.lock().unwrap_or_else(PoisonError::into_inner).in_flight_ops;
+        assert_eq!(in_flight_bytes, 0, "the byte budget is returned");
+        assert_eq!(in_flight_ops, 0, "the concurrency slot is returned");
     }
 }

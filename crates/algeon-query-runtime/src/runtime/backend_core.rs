@@ -6,7 +6,7 @@ use std::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 #[cfg(test)]
 use std::{
@@ -23,18 +23,15 @@ use super::DeviceQuarantineInjection;
 #[cfg(test)]
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
-    CacheSourceEventSnapshot, DeploymentIoCapability, DeviceCacheReport, DeviceCapabilities, DeviceFacts,
-    DeviceLedgerReport, DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot,
-    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
-    QueryService, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    CacheSourceEventSnapshot, DeviceCacheReport, DeviceCapabilities, DeviceFacts, DeviceLedgerReport,
+    DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot,
+    GpuExecutionQuerySnapshot, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueryService,
+    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
     },
-    backend_metrics::{
-        BackendAttemptDurations, BackendMemoryFailureTelemetry, BackendMetricsSnapshot, BackendMetricsStore,
-        BackendTelemetryAvailability, BackendTelemetryRefresh, BackendTelemetryRefreshSnapshot, BackendTelemetrySource,
-    },
+    backend_metrics::{BackendAttemptDurations, BackendMetricsSnapshot, BackendMetricsStore},
     gpu::{AlgeonGpuInventory, GpuInventory, LiveBackendLease, claim_live_backend, normalize_device_ordinals},
     observation_completion::ObservationCompletionExecutor,
 };
@@ -52,8 +49,7 @@ const CLOSE_OPERATION: &str = "query_engine.gpu_backend_core.close";
 const RESOURCE_OPERATION: &str = "query_engine.gpu_backend_core.resource";
 
 pub use super::backend_close::GpuBackendCloseSnapshot;
-#[doc(hidden)]
-pub use super::observation_completion::ObservationCompletionDispatcher;
+pub(crate) use super::observation_completion::ObservationCompletionDispatcher;
 
 /// Deployment ownership promised for one CUDA device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,7 +62,7 @@ pub enum GpuMemoryOwnership {
 }
 
 impl GpuMemoryOwnership {
-    pub fn allocation_limit_bytes(self) -> Option<u64> {
+    pub(crate) fn allocation_limit_bytes(self) -> Option<u64> {
         match self {
             Self::WholeDeviceExclusive => None,
             Self::StaticPartition { allocation_limit_bytes } => Some(allocation_limit_bytes),
@@ -86,11 +82,11 @@ impl GpuMemoryOwnership {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GpuDeviceCapacityProbe {
-    pub device_ordinal: usize,
+    pub(crate) device_ordinal: usize,
     /// NVML-reported physical framebuffer capacity, when the optional NVML
     /// substrate reported one. CUDA-visible capacity may be smaller by the
     /// driver-reserved framebuffer.
-    pub physical_total_bytes: Option<u64>,
+    pub(crate) physical_total_bytes: Option<u64>,
     /// CUDA-visible allocation capacity. Ownership and explicit limits are
     /// compared against this, not against the NVML total.
     pub cuda_total_bytes: u64,
@@ -99,7 +95,7 @@ pub struct GpuDeviceCapacityProbe {
     /// Largest explicit managed-capacity limit this ownership accepts,
     /// before the backend reserve is subtracted.
     pub max_declarable_limit_bytes: u64,
-    pub backend_reserve_bytes: u64,
+    pub(crate) backend_reserve_bytes: u64,
     pub max_managed_capacity_bytes: u64,
 }
 
@@ -204,8 +200,7 @@ impl GpuMemoryFraction {
         f64::from_bits(self.0)
     }
 
-    #[doc(hidden)]
-    pub fn capacity_bytes(self, owned_capacity_bytes: u64) -> u64 {
+    pub(crate) fn capacity_bytes(self, owned_capacity_bytes: u64) -> u64 {
         ((owned_capacity_bytes as f64 * self.value()).floor() as u64).min(owned_capacity_bytes)
     }
 }
@@ -256,13 +251,13 @@ pub struct GpuBackendDeviceProfile {
 impl GpuBackendDeviceProfile {
     /// Absence asks the engine to use the installed device's managed capacity
     /// as the default query limit.
-    pub const DEFAULT_QUERY_LIMIT_BYTES: Option<u64> = None;
+    pub(crate) const DEFAULT_QUERY_LIMIT_BYTES: Option<u64> = None;
     /// One auxiliary source-work slot is reserved for each active attempt by
     /// default.
-    pub const DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize = 1;
+    pub(crate) const DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize = 1;
     /// Device admission begins with two active attempts unless the installer
     /// explicitly freezes a different per-device limit.
-    pub const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 2;
+    pub(crate) const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 2;
 
     /// Starts a profile with automatic capacity discovery and two active
     /// attempts. Callers may override any device-local bound below.
@@ -522,18 +517,15 @@ impl GpuBackendControllerDraft {
         Self { execution_config, queue_bounds }
     }
 
-    #[doc(hidden)]
-    pub fn execution_config(&self) -> &QueryExecutionConfig {
+    pub(crate) fn execution_config(&self) -> &QueryExecutionConfig {
         &self.execution_config
     }
 
-    #[doc(hidden)]
-    pub fn queue_bounds(&self) -> &QueueBounds {
+    pub(crate) fn queue_bounds(&self) -> &QueueBounds {
         &self.queue_bounds
     }
 
-    #[doc(hidden)]
-    pub fn into_parts(self) -> (QueryExecutionConfig, QueueBounds) {
+    pub(crate) fn into_parts(self) -> (QueryExecutionConfig, QueueBounds) {
         (self.execution_config, self.queue_bounds)
     }
 }
@@ -547,17 +539,12 @@ impl GpuBackendControllerDraft {
 pub struct GpuBackendCoreDraft {
     devices: Vec<GpuBackendDeviceConfig>,
     controller: GpuBackendControllerDraft,
-    deployment_io_capability: DeploymentIoCapability,
     attempt_completion_queue_capacity: Option<usize>,
 }
 
 impl GpuBackendCoreDraft {
-    pub fn new(
-        devices: Vec<GpuBackendDeviceConfig>,
-        controller: GpuBackendControllerDraft,
-        deployment_io_capability: DeploymentIoCapability,
-    ) -> Self {
-        Self { devices, controller, deployment_io_capability, attempt_completion_queue_capacity: None }
+    pub fn new(devices: Vec<GpuBackendDeviceConfig>, controller: GpuBackendControllerDraft) -> Self {
+        Self { devices, controller, attempt_completion_queue_capacity: None }
     }
 
     pub fn with_attempt_completion_queue_capacity(mut self, capacity: usize) -> Self {
@@ -565,11 +552,12 @@ impl GpuBackendCoreDraft {
         self
     }
 
-    pub fn devices(&self) -> &[GpuBackendDeviceConfig] {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn devices(&self) -> &[GpuBackendDeviceConfig] {
         &self.devices
     }
 
-    pub fn derived_global_max_active_attempts(&self) -> Result<usize> {
+    pub(crate) fn derived_global_max_active_attempts(&self) -> Result<usize> {
         self.devices.iter().try_fold(0usize, |sum, device| {
             sum.checked_add(device.profile.max_active_attempts).ok_or_else(|| {
                 invalid_config("max_active_attempts", "derived global maximum overflowed")
@@ -791,8 +779,7 @@ fn invalid_config(field: &'static str, message: &'static str) -> QueryError {
 /// Construction boundary exposed to deterministic probes and failure injectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-#[doc(hidden)]
-pub enum GpuBackendConstructionCheckpoint {
+pub(crate) enum GpuBackendConstructionCheckpoint {
     BeforeDeviceDiscovery { device_ordinal: usize },
     AfterDeviceDiscovery { device_ordinal: usize },
     BeforeMemoryManager { device_ordinal: usize },
@@ -812,8 +799,7 @@ pub enum GpuBackendConstructionCheckpoint {
 
 /// Injectable construction observer. Returning an error injects failure at the
 /// named transaction boundary.
-#[doc(hidden)]
-pub trait GpuBackendConstructionProbe: Send + Sync + fmt::Debug {
+pub(crate) trait GpuBackendConstructionProbe: Send + Sync + fmt::Debug {
     fn checkpoint(&self, checkpoint: GpuBackendConstructionCheckpoint) -> Result<()>;
 }
 
@@ -853,8 +839,7 @@ pub struct GpuBackendCoreBuilder {
 
 impl GpuBackendCoreBuilder {
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn with_construction_probe(mut self, probe: Arc<dyn GpuBackendConstructionProbe>) -> Self {
+    pub(crate) fn with_construction_probe(mut self, probe: Arc<dyn GpuBackendConstructionProbe>) -> Self {
         self.probe = probe;
         self
     }
@@ -877,8 +862,7 @@ impl GpuBackendCoreBuilder {
         self.draft.validate()?;
         #[cfg(test)]
         let observation_completion_executor_factory = Arc::clone(&self.observation_completion_executor_factory);
-        let GpuBackendCoreDraft { devices, controller, deployment_io_capability, attempt_completion_queue_capacity } =
-            self.draft;
+        let GpuBackendCoreDraft { devices, controller, attempt_completion_queue_capacity } = self.draft;
         let ordinals = devices.iter().map(|device| device.device_ordinal()).collect::<Vec<_>>();
         let generation_id = next_backend_identity();
         let backend_metrics = BackendMetricsStore::new(generation_id, &ordinals)?;
@@ -923,7 +907,6 @@ impl GpuBackendCoreBuilder {
             let service = QueryService::install_for_backend(
                 ordinals,
                 controller,
-                deployment_io_capability,
                 &token,
                 &devices,
                 self.probe.as_ref(),
@@ -1205,60 +1188,6 @@ impl GpuBackendCore {
         self.observation_core.backend_metrics.snapshot()
     }
 
-    /// Records one explicit control-plane telemetry sample.
-    ///
-    /// This is deliberately separate from admission: it updates only the
-    /// backend metrics telemetry region and returns the source, sample time,
-    /// availability, and caller-measured age that were retained.
-    pub fn refresh_backend_telemetry(
-        &self,
-        refresh: BackendTelemetryRefresh,
-    ) -> Result<BackendTelemetryRefreshSnapshot> {
-        self.observation_core.backend_metrics.refresh_telemetry(refresh)
-    }
-
-    /// Samples the installed allocation-failure trackers into telemetry-class
-    /// backend metrics.
-    ///
-    /// The frozen memory-manager installation generation binds each callback
-    /// report to this backend generation. Admission never consults this data.
-    pub fn refresh_memory_failure_telemetry(&self) -> Result<Vec<BackendTelemetryRefreshSnapshot>> {
-        const OPERATION: &str = "query_engine.gpu_backend_core.refresh_memory_failure_telemetry";
-        let sampled_at_unix_ms = backend_telemetry_sampled_at_unix_ms(OPERATION)?;
-        let reports = self.session_capability().device_memory_failure_reports()?;
-        let mut refreshed = Vec::with_capacity(reports.len());
-        for report in reports {
-            let source_generation = self
-                .startup_records
-                .iter()
-                .find(|record| record.device_ordinal == report.device_ordinal)
-                .and_then(|record| record.memory_manager_installation.installation_generation)
-                .ok_or_else(|| {
-                    QueryError::new(
-                        QueryErrorCode::Internal,
-                        OPERATION,
-                        "installed device has no memory-manager generation for failure telemetry",
-                    )
-                    .with_fact("device_ordinal", report.device_ordinal)
-                    .with_fact("reason", "memory_failure_telemetry_generation_missing")
-                })?;
-            let age_ms = backend_telemetry_sampled_at_unix_ms(OPERATION)?.saturating_sub(sampled_at_unix_ms);
-            refreshed.push(self.refresh_backend_telemetry(BackendTelemetryRefresh {
-                device_ordinal: report.device_ordinal,
-                source: BackendTelemetrySource::DeviceMemoryFailureTracker,
-                sampled_at_unix_ms,
-                age_ms,
-                availability: if report.callback_installed {
-                    BackendTelemetryAvailability::Available
-                } else {
-                    BackendTelemetryAvailability::Unavailable
-                },
-                memory_failures: Some(BackendMemoryFailureTelemetry::from_report(source_generation, &report)),
-            })?);
-        }
-        Ok(refreshed)
-    }
-
     pub fn close(&self) -> bool {
         self.coordinator.signal()
     }
@@ -1338,14 +1267,6 @@ impl GpuBackendSession {
         self.observation_core.backend_metrics.snapshot()
     }
 
-    /// Records one explicit telemetry refresh through this session capability.
-    pub fn refresh_backend_telemetry(
-        &self,
-        refresh: BackendTelemetryRefresh,
-    ) -> Result<BackendTelemetryRefreshSnapshot> {
-        self.observation_core.backend_metrics.refresh_telemetry(refresh)
-    }
-
     pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         self.observation_core.attempt_completion_queue.as_ref().map_or_else(Vec::new, |queue| queue.drain(max))
     }
@@ -1399,10 +1320,6 @@ impl GpuBackendSession {
 
     pub fn config(&self) -> Result<QueryExecutionConfig> {
         self.with_service(|service| Ok(service.config().clone()))
-    }
-
-    pub fn queue_bounds(&self) -> Result<QueueBounds> {
-        self.with_service(|service| Ok(service.queue_bounds().clone()))
     }
 
     pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
@@ -1465,28 +1382,12 @@ fn register_backend_attempt_metrics_sink(owner: &AttemptOwner, backend_metrics: 
     });
 }
 
-fn backend_telemetry_sampled_at_unix_ms(operation: &'static str) -> Result<u64> {
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_error| {
-        QueryError::new(QueryErrorCode::Internal, operation, "backend telemetry sample time predates the Unix epoch")
-            .with_fact("reason", "telemetry_clock_before_unix_epoch")
-    })?;
-    u64::try_from(elapsed.as_millis()).map_err(|_error| {
-        QueryError::new(
-            QueryErrorCode::Internal,
-            operation,
-            "backend telemetry sample time exceeds the supported millisecond range",
-        )
-        .with_fact("reason", "telemetry_sample_time_overflow")
-    })
-}
-
 /// Permit required by private service admission.
 ///
 /// The resource generation field is declared before the lifecycle count so it
 /// is released first; a close waiter that observes the count reach zero then
 /// knows no permit can still retain the generation.
-#[doc(hidden)]
-pub struct GpuResourcePermit {
+pub(crate) struct GpuResourcePermit {
     generation: Arc<ResourceGeneration>,
     // Declare this last: this keep-alive guard is never read, but its `Drop`
     // releases the GPU lifecycle count, and that release must happen only
@@ -1506,19 +1407,15 @@ impl fmt::Debug for GpuResourcePermit {
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ResourceCore {
+pub(crate) struct ResourceCore {
     identity: u64,
-    #[doc(hidden)]
-    pub generation: Mutex<Option<Arc<ResourceGeneration>>>,
+    pub(crate) generation: Mutex<Option<Arc<ResourceGeneration>>>,
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ObservationCore {
+pub(crate) struct ObservationCore {
     identity: u64,
-    #[doc(hidden)]
-    pub lifecycle: BackendLifecycle,
+    pub(crate) lifecycle: BackendLifecycle,
     attempt_counters: Arc<AttemptBackendCounters>,
     attempt_completion_queue: Option<Arc<AttemptCompletionQueue>>,
     backend_metrics: BackendMetricsStore,
@@ -1526,8 +1423,7 @@ pub struct ObservationCore {
 }
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ResourceGeneration {
+pub(crate) struct ResourceGeneration {
     service: OnceLock<QueryService>,
     startup_records: OnceLock<Arc<[GpuBackendDeviceStartupRecord]>>,
     generation_id: u64,
@@ -1551,13 +1447,11 @@ impl ResourceGeneration {
         }
     }
 
-    #[doc(hidden)]
-    pub fn service(&self) -> Option<&QueryService> {
+    pub(crate) fn service(&self) -> Option<&QueryService> {
         self.service.get()
     }
 
-    #[doc(hidden)]
-    pub fn construction_journal(&self) -> &ConstructionResourceJournal {
+    pub(crate) fn construction_journal(&self) -> &ConstructionResourceJournal {
         &self.construction_journal
     }
 }
@@ -1572,29 +1466,24 @@ enum ConstructionResource {
 }
 
 #[derive(Debug, Default)]
-#[doc(hidden)]
-pub struct ConstructionResourceJournal {
+pub(crate) struct ConstructionResourceJournal {
     entries: Mutex<Vec<ConstructionResource>>,
 }
 
 impl ConstructionResourceJournal {
-    #[doc(hidden)]
-    pub fn record_memory_manager(&self, manager: DeviceMemoryManager) -> Result<()> {
+    pub(crate) fn record_memory_manager(&self, manager: DeviceMemoryManager) -> Result<()> {
         self.record(ConstructionResource::MemoryManager(manager))
     }
 
-    #[doc(hidden)]
-    pub fn record_stream_pool(&self, pool: super::ServiceStreamPool) -> Result<()> {
+    pub(crate) fn record_stream_pool(&self, pool: super::ServiceStreamPool) -> Result<()> {
         self.record(ConstructionResource::StreamPool(pool))
     }
 
-    #[doc(hidden)]
-    pub fn record_device_context(&self, context: super::DeviceContext) -> Result<()> {
+    pub(crate) fn record_device_context(&self, context: super::DeviceContext) -> Result<()> {
         self.record(ConstructionResource::DeviceContext(context))
     }
 
-    #[doc(hidden)]
-    pub fn record_execution_pool(&self, pool: super::GpuExecutionPool) -> Result<()> {
+    pub(crate) fn record_execution_pool(&self, pool: super::GpuExecutionPool) -> Result<()> {
         self.record(ConstructionResource::ExecutionPool(pool))
     }
 
@@ -1607,8 +1496,7 @@ impl ConstructionResourceJournal {
         Ok(())
     }
 
-    #[doc(hidden)]
-    pub fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
         let entries = self.entries.lock().map_err(|_| construction_journal_poisoned())?;
         let mut first_deadline = None;
         let mut first_permanent = None;
@@ -1685,8 +1573,8 @@ mod tests {
     use crate::{
         observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTerminalOutcome},
         runtime::{
-            BACKEND_METRIC_DEVICE_CAPACITY, GdsDriverProbeStatus, GpuExecutionJobKind, GpuExecutionPool,
-            KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryActivityLease, SourceSchedulerPolicy,
+            BACKEND_METRIC_DEVICE_CAPACITY, GpuExecutionJobKind, GpuExecutionPool, QueryActivityLease,
+            SourceSchedulerPolicy,
         },
     };
 
@@ -2000,14 +1888,6 @@ mod tests {
         }
     }
 
-    fn deployment() -> DeploymentIoCapability {
-        DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::DriverMissing,
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::ProbeUnimplemented,
-        )
-    }
-
     fn controller(policy: QueryExecutionConfig) -> GpuBackendControllerDraft {
         GpuBackendControllerDraft::new(policy, QueueBounds::default())
     }
@@ -2019,7 +1899,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         )
     }
 
@@ -2049,7 +1928,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         );
         let error = config.validate().unwrap_err();
         assert_eq!(error.fact_value("field"), Some("max_active_attempts"));
@@ -2064,7 +1942,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         );
 
         let error = config.validate().unwrap_err();
@@ -2107,7 +1984,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         );
         let probe = Arc::new(CountingProbe::default());
 
@@ -2126,7 +2002,6 @@ mod tests {
                 GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(1), GpuMemoryOwnership::WholeDeviceExclusive),
             ],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         );
         assert_eq!(config.derived_global_max_active_attempts().unwrap(), 4);
     }
@@ -2139,7 +2014,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         );
 
         draft.normalize_installation_bounds().expect("automatic bounds derive");
@@ -2162,7 +2036,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(execution),
-            deployment(),
         );
 
         draft.normalize_installation_bounds().expect("automatic bounds derive");
@@ -2274,7 +2147,6 @@ mod tests {
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
-            deployment(),
         ))
         .build()
         .unwrap();

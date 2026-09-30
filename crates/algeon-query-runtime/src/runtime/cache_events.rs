@@ -128,16 +128,15 @@ impl LakehouseCacheFillEventSink {
         }
     }
 
-    #[doc(hidden)]
-    pub fn events(&self) -> Vec<LakehouseCacheFillEvent> {
+    #[cfg(test)]
+    pub(crate) fn events(&self) -> Vec<LakehouseCacheFillEvent> {
         match self.events.lock() {
             Ok(events) => events.clone(),
             Err(_error) => Vec::new(),
         }
     }
 
-    #[doc(hidden)]
-    pub fn drain(&self) -> Vec<LakehouseCacheFillEvent> {
+    pub(crate) fn drain(&self) -> Vec<LakehouseCacheFillEvent> {
         match self.events.lock() {
             Ok(mut events) => events.drain(..).collect(),
             Err(_error) => Vec::new(),

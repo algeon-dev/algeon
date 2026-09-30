@@ -95,31 +95,40 @@ pub(crate) async fn prune_native_query_plan(
     for event in result.events {
         match event {
             LakehouseFooterPruningEvent::StaticReaderPredicateApplied { before, after } => {
-                eprintln!(
-                    "[lakehouse_pruning] event=static_reader_predicate_applied before_row_groups={} after_row_groups={}",
-                    before, after,
+                tracing::info!(
+                    event = "static_reader_predicate_applied",
+                    before_row_groups = before,
+                    after_row_groups = after,
+                    "lakehouse footer pruning"
                 );
             },
             LakehouseFooterPruningEvent::Skipped { reason } => {
-                eprintln!("[lakehouse_pruning] event=skip reason={}", stable_log_field(&reason));
+                tracing::debug!(event = "skip", reason = stable_log_field(&reason), "lakehouse footer pruning");
             },
             LakehouseFooterPruningEvent::DimensionDerivedApplied { target_source_node_id, before, after } => {
-                eprintln!(
-                    "[lakehouse_pruning] event=applied target_source_node_id={} before_row_groups={} after_row_groups={}",
-                    target_source_node_id.index(),
-                    before,
-                    after,
+                tracing::info!(
+                    event = "applied",
+                    target_source_node_id = target_source_node_id.index(),
+                    before_row_groups = before,
+                    after_row_groups = after,
+                    "lakehouse footer pruning"
                 );
             },
             LakehouseFooterPruningEvent::DimensionDerivedSkipped { target_source_node_id, reason } => {
-                eprintln!(
-                    "[lakehouse_pruning] event=skip target_source_node_id={} reason={}",
-                    target_source_node_id.index(),
+                tracing::debug!(
+                    event = "skip",
+                    target_source_node_id = target_source_node_id.index(),
                     reason,
+                    "lakehouse footer pruning"
                 );
             },
             LakehouseFooterPruningEvent::DimensionDerivedRequestError { error } => {
-                eprintln!("[lakehouse_pruning] event=skip reason=request_error error={}", stable_log_field(&error));
+                tracing::warn!(
+                    event = "skip",
+                    reason = "request_error",
+                    error = stable_log_field(&error),
+                    "lakehouse footer pruning"
+                );
             },
         }
     }

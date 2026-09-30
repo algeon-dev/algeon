@@ -1,40 +1,31 @@
 //! GPU runtime inventory, registry, and placement helpers.
 
-#[doc(hidden)]
-pub mod device_context;
-pub mod inventory;
-#[doc(hidden)]
-pub mod lanes;
-pub mod ledger;
-pub mod memory_failure;
+pub(crate) mod device_context;
+pub(crate) mod inventory;
+pub(crate) mod lanes;
+pub(crate) mod ledger;
+pub(crate) mod memory_failure;
 mod owner;
-#[doc(hidden)]
-pub mod placement;
-pub mod profile;
-#[doc(hidden)]
-pub mod registry;
+pub(crate) mod placement;
+pub(crate) mod profile;
+pub(crate) mod registry;
 
-#[doc(hidden)]
-pub use device_context::DeviceContext;
-pub use inventory::{
-    AlgeonGpuInventory, AlgeonNvmlTelemetry, DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory,
-    GpuTelemetry, device_budget_bytes_from_facts,
-};
-#[doc(hidden)]
-pub use lanes::{DeviceLanePermit, DeviceWorkerScope};
-#[doc(hidden)]
-pub use ledger::LedgerTransition;
+pub(crate) use device_context::DeviceContext;
 #[cfg(test)]
-#[doc(hidden)]
-pub use ledger::LedgerTransitionKind;
-pub use ledger::{
-    DeviceAdmissionHealth, DeviceLedger, DeviceLedgerGrantRow, DeviceLedgerReport, GrantIdentity, LedgerSnapshot,
-    MemoryGrant,
+pub(crate) use inventory::device_budget_bytes_from_facts;
+pub(crate) use inventory::{AlgeonGpuInventory, AlgeonNvmlTelemetry, GpuInventory, GpuTelemetry};
+pub use inventory::{DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus};
+pub(crate) use lanes::{DeviceLanePermit, DeviceWorkerScope};
+#[cfg(test)]
+pub(crate) use ledger::LedgerTransitionKind;
+pub(crate) use ledger::{
+    DeviceAdmissionHealth, DeviceLedger, GrantIdentity, LedgerSnapshot, LedgerTransition, MemoryGrant,
 };
-pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
-#[doc(hidden)]
-pub use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normalize_device_ordinals};
-#[doc(hidden)]
-pub use placement::PlacementRequest;
-pub use profile::{DeviceCapabilities, DeviceCapability, DeviceResourceEnvelope, DeviceResourceProfile};
+pub use ledger::{DeviceLedgerGrantRow, DeviceLedgerReport};
+pub use memory_failure::DeviceMemoryFailureReport;
+pub(crate) use memory_failure::DeviceMemoryFailureTracker;
+pub(crate) use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normalize_device_ordinals};
+pub(crate) use placement::PlacementRequest;
+pub(crate) use profile::DeviceResourceEnvelope;
+pub use profile::{DeviceCapabilities, DeviceCapability, DeviceResourceProfile};
 pub(crate) use registry::DeviceRegistry;

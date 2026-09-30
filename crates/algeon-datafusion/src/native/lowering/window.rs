@@ -542,7 +542,7 @@ fn lower_window_spec(
         return Err(CapabilityReason::UnsupportedExpression.into());
     }
 
-    let first_keys = &prepared_keys[0];
+    let first_keys = prepared_keys.first().ok_or(CapabilityReason::UnsupportedExpression)?;
     let expected_partition_by = first_keys.partition_by.clone();
     let expected_order_by = first_keys.order_by.clone();
     let mut functions = Vec::with_capacity(window_exprs.len());

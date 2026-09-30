@@ -1,6 +1,6 @@
 ---
 sidebar_position: 5
-description: Configure the Flight SQL server, GPU admission, native execution, authentication, observability, and Iceberg sources.
+description: Configure the Flight SQL server, GPU admission, native execution, authentication, observability, and the workspace overlay.
 ---
 
 # Configuration
@@ -9,7 +9,7 @@ Algeon has three configuration owners. Keep them separate:
 
 | Surface | Configure with | Owns |
 | --- | --- | --- |
-| Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, source catalogs, and retention |
+| Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, workspace overlay, and retention |
 | Embedded GPU backend | `AlgeonGpuBackend::builder()` | Device ownership, capacity, queues, and execution mode |
 | DataFusion session | `SessionConfig` | Standard DataFusion behavior (catalogs, batch size, target partitions) |
 
@@ -22,10 +22,9 @@ named by `ALGEON_SERVER_CONFIG_FILE`, and then applies environment overrides for
 matching scalar admission, native, and observability fields.
 
 The TOML file accepts only `[auth]`, `[admission]`, `[native]`,
-`[observability]`, and `[models]`. Unknown fields fail startup. cuGraph,
-Iceberg, and workspace settings use the environment; standard DataFusion
-settings come from its environment mapping or the embedded `SessionConfig`
-API.
+`[observability]`, and `[models]`. Unknown fields fail startup. cuGraph and
+workspace settings use the environment; standard DataFusion settings come from
+its environment mapping or the embedded `SessionConfig` API.
 
 ## Minimal GPU server
 
@@ -257,62 +256,63 @@ synchronously on each planning pass (`GetFlightInfo`, `DoGet`, and prepared
 statement creation), so a large model adds its read and parse time to the
 planning latency of every statement that names it.
 
-## Iceberg and workspace
+## Removed Iceberg settings
 
-Iceberg server configuration activates when a catalog, storage, or cache
-setting below is present and requires the `iceberg` Cargo feature. That feature
-is held out of the current release while the project waits for the upstream
-iceberg-rust 0.12 release and compatibility validation.
+The server has no Iceberg integration. Startup fails with an error that names
+the variable and says it belonged to the removed integration when any of these
+has a non-blank value:
 
-Common settings are:
+- `ALGEON_ICEBERG_CATALOG_KIND`, `ALGEON_ICEBERG_CATALOG_NAME`,
+  `ALGEON_ICEBERG_NAMESPACE`, `ALGEON_ICEBERG_TABLES`,
+  `ALGEON_ICEBERG_WAREHOUSE`, and `ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS`
+- `ALGEON_ICEBERG_GLUE_CATALOG_NAME`, `ALGEON_ICEBERG_GLUE_CATALOG_ID`,
+  `ALGEON_ICEBERG_GLUE_URI`, `ALGEON_ICEBERG_REST_URI`,
+  `ALGEON_ICEBERG_REST_PREFIX`, `ALGEON_ICEBERG_REST_TOKEN`, and
+  `ALGEON_ICEBERG_REST_CATALOG_HANDLE`
+- `ALGEON_ICEBERG_S3_ENDPOINT`, `ALGEON_ICEBERG_S3_REGION`,
+  `ALGEON_ICEBERG_S3_PATH_STYLE`, and `ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE`
+- `ALGEON_LAKEHOUSE_CACHE_ROOT`, `ALGEON_LAKEHOUSE_CACHE_READ`,
+  `ALGEON_LAKEHOUSE_CACHE_POLICY`, and `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES`
 
-| Variable | Requirement |
-| --- | --- |
-| `ALGEON_ICEBERG_CATALOG_KIND` | Required when Iceberg settings are present; `glue` or `rest` |
-| `ALGEON_ICEBERG_CATALOG_NAME` | DataFusion catalog name; defaults to the selected backend name |
-| `ALGEON_ICEBERG_NAMESPACE` | Required namespace exposed to SQL |
-| `ALGEON_ICEBERG_WAREHOUSE` | Required warehouse URI |
-| `ALGEON_ICEBERG_TABLES` | Optional `alias=table` preload list; otherwise tables resolve lazily |
-| `ALGEON_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS` | Planning timeout; default `60` |
+Remove them from the deployment environment. The last group means a server
+process cannot enable the persistent lakehouse byte cache for `s3://` Parquet
+files. See [Iceberg support](./overview.mdx#iceberg-support) for the status of
+Iceberg sources.
 
-REST catalogs require `ALGEON_ICEBERG_REST_URI`. Glue requires `AWS_REGION` or
-`AWS_DEFAULT_REGION`; backend-specific prefix, token, catalog-handle, ID, and
-endpoint variables are optional.
+## Parquet source flags
 
-S3-compatible storage uses `ALGEON_ICEBERG_S3_ENDPOINT`,
-`ALGEON_ICEBERG_S3_REGION`, and `ALGEON_ICEBERG_S3_PATH_STYLE`. Choose either
-static `ALGEON_ICEBERG_S3_ACCESS_KEY_ID` /
-`ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY` credentials or
-`ALGEON_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain`; combining them is rejected.
-For Glue with remote KvikIO reads, set both `AWS_REGION` and
-`AWS_DEFAULT_REGION` to the same region.
+Native scans read local and `s3://` Parquet files. Remote reads go through
+KvikIO, which reads `AWS_DEFAULT_REGION`; the engine's own S3 metadata reads
+use `AWS_REGION` first. Set both to the same region.
 
-The optional persistent byte cache is separate from GPU memory. Configure it
-with `ALGEON_LAKEHOUSE_CACHE_ROOT`, `ALGEON_LAKEHOUSE_CACHE_READ`,
-`ALGEON_LAKEHOUSE_CACHE_POLICY`, and `ALGEON_LAKEHOUSE_CACHE_MAX_BYTES`; cache
-policy is `disabled`, `read_through`, or `fill_before_read`.
-`ALGEON_LAKEHOUSE_CACHE_READ` accepts only `enabled` or `disabled`.
-`ALGEON_LAKEHOUSE_CACHE_MAX_BYTES` is required whenever a cache root is
-configured with a filling policy (`read_through` or `fill_before_read`).
-`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `ALGEON_ICEBERG_FOOTER_PRUNING` are
-process/source flags rather than `ServerConfig` fields; set them before
-process startup. `ALGEON_ICEBERG_FOOTER_PRUNING` accepts only `true`, `false`,
-`1`, or `0`; any other value is a startup/planning error, not a silent
-`false`.
+`KVIKIO_COMPAT_MODE=ON|OFF|AUTO` and `ALGEON_ICEBERG_FOOTER_PRUNING` are not
+`ServerConfig` fields; set them in the process environment before startup.
+`ALGEON_ICEBERG_FOOTER_PRUNING=true` enables Parquet-footer row-group pruning
+for `s3://` scans (see
+[Lakehouse and workspace boundary](../design/index.mdx#lakehouse-and-workspace-boundary)).
+It accepts `true`, `false`, `1`, or `0` in any letter case, and an unset or
+blank value means `false`. Any other value fails query planning. The variable
+name predates the removal of the Iceberg integration.
 
-Use a workspace overlay when the source catalog is read-only but interactive
-DDL should remain local:
+## Workspace overlay
+
+A workspace overlay keeps interactive DDL local and reads through to a backing
+schema:
 
 ```bash
-export ALGEON_SERVER_WORKSPACE_CATALOG=datafusion
-export ALGEON_SERVER_WORKSPACE_SCHEMA=public
-export ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake
-export ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network
-export ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,papers,paper_authors
+export ALGEON_SERVER_WORKSPACE_CATALOG=<workspace catalog>
+export ALGEON_SERVER_WORKSPACE_SCHEMA=<workspace schema>
+export ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=<backing catalog>
+export ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=<backing schema>
+export ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=<table>,<table>
 ```
 
-The backing catalog and schema must be set together. Catalog/schema default to
-`datafusion.public`, and omitting the aliases exposes every backing table.
+The backing catalog and schema must be set together, and both must already be
+registered in the server session, or session construction fails with a
+configuration error. The standalone server registers no catalog beyond
+DataFusion's default catalog. The workspace catalog and schema default to
+`datafusion.public` and must differ from the backing pair. Omitting the aliases
+exposes every backing table.
 
 ## DataFusion session configuration
 

@@ -27,7 +27,7 @@ impl QueryService {
     /// Call [`QueryAdmissionWaiter::try_admit`] until it returns a handle. If
     /// the waiter is dropped first, the queued request is removed.
     #[cfg(test)]
-    pub fn enqueue_admission(&self) -> Result<QueryAdmissionWaiter> {
+    pub(crate) fn enqueue_admission(&self) -> Result<QueryAdmissionWaiter> {
         self.enqueue_admission_with_request(QueryAdmissionRequest::new())
     }
 
@@ -38,18 +38,17 @@ impl QueryService {
     /// event-driven wakeup instead of polling
     /// [`QueryAdmissionWaiter::try_admit`].
     #[cfg(test)]
-    pub async fn admit_async(&self) -> Result<QueryHandle> {
+    pub(crate) async fn admit_async(&self) -> Result<QueryHandle> {
         self.admit_async_with_request(QueryAdmissionRequest::new()).await
     }
 
     /// Admits a query asynchronously with consolidated request-scoped admission metadata.
     #[cfg(test)]
-    pub async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
+    pub(crate) async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         self.admit_async_with_request_and_permits(request, None, None, None).await
     }
 
-    #[doc(hidden)]
-    pub async fn admit_async_with_backend_permits(
+    pub(crate) async fn admit_async_with_backend_permits(
         &self,
         request: QueryAdmissionRequest,
         observation_permit: ObservationPermit,
@@ -95,7 +94,10 @@ impl QueryService {
 
     /// Enqueues a query admission request with consolidated request-scoped metadata.
     #[cfg(test)]
-    pub fn enqueue_admission_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryAdmissionWaiter> {
+    pub(crate) fn enqueue_admission_with_request(
+        &self,
+        request: QueryAdmissionRequest,
+    ) -> Result<QueryAdmissionWaiter> {
         self.enqueue_admission_with_request_and_permits(request, None, None, None)
     }
 

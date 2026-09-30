@@ -117,7 +117,7 @@ pub enum DynamicFilterConsumerReductionStage {
 
 impl DynamicFilterConsumerReductionStage {
     /// Stable lower-case code used by diagnostics.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::SourceReader => "source_reader",
             Self::SourcePostDecode => "source_post_decode",
@@ -233,7 +233,7 @@ pub struct DynamicFilterRoute {
     /// Consumer columns that receive the payload.
     pub consumer_columns: Vec<String>,
     /// Payload kinds this route may produce.
-    pub filter_kinds: Vec<DynamicFilterKind>,
+    pub(crate) filter_kinds: Vec<DynamicFilterKind>,
     /// Consumer lowering selected during route discovery.
     pub consumer_lowering: DynamicFilterConsumerLowering,
 }
@@ -364,7 +364,7 @@ fn values_form_dense_i64_range(values: &[i64], min: i64, max: i64) -> bool {
 
 /// Route payload status recorded by runtime dynamic-filter channels.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DynamicFilterPayload {
+pub(crate) enum DynamicFilterPayload {
     /// The route produced a filter payload.
     Produced(DynamicFilter),
     /// The producer completed but no supported payload could be derived.
@@ -407,14 +407,6 @@ impl DynamicFilterSet {
         match self.payloads.get(&id) {
             Some(DynamicFilterPayload::Produced(filter)) => Some(filter),
             Some(DynamicFilterPayload::Skipped { .. }) | None => None,
-        }
-    }
-
-    /// Looks up the skipped reason for a completed route with no payload.
-    pub fn skipped_reason(&self, id: DynamicFilterId) -> Option<&'static str> {
-        match self.payloads.get(&id) {
-            Some(DynamicFilterPayload::Skipped { reason }) => Some(*reason),
-            Some(DynamicFilterPayload::Produced(_)) | None => None,
         }
     }
 
@@ -462,8 +454,7 @@ pub struct DynamicFilterExecutionOptions {
     pub tiny_local_parquet_consumer_row_groups: usize,
     /// Maximum range overlap ratio, in parts per million, for merging a runtime
     /// range payload into a reader predicate.
-    #[doc(hidden)]
-    pub max_range_reader_predicate_selectivity_ppm: u64,
+    pub(crate) max_range_reader_predicate_selectivity_ppm: u64,
     /// Maximum small-IN-list cardinality that may be deferred from reader
     /// predicate application into a post-decode filter when another predicate remains.
     #[doc(hidden)]
@@ -481,15 +472,15 @@ pub struct DynamicFilterExecutionOptions {
 impl DynamicFilterExecutionOptions {
     const MAX_SELECTIVITY_PPM: u64 = 1_000_000;
 
-    pub const DEFAULT_SMALL_IN_LIST_LIMIT: usize = 1024;
-    pub const DEFAULT_MAX_BUILD_ROWS: usize = 1_000_000;
-    pub const DEFAULT_LARGE_LOCAL_PARQUET_RANGE_PRODUCER_ROWS: usize = 4 * 1024;
-    pub const DEFAULT_DIMENSION_SIZED_CONSUMER_BYTES: u64 = 256 * 1024 * 1024;
-    pub const DEFAULT_TINY_LOCAL_PARQUET_CONSUMER_ROW_GROUPS: usize = 32;
-    pub const DEFAULT_MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM: u64 = 950_000;
-    pub const DEFAULT_MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES: usize = 128;
-    pub const DEFAULT_MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES: usize = 4096;
-    pub const DEFAULT_MIN_UNPRUNED_HASH_SET_POST_DECODE_SOURCE_ROWS: u64 = 1_000_000;
+    pub(crate) const DEFAULT_SMALL_IN_LIST_LIMIT: usize = 1024;
+    pub(crate) const DEFAULT_MAX_BUILD_ROWS: usize = 1_000_000;
+    pub(crate) const DEFAULT_LARGE_LOCAL_PARQUET_RANGE_PRODUCER_ROWS: usize = 4 * 1024;
+    pub(crate) const DEFAULT_DIMENSION_SIZED_CONSUMER_BYTES: u64 = 256 * 1024 * 1024;
+    pub(crate) const DEFAULT_TINY_LOCAL_PARQUET_CONSUMER_ROW_GROUPS: usize = 32;
+    pub(crate) const DEFAULT_MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM: u64 = 950_000;
+    pub(crate) const DEFAULT_MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES: usize = 128;
+    pub(crate) const DEFAULT_MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES: usize = 4096;
+    pub(crate) const DEFAULT_MIN_UNPRUNED_HASH_SET_POST_DECODE_SOURCE_ROWS: u64 = 1_000_000;
 
     /// Maximum exact keyset cardinality lowered into a reader `IN (...)` predicate.
     pub fn small_in_list_limit(&self) -> usize {
@@ -573,6 +564,7 @@ impl DynamicFilterExecutionOptions {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn with_small_in_list_limit(mut self, limit: usize) -> Self {
         self.small_in_list_limit = limit;
         self
@@ -588,33 +580,15 @@ impl DynamicFilterExecutionOptions {
         self
     }
 
-    pub fn with_dimension_sized_consumer_bytes(mut self, bytes: u64) -> Self {
-        self.dimension_sized_consumer_bytes = bytes;
-        self
-    }
-
-    pub fn with_tiny_local_parquet_consumer_row_groups(mut self, row_groups: usize) -> Self {
-        self.tiny_local_parquet_consumer_row_groups = row_groups;
-        self
-    }
-
-    pub fn with_max_range_reader_predicate_selectivity_ppm(mut self, selectivity_ppm: u64) -> Self {
-        self.max_range_reader_predicate_selectivity_ppm = selectivity_ppm;
-        self
-    }
-
+    #[cfg(test)]
     pub fn with_max_deferred_small_in_list_reader_values(mut self, values: usize) -> Self {
         self.max_deferred_small_in_list_reader_values = values;
         self
     }
 
+    #[cfg(test)]
     pub fn with_max_unpruned_hash_set_post_decode_values(mut self, values: usize) -> Self {
         self.max_unpruned_hash_set_post_decode_values = values;
-        self
-    }
-
-    pub fn with_min_unpruned_hash_set_post_decode_source_rows(mut self, rows: u64) -> Self {
-        self.min_unpruned_hash_set_post_decode_source_rows = rows;
         self
     }
 }
@@ -670,10 +644,6 @@ impl Default for DynamicFilterExecutionOptions {
         }
     }
 }
-
-/// Maximum exact keyset cardinality lowered into a reader `IN (...)` predicate.
-pub const DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize =
-    DynamicFilterExecutionOptions::DEFAULT_SMALL_IN_LIST_LIMIT;
 
 /// Stable runtime skip reason for a large exact keyset whose local-Parquet
 /// consumers are already small enough that payload materialization and footer
@@ -896,7 +866,6 @@ fn prune_source_row_groups_by_key_filter(
                 None => retained.push(row_group_index),
             }
         }
-        let retained = if file.has_position_delete_files() { contiguous_row_group_cover(retained) } else { retained };
         retained_total = retained_total.saturating_add(retained.len());
         selections.push(Some(retained));
     }
@@ -924,14 +893,6 @@ fn mark_source_row_groups_empty(source: &mut LocalParquetSource) {
     for file in &mut source.files {
         file.row_groups = Some(Vec::new());
     }
-}
-
-fn contiguous_row_group_cover(row_groups: Vec<usize>) -> Vec<usize> {
-    let Some(first) = row_groups.iter().copied().min() else {
-        return row_groups;
-    };
-    let last = row_groups.iter().copied().max().expect("min proved non-empty row group selection");
-    (first..=last).collect()
 }
 
 fn dynamic_filter_reader_predicate(
@@ -1077,9 +1038,6 @@ fn source_reader_predicate_merge_is_supported(
     predicate: &Expr,
     ctx: AnalysisContext<'_>,
 ) -> bool {
-    if source.has_row_delete_files() {
-        return false;
-    }
     let predicate = match &source.reader_predicate {
         Some(existing) => Expr::binary(existing.clone(), BinaryOp::And, predicate.clone()),
         None => predicate.clone(),

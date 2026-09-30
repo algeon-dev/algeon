@@ -48,8 +48,7 @@ use crate::{
 /// Fault injection fires before and after every acquisition so tests can
 /// prove exact rollback at each point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub enum AdmissionStep {
+pub(crate) enum AdmissionStep {
     BeforeLanePermit,
     AfterLanePermit,
     BeforeRootStream,
@@ -63,8 +62,7 @@ pub enum AdmissionStep {
 }
 
 impl AdmissionStep {
-    #[doc(hidden)]
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::BeforeLanePermit => "before_lane_permit",
             Self::AfterLanePermit => "after_lane_permit",
@@ -80,8 +78,7 @@ impl AdmissionStep {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub const ALL: [AdmissionStep; 10] = [
+    pub(crate) const ALL: [AdmissionStep; 10] = [
         Self::BeforeLanePermit,
         Self::AfterLanePermit,
         Self::BeforeRootStream,
@@ -100,8 +97,7 @@ impl AdmissionStep {
 /// The mechanism is test-only: production installs no probe, so the struct
 /// carries no state there and every hook is an inlined no-op that takes no
 /// locks on the admission path.
-#[doc(hidden)]
-pub struct AdmissionTransactionProbe {
+pub(crate) struct AdmissionTransactionProbe {
     #[cfg(test)]
     fail_at: Mutex<Option<AdmissionStep>>,
     #[cfg(test)]
@@ -133,8 +129,7 @@ impl std::fmt::Debug for AdmissionTransactionProbe {
 
 impl AdmissionTransactionProbe {
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn disabled() -> Self {
+    pub(crate) fn disabled() -> Self {
         Self {
             fail_at: Mutex::new(None),
             pause_at: Mutex::new(None),
@@ -144,8 +139,7 @@ impl AdmissionTransactionProbe {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn failing_at(step: AdmissionStep) -> Self {
+    pub(crate) fn failing_at(step: AdmissionStep) -> Self {
         Self {
             fail_at: Mutex::new(Some(step)),
             pause_at: Mutex::new(None),
@@ -159,8 +153,7 @@ impl AdmissionTransactionProbe {
     /// grant exists; the release channel lets it resume without publishing it
     /// early.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn pausing_at(step: AdmissionStep) -> (Self, super::TestPauseHandle) {
+    pub(crate) fn pausing_at(step: AdmissionStep) -> (Self, super::TestPauseHandle) {
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
         let pause =
@@ -180,8 +173,7 @@ impl AdmissionTransactionProbe {
     /// deadline elapsed.  This keeps deadline coverage deterministic without
     /// turning a scheduler delay into a test precondition.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn force_deadline_after_acquisition_step(&self, step: AdmissionStep) {
+    pub(crate) fn force_deadline_after_acquisition_step(&self, step: AdmissionStep) {
         *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(ForcedAdmissionDeadline::Acquisition(step));
     }
@@ -189,8 +181,7 @@ impl AdmissionTransactionProbe {
     /// Forces only the publication recheck to expire.  Acquisition still
     /// completes, allowing tests to prove the post-mutex publication gate.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn force_deadline_before_publication(&self) {
+    pub(crate) fn force_deadline_before_publication(&self) {
         *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some(ForcedAdmissionDeadline::BeforePublication);
     }
@@ -199,8 +190,7 @@ impl AdmissionTransactionProbe {
     /// lifecycle ticket into rollback cleanup, but before its drop starts
     /// physical cleanup. This exposes the exact shutdown-quiescence boundary.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn pausing_after_rollback_accounting() -> (Self, super::TestPauseHandle) {
+    pub(crate) fn pausing_after_rollback_accounting() -> (Self, super::TestPauseHandle) {
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
         let pause =
@@ -368,12 +358,9 @@ impl AdmissionTransactionProbe {
 }
 
 /// The root stream binding consumed by the first context acquisition.
-#[doc(hidden)]
-pub struct RootStreamBinding {
-    #[doc(hidden)]
-    pub stream_lease: StreamLease,
-    #[doc(hidden)]
-    pub member_lease: cudf::StreamReservationLease,
+pub(crate) struct RootStreamBinding {
+    pub(crate) stream_lease: StreamLease,
+    pub(crate) member_lease: cudf::StreamReservationLease,
 }
 
 /// GPU-bound components of an admitted attempt. Fields are declared in
@@ -501,8 +488,7 @@ impl Drop for AdmissionTeardown {
 }
 
 /// One admitted attempt's resource envelope.
-#[doc(hidden)]
-pub struct AdmissionEnvelope {
+pub(crate) struct AdmissionEnvelope {
     /// Retained so a pre-publication drop can account for deferred rollback
     /// cleanup until its stream callback has released the terminal sequence.
     service: Arc<QueryServiceInner>,
@@ -682,8 +668,7 @@ impl AdmissionEnvelope {
     /// Builds the envelope for a placed query while the admission mutex is
     /// released. The root stream acquisition is the only blocking step and
     /// observes the attempt-wide cancellation and queue deadline.
-    #[doc(hidden)]
-    pub fn acquire(
+    pub(crate) fn acquire(
         service: &Arc<QueryServiceInner>,
         placed: PlacedQuery,
         lifecycle_ticket: AdmissionTicket,
@@ -812,21 +797,18 @@ impl AdmissionEnvelope {
         })
     }
 
-    #[doc(hidden)]
-    pub fn device_ordinal(&self) -> usize {
+    pub(crate) fn device_ordinal(&self) -> usize {
         self.device_ordinal
     }
 
-    #[doc(hidden)]
-    pub fn memory_grant(&self) -> &MemoryGrant {
+    pub(crate) fn memory_grant(&self) -> &MemoryGrant {
         self.teardown.terminal().memory_grant()
     }
 
     /// Atomically hands an unpublished envelope's lifecycle ticket from
     /// provisional admission to rollback cleanup. The caller holds the
     /// service admission mutex while installing the idempotence guard.
-    #[doc(hidden)]
-    pub fn preaccount_rollback_cleanup(&mut self, _state: &mut AdmissionState) {
+    pub(crate) fn preaccount_rollback_cleanup(&mut self, _state: &mut AdmissionState) {
         if !self.rollback_cleanup_started {
             if let Some(ticket) = self.teardown.terminal_mut().lifecycle_ticket_mut()
                 && let Err(error) = ticket.transition_to_cleanup()
@@ -839,8 +821,7 @@ impl AdmissionEnvelope {
         }
     }
 
-    #[doc(hidden)]
-    pub fn activate_lifecycle_ticket(&mut self) -> Result<()> {
+    pub(crate) fn activate_lifecycle_ticket(&mut self) -> Result<()> {
         self.teardown
             .terminal_mut()
             .lifecycle_ticket_mut()
@@ -858,8 +839,7 @@ impl AdmissionEnvelope {
     /// is complete but before the query can execute. Diagnostic registration
     /// failure leaves later events explicitly unattributed and never changes
     /// admission or the immutable grant.
-    #[doc(hidden)]
-    pub fn register_allocator_domain_attempt(&mut self, attempt_id: AttemptId) {
+    pub(crate) fn register_allocator_domain_attempt(&mut self, attempt_id: AttemptId) {
         if self.allocator_domain_attempt.is_some() {
             return;
         }
@@ -873,15 +853,13 @@ impl AdmissionEnvelope {
     /// Moves the binding to the post-cleanup report commit. The binding is
     /// consumed exactly once, so envelope destruction cannot discard an
     /// already-retired attempt window.
-    #[doc(hidden)]
-    pub fn take_allocator_domain_attempt(&mut self) -> Option<AllocatorDomainAttempt> {
+    pub(crate) fn take_allocator_domain_attempt(&mut self) -> Option<AllocatorDomainAttempt> {
         self.allocator_domain_attempt.take()
     }
 
     /// Records the active-to-cleanup transition while retaining the ticket
     /// inside this envelope through all terminal resource destruction.
-    #[doc(hidden)]
-    pub fn begin_terminal_cleanup(&mut self) {
+    pub(crate) fn begin_terminal_cleanup(&mut self) {
         if let Some(ticket) = self.teardown.terminal_mut().lifecycle_ticket_mut()
             && !ticket.is_cleanup()
             && let Err(error) = ticket.transition_to_cleanup()
@@ -893,42 +871,36 @@ impl AdmissionEnvelope {
     /// Adds the backend-generation permit at publication. It is intentionally
     /// not exposed again: the envelope releases it together with the admitted
     /// attempt's other terminal resources.
-    #[doc(hidden)]
-    pub fn retain_gpu_resource_permit(&mut self, gpu_resource_permit: Option<GpuResourcePermit>) {
+    pub(crate) fn retain_gpu_resource_permit(&mut self, gpu_resource_permit: Option<GpuResourcePermit>) {
         self.teardown.terminal_mut().retain_gpu_resource_permit(gpu_resource_permit);
     }
 
     /// The attempt allocation domain. Always present for device-backed
     /// admissions; `None` only on ledger-only envelopes.
-    #[doc(hidden)]
-    pub fn domain(&self) -> Option<&AttemptAllocationDomain> {
+    pub(crate) fn domain(&self) -> Option<&AttemptAllocationDomain> {
         self.teardown.physical.as_ref().map(|physical| &physical.domain)
     }
 
     /// Device worker scope identity evidence for device-backed admissions.
-    #[doc(hidden)]
-    pub fn worker_scope(&self) -> Option<DeviceWorkerScope> {
+    pub(crate) fn worker_scope(&self) -> Option<DeviceWorkerScope> {
         self.teardown.physical.as_ref().map(|physical| physical.worker_scope)
     }
 
     /// Attempt lane index for device-backed admissions.
-    #[doc(hidden)]
-    pub fn lane_index(&self) -> Option<usize> {
+    pub(crate) fn lane_index(&self) -> Option<usize> {
         self.teardown.terminal().lane_index()
     }
 
     /// Whether this envelope still owns GPU-bound components. Once the root
     /// context consumed the stream and member, the remaining domain keeps the
     /// envelope GPU-bound until release.
-    #[doc(hidden)]
-    pub fn holds_gpu_resources(&self) -> bool {
+    pub(crate) fn holds_gpu_resources(&self) -> bool {
         self.teardown.physical.is_some()
     }
 
     /// Takes the root stream binding for the first context acquisition.
     /// Exactly one call succeeds per envelope.
-    #[doc(hidden)]
-    pub fn take_root_binding(&self) -> Result<RootStreamBinding> {
+    pub(crate) fn take_root_binding(&self) -> Result<RootStreamBinding> {
         let operation = "query_engine.query_service.admission_transaction";
         let physical = self.teardown.physical.as_ref().ok_or_else(|| {
             QueryError::new(QueryErrorCode::Internal, operation, "ledger-only admission envelope has no root binding")
@@ -974,8 +946,7 @@ impl AdmissionEnvelope {
     /// completion fences the release. The member detaches and the domain is
     /// destroyed before the stream returns to its pool. Returns `None` when
     /// the root context already consumed the binding.
-    #[doc(hidden)]
-    pub fn release_unconsumed_physical(&mut self) -> Option<StreamLease> {
+    pub(crate) fn release_unconsumed_physical(&mut self) -> Option<StreamLease> {
         let physical = self.teardown.physical.take()?;
         let member = physical.root_member.lock().ok().and_then(|mut slot| slot.take());
         // Release the stream reservation lease before reclaiming the allocation domain.

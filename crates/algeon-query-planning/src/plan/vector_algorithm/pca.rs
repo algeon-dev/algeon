@@ -10,7 +10,7 @@ pub enum VectorPcaSolver {
 }
 
 impl VectorPcaSolver {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::CovEigDq => "cov_eig_dq",
             Self::CovEigJacobi => "cov_eig_jacobi",

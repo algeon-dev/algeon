@@ -101,43 +101,16 @@ export ALGEON_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${ALGEON_SERVE
 export DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"
 
 # ---------------------------------------------------------------------------
-# Iceberg / AWS Glue or local Glue-compatible catalog
-#
-# ALGEON_ICEBERG_CATALOG_KIND   Catalog backend: rest or glue
-# ALGEON_ICEBERG_CATALOG_NAME   DataFusion catalog name (first segment of catalog.ns.table)
-# ALGEON_ICEBERG_NAMESPACE      Iceberg namespace / Glue database name; dynamic catalog scope
-# ALGEON_ICEBERG_WAREHOUSE      S3 warehouse root
-# ALGEON_ICEBERG_TABLES         Pre-load list: "alias=table,table2"
-#                                        Empty → all tables served dynamically
-# ALGEON_ICEBERG_GLUE_CATALOG_ID  AWS account ID (empty = caller's own account or local mock)
-# ALGEON_ICEBERG_REST_URI      Local REST fixture endpoint when kind=rest
-# ALGEON_ICEBERG_GLUE_URI      Local Moto endpoint when kind=glue
-# ALGEON_ICEBERG_S3_*          RustFS/S3-compatible endpoint and credentials
+# S3 region
 #
 # AWS_DEFAULT_REGION   REQUIRED for KvikIO S3 (reads ONLY this var;
 #                      AWS_REGION alone → unsigned requests → 403 on private buckets)
-# AWS_REGION           Used by iceberg-rust catalog; set both.
+# AWS_REGION           Read by the query engine for S3 source metadata; set both.
 #
 # Real AWS credentials, when used, must be passed from the host environment.
-# The defaults below target the public local lakehouse fixture namespace.
 # ---------------------------------------------------------------------------
-if [[ "${ALGEON_RUN_SERVER_ICEBERG:-1}" != "0" ]]; then
-    export ALGEON_ICEBERG_CATALOG_KIND="${ALGEON_ICEBERG_CATALOG_KIND:-rest}"
-    export ALGEON_ICEBERG_CATALOG_NAME="${ALGEON_ICEBERG_CATALOG_NAME:-lake}"
-    export ALGEON_ICEBERG_NAMESPACE="${ALGEON_ICEBERG_NAMESPACE:-tpch_sf1}"
-    export ALGEON_ICEBERG_WAREHOUSE="${ALGEON_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
-    export ALGEON_ICEBERG_REST_URI="${ALGEON_ICEBERG_REST_URI:-http://localhost:8181}"
-    export ALGEON_ICEBERG_S3_ENDPOINT="${ALGEON_ICEBERG_S3_ENDPOINT:-http://localhost:9000}"
-    export ALGEON_ICEBERG_S3_REGION="${ALGEON_ICEBERG_S3_REGION:-us-east-1}"
-    export ALGEON_ICEBERG_S3_PATH_STYLE="${ALGEON_ICEBERG_S3_PATH_STYLE:-true}"
-    export ALGEON_ICEBERG_S3_ACCESS_KEY_ID="${ALGEON_ICEBERG_S3_ACCESS_KEY_ID:-algeonadmin}"
-    export ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY="${ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY:-algeonadmin}"
-    # export ALGEON_ICEBERG_TABLES="lineitem,orders"
-    # export ALGEON_ICEBERG_GLUE_CATALOG_ID=""
-
-    export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-    export AWS_REGION="${AWS_REGION:-us-east-1}"
-fi
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+export AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # AWS credentials forwarded from host environment (short-lived STS tokens).
 # Nothing to export here: they are already in the environment when set via

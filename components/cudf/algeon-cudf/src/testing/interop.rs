@@ -4,10 +4,6 @@ use rapids_interop::{
     InteropError, InteropErrorKind, LeaseBackend, PreparedAccess, PreparedColumnExport, PreparedTableExport,
 };
 
-pub use crate::interop::arrow_device::testing_hooks::{
-    arrow_device_cpu_type_for_test, arrow_device_cuda_host_type_for_test, arrow_device_cuda_managed_type_for_test,
-    quarantine_owner_unknown_device_array_for_test,
-};
 use crate::interop::{
     projection::testing_hooks::{
         trigger_active_range_overflow_for_test as projection_trigger_active_range_overflow_for_test,

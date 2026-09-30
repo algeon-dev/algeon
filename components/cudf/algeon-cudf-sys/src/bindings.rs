@@ -42,16 +42,6 @@ pub type cudf_column_view_handle = *mut cudf_column_view_handle_state;
 pub type cudf_interop_placement_kind_t = core::ffi::c_uint;
 pub type cudf_interop_validity_kind_t = core::ffi::c_uint;
 pub type cudf_interop_layout_kind_t = core::ffi::c_uint;
-#[doc = " Opaque handle to a cudf::table (owning)."]
-pub type cudf_table_handle = *mut cudf_table_handle_state;
-#[doc = " Opaque handle to a cudf::table_view (non-owning)."]
-pub type cudf_table_view_handle = *mut cudf_table_view_handle_state;
-pub type cudf_arrow_schema_handle = *mut cudf_arrow_schema_handle_state;
-pub type cudf_arrow_device_array_handle = *mut cudf_arrow_device_array_handle_state;
-#[doc = " Arrow C Device device-type codes used by this shim.\n\n These are raw Arrow ABI values. Callers must preserve unknown values until\n a higher-level boundary validates or interprets them."]
-pub type cudf_arrow_device_type_t = core::ffi::c_uint;
-pub type cudf_arrow_device_export_materialization_t = core::ffi::c_uint;
-pub type cudf_arrow_device_import_materialization_t = core::ffi::c_uint;
 #[doc = " Opaque handle to a libcudf AST expression node."]
 pub type cudf_ast_expression_handle = *mut cudf_ast_expression_handle_state;
 #[doc = " Which input table a column reference reads from when evaluating a binary\n predicate."]
@@ -60,6 +50,10 @@ pub type cudf_ast_table_reference_t = core::ffi::c_uint;
 pub type cudf_ast_operator_t = core::ffi::c_uint;
 #[doc = " Binary operators matching cudf::binary_operator (same integer values)."]
 pub type cudf_binary_operator_t = core::ffi::c_uint;
+#[doc = " Opaque handle to a cudf::table (owning)."]
+pub type cudf_table_handle = *mut cudf_table_handle_state;
+#[doc = " Opaque handle to a cudf::table_view (non-owning)."]
+pub type cudf_table_view_handle = *mut cudf_table_view_handle_state;
 #[doc = " Out-of-bounds policy for gather operations."]
 pub type cudf_out_of_bounds_policy_t = core::ffi::c_uint;
 #[doc = " Datetime components wrapped by cudf."]
@@ -287,6 +281,11 @@ pub struct cudf_interop_semantic_column_t {
 }
 #[repr(C)]
 #[derive(Debug)]
+pub struct cudf_ast_expression_handle_state {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug)]
 pub struct cudf_table_handle_state {
     _unused: [u8; 0],
 }
@@ -301,21 +300,6 @@ pub struct cudf_interop_semantic_table_t {
     pub num_rows: i32,
     pub column_ids: *const u32,
     pub num_columns: i32,
-}
-#[repr(C)]
-#[derive(Debug)]
-pub struct cudf_arrow_schema_handle_state {
-    _unused: [u8; 0],
-}
-#[repr(C)]
-#[derive(Debug)]
-pub struct cudf_arrow_device_array_handle_state {
-    _unused: [u8; 0],
-}
-#[repr(C)]
-#[derive(Debug)]
-pub struct cudf_ast_expression_handle_state {
-    _unused: [u8; 0],
 }
 #[repr(C)]
 #[derive(Debug)]
@@ -643,14 +627,6 @@ pub const CUDF_INTEROP_LAYOUT_BINARY_LIKE: cudf_interop_layout_kind_t = 1;
 pub const CUDF_INTEROP_LAYOUT_LIST: cudf_interop_layout_kind_t = 2;
 pub const CUDF_INTEROP_LAYOUT_STRUCT: cudf_interop_layout_kind_t = 3;
 pub const CUDF_INTEROP_LAYOUT_DICTIONARY: cudf_interop_layout_kind_t = 4;
-pub const CUDF_ARROW_DEVICE_TYPE_CPU: cudf_arrow_device_type_t = 1;
-pub const CUDF_ARROW_DEVICE_TYPE_CUDA: cudf_arrow_device_type_t = 2;
-pub const CUDF_ARROW_DEVICE_TYPE_CUDA_HOST: cudf_arrow_device_type_t = 3;
-pub const CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED: cudf_arrow_device_type_t = 13;
-pub const CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW: cudf_arrow_device_export_materialization_t = 0;
-pub const CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY: cudf_arrow_device_export_materialization_t = 1;
-pub const CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW: cudf_arrow_device_import_materialization_t = 0;
-pub const CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY: cudf_arrow_device_import_materialization_t = 1;
 pub const CUDF_AST_TABLE_REFERENCE_LEFT: cudf_ast_table_reference_t = 0;
 pub const CUDF_AST_TABLE_REFERENCE_RIGHT: cudf_ast_table_reference_t = 1;
 pub const CUDF_AST_TABLE_REFERENCE_OUTPUT: cudf_ast_table_reference_t = 2;
@@ -1270,6 +1246,63 @@ unsafe extern "C" {
         total_chars_bytes: *mut i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Import one host-resident Arrow C Data Interface column through libcudf's\n host Arrow column importer.\n\n `schema` must point to an `ArrowSchema`, and `array` must point to the\n matching `ArrowArray`. `options` must name an explicit valid device,\n non-NULL stream, and non-NULL memory resource. The shim synchronizes the\n stream before returning because the Arrow host roots are borrowed only for\n the duration of this call."]
+    pub fn cudf_arrow_host_column_import_ex(
+        schema: *const core::ffi::c_void,
+        array: *const core::ffi::c_void,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+    #[doc = " Create a column-reference expression."]
+    pub fn cudf_ast_column_reference_create(
+        column_index: i32,
+        table_source: cudf_ast_table_reference_t,
+        out: *mut cudf_ast_expression_handle,
+    ) -> cudf_status_t;
+    #[doc = " Create a literal expression borrowing `scalar`.\n\n The scalar handle must outlive every join or transform call that evaluates\n the returned AST expression."]
+    pub fn cudf_ast_literal_create(scalar: cudf_scalar_handle, out: *mut cudf_ast_expression_handle) -> cudf_status_t;
+    #[doc = " Create a unary operation expression. The returned expression retains the\n input AST handle internally, so destroying `input` after this call does not\n invalidate the returned operation expression."]
+    pub fn cudf_ast_operation_unary_create(
+        op: cudf_ast_operator_t,
+        input: cudf_ast_expression_handle,
+        out: *mut cudf_ast_expression_handle,
+    ) -> cudf_status_t;
+    #[doc = " Create a binary operation expression. The returned expression retains both\n child AST handles internally, so destroying either child after this call\n does not invalidate the returned operation expression."]
+    pub fn cudf_ast_operation_binary_create(
+        op: cudf_ast_operator_t,
+        left: cudf_ast_expression_handle,
+        right: cudf_ast_expression_handle,
+        out: *mut cudf_ast_expression_handle,
+    ) -> cudf_status_t;
+    #[doc = " Destroy an AST expression handle. Ownership is consumed on call; success\n means cleanup completed and failure means the handle is quarantined."]
+    pub fn cudf_ast_expression_destroy(handle: cudf_ast_expression_handle) -> cudf_status_t;
+    #[doc = " Binary operation: column op column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    pub fn cudf_binary_operation_vv_ex(
+        lhs: cudf_column_view_handle,
+        rhs: cudf_column_view_handle,
+        op: cudf_binary_operator_t,
+        output_type: cudf_data_type_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Binary operation: column op scalar with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    pub fn cudf_binary_operation_vs_ex(
+        lhs: cudf_column_view_handle,
+        rhs: cudf_scalar_handle,
+        op: cudf_binary_operator_t,
+        output_type: cudf_data_type_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Binary operation: scalar op column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
+    pub fn cudf_binary_operation_sv_ex(
+        lhs: cudf_scalar_handle,
+        rhs: cudf_column_view_handle,
+        op: cudf_binary_operator_t,
+        output_type: cudf_data_type_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Create a table from an array of column handles.\n\n On success, all input column handles are consumed and moved into the\n returned table. The caller must NOT destroy any of the consumed column\n handles after a successful call.\n\n On failure, no input columns are consumed. The caller retains ownership of\n every input column handle and remains responsible for destroying them."]
     pub fn cudf_table_create(
         columns: *mut cudf_column_handle,
@@ -1361,136 +1394,6 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Free a heap-allocated array of column handles returned by APIs such as\n cudf_table_release_columns, cudf_groupby_aggregate, and\n cudf_dictionary_match_dictionaries.\n Does NOT destroy the individual columns; caller must do that first."]
     pub fn cudf_free_column_array(array: *mut cudf_column_handle);
-    #[doc = " Export one borrowed cudf column view as Arrow C Device ABI.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned ArrowDeviceArray when bridge-owned device storage is reported.\n\n This slice supports recursive fixed-width (including decimal), STRING,\n LIST, STRUCT, and DICTIONARY32 column layouts.\n Any `BOOL8` leaf exports through a bridge-owned device copy because Arrow\n uses bitmap layout. Zero-row STRING leaves also export through bridge-owned\n device storage because Arrow requires a length + 1 offsets buffer."]
-    pub fn cudf_arrow_device_column_export(
-        view: cudf_column_view_handle,
-        options: *const cudf_exec_options_t,
-        out_schema: *mut cudf_arrow_schema_handle,
-        out_array: *mut cudf_arrow_device_array_handle,
-        out_materialization: *mut cudf_arrow_device_export_materialization_t,
-    ) -> cudf_status_t;
-    #[doc = " Export one borrowed cudf table view as Arrow C Device ABI.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned ArrowDeviceArray when bridge-owned device storage is reported.\n\n This slice supports tables whose top-level columns are all recursive\n fixed-width (including decimal), STRING, LIST, STRUCT, or DICTIONARY32\n layouts. Any `BOOL8` leaf exports through bridge-owned copied device\n storage because Arrow uses bitmap layout. Zero-row STRING leaves also\n export through bridge-owned device storage because Arrow requires a\n length + 1 offsets buffer.\n\n When `column_names` is non-NULL, it must point to `num_column_names`\n top-level UTF-8 column names. Passing NULL with `num_column_names == 0`\n exports unnamed top-level columns."]
-    pub fn cudf_arrow_device_table_export(
-        view: cudf_table_view_handle,
-        options: *const cudf_exec_options_t,
-        column_names: *const *const core::ffi::c_char,
-        num_column_names: i32,
-        out_schema: *mut cudf_arrow_schema_handle,
-        out_array: *mut cudf_arrow_device_array_handle,
-        out_materialization: *mut cudf_arrow_device_export_materialization_t,
-    ) -> cudf_status_t;
-    #[doc = " Import one Arrow C Device ABI column into a cudf column handle using the\n provided explicit execution options.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned column when bridge-owned device storage is materialized.\n\n When `array->sync_event` is present, this shim first performs one\n observable `cudaStreamWaitEvent` on the destination stream and then forwards\n a temporary `sync_event = nullptr` copy to libcudf so ordering stays honest\n without double-waiting."]
-    pub fn cudf_arrow_device_column_import(
-        schema: cudf_arrow_schema_handle,
-        array: cudf_arrow_device_array_handle,
-        options: *const cudf_exec_options_t,
-        out: *mut cudf_column_handle,
-        out_materialization: *mut cudf_arrow_device_import_materialization_t,
-    ) -> cudf_status_t;
-    #[doc = " Import one Arrow C Device ABI table into a cudf table handle using the\n provided explicit execution options.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned table when bridge-owned device storage is materialized.\n\n When `array->sync_event` is present, this shim first performs one\n observable `cudaStreamWaitEvent` on the destination stream and then forwards\n a temporary `sync_event = nullptr` copy to libcudf so ordering stays honest\n without double-waiting."]
-    pub fn cudf_arrow_device_table_import(
-        schema: cudf_arrow_schema_handle,
-        array: cudf_arrow_device_array_handle,
-        options: *const cudf_exec_options_t,
-        out: *mut cudf_table_handle,
-        out_materialization: *mut cudf_arrow_device_import_materialization_t,
-    ) -> cudf_status_t;
-    #[doc = " Destroy one heap-owned ArrowSchema handle returned by this shim. Ownership\n is consumed on call; failure quarantines the root and must not be retried."]
-    pub fn cudf_arrow_device_schema_destroy(schema: cudf_arrow_schema_handle) -> cudf_status_t;
-    #[doc = " Destroy one heap-owned ArrowDeviceArray handle returned by this shim.\n Ownership is consumed on call; failure quarantines the root."]
-    pub fn cudf_arrow_device_array_destroy(array: cudf_arrow_device_array_handle) -> cudf_status_t;
-    #[doc = " Read the ArrowDeviceArray device id."]
-    pub fn cudf_arrow_device_array_device_id(array: cudf_arrow_device_array_handle, out: *mut i64) -> cudf_status_t;
-    #[doc = " Read the ArrowDeviceArray device type."]
-    pub fn cudf_arrow_device_array_device_type(array: cudf_arrow_device_array_handle, out: *mut i32) -> cudf_status_t;
-    #[doc = " Report whether the ArrowDeviceArray currently carries a non-null sync_event."]
-    pub fn cudf_arrow_device_array_has_sync_event(
-        array: cudf_arrow_device_array_handle,
-        out: *mut i32,
-    ) -> cudf_status_t;
-    #[doc = " Borrow the raw ArrowDeviceArray sync_event pointer without transferring\n ownership. The returned pointer stays valid for the lifetime of `array`."]
-    pub fn cudf_arrow_device_array_sync_event_raw(
-        array: cudf_arrow_device_array_handle,
-        out: *mut *mut core::ffi::c_void,
-    ) -> cudf_status_t;
-    #[doc = " Return the logical fixed-width values buffer pointer for supported\n first-slice column exports/imports."]
-    pub fn cudf_arrow_device_column_fixed_width_values_ptr(
-        schema: cudf_arrow_schema_handle,
-        array: cudf_arrow_device_array_handle,
-        out: *mut *const core::ffi::c_void,
-    ) -> cudf_status_t;
-    #[doc = " Return the number of top-level columns described by an Arrow table schema."]
-    pub fn cudf_arrow_device_table_num_columns(schema: cudf_arrow_schema_handle, out: *mut i64) -> cudf_status_t;
-    #[doc = " Return the borrowed top-level Arrow column name pointer for one table\n schema child. The returned pointer stays valid for the lifetime of `schema`."]
-    pub fn cudf_arrow_device_table_column_name(
-        schema: cudf_arrow_schema_handle,
-        index: i64,
-        out: *mut *const core::ffi::c_char,
-    ) -> cudf_status_t;
-    #[doc = " Return the logical fixed-width values buffer pointer for one supported\n first-slice top-level column in a table export/import."]
-    pub fn cudf_arrow_device_table_fixed_width_values_ptr(
-        schema: cudf_arrow_schema_handle,
-        array: cudf_arrow_device_array_handle,
-        index: i64,
-        out: *mut *const core::ffi::c_void,
-    ) -> cudf_status_t;
-    #[doc = " Import one host-resident Arrow C Data Interface column through libcudf's\n host Arrow column importer.\n\n `schema` must point to an `ArrowSchema`, and `array` must point to the\n matching `ArrowArray`. `options` must name an explicit valid device,\n non-NULL stream, and non-NULL memory resource. The shim synchronizes the\n stream before returning because the Arrow host roots are borrowed only for\n the duration of this call."]
-    pub fn cudf_arrow_host_column_import_ex(
-        schema: *const core::ffi::c_void,
-        array: *const core::ffi::c_void,
-        options: *const cudf_exec_options_t,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-    #[doc = " Create a column-reference expression."]
-    pub fn cudf_ast_column_reference_create(
-        column_index: i32,
-        table_source: cudf_ast_table_reference_t,
-        out: *mut cudf_ast_expression_handle,
-    ) -> cudf_status_t;
-    #[doc = " Create a literal expression borrowing `scalar`.\n\n The scalar handle must outlive every join or transform call that evaluates\n the returned AST expression."]
-    pub fn cudf_ast_literal_create(scalar: cudf_scalar_handle, out: *mut cudf_ast_expression_handle) -> cudf_status_t;
-    #[doc = " Create a unary operation expression. The returned expression retains the\n input AST handle internally, so destroying `input` after this call does not\n invalidate the returned operation expression."]
-    pub fn cudf_ast_operation_unary_create(
-        op: cudf_ast_operator_t,
-        input: cudf_ast_expression_handle,
-        out: *mut cudf_ast_expression_handle,
-    ) -> cudf_status_t;
-    #[doc = " Create a binary operation expression. The returned expression retains both\n child AST handles internally, so destroying either child after this call\n does not invalidate the returned operation expression."]
-    pub fn cudf_ast_operation_binary_create(
-        op: cudf_ast_operator_t,
-        left: cudf_ast_expression_handle,
-        right: cudf_ast_expression_handle,
-        out: *mut cudf_ast_expression_handle,
-    ) -> cudf_status_t;
-    #[doc = " Destroy an AST expression handle. Ownership is consumed on call; success\n means cleanup completed and failure means the handle is quarantined."]
-    pub fn cudf_ast_expression_destroy(handle: cudf_ast_expression_handle) -> cudf_status_t;
-    #[doc = " Binary operation: column op column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
-    pub fn cudf_binary_operation_vv_ex(
-        lhs: cudf_column_view_handle,
-        rhs: cudf_column_view_handle,
-        op: cudf_binary_operator_t,
-        output_type: cudf_data_type_handle,
-        out: *mut cudf_column_handle,
-        options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Binary operation: column op scalar with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
-    pub fn cudf_binary_operation_vs_ex(
-        lhs: cudf_column_view_handle,
-        rhs: cudf_scalar_handle,
-        op: cudf_binary_operator_t,
-        output_type: cudf_data_type_handle,
-        out: *mut cudf_column_handle,
-        options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Binary operation: scalar op column with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
-    pub fn cudf_binary_operation_sv_ex(
-        lhs: cudf_scalar_handle,
-        rhs: cudf_column_view_handle,
-        op: cudf_binary_operator_t,
-        output_type: cudf_data_type_handle,
-        out: *mut cudf_column_handle,
-        options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
     #[doc = " Concatenate multiple columns into a single column with explicit execution context.\n\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned column."]
     pub fn cudf_concatenate_columns_ex(
         columns: *const cudf_column_view_handle,
@@ -2098,50 +2001,6 @@ unsafe extern "C" {
         num_columns: i32,
         row_group_size_rows: i32,
         dictionary_policy: i32,
-        exec_options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Read a CSV file into a table with explicit execution context.\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
-    pub fn cudf_io_read_csv_ex(
-        filepath: *const core::ffi::c_char,
-        delimiter: core::ffi::c_char,
-        has_header: i32,
-        out: *mut cudf_table_handle,
-        exec_options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Write a table to a CSV file.\n `column_names` is an array of null-terminated strings (one per column).\n\n Contract:\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `column_names` must be non-NULL\n Write a table to a CSV file with explicit execution context.\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n libcudf's CSV writer accepts a stream but not an explicit MR; the shim\n installs `exec_options->mr` as the current device resource only for the\n duration of the libcudf writer call."]
-    pub fn cudf_io_write_csv_ex(
-        table: cudf_table_view_handle,
-        filepath: *const core::ffi::c_char,
-        column_names: *mut *const core::ffi::c_char,
-        num_columns: i32,
-        delimiter: core::ffi::c_char,
-        include_header: i32,
-        exec_options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Read JSON with explicit execution context.\n `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
-    pub fn cudf_io_read_json_ex(
-        filepath: *const core::ffi::c_char,
-        lines: i32,
-        out: *mut cudf_table_handle,
-        exec_options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Read JSON with metadata and explicit execution context.\n\n `out_names` is populated with `out_num_names` null-terminated strings.\n The caller must free the names with `cudf_io_free_column_names()`.\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n `exec_options->mr` must outlive the returned table."]
-    pub fn cudf_io_read_json_with_metadata_ex(
-        filepath: *const core::ffi::c_char,
-        lines: i32,
-        out_table: *mut cudf_table_handle,
-        out_names: *mut *mut *mut core::ffi::c_char,
-        out_num_names: *mut i32,
-        exec_options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Write a table to a JSON file.\n `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.\n `include_nulls`: 1 to output null fields, 0 to omit them.\n\n Contract:\n - `num_columns` must be >= 0\n - if `num_columns > 0`, `column_names` must be non-NULL\n Write JSON with explicit execution context.\n\n `exec_options` must name an explicit valid device and non-NULL stream/MR.\n libcudf's JSON writer accepts a stream but not an explicit MR; the shim\n installs `exec_options->mr` as the current device resource only for the\n duration of the libcudf writer call."]
-    pub fn cudf_io_write_json_ex(
-        table: cudf_table_view_handle,
-        filepath: *const core::ffi::c_char,
-        column_names: *mut *const core::ffi::c_char,
-        num_columns: i32,
-        lines: i32,
-        include_nulls: i32,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
     #[doc = " Retain logical-left equality and conditional views and build the equality index.\n Left device storage must outlive the state. The predicate owner is retained.\n All subsequent execution calls must use the same device, stream, and MR.\n Partial construction is cleaned on failure and `out` remains NULL."]

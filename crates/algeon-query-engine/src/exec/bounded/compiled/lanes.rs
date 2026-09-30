@@ -126,8 +126,7 @@ pub(in crate::exec::bounded) fn is_resident_sort_lane_pipeline(pipeline: &Compil
 /// that would charge attempt auxiliary permits and service streams for lanes
 /// that are guaranteed to stay idle. The sink boundary always runs on the
 /// coordinator and is not a lane.
-#[doc(hidden)]
-pub fn lane_family_concurrent_task_count(pipeline: &CompiledPipeline) -> usize {
+pub(crate) fn lane_family_concurrent_task_count(pipeline: &CompiledPipeline) -> usize {
     let sink_task = pipeline.sink().input();
     pipeline
         .tasks()
@@ -147,13 +146,13 @@ pub fn lane_family_concurrent_task_count(pipeline: &CompiledPipeline) -> usize {
 /// dispatching frame.
 #[doc(hidden)]
 pub struct LaneDispatchSupport {
-    pub route: Arc<AttemptStreamProviderRoute>,
+    pub(crate) route: Arc<AttemptStreamProviderRoute>,
     pub requested_lanes: usize,
-    pub context: Arc<ExecutionContext>,
-    pub plan: Arc<QueryPlan>,
-    pub pipeline: Arc<CompiledPipeline>,
-    pub gpu_inputs: Arc<GpuResidentInputMap>,
-    pub metrics: Arc<ExecutionMetrics>,
+    pub(crate) context: Arc<ExecutionContext>,
+    pub(crate) plan: Arc<QueryPlan>,
+    pub(crate) pipeline: Arc<CompiledPipeline>,
+    pub(crate) gpu_inputs: Arc<GpuResidentInputMap>,
+    pub(crate) metrics: Arc<ExecutionMetrics>,
     #[cfg(feature = "test-hooks")]
     lane_completion_gate: Option<LaneCompletionGate>,
     #[cfg(feature = "test-hooks")]
@@ -238,11 +237,11 @@ impl LaneDispatchSupport {
 /// Observes each lane worker's completion: the lane index and the fork index
 /// that lane's alias holds, if it holds one.
 #[cfg(feature = "test-hooks")]
-pub type LaneCompletionGate = Arc<dyn Fn(usize, Option<usize>) + Send + Sync>;
+pub(crate) type LaneCompletionGate = Arc<dyn Fn(usize, Option<usize>) + Send + Sync>;
 
 /// Aggregate chunk ordinal, lane index, and lane-local fork identity.
 #[cfg(feature = "test-hooks")]
-pub type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<usize>) + Send + Sync>;
+pub(crate) type AggregateChunkCompletionGate = Arc<dyn Fn(usize, usize, Option<usize>) + Send + Sync>;
 
 /// One execution lane's attempt work lease, held for the whole dispatched run.
 ///

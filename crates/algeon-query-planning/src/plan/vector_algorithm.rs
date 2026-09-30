@@ -87,8 +87,7 @@ impl VectorAlgorithmParams {
         }
     }
 
-    #[doc(hidden)]
-    pub fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
+    pub(crate) fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
         match self {
             Self::BruteForceKnn(params) => {
                 params.dataset.input = remap(params.dataset.input);

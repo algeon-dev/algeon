@@ -39,7 +39,7 @@ pub use self::{
     },
 };
 use self::{
-    physical::{candidate_outcomes_from_report, cugraph_calls, planning_diagnostics_did_io},
+    physical::{candidate_outcomes_from_report, cugraph_calls},
     preflight::{
         QueryGpuRejection, classify_physical_planning_error, mark_coverage_validation_in_progress,
         optimizer_config_for_validation, planning_did_io_for_physical_error, preflight_single_query, validated_under,
@@ -112,7 +112,7 @@ pub fn validate_query<'a>(
             Err(error) => {
                 let diagnostics = native_rule.last_planning_diagnostics();
                 let phase = classify_physical_planning_error(&error);
-                let planning_did_io = planning_did_io_for_physical_error(phase, diagnostics.as_ref());
+                let planning_did_io = planning_did_io_for_physical_error(phase);
                 return Ok(QueryGpuCoverage::rejected_with_diagnostics(
                     validated_under,
                     QueryGpuRejection::from_datafusion_error(phase, &error),
@@ -129,14 +129,12 @@ pub fn validate_query<'a>(
             .map(|diagnostics| candidate_outcomes_from_report(&diagnostics.report))
             .unwrap_or_default();
         let cugraph_calls = cugraph_calls(plan.as_ref());
-        let planning_did_io = diagnostics.as_ref().is_some_and(planning_diagnostics_did_io);
         Ok(QueryGpuCoverage::planned(
             validated_under,
             plan.as_ref(),
             observation,
             candidate_outcomes,
             cugraph_calls,
-            planning_did_io,
             diagnostics.as_ref(),
         ))
     })

@@ -20,8 +20,7 @@ use crate::source::LocalParquetSource;
 ///
 /// Estimates are descriptive optimizer/admission evidence only. They must not
 /// be treated as exact execution results.
-#[doc(hidden)]
-pub fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     match &plan.node(node_id)?.kind {
         PlanNode::Source(source) => match source.as_ref() {
             SourceNode::LocalParquet(source) => {
@@ -115,14 +114,6 @@ pub fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> 
     }
 }
 
-/// Returns the descriptive source-stage size for one exact local-Parquet
-/// rowset. Projected uncompressed bytes are preferred; a separately known
-/// source size is a modeled fallback, never a claim of exact device residency.
-#[doc(hidden)]
-pub fn estimated_local_parquet_source_bytes(source: &LocalParquetSource) -> Option<u64> {
-    selected_local_parquet_source_bytes(source)
-}
-
 /// Returns the descriptive retained-output bytes for one local-Parquet source.
 /// Unlike a source-stage budget, a metadata-only count source legitimately
 /// retains zero physical columns.
@@ -144,6 +135,7 @@ fn selected_local_parquet_source_bytes(source: &LocalParquetSource) -> Option<u6
 /// plans rather than manufacturing a partial target from only the sources
 /// that happened to retain byte metadata.
 #[doc(hidden)]
+#[cfg(test)]
 pub fn estimated_reachable_local_parquet_source_bytes(plan: &QueryPlan) -> Option<u64> {
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut source_count = 0_usize;
@@ -171,8 +163,7 @@ pub fn estimated_reachable_local_parquet_source_bytes(plan: &QueryPlan) -> Optio
 /// Advisory statistics live on join nodes; order-preserving and row-preserving
 /// operators above a join carry its estimate upward the same way the
 /// conservative walkers do. Every other node has no advisory value.
-#[doc(hidden)]
-pub fn advisory_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+pub(crate) fn advisory_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     match &plan.node(node_id)?.kind {
         PlanNode::Join(join) => join.spec.advisory_output_statistics?.rows.value(),
         PlanNode::Projection(projection) => advisory_output_rows(plan, projection.input),
@@ -198,8 +189,7 @@ pub fn advisory_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
 ///
 /// Follows the same node walk as [`advisory_output_rows`] except that
 /// limit and window outputs have no advisory byte estimate.
-#[doc(hidden)]
-pub fn advisory_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+pub(crate) fn advisory_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
     match &plan.node(node_id)?.kind {
         PlanNode::Join(join) => join.spec.advisory_output_statistics?.bytes.value(),
         PlanNode::Projection(projection) => advisory_output_bytes(plan, projection.input),

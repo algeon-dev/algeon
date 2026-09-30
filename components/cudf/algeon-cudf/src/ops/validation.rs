@@ -13,9 +13,8 @@ use crate::{
         types::TypeId,
     },
     runtime::{
-        BoundaryKind, BoundaryObservation, ExecutionBindingId, ExecutionPlacement, QueryMemoryObservation,
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
-        execution_resolver::ResolvedExecution, record_boundary_observation_in_domain,
+        ExecutionBindingId, ExecutionPlacement, execution_context::ExecutionOverrides,
+        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
@@ -28,14 +27,12 @@ const INT64_BUFFER_RANGE_OPERATION: &str = "validation::validate_int64_buffer_ra
 /// Successful proof that one Float32 or Float64 payload contains only finite values.
 ///
 /// The proof is bound to the exact retained execution binding that performed
-/// the device reduction. `observation()` exposes the bounded control-scalar
-/// boundary separately from bulk Arrow host materialization.
+/// the device reduction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FiniteValidationProof {
     validated_values: usize,
     binding_id: ExecutionBindingId,
     placement: ExecutionPlacement,
-    observation: BoundaryObservation,
 }
 
 impl FiniteValidationProof {
@@ -53,11 +50,6 @@ impl FiniteValidationProof {
     pub(crate) fn placement(self) -> ExecutionPlacement {
         self.placement
     }
-
-    /// Bounded control-scalar transfer observation.
-    pub(crate) fn observation(self) -> BoundaryObservation {
-        self.observation
-    }
 }
 
 /// Successful proof that one exact raw Int64 buffer is within a half-open
@@ -69,7 +61,6 @@ pub(crate) struct Int64RangeValidationProof {
     max_exclusive: i64,
     binding_id: ExecutionBindingId,
     placement: ExecutionPlacement,
-    observation: BoundaryObservation,
 }
 
 impl Int64RangeValidationProof {
@@ -91,10 +82,6 @@ impl Int64RangeValidationProof {
 
     pub(crate) fn placement(self) -> ExecutionPlacement {
         self.placement
-    }
-
-    pub(crate) fn observation(self) -> BoundaryObservation {
-        self.observation
     }
 }
 
@@ -124,18 +111,6 @@ fn exact_buffer_element_count(buffer: &DeviceBuffer, element_bytes: usize, opera
     Ok(element_count)
 }
 
-fn buffer_validation_observation(
-    buffer: &DeviceBuffer,
-    validated_values: usize,
-) -> (ExecutionPlacement, BoundaryObservation) {
-    let placement = buffer.placement();
-    let observation =
-        BoundaryObservation::new(BoundaryKind::BoundedControlScalar, placement, validated_values, 1, true)
-            .with_memory(QueryMemoryObservation::empty().with_downloaded_bytes(mem::size_of::<i32>()));
-    record_boundary_observation_in_domain(buffer.execution_domain(), observation);
-    (placement, observation)
-}
-
 pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<FiniteValidationProof> {
     let validated_values = exact_buffer_element_count(buffer, mem::size_of::<f32>(), FINITE_FLOAT32_BUFFER_OPERATION)?;
     let input = buffer.as_ptr().map_err(|error| error.reanchor(FINITE_FLOAT32_BUFFER_OPERATION))? as *const f32;
@@ -157,7 +132,7 @@ pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<Fi
         ],
     )?;
 
-    let (placement, observation) = buffer_validation_observation(buffer, validated_values);
+    let placement = buffer.placement();
     let non_finite_count = usize::try_from(non_finite_count).map_err(|_| {
         Error::new_with(
             ErrorCode::ForeignInvariantViolation,
@@ -183,7 +158,7 @@ pub(crate) fn validate_finite_float32_buffer(buffer: &DeviceBuffer) -> Result<Fi
         .with_detail("remedy", "replace or reject NaN and infinite values before GPU consumer execution"));
     }
 
-    Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement, observation })
+    Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement })
 }
 
 pub(crate) fn validate_finite_float64_buffer(buffer: &DeviceBuffer) -> Result<FiniteValidationProof> {
@@ -206,7 +181,7 @@ pub(crate) fn validate_finite_float64_buffer(buffer: &DeviceBuffer) -> Result<Fi
             ("validation_evidence", "bounded_control_scalar".to_string()),
         ],
     )?;
-    let (placement, observation) = buffer_validation_observation(buffer, validated_values);
+    let placement = buffer.placement();
     let non_finite_count = usize::try_from(non_finite_count).map_err(|_| {
         Error::new_with(
             ErrorCode::ForeignInvariantViolation,
@@ -231,7 +206,7 @@ pub(crate) fn validate_finite_float64_buffer(buffer: &DeviceBuffer) -> Result<Fi
         .with_detail("validation_evidence", "bounded_control_scalar")
         .with_detail("remedy", "replace or reject NaN and infinite values before GPU consumer execution"));
     }
-    Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement, observation })
+    Ok(FiniteValidationProof { validated_values, binding_id: buffer.binding_id(), placement })
 }
 
 pub(crate) fn validate_int64_buffer_range(
@@ -273,7 +248,7 @@ pub(crate) fn validate_int64_buffer_range(
         ],
     )?;
 
-    let (placement, observation) = buffer_validation_observation(buffer, validated_values);
+    let placement = buffer.placement();
     let out_of_range_count = usize::try_from(out_of_range_count).map_err(|_| {
         Error::new_with(
             ErrorCode::ForeignInvariantViolation,
@@ -307,7 +282,6 @@ pub(crate) fn validate_int64_buffer_range(
         max_exclusive,
         binding_id: buffer.binding_id(),
         placement,
-        observation,
     })
 }
 
@@ -559,10 +533,6 @@ fn validate_finite_with_exec(
 
     let control_scalar_bytes = mem::size_of::<i32>();
     let placement = output_domain.placement();
-    let observation =
-        BoundaryObservation::new(BoundaryKind::BoundedControlScalar, placement, validated_values, 1, true)
-            .with_memory(QueryMemoryObservation::empty().with_downloaded_bytes(control_scalar_bytes));
-    record_boundary_observation_in_domain(output_domain, observation);
 
     let non_finite_count = usize::try_from(non_finite_count).map_err(|_| {
         Error::new_with(
@@ -589,7 +559,7 @@ fn validate_finite_with_exec(
         .with_detail("remedy", "replace or reject null, NaN, and infinite values before GPU consumer execution"));
     }
 
-    Ok(FiniteValidationProof { validated_values, binding_id: output_domain.binding_id(), placement, observation })
+    Ok(FiniteValidationProof { validated_values, binding_id: output_domain.binding_id(), placement })
 }
 
 /// Validate a Float64 column with the same bounded control-scalar evidence as Float32.

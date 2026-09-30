@@ -10,13 +10,12 @@
 //! consumer access or copying.
 //!
 //! To import into `cudf`, call `try_import_from_*_into_runtime` with the
-//! destination [`crate::Runtime`]. [`arrow_device`] exposes `cudf`-specific
-//! advanced controls; [`arrow_host`] converts through host `RecordBatch`
-//! values. Import the shared types used by these APIs from [`contract`].
+//! destination [`crate::Runtime`]. [`arrow_host`] converts through host
+//! `RecordBatch` values. Import the shared types used by these APIs from
+//! [`contract`].
 //! Independent producers and consumers can instead depend on `algeon-interop`
 //! directly and import the same types from `rapids_interop`.
 
-pub mod arrow_device;
 pub mod arrow_host;
 mod column;
 mod consumer_import;
@@ -28,6 +27,7 @@ pub(crate) mod projection;
 mod runtime_lease;
 mod table;
 mod table_export;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;
 
 use column::{prepare_from_owned_column, prepare_host_from_owned_column};
@@ -69,45 +69,8 @@ use crate::{
     },
     frame::{dataframe::DataFrame, series::Series},
     ops::dictionary,
-    runtime::{
-        BoundaryKind, BoundaryObservation, CudaEvent, CudaStream, ExecutionPlacement, QueryStageKind, Runtime,
-        execution_domain::ExecutionDomain,
-    },
+    runtime::{CudaEvent, CudaStream, Runtime, execution_domain::ExecutionDomain},
 };
-
-fn boundary_observation(
-    kind: BoundaryKind,
-    placement: ExecutionPlacement,
-    rows: usize,
-    columns: usize,
-    synchronized_for_host: bool,
-) -> BoundaryObservation {
-    let observation = BoundaryObservation::new(kind, placement, rows, columns, synchronized_for_host);
-    match kind {
-        BoundaryKind::InteropLease => observation.with_query_stage(QueryStageKind::InteropExport),
-        _ => observation,
-    }
-}
-
-fn column_view_boundary_observation(
-    kind: BoundaryKind,
-    view: &ColumnView<'_>,
-    operation: &'static str,
-) -> Result<BoundaryObservation, InteropError> {
-    let rows = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    Ok(boundary_observation(kind, view.execution_domain().placement(), rows, 1, false))
-}
-
-fn table_view_boundary_observation(
-    kind: BoundaryKind,
-    view: &TableView<'_>,
-    operation: &'static str,
-) -> Result<BoundaryObservation, InteropError> {
-    let rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let columns =
-        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    Ok(boundary_observation(kind, view.execution_domain().placement(), rows, columns, false))
-}
 
 /// Borrow a `cudf` CUDA stream as a shared RAPIDS interop stream handle.
 ///

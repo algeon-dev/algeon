@@ -17,11 +17,6 @@ use crate::server::{
     native_exec::{AlgeonNativeExecutionConfig, NativeMetricsCapture},
     planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
 };
-#[cfg(feature = "iceberg")]
-use crate::server::{
-    config::IcebergCatalogBackendConfig,
-    table_format::iceberg::{SourceAccessPolicy, catalog::RestCatalogConfig},
-};
 
 const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
 const TEST_MAX_SOURCE_CHUNK_BYTES: u64 = 1024;
@@ -55,8 +50,6 @@ fn base_config() -> ServerConfig {
         native_optimizer_config: AlgeonNativeOptimizerConfig::default(),
         auth: AuthConfig::default(),
         workspace: None,
-        #[cfg(feature = "iceberg")]
-        iceberg: None,
         cugraph: None,
         models: None,
     }
@@ -540,27 +533,4 @@ fn distinct_librmm_mappings_counts_deleted_and_ignores_lookalikes() {
 fn single_librmm_runtime_mapping_check_passes_in_this_process() {
     ensure_single_librmm_runtime_mapping()
         .expect("this test process must not map two librmm.so builds; a failure here is a real regression");
-}
-
-#[cfg(feature = "iceberg")]
-#[test]
-fn iceberg_backend_snapshot_sanitizes_rest_urls_for_logs() {
-    let backend = IcebergCatalogBackendConfig::Rest(RestCatalogConfig::new(
-        "lake",
-        "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
-        "s3://lakehouse/warehouse",
-    ));
-    let source_access = SourceAccessPolicy::s3_custom_endpoint(
-        "http://user:s3-secret@rustfs.local:9000/path?sig=secret#frag",
-        None,
-        Some(true),
-    );
-
-    let snapshot = iceberg_backend_snapshot(&backend, &source_access);
-
-    assert_eq!(snapshot.rest_uri, "https://rest.local:8181/catalog");
-    assert_eq!(snapshot.rest_s3_endpoint, "http://rustfs.local:9000/path");
-    assert!(!snapshot.rest_uri.contains("secret"));
-    assert!(!snapshot.rest_s3_endpoint.contains("secret"));
-    assert!(!snapshot.rest_s3_endpoint.contains("sig="));
 }

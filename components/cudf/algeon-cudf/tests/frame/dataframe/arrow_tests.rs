@@ -1,5 +1,5 @@
 //! Tests for DataFrame ↔ Arrow RecordBatch interop.
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arrow::{
     array::*,
@@ -14,7 +14,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    BoundaryKind, DataFrame, DataType, ErrorCode, ErrorKind, Runtime, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, TypeId,
     frame::dataframe::GpuRecordBatch,
     interop::arrow_host::{all_null_list_series, cudf_dtype_from_arrow_type, estimate_list_import_device_memory_bytes},
     testing::{
@@ -1482,79 +1482,6 @@ fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
     );
 }
 
-fn test_from_record_batch_mixed_decimal_temporal_boundary_observation() {
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_records = Arc::clone(&observed);
-    let runtime = Runtime::builder()
-        .with_boundary_observer(move |observation| {
-            observer_records.lock().unwrap().push(observation);
-        })
-        .build()
-        .unwrap();
-    let amount = Decimal128Array::from(vec![12345i128, 67890]).with_precision_and_scale(20, 2).unwrap();
-    let date = Date32Array::from(vec![18_262, 18_263]);
-    let schema = Schema::new(vec![
-        Field::new("amount", ArrowDataType::Decimal128(20, 2), false),
-        Field::new("date", ArrowDataType::Date32, false),
-    ]);
-    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amount), Arc::new(date)]).unwrap();
-
-    let df = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
-    assert_eq!(df.num_rows(), 2);
-    let observations = observed.lock().unwrap();
-    assert_eq!(observations.len(), 1);
-    let observation = observations[0];
-    assert_eq!(observation.kind, BoundaryKind::HostToDevice);
-    assert_eq!(observation.rows, 2);
-    assert_eq!(observation.columns, 2);
-    assert!(!observation.synchronized_for_host);
-}
-
-fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_records = Arc::clone(&observed);
-    let runtime = Runtime::builder()
-        .with_boundary_observer(move |observation| {
-            observer_records.lock().unwrap().push(observation);
-        })
-        .build()
-        .unwrap();
-
-    let amount = runtime
-        .series(&[12345i64, -67890])
-        .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
-        .unwrap();
-    let date = runtime
-        .series(&[18_262i32, 18_263])
-        .unwrap()
-        .astype(TypeId::DurationDays)
-        .unwrap()
-        .astype(TypeId::TimestampDays)
-        .unwrap();
-    let ts_s = runtime
-        .series(&[1i64, 2])
-        .unwrap()
-        .astype(TypeId::DurationSeconds)
-        .unwrap()
-        .astype(TypeId::TimestampSeconds)
-        .unwrap();
-    let df = DataFrame::from_series([("amount", amount), ("date", date), ("ts_s", ts_s)]).unwrap();
-
-    let batch = df.to_record_batch().unwrap();
-
-    assert_eq!(batch.num_rows(), 2);
-    assert_eq!(batch.num_columns(), 3);
-    let observations = observed.lock().unwrap();
-    assert_eq!(observations.len(), 1);
-    let observation = observations[0];
-    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observation.rows, 2);
-    assert_eq!(observation.columns, 3);
-    assert!(observation.synchronized_for_host);
-}
-
 // ---------------------------------------------------------------------------
 // Nullable columns: verify null mask round-trip
 // ---------------------------------------------------------------------------
@@ -2320,14 +2247,6 @@ fn arrow_tests_cases() {
         (
             "test_gpu_record_batch_preserves_date64_and_time_schema_contract",
             test_gpu_record_batch_preserves_date64_and_time_schema_contract,
-        ),
-        (
-            "test_from_record_batch_mixed_decimal_temporal_boundary_observation",
-            test_from_record_batch_mixed_decimal_temporal_boundary_observation,
-        ),
-        (
-            "test_to_record_batch_mixed_decimal_temporal_boundary_observation",
-            test_to_record_batch_mixed_decimal_temporal_boundary_observation,
         ),
         ("test_round_trip_nullable_i32", test_round_trip_nullable_i32),
         ("test_round_trip_nullable_f64", test_round_trip_nullable_f64),

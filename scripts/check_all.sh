@@ -97,7 +97,6 @@ gate_source_identity() {
 
 POLICY_SCRIPTS=(
   scripts/ci/tests/check_cpu_packaging_tests.sh
-  scripts/ci/check_iceberg_leaf_dependency.sh
   scripts/ci/check_single_brand.sh
   scripts/build/check_build_support.sh
   scripts/ci/tests/check_dependency_direction_tests.sh
@@ -152,7 +151,7 @@ FEATURE_ISOLATION_SHARDS=(
   "algeon-query-runtime algeon-query-planning"
   "algeon-query-engine algeon-cudf algeon-cudf-sys algeon-build-support"
   "algeon-cuml algeon-cuml-sys"
-  "iceberg-catalog algeon-server algeon-cugraph-sys"
+  "algeon-server algeon-cugraph-sys"
   "examples bench algeon-cugraph algeon-cuvs algeon-cuvs-sys"
 )
 
@@ -195,9 +194,20 @@ feature_isolation() {
   return "${status}"
 }
 
+# Lints the shipped server exactly as packaged: only the algeon_server binary
+# with server.features from the packaging policy. Selecting no tests, examples,
+# or other members keeps dev-dependencies from enabling test-hooks, which the
+# --all-features lanes always enable.
+shipped_clippy() {
+  local features
+  features=$(python3 scripts/build/cpu_packaging_policy.py shipped-features) || return 1
+  cargo clippy --manifest-path crates/algeon-server/Cargo.toml --bin algeon_server --no-default-features \
+    --features "${features}" --locked --target-dir "${ROOT}/target/check-all/shipped-clippy" -- -D warnings
+}
+
 if [[ "${mode}" == full ]]; then
   PHASES=(gate rustfmt native-sources checked-bindings policy-scripts tests doctests clippy rustdoc
-    public-api-surface feature-isolation msrv native-free publication-policy)
+    public-api-surface feature-isolation shipped-clippy msrv native-free publication-policy)
 else
   PHASES=(gate rustfmt native-sources policy-scripts cpu-tests)
 fi
@@ -249,6 +259,7 @@ if [[ "${mode}" == full ]]; then
     RUSTDOCFLAGS="${RUSTDOCFLAGS:+${RUSTDOCFLAGS} }-D warnings" run rustdoc cargo doc --workspace --all-features --no-deps --keep-going
     run public-api-surface bash scripts/ci/check_public_api_surface.sh check --all-features; } &
   run feature-isolation feature_isolation &
+  run shipped-clippy shipped_clippy &
   CARGO_TARGET_DIR="${ROOT}/target/check-all/msrv" \
     run msrv cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo &
   DOCS_RS=1 run native-free cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check &

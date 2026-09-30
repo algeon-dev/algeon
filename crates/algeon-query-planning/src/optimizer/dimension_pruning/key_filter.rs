@@ -158,7 +158,7 @@ pub fn dimension_key_filter_from_batch(
 ///
 /// `row_group_key_ranges` carries one entry per candidate row group in selection
 /// order; `None` means the key statistics were unavailable for that row group.
-pub fn select_overlapping_row_groups(
+pub(crate) fn select_overlapping_row_groups(
     row_group_key_ranges: &[Option<KeyRange>],
     filter: &DimensionKeyFilter,
 ) -> RowGroupOverlapSelection {
@@ -182,15 +182,15 @@ pub fn select_overlapping_row_groups(
 
 /// Result of [`select_overlapping_row_groups`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RowGroupOverlapSelection {
+pub(crate) struct RowGroupOverlapSelection {
     /// Indices (into the input order) of row groups to retain.
-    pub kept: Vec<usize>,
+    pub(crate) kept: Vec<usize>,
     /// Total candidate row groups considered.
-    pub before: usize,
+    pub(crate) before: usize,
     /// Whether any candidate row group exposed usable key statistics.
-    pub saw_statistics: bool,
+    pub(crate) saw_statistics: bool,
     /// Whether pruning strictly narrowed a non-empty selection.
-    pub applied: bool,
+    pub(crate) applied: bool,
 }
 
 fn ranges_overlap(left: KeyRange, right: KeyRange) -> bool {

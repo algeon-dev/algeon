@@ -11,9 +11,8 @@ use query_engine::{
     pipeline::PipelineTaskKind,
     plan::QueryPlan,
     runtime::{
-        DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
+        ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        GpuBackendDeviceProfile, GpuMemoryOwnership, QueryExecutionConfig, QueueBounds,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{LocalParquetSource, validate_local_parquet_source},
@@ -24,16 +23,10 @@ use query_engine::{
 fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _expr = Expr::column("c0");
     let _metrics = QueryMetrics::default();
-    let deployment = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    );
     let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
     let draft = GpuBackendCoreDraft::new(
         vec![GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)],
         controller,
-        deployment,
     );
     let _supported_backend_builder = GpuBackendCore::builder(draft);
     let _resident_input_map = GpuResidentInputMap::new();

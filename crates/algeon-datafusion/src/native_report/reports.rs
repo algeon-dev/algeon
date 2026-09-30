@@ -2,15 +2,16 @@ use std::{fmt::Write, sync::Arc};
 
 use query_engine::mode::StatisticalAggregateExecutionMode;
 
+#[cfg(feature = "server")]
+use super::NativeDataFusionExecutionMetrics;
 use super::{
     AlgeonNativeExecutionConfig, AlgeonNativePhysicalOptimizerRule, CandidateOutcomeKind, ExecutionPlan,
     FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionRow,
-    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionRuntime, NativeDataFusionRuntimeSummary, NativeFallbackPressureRow,
-    NativeFallbackPressureWorkloadItem, TsvRow, WorkloadDatasetMetadata, datafusion_execution_rows_for_item,
-    datafusion_planning_rows_for_item, report_rows_for_item, write_metric_detail_completeness,
-    write_workload_dataset_metadata,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadItem,
+    NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
+    NativeDataFusionRuntimeSummary, NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem, TsvRow,
+    WorkloadDatasetMetadata, datafusion_execution_rows_for_item, datafusion_planning_rows_for_item,
+    report_rows_for_item, write_metric_detail_completeness, write_workload_dataset_metadata,
 };
 
 /// In-memory fallback-pressure report.
@@ -306,6 +307,7 @@ impl NativeDataFusionExecutionTsvTemplate {
     /// Renders `runtime` with native metrics already projected from a sealed
     /// attempt. They replace any metrics carried by `runtime`, except that a
     /// runtime that never started keeps its empty metrics.
+    #[cfg(feature = "server")]
     pub(crate) fn to_tsv_with_projected_metrics(
         &self,
         runtime: NativeDataFusionRuntime,

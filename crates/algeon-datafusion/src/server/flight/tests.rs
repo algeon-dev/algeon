@@ -1,26 +1,21 @@
 use std::{
     collections::BTreeMap,
     io::Write,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use arrow::{
-    array::{ArrayRef, Int32Builder, ListBuilder, MapBuilder, MapFieldNames, StringBuilder},
-    record_batch::RecordBatch,
-};
-use arrow_flight::decode::FlightRecordBatchStream;
+use arrow::{array::Int64Array, record_batch::RecordBatch};
+use arrow_flight::{decode::FlightRecordBatchStream, error::FlightError};
 use datafusion::{
-    common::TableReference,
+    catalog::{CatalogProvider, SchemaProvider},
+    common::{Result as DataFusionResult, TableReference},
     datasource::{MemTable, TableProvider, provider_as_source},
     execution::SessionStateBuilder,
     logical_expr::LogicalPlanBuilder,
     prelude::SessionConfig,
 };
-use futures::future::BoxFuture;
+use tracing::subscriber::with_default;
 
 use super::*;
 use crate::{
@@ -30,18 +25,8 @@ use crate::{
         error::{
             ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
         },
-        table_format::{
-            iceberg::AlgeonIcebergTableProvider,
-            scan::{
-                TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-                TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability,
-                TableFormatScanPlan, TableFormatScanRequest,
-            },
-        },
     },
 };
-
-type PlannerFuture<'a> = BoxFuture<'a, crate::server::adapter_error::Result<TableFormatScanPlan>>;
 
 #[derive(Clone, Default)]
 struct SharedLogBuffer(Arc<Mutex<Vec<u8>>>);
@@ -54,29 +39,6 @@ impl Write for SharedLogBuffer {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct SleepingPlanner {
-    plan: TableFormatScanPlan,
-    delay: Duration,
-}
-
-impl SleepingPlanner {
-    fn new(plan: TableFormatScanPlan, delay: Duration) -> Self {
-        Self { plan, delay }
-    }
-}
-
-impl TableFormatPlanner for SleepingPlanner {
-    fn resolve_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
-        let plan = self.plan.clone();
-        let delay = self.delay;
-        Box::pin(async move {
-            tokio::time::sleep(delay).await;
-            Ok(plan)
-        })
     }
 }
 
@@ -114,7 +76,7 @@ fn get_tables_metadata_log_uses_the_same_collection_error_for_fields_and_cause()
         .with_writer(move || writer.clone())
         .finish();
 
-    tracing::subscriber::with_default(subscriber, || {
+    with_default(subscriber, || {
         DatafusionAlgeonFlightSqlService::warn_get_tables_metadata_error(
             "catalog", "schema", "table", "schema", &error,
         );
@@ -139,7 +101,7 @@ fn statement_status_log_flattens_resolved_sql_and_keeps_all_fields() {
         .finish();
     let status = Status::invalid_argument("terminal failure");
 
-    tracing::subscriber::with_default(subscriber, || {
+    with_default(subscriber, || {
         log_statement_status(
             "terminal-query",
             Some("SELECT 1\tFROM t\nWHERE x = 1"),
@@ -172,7 +134,7 @@ fn statement_status_log_omits_sql_before_ticket_resolution() {
         .finish();
     let status = Status::invalid_argument("unknown ticket");
 
-    tracing::subscriber::with_default(subscriber, || {
+    with_default(subscriber, || {
         log_statement_status("unknown-query", None, "ticket", Instant::now(), &status);
     });
 
@@ -211,7 +173,7 @@ fn execution_terminal_log_includes_resolved_sql() {
         .finish();
     let status = Status::internal("stream failed");
 
-    tracing::subscriber::with_default(subscriber, || {
+    with_default(subscriber, || {
         terminal.finish_captured("stream", &status, CapturedError::from_status(&status));
     });
 
@@ -236,6 +198,15 @@ fn query_id_from_flight_info(response: &Response<FlightInfo>) -> String {
         .and_then(|value| value.to_str().ok())
         .expect("FlightInfo response metadata carries a query id")
         .to_string()
+}
+
+async fn execute_ticket_batches(service: &DatafusionAlgeonFlightSqlService, query_id: String) -> Vec<RecordBatch> {
+    let response =
+        service.execute_ticket(query_id, None).await.expect("physical planning and execution should succeed");
+    FlightRecordBatchStream::new_from_flight_data(response.into_inner().map_err(FlightError::from))
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("Flight result should decode into Arrow batches")
 }
 
 fn assert_single_sealed_attempt_report(payload: &str, expected_outcome: &str) {
@@ -481,7 +452,11 @@ async fn explain_gpu_cancel_before_do_get_retains_one_sealed_attempt_report() {
     let query_id = query_id_from_flight_info(&response);
     let info = response.into_inner();
 
-    assert!(service.cancel_from_flight_info(&info.encode_to_vec()).expect("cancel request should decode"));
+    assert!(
+        service
+            .cancel_from_flight_info(&info.encode_to_vec(), &Owner::Anonymous)
+            .expect("cancel request should decode")
+    );
 
     let payload = query_stats_payload(&service, &query_id);
     assert!(payload.contains("# outcome=cancelled"), "{payload}");
@@ -552,222 +527,6 @@ async fn explain_gpu_post_batch_drop_records_failed_delivery_outcome() {
     assert_single_sealed_attempt_report(&payload, "cancelled");
 }
 
-#[derive(Debug)]
-struct CountingPlanner {
-    plan: TableFormatScanPlan,
-    requests: AtomicUsize,
-}
-
-impl CountingPlanner {
-    fn new(plan: TableFormatScanPlan) -> Self {
-        Self { plan, requests: AtomicUsize::new(0) }
-    }
-
-    fn request_count(&self) -> usize {
-        self.requests.load(Ordering::SeqCst)
-    }
-}
-
-impl TableFormatPlanner for CountingPlanner {
-    fn resolve_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
-        self.requests.fetch_add(1, Ordering::SeqCst);
-        let plan = self.plan.clone();
-        Box::pin(async move { Ok(plan) })
-    }
-}
-
-fn test_iceberg_provider<P>(schema: Arc<Schema>, planner: Arc<P>) -> AlgeonIcebergTableProvider
-where P: TableFormatPlanner + Send + Sync + 'static {
-    test_iceberg_provider_with_batches(schema, vec![], planner)
-}
-
-fn test_iceberg_provider_with_batches<P>(
-    schema: Arc<Schema>,
-    batches: Vec<RecordBatch>,
-    planner: Arc<P>,
-) -> AlgeonIcebergTableProvider
-where
-    P: TableFormatPlanner + Send + Sync + 'static,
-{
-    let cpu_provider: Arc<dyn TableProvider> =
-        Arc::new(MemTable::try_new(schema, vec![batches]).expect("test CPU provider must build"));
-    AlgeonIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, None, planner)
-}
-
-#[tokio::test]
-async fn table_format_distinct_list_issues_ticket_and_executes_datafusion_delegate() {
-    let schema = list_string_schema();
-    let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(
-        test_iceberg_provider_with_batches(
-            Arc::clone(&schema),
-            vec![list_string_batch(Arc::clone(&schema))],
-            planner.clone(),
-        )
-        .with_catalog_type("local"),
-    );
-    let ctx = Arc::new(SessionContext::new());
-    ctx.register_table("iceberg_t", provider).expect("test registers iceberg table");
-    let service = DatafusionAlgeonFlightSqlService::new(
-        ctx,
-        AlgeonNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new_for_tests()),
-        Duration::from_secs(30),
-    );
-
-    issue_statement_ticket(&service, "SELECT DISTINCT \"pCodes\" FROM iceberg_t")
-        .await
-        .expect("logical planning should issue a ticket for DataFusion-executable List semantics");
-    assert_eq!(planner.request_count(), 0, "scan planning belongs to the execution-ticket path");
-    let query_id = only_ticket_query_id(&service);
-    let batches = execute_ticket_batches(&service, query_id.clone()).await;
-
-    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
-    assert_eq!(batches[0].schema().field(0).data_type(), &list_string_type());
-    assert_eq!(planner.request_count(), 1, "physical planning must resolve the Iceberg scan once");
-    assert_datafusion_baseline_evidence(&service, &query_id, None);
-}
-
-#[tokio::test]
-async fn table_format_map_preserves_datafusion_baseline() {
-    let iceberg_schema = map_schema();
-    let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&iceberg_schema))));
-    let provider = Arc::new(
-        test_iceberg_provider_with_batches(
-            Arc::clone(&iceberg_schema),
-            vec![map_batch(Arc::clone(&iceberg_schema))],
-            planner.clone(),
-        )
-        .with_catalog_type("local"),
-    );
-    let ctx = Arc::new(SessionContext::new());
-    ctx.register_table("iceberg_t", provider).expect("test registers table once");
-
-    let memory_schema = Arc::new(Schema::new(vec![Field::new("mem_id", DataType::Int64, false)]));
-    let memory_batch = RecordBatch::try_new(
-        Arc::clone(&memory_schema),
-        vec![Arc::new(arrow::array::Int64Array::from(vec![1_i64])) as ArrayRef],
-    )
-    .unwrap();
-    let memory_table = Arc::new(MemTable::try_new(memory_schema, vec![vec![memory_batch]]).unwrap());
-    ctx.register_table("mem_t", memory_table).expect("test registers memory table");
-
-    let service = DatafusionAlgeonFlightSqlService::new(
-        ctx,
-        AlgeonNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new_for_tests()),
-        Duration::from_secs(30),
-    );
-
-    issue_statement_ticket(&service, "SELECT i.\"countDetail\" FROM iceberg_t AS i CROSS JOIN mem_t AS m")
-        .await
-        .expect("logical planning should issue a ticket for DataFusion-executable Map semantics");
-    assert_eq!(planner.request_count(), 0, "scan planning belongs to the execution-ticket path");
-    let query_id = only_ticket_query_id(&service);
-    let batches = execute_ticket_batches(&service, query_id.clone()).await;
-
-    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
-    assert_eq!(batches[0].schema().field(0).data_type(), &map_type());
-    assert_eq!(planner.request_count(), 1, "physical planning must resolve the Iceberg scan once");
-    assert_datafusion_baseline_evidence(&service, &query_id, Some("native_outcome=not_supported"));
-}
-
-async fn execute_ticket_batches(service: &DatafusionAlgeonFlightSqlService, query_id: String) -> Vec<RecordBatch> {
-    let response = service
-        .execute_ticket(query_id, None)
-        .await
-        .expect("physical planning and DataFusion delegate execution should succeed");
-    FlightRecordBatchStream::new_from_flight_data(response.into_inner().map_err(arrow_flight::error::FlightError::from))
-        .try_collect::<Vec<_>>()
-        .await
-        .expect("Flight result should decode into Arrow batches")
-}
-
-fn assert_datafusion_baseline_evidence(
-    service: &DatafusionAlgeonFlightSqlService,
-    query_id: &str,
-    physical_plan_fragment: Option<&str>,
-) {
-    let payload = String::from_utf8(
-        service.coordinator.query_stats(query_id).expect("query stats capture should be retained").to_vec(),
-    )
-    .expect("query stats are UTF-8");
-    assert!(payload.contains("# outcome=succeeded"), "{payload}");
-    assert!(
-        payload.contains("AlgeonIcebergScanExec"),
-        "the DataFusion baseline must retain the executable wrapper: {payload}"
-    );
-    if let Some(fragment) = physical_plan_fragment {
-        assert!(payload.contains(fragment), "missing physical-plan evidence `{fragment}`: {payload}");
-    }
-
-    let planning = payload
-        .split_once("\n[planning]\n")
-        .map(|(_, planning)| planning)
-        .expect("query stats should expose native planning evidence");
-    let mut lines = planning.lines();
-    let header = lines.next().expect("planning TSV header").split('\t').collect::<Vec<_>>();
-    let outcome = header.iter().position(|column| *column == "outcome").expect("outcome column");
-    let reason = header.iter().position(|column| *column == "reason_code").expect("reason_code column");
-    let execution_path = header
-        .iter()
-        .position(|column| *column == "post_native_execution_path")
-        .expect("post_native_execution_path column");
-    let rejected = header
-        .iter()
-        .position(|column| *column == "rejected_before_execution")
-        .expect("rejected_before_execution column");
-    let has_datafusion_baseline_outcome = lines.take_while(|line| !line.is_empty()).any(|line| {
-        let fields = line.split('\t').collect::<Vec<_>>();
-        fields.get(outcome) == Some(&"not_supported")
-            && fields.get(reason) == Some(&"unsupported_type")
-            && fields.get(execution_path) == Some(&"datafusion")
-            && fields.get(rejected) == Some(&"false")
-    });
-    assert!(
-        has_datafusion_baseline_outcome,
-        "missing structured unsupported-type DataFusion-baseline evidence: {payload}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn planning_timeout_consumes_statement_ticket_without_holding_admission() {
-    let schema = iceberg_test_schema();
-    let planner =
-        Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
-    let provider = Arc::new(
-        test_iceberg_provider(Arc::clone(&schema), planner)
-            .with_catalog_type("local")
-            .with_scan_planning_timeout(Some(Duration::from_millis(1))),
-    );
-    let ctx = Arc::new(SessionContext::new());
-    ctx.register_table("iceberg_t", provider).expect("test registers table once");
-
-    let service = DatafusionAlgeonFlightSqlService::new(
-        ctx,
-        AlgeonNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new_for_tests()),
-        Duration::from_secs(30),
-    );
-
-    issue_statement_ticket(&service, "SELECT COUNT(*) AS c FROM iceberg_t")
-        .await
-        .expect("logical planning should issue a ticket before table scan planning");
-    let query_id = only_ticket_query_id(&service);
-    let status = match service.execute_ticket(query_id, None).await {
-        Ok(_) => panic!("physical scan planning should time out"),
-        Err(status) => status,
-    };
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert_status_metadata(&status, "planning_timeout", "planning", "permanent");
-    assert!(service.coordinator.ticket_query_ids().is_empty(), "timed-out statement ticket should be consumed");
-
-    tokio::time::timeout(Duration::from_secs(1), issue_statement_ticket(&service, "SELECT 1 AS one"))
-        .await
-        .expect("second statement should not wait on the timed-out query")
-        .expect("second statement should issue a ticket");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_prose() {
     let ctx = Arc::new(SessionContext::new_with_config(
@@ -809,7 +568,6 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
         "fact.workspace_catalog=",
         "fact.workspace_schema=",
         "fact.statement_kind=",
-        "fact.iceberg_enabled=",
     ] {
         assert!(!payload.contains(raw_fact), "raw identifier fact must not be retained: {payload}");
     }
@@ -999,47 +757,44 @@ struct ReadOnlyCatalog {
 impl ReadOnlyCatalog {
     fn new(
         schema_name: impl Into<String>,
-        tables: impl IntoIterator<Item = (&'static str, Arc<dyn datafusion::datasource::TableProvider>)>,
+        tables: impl IntoIterator<Item = (&'static str, Arc<dyn TableProvider>)>,
     ) -> Self {
         Self { schema_name: schema_name.into(), schema: Arc::new(ReadOnlySchema::new(tables)) }
     }
 }
 
-impl datafusion::catalog::CatalogProvider for ReadOnlyCatalog {
+impl CatalogProvider for ReadOnlyCatalog {
     fn schema_names(&self) -> Vec<String> {
         vec![self.schema_name.clone()]
     }
 
-    fn schema(&self, name: &str) -> Option<Arc<dyn datafusion::catalog::SchemaProvider>> {
-        (name == self.schema_name).then(|| Arc::clone(&self.schema) as Arc<dyn datafusion::catalog::SchemaProvider>)
+    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+        (name == self.schema_name).then(|| Arc::clone(&self.schema) as Arc<dyn SchemaProvider>)
     }
 }
 
 #[derive(Debug)]
 struct ReadOnlySchema {
-    tables: BTreeMap<String, Arc<dyn datafusion::datasource::TableProvider>>,
+    tables: BTreeMap<String, Arc<dyn TableProvider>>,
 }
 
 impl ReadOnlySchema {
-    fn new(tables: impl IntoIterator<Item = (&'static str, Arc<dyn datafusion::datasource::TableProvider>)>) -> Self {
+    fn new(tables: impl IntoIterator<Item = (&'static str, Arc<dyn TableProvider>)>) -> Self {
         Self { tables: tables.into_iter().map(|(name, table)| (name.to_string(), table)).collect() }
     }
 }
 
 #[async_trait::async_trait]
-impl datafusion::catalog::SchemaProvider for ReadOnlySchema {
+impl SchemaProvider for ReadOnlySchema {
     fn table_names(&self) -> Vec<String> {
         self.tables.keys().cloned().collect()
     }
 
-    async fn table(
-        &self,
-        name: &str,
-    ) -> datafusion::common::Result<Option<Arc<dyn datafusion::datasource::TableProvider>>> {
+    async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         Ok(self.tables.get(name).cloned())
     }
 
-    async fn table_type(&self, name: &str) -> datafusion::common::Result<Option<TableType>> {
+    async fn table_type(&self, name: &str) -> DataFusionResult<Option<TableType>> {
         Ok(self.tables.get(name).map(|table| table.table_type()))
     }
 
@@ -1048,134 +803,15 @@ impl datafusion::catalog::SchemaProvider for ReadOnlySchema {
     }
 }
 
-fn read_only_edge_table() -> Arc<dyn datafusion::datasource::TableProvider> {
+fn read_only_edge_table() -> Arc<dyn TableProvider> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
         Field::new("dst", DataType::Int64, false),
     ]));
-    let batch = arrow::record_batch::RecordBatch::try_new(
+    let batch = RecordBatch::try_new(
         Arc::clone(&schema),
-        vec![
-            Arc::new(arrow::array::Int64Array::from(vec![0, 1])),
-            Arc::new(arrow::array::Int64Array::from(vec![1, 2])),
-        ],
+        vec![Arc::new(Int64Array::from(vec![0, 1])), Arc::new(Int64Array::from(vec![1, 2]))],
     )
     .unwrap();
     Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())
-}
-
-fn iceberg_test_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]))
-}
-
-fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
-    TableFormatScanPlan::new(TableFormat::Iceberg)
-        .with_snapshot_id("12345")
-        .with_catalog_type("local")
-        .with_logical_schema(Arc::clone(&schema))
-        .with_native_source_schema(schema)
-        .with_data_file(
-            TableFormatDataFile::new(
-                "data-0001",
-                "/tmp/iceberg/data-0001.parquet",
-                TableFormatDataFileFormat::Parquet,
-                TableFormatReadCapability::local_file_system(),
-            )
-            .with_size_bytes(4096)
-            .with_row_count(11),
-        )
-        .with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
-            "id",
-            Some("id"),
-            DataType::Int64,
-            false,
-            TableFormatColumnSource::DirectTopLevelFileColumn,
-            TableFormatColumnRole::Projected,
-        ))
-}
-
-fn list_string_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![Field::new("pCodes", list_string_type(), true)]))
-}
-
-fn list_string_type() -> DataType {
-    DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)))
-}
-
-fn list_string_batch(schema: Arc<Schema>) -> RecordBatch {
-    let mut values =
-        ListBuilder::new(StringBuilder::new()).with_field(Arc::new(Field::new("element", DataType::Utf8, true)));
-    values.append_value([Some("north"), Some("east")]);
-    values.append_value([Some("north"), Some("east")]);
-    values.append_value([Some("south")]);
-    RecordBatch::try_new(schema, vec![Arc::new(values.finish()) as ArrayRef]).unwrap()
-}
-
-fn list_string_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
-    let data_type = list_string_type();
-    single_column_scan_plan(schema, "pCodes", data_type)
-}
-
-fn map_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![Field::new("countDetail", map_type(), true)]))
-}
-
-fn map_type() -> DataType {
-    DataType::Map(
-        Arc::new(Field::new(
-            "entries",
-            DataType::Struct(arrow::datatypes::Fields::from(vec![
-                Arc::new(Field::new("key", DataType::Utf8, false)),
-                Arc::new(Field::new("value", DataType::Int32, true)),
-            ])),
-            false,
-        )),
-        false,
-    )
-}
-
-fn map_batch(schema: Arc<Schema>) -> RecordBatch {
-    let mut values = MapBuilder::new(
-        Some(MapFieldNames { entry: "entries".to_string(), key: "key".to_string(), value: "value".to_string() }),
-        StringBuilder::new(),
-        Int32Builder::new(),
-    );
-    for (key, value) in [("a", 1), ("a", 1), ("b", 2)] {
-        values.keys().append_value(key);
-        values.values().append_value(value);
-        values.append(true).unwrap();
-    }
-    RecordBatch::try_new(schema, vec![Arc::new(values.finish()) as ArrayRef]).unwrap()
-}
-
-fn map_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
-    single_column_scan_plan(schema, "countDetail", map_type())
-}
-
-fn single_column_scan_plan(schema: Arc<Schema>, column_name: &'static str, data_type: DataType) -> TableFormatScanPlan {
-    TableFormatScanPlan::new(TableFormat::Iceberg)
-        .with_snapshot_id("12345")
-        .with_catalog_type("local")
-        .with_logical_schema(Arc::clone(&schema))
-        .with_native_source_schema(schema)
-        .with_data_file(
-            TableFormatDataFile::new(
-                "data-0001",
-                "/tmp/iceberg/data-0001.parquet",
-                TableFormatDataFileFormat::Parquet,
-                TableFormatReadCapability::local_file_system(),
-            )
-            .with_size_bytes(4096)
-            .with_row_count(11),
-        )
-        .with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
-            column_name,
-            Some(column_name),
-            data_type,
-            true,
-            TableFormatColumnSource::DirectTopLevelFileColumn,
-            TableFormatColumnRole::Projected,
-        ))
 }

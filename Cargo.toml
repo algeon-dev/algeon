@@ -2,7 +2,6 @@
 members = [
   "crates/algeon-datafusion",
   "crates/workloads",
-  "crates/iceberg-catalog",
   "crates/algeon-query-engine",
   "crates/algeon-query-planning",
   "crates/algeon-query-runtime",
@@ -42,20 +41,6 @@ homepage = "https://algeon.dev"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
-[workspace.lints.rust]
-# The `iceberg` feature is unbuildable and absent from every manifest. The
-# DataFusion integration left apache/iceberg-rust for apache/datafusion-iceberg
-# (iceberg-rust#3029, merged 2026-09-17), which already targets DataFusion 55
-# but is not on crates.io and still pins iceberg by git rev. The
-# `cfg(feature = "iceberg")` sites stay in place as the restoration point, so
-# rustc must treat the value as known rather than report it as an unexpected
-# cfg. See docs/issue/2026-08-20-crates-io-release-readiness.md.
-unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(feature, values("iceberg"))',
-  'cfg(feature, values("iceberg-e2e", "server-iceberg-e2e"))',
-  'cfg(feature, values("server-runtime-observability-e2e", "embedded-backend-e2e"))',
-] }
-
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 bare_urls = "deny"
@@ -90,7 +75,6 @@ workloads = { path = "crates/workloads" }
 query-engine = { package = "algeon-query-engine", path = "crates/algeon-query-engine", version = "=0.1.0", default-features = false }
 query-planning = { package = "algeon-query-planning", path = "crates/algeon-query-planning", version = "=0.1.0", default-features = false }
 query-runtime = { package = "algeon-query-runtime", path = "crates/algeon-query-runtime", version = "=0.1.0", default-features = false }
-iceberg-catalog = { path = "crates/iceberg-catalog", version = "=0.1.0", default-features = false }
 cudf = { package = "algeon-cudf", path = "components/cudf/algeon-cudf", version = "=0.1.0" }
 cudf-sys = { package = "algeon-cudf-sys", path = "components/cudf/algeon-cudf-sys", version = "=0.1.0" }
 cugraph = { package = "algeon-cugraph", path = "components/cugraph/algeon-cugraph", version = "=0.1.0" }
@@ -116,20 +100,10 @@ bytes = "1"
 cc = "1.2"
 cmake = "0.1"
 cmake-package = "0.2.0"
-csv = "1.4"
 datafusion = "55.0"
 fnv = "1"
 futures = "0.3"
 getrandom = "0.4"
-# Only `iceberg-catalog` declares these, and it is private and unbuildable, so
-# they never reach a published manifest. `iceberg-datafusion` is deliberately
-# absent: apache/iceberg-rust#3228 deleted it from this repository on
-# 2026-09-17 after the integration moved to apache/datafusion-iceberg, so a git
-# dependency on it resolves against a path that no longer exists.
-iceberg = { git = "https://github.com/apache/iceberg-rust.git" }
-iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git" }
-iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git" }
 indexmap = "2"
 libc = "0.2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }

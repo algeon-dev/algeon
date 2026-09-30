@@ -19,8 +19,7 @@ use std::{
 /// before the execution pool that carries them, and stream-cleanup workers
 /// stop last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[doc(hidden)]
-pub enum ProcessExitPhase {
+pub(crate) enum ProcessExitPhase {
     BackendCoordinator,
     /// Cancels and joins supervised blocking workers while their leased CUDA
     /// streams are still valid. This must precede the execution pool: the
@@ -37,16 +36,14 @@ pub enum ProcessExitPhase {
 /// Implementations must not return while their worker can still execute CUDA
 /// teardown. Process exit has no safe fallback that leaves such a worker
 /// detached behind libcudart destruction.
-#[doc(hidden)]
-pub trait ProcessExitShutdown: Send + Sync {
+pub(crate) trait ProcessExitShutdown: Send + Sync {
     fn phase(&self) -> ProcessExitPhase;
 
     fn shutdown_for_process_exit(&self);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct ProcessExitRegistration {
+pub(crate) struct ProcessExitRegistration {
     id: Option<u64>,
 }
 
@@ -54,8 +51,7 @@ impl ProcessExitRegistration {
     /// Removes a worker that has already stopped. This is deliberately
     /// explicit rather than a `Drop` side effect: the registration must stay
     /// live while the worker owns the last ordinary runtime reference.
-    #[doc(hidden)]
-    pub fn unregister(self) {
+    pub(crate) fn unregister(self) {
         if let Some(id) = self.id {
             global_registry().unregister(id);
         }
@@ -155,8 +151,9 @@ fn global_registry() -> &'static ProcessExitRegistry {
 /// handler below: it establishes that the engine joins its workers before
 /// libcudart begins teardown. A worker constructed without an available CUDA
 /// runtime has no CUDA finalizer to race and therefore needs no registration.
-#[doc(hidden)]
-pub fn register_cuda_process_exit_shutdown(shutdown: Arc<dyn ProcessExitShutdown>) -> Option<ProcessExitRegistration> {
+pub(crate) fn register_cuda_process_exit_shutdown(
+    shutdown: Arc<dyn ProcessExitShutdown>,
+) -> Option<ProcessExitRegistration> {
     // `DeviceId::current` enters the CUDA Runtime API through the canonical
     // cuDF boundary. Do not initialize the registry until that call succeeds:
     // registering first would invert `atexit` LIFO ordering if CUDA were

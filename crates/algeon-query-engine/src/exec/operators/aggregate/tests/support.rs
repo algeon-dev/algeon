@@ -12,42 +12,6 @@ fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
-fn q31_key_sum_spec() -> (Schema, AggregateSpec) {
-    let schema = Schema::new(vec![
-        Field::new("county", DataType::Utf8, true),
-        Field::new("quarter", DataType::Int64, false),
-        Field::new("year", DataType::Int64, false),
-        Field::new("sales", DataType::Decimal128(17, 2), true),
-    ]);
-    let spec = AggregateSpec::new(
-        vec![Expr::column("county"), Expr::column("quarter"), Expr::column("year")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
-    );
-    (schema, spec)
-}
-
-fn q76_key_sum_spec() -> (Schema, AggregateSpec) {
-    let schema = Schema::new(vec![
-        Field::new("channel", DataType::Utf8, false),
-        Field::new("col_name", DataType::Utf8, false),
-        Field::new("year", DataType::Int64, false),
-        Field::new("quarter", DataType::Int64, false),
-        Field::new("category", DataType::Utf8, true),
-        Field::new("sales", DataType::Decimal128(17, 2), true),
-    ]);
-    let spec = AggregateSpec::new(
-        vec![
-            Expr::column("channel"),
-            Expr::column("col_name"),
-            Expr::column("year"),
-            Expr::column("quarter"),
-            Expr::column("category"),
-        ],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
-    );
-    (schema, spec)
-}
-
 fn fixed_width_sum_spec() -> (Schema, AggregateSpec) {
     let schema = Schema::new(vec![
         Field::new("quarter", DataType::Int32, false),

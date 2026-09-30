@@ -1,31 +1,37 @@
 use std::sync::Arc;
 
 use super::owned::DataFrame;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::Runtime;
 use crate::{
     core::{column::ColumnView, error::Result, row_range},
     frame::series::Series,
     internal::resolve::missing_column_error,
     ops::{self, copying, filter},
     runtime::{
-        BudgetedExecutionOutcome, ExecutionBudgetToken, Runtime, execution_context::ExecutionOverrides,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
         execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
+#[cfg(any(test, feature = "test-hooks"))]
 fn range_testing_dataframe() -> Result<DataFrame> {
     let runtime = Runtime::new()?;
     let series = runtime.series(&[1i32, 2, 3])?;
     DataFrame::from_series([("x", series)])
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_dataframe_row_range_start_limit_error_for_test() -> Result<DataFrame> {
     range_testing_dataframe()?.__debug_gather_range_for_test(usize::MAX, 1, "dataframe::gather_range")
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_dataframe_row_range_end_limit_error_for_test() -> Result<DataFrame> {
     range_testing_dataframe()?.__debug_gather_range_for_test(i32::MAX as usize, 1, "dataframe::gather_range")
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_dataframe_row_range_overflow_error_for_test() -> Result<DataFrame> {
     range_testing_dataframe()?.__debug_gather_range_for_test(i32::MAX as usize, usize::MAX, "dataframe::gather_range")
 }
@@ -50,6 +56,7 @@ impl DataFrame {
         self.gather_device_allocated_size_by_column_view_impl(&cv, output_domain, operation, reservation_contract)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.gather_in_context(indices, ctx)
     }
@@ -60,6 +67,7 @@ impl DataFrame {
         let mask_view = self.validate_series_mask(mask)?;
         self.filter_by_mask_impl(&mask_view, output_domain, "dataframe::with_execution::filter")
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.filter_in_context(mask, ctx)
     }
@@ -282,6 +290,7 @@ impl DataFrame {
         self.gather_range_impl(start, len, output_domain, "dataframe::gather_range")
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_gather_range_for_test(
         &self,
         start: usize,

@@ -36,7 +36,10 @@ use datafusion::{
         SessionStateBuilder,
         context::{QueryPlanner, TaskContext},
     },
-    logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
+    logical_expr::{
+        LogicalPlan, UserDefinedLogicalNodeCore,
+        planner::{RelationPlanner, RelationPlannerContext, RelationPlanning},
+    },
     physical_expr::PhysicalExpr,
     physical_plan::{
         ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
@@ -470,6 +473,37 @@ fn identical_cuvs_installation_is_idempotent_over_its_existing_query_planner() {
     let builder = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().expect("first cuVS SQL install");
     let mut builder = builder.try_with_cuvs_sql().expect("identical second cuVS SQL install must be a no-op");
     assert!(builder.query_planner().is_some());
+}
+
+#[test]
+fn cuvs_reinstall_rejects_a_builder_without_a_relation_planner_list() {
+    let mut builder = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().expect("first cuVS install");
+    builder.relation_planners().take();
+    let error = builder.try_with_cuvs_sql().expect_err("a missing relation planner list is not an installation");
+    let typed = error.find_algeon_error().expect("structured error");
+    assert_eq!(typed.fact_value("reason"), Some("inconsistent_installation"));
+}
+
+#[derive(Debug)]
+struct CuvsRelationPlannerImpostor;
+
+impl RelationPlanner for CuvsRelationPlannerImpostor {
+    fn plan_relation(
+        &self,
+        relation: TableFactor,
+        _context: &mut dyn RelationPlannerContext,
+    ) -> DataFusionResult<RelationPlanning> {
+        Ok(RelationPlanning::Original(Box::new(relation)))
+    }
+}
+
+#[test]
+fn cuvs_reinstall_rejects_a_relation_planner_that_only_shares_the_installed_debug_name() {
+    let mut builder = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().expect("first cuVS install");
+    *builder.relation_planners() = Some(vec![Arc::new(CuvsRelationPlannerImpostor)]);
+    let error = builder.try_with_cuvs_sql().expect_err("only the installed relation planner satisfies reinstall");
+    let typed = error.find_algeon_error().expect("structured error");
+    assert_eq!(typed.fact_value("reason"), Some("inconsistent_installation"));
 }
 
 #[derive(Debug)]

@@ -43,8 +43,8 @@ pub enum BackendMetricUpdatePoint {
 /// value; stores must reject values outside the corresponding closed domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendMetricLabel {
-    pub name: &'static str,
-    pub cardinality: usize,
+    pub(crate) name: &'static str,
+    pub(crate) cardinality: usize,
 }
 
 /// One backend metric's immutable registration metadata.
@@ -169,7 +169,7 @@ pub const fn backend_metric_descriptors() -> &'static [BackendMetricDescriptor] 
 
 impl BackendMetric {
     /// Returns this metric's one canonical descriptor-table entry.
-    pub const fn descriptor(self) -> &'static BackendMetricDescriptor {
+    pub(crate) const fn descriptor(self) -> &'static BackendMetricDescriptor {
         &BACKEND_METRIC_DESCRIPTORS[self as usize]
     }
 }

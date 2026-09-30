@@ -33,15 +33,13 @@ const DEFAULT_MAX_RETIRED_ENTRIES: usize = 1024;
 /// without cugraph carry an inert value, while admitted cugraph attempts share
 /// one collector across every context clone until terminal report commit.
 #[derive(Debug, Clone, Default)]
-#[doc(hidden)]
-pub struct AttemptCacheScopeAllocatorCorrelation {
+pub(crate) struct AttemptCacheScopeAllocatorCorrelation {
     #[cfg(feature = "cugraph")]
     collector: Option<Arc<AttemptCacheScopeCorrelationCollector>>,
 }
 
 impl AttemptCacheScopeAllocatorCorrelation {
-    #[doc(hidden)]
-    pub fn for_admitted_attempt(attempt_id: Option<AttemptId>) -> Self {
+    pub(crate) fn for_admitted_attempt(attempt_id: Option<AttemptId>) -> Self {
         #[cfg(feature = "cugraph")]
         {
             Self { collector: attempt_id.is_some().then(AttemptCacheScopeCorrelationCollector::new) }
@@ -53,8 +51,7 @@ impl AttemptCacheScopeAllocatorCorrelation {
         }
     }
 
-    #[doc(hidden)]
-    pub fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
+    pub(crate) fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
         #[cfg(feature = "cugraph")]
         {
             self.collector.as_ref().and_then(|collector| collector.seal_and_take_exact_event())
@@ -66,8 +63,7 @@ impl AttemptCacheScopeAllocatorCorrelation {
     }
 
     #[cfg(feature = "cugraph")]
-    #[doc(hidden)]
-    pub fn begin(&self, scope: Arc<CacheAllocationScope>) -> Option<CacheScopeCorrelationGuard> {
+    pub(crate) fn begin(&self, scope: Arc<CacheAllocationScope>) -> Option<CacheScopeCorrelationGuard> {
         self.collector.as_ref().map(|collector| collector.begin(scope))
     }
 }
@@ -125,8 +121,7 @@ impl CacheScopeAllocatorIdentity {
 /// deliberately unavailable instead of arbitrarily choosing one.
 #[cfg(feature = "cugraph")]
 #[derive(Debug, Default)]
-#[doc(hidden)]
-pub struct AttemptCacheScopeCorrelationCollector {
+pub(crate) struct AttemptCacheScopeCorrelationCollector {
     state: Mutex<AttemptCacheScopeCorrelationState>,
 }
 
@@ -163,8 +158,7 @@ enum CacheScopeWindowEvidence {
 
 #[cfg(feature = "cugraph")]
 impl AttemptCacheScopeCorrelationCollector {
-    #[doc(hidden)]
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
@@ -174,8 +168,7 @@ impl AttemptCacheScopeCorrelationCollector {
     /// changes execution behavior. An unavailable lower bound is still a
     /// terminal evidence failure for this attempt: a later cache event cannot
     /// safely prove it was the terminal allocation failure.
-    #[doc(hidden)]
-    pub fn begin(self: &Arc<Self>, scope: Arc<CacheAllocationScope>) -> CacheScopeCorrelationGuard {
+    pub(crate) fn begin(self: &Arc<Self>, scope: Arc<CacheAllocationScope>) -> CacheScopeCorrelationGuard {
         let identity = CacheScopeAllocatorIdentity::from_cudf(scope.identity());
         let Some(observed_after_sequence) =
             scope.allocator_event_ring_bounds().ok().and_then(|bounds| bounds.next_sequence.checked_sub(1))
@@ -199,8 +192,7 @@ impl AttemptCacheScopeCorrelationCollector {
     /// double-sealed windows are unavailable: the report must never race a
     /// later context clone or infer a terminal event around an unclosed
     /// interval.
-    #[doc(hidden)]
-    pub fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
+    pub(crate) fn seal_and_take_exact_event(&self) -> Option<AllocatorEvent> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.sealed {
             state.discarded = true;
@@ -414,23 +406,20 @@ where
 /// A domain id is not sufficient because allocator-domain ids may be reused.
 /// The generation is therefore part of every lookup key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[doc(hidden)]
-pub struct AllocatorDomainIdentity {
+pub(crate) struct AllocatorDomainIdentity {
     device_ordinal: usize,
     domain_id: u64,
     generation: u64,
 }
 
 impl AllocatorDomainIdentity {
-    #[doc(hidden)]
-    pub const fn new(device_ordinal: usize, domain_id: u64, generation: u64) -> Self {
+    pub(crate) const fn new(device_ordinal: usize, domain_id: u64, generation: u64) -> Self {
         Self { device_ordinal, domain_id, generation }
     }
 
     /// Adapts the complete identity that cuDF returns for one native domain
     /// instance. Callers must not substitute a grant id for its generation.
-    #[doc(hidden)]
-    pub fn from_cudf(identity: QueryMemoryDomainIdentity) -> Self {
+    pub(crate) fn from_cudf(identity: QueryMemoryDomainIdentity) -> Self {
         Self::new(identity.device.ordinal(), identity.domain_id, identity.generation)
     }
 }
@@ -440,8 +429,7 @@ impl AllocatorDomainIdentity {
 /// `Missing` and `Overwritten` are terminal attribution states.  They must not
 /// fall back to a later device sample or to another attempt-domain identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorEventAvailability {
+pub(crate) enum AllocatorEventAvailability {
     Available,
     Missing,
     Overwritten,
@@ -453,8 +441,7 @@ pub enum AllocatorEventAvailability {
 /// outcome, and domain identity. The remaining record is retained only after
 /// this identity-only join proves it belongs to the attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct AllocatorEventCorrelationInput {
+pub(crate) struct AllocatorEventCorrelationInput {
     sequence: u64,
     availability: AllocatorEventAvailability,
     domain: Option<AllocatorDomainIdentity>,
@@ -462,40 +449,33 @@ pub struct AllocatorEventCorrelationInput {
 
 impl AllocatorEventCorrelationInput {
     #[cfg(test)]
-    #[doc(hidden)]
-    pub const fn available(sequence: u64, domain: AllocatorDomainIdentity) -> Self {
+    pub(crate) const fn available(sequence: u64, domain: AllocatorDomainIdentity) -> Self {
         Self { sequence, availability: AllocatorEventAvailability::Available, domain: Some(domain) }
     }
 
-    #[doc(hidden)]
-    pub const fn missing(sequence: u64) -> Self {
+    pub(crate) const fn missing(sequence: u64) -> Self {
         Self { sequence, availability: AllocatorEventAvailability::Missing, domain: None }
     }
 
-    #[doc(hidden)]
-    pub const fn overwritten(sequence: u64) -> Self {
+    pub(crate) const fn overwritten(sequence: u64) -> Self {
         Self { sequence, availability: AllocatorEventAvailability::Overwritten, domain: None }
     }
 
-    #[doc(hidden)]
-    pub const fn sequence(self) -> u64 {
+    pub(crate) const fn sequence(self) -> u64 {
         self.sequence
     }
 
-    #[doc(hidden)]
-    pub const fn availability(self) -> AllocatorEventAvailability {
+    pub(crate) const fn availability(self) -> AllocatorEventAvailability {
         self.availability
     }
 
-    #[doc(hidden)]
-    pub const fn domain(self) -> Option<AllocatorDomainIdentity> {
+    pub(crate) const fn domain(self) -> Option<AllocatorDomainIdentity> {
         self.domain
     }
 
     /// Adapts one exact cuDF ring read without fabricating an identity for
     /// incomplete, pending, or non-query-domain records.
-    #[doc(hidden)]
-    pub fn from_cudf_read(sequence: u64, read: AllocatorEventRead) -> Self {
+    pub(crate) fn from_cudf_read(sequence: u64, read: AllocatorEventRead) -> Self {
         match read {
             AllocatorEventRead::Available(event) => {
                 let domain = if event.completeness.allocation_domain {
@@ -526,16 +506,14 @@ impl AllocatorEventCorrelationInput {
 /// Whether a precisely correlated record belongs to an active or already
 /// released attempt-domain interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorEventAttemptState {
+pub(crate) enum AllocatorEventAttemptState {
     Live,
     Retired,
 }
 
 /// Why an allocator record cannot truthfully name an attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorEventUnattributedReason {
+pub(crate) enum AllocatorEventUnattributedReason {
     Missing,
     Overwritten,
     MissingDomainIdentity,
@@ -546,16 +524,14 @@ pub enum AllocatorEventUnattributedReason {
 
 /// Result of joining one allocator-ring read to the bounded domain index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorEventCorrelation {
+pub(crate) enum AllocatorEventCorrelation {
     Exact { attempt_id: AttemptId, state: AllocatorEventAttemptState },
     Unattributed(AllocatorEventUnattributedReason),
 }
 
 /// Outcome of registering a newly admitted attempt domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorDomainRegistration {
+pub(crate) enum AllocatorDomainRegistration {
     Registered,
     AlreadyRegistered,
     Ambiguous,
@@ -564,8 +540,7 @@ pub enum AllocatorDomainRegistration {
 
 /// Outcome of retiring one admitted attempt domain after cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorDomainRetirement {
+pub(crate) enum AllocatorDomainRetirement {
     Retired,
     AmbiguousStillLive,
     AmbiguousRetired,
@@ -576,8 +551,7 @@ pub enum AllocatorDomainRetirement {
 
 /// Outcome of dropping a live mapping without a trustworthy terminal watermark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum AllocatorDomainDiscard {
+pub(crate) enum AllocatorDomainDiscard {
     Discarded,
     AmbiguousStillLive,
     Missing,
@@ -588,8 +562,7 @@ pub enum AllocatorDomainDiscard {
 /// final ring watermark. It contains no cuDF handle, grant, or mutable attempt
 /// state, so retaining it cannot extend an allocation domain's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct AllocatorDomainAttempt {
+pub(crate) struct AllocatorDomainAttempt {
     domain: AllocatorDomainIdentity,
     attempt_id: AttemptId,
 }
@@ -599,12 +572,9 @@ pub struct AllocatorDomainAttempt {
 /// exactly remains explicitly unattributed; it is never a substitute attempt
 /// event.
 #[derive(Debug, Default)]
-#[doc(hidden)]
-pub struct AllocatorEventEvidenceRead {
-    #[doc(hidden)]
-    pub exact: Option<AllocatorEvent>,
-    #[doc(hidden)]
-    pub unattributed: Option<AllocatorEvent>,
+pub(crate) struct AllocatorEventEvidenceRead {
+    pub(crate) exact: Option<AllocatorEvent>,
+    pub(crate) unattributed: Option<AllocatorEvent>,
 }
 
 /// Registers one just-created native domain against an engine attempt.
@@ -613,8 +583,7 @@ pub struct AllocatorEventEvidenceRead {
 /// unattributed; it must never change an already-approved admission. A full
 /// bounded index likewise declines the optional registration rather than
 /// evicting a live attempt mapping.
-#[doc(hidden)]
-pub fn register_admitted_domain(
+pub(crate) fn register_admitted_domain(
     index: &Mutex<AllocatorEventCorrelationIndex>,
     domain: &QueryMemoryDomain,
     attempt_id: AttemptId,
@@ -644,8 +613,7 @@ pub fn register_admitted_domain(
 /// pending, overwritten, stale, and ambiguous records remain unavailable for
 /// this attempt. The newest available non-exact record is retained only as a
 /// device-level, explicitly unattributed sample.
-#[doc(hidden)]
-pub fn retire_admitted_domain(
+pub(crate) fn retire_admitted_domain(
     index: &Mutex<AllocatorEventCorrelationIndex>,
     binding: AllocatorDomainAttempt,
     domain: &QueryMemoryDomain,
@@ -710,8 +678,7 @@ pub fn retire_admitted_domain(
 
 /// Removes a live mapping on an unadmitted rollback or a cleanup path whose
 /// completion cannot be proven. This deliberately creates no retired window.
-#[doc(hidden)]
-pub fn discard_admitted_domain(index: &Mutex<AllocatorEventCorrelationIndex>, binding: AllocatorDomainAttempt) {
+pub(crate) fn discard_admitted_domain(index: &Mutex<AllocatorEventCorrelationIndex>, binding: AllocatorDomainAttempt) {
     let _ = index.lock().unwrap_or_else(PoisonError::into_inner).discard_live(binding.domain, binding.attempt_id);
 }
 
@@ -723,8 +690,7 @@ pub fn discard_admitted_domain(index: &Mutex<AllocatorEventCorrelationIndex>, bi
 /// boundaries prevent old ring slots and later domain-id reuse from gaining an
 /// attribution merely because their three-part identity happens to match.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct AllocatorEventCorrelationIndex {
+pub(crate) struct AllocatorEventCorrelationIndex {
     max_live_entries: NonZeroUsize,
     max_retired_entries: NonZeroUsize,
     live: BTreeMap<AllocatorDomainIdentity, LiveBinding>,
@@ -762,8 +728,7 @@ enum RetiredBinding {
 }
 
 impl AllocatorEventCorrelationIndex {
-    #[doc(hidden)]
-    pub fn new(max_live_entries: NonZeroUsize, max_retired_entries: NonZeroUsize) -> Self {
+    pub(crate) fn new(max_live_entries: NonZeroUsize, max_retired_entries: NonZeroUsize) -> Self {
         Self {
             max_live_entries,
             max_retired_entries,
@@ -779,8 +744,7 @@ impl AllocatorEventCorrelationIndex {
     /// installed.  Events at or before that watermark are deliberately stale;
     /// the callback was never allowed to look up the attempt while they ran.
     #[must_use]
-    #[doc(hidden)]
-    pub fn register_live(
+    pub(crate) fn register_live(
         &mut self,
         domain: AllocatorDomainIdentity,
         attempt_id: AttemptId,
@@ -826,8 +790,7 @@ impl AllocatorEventCorrelationIndex {
     /// event read after the attempt is gone can still correlate exactly to the
     /// retired interval.
     #[must_use]
-    #[doc(hidden)]
-    pub fn retire(
+    pub(crate) fn retire(
         &mut self,
         domain: AllocatorDomainIdentity,
         attempt_id: AttemptId,
@@ -883,8 +846,7 @@ impl AllocatorEventCorrelationIndex {
     /// Correlates a ring read only when the identity and sequence lie inside
     /// one non-ambiguous admitted-domain lifetime.
     #[must_use]
-    #[doc(hidden)]
-    pub fn correlate(&self, event: AllocatorEventCorrelationInput) -> AllocatorEventCorrelation {
+    pub(crate) fn correlate(&self, event: AllocatorEventCorrelationInput) -> AllocatorEventCorrelation {
         match event.availability() {
             AllocatorEventAvailability::Missing => {
                 return AllocatorEventCorrelation::Unattributed(AllocatorEventUnattributedReason::Missing);
@@ -949,8 +911,11 @@ impl AllocatorEventCorrelationIndex {
     /// must not become a guess about which later event belonged to this
     /// attempt. A mismatched attempt remains untouched.
     #[must_use]
-    #[doc(hidden)]
-    pub fn discard_live(&mut self, domain: AllocatorDomainIdentity, attempt_id: AttemptId) -> AllocatorDomainDiscard {
+    pub(crate) fn discard_live(
+        &mut self,
+        domain: AllocatorDomainIdentity,
+        attempt_id: AttemptId,
+    ) -> AllocatorDomainDiscard {
         let Some(binding) = self.live.remove(&domain) else {
             return AllocatorDomainDiscard::Missing;
         };

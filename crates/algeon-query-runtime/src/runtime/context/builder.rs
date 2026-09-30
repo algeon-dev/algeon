@@ -1,6 +1,6 @@
 //! Construction and policy validation for native execution contexts.
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 use std::time::Duration;
 use std::{
     error::Error as StdError,
@@ -19,8 +19,8 @@ use query_planning::{
 
 use super::{
     super::{
-        CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy,
-        MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+        CacheFillByteBudget, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
+        ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
         cache_events::LakehouseCacheFillEventSink,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
@@ -85,8 +85,6 @@ pub struct ExecutionContextBuilder {
     lakehouse_cache_fill_budget_bytes: Option<u64>,
     /// Max background lakehouse complete-object cache-fill operations allowed concurrently.
     lakehouse_cache_fill_max_concurrent_ops: Option<usize>,
-    /// Optional caller-supplied deployment IO capability diagnostic.
-    deployment_io_capability: Option<DeploymentIoCapability>,
     /// Cooperative cancellation flag observed by native execution.
     cancellation: ExecutionCancellation,
     /// Execution contract for floating statistical aggregates.
@@ -245,8 +243,8 @@ impl ExecutionContextBuilder {
     }
 
     /// Set bounded source chunk planning mode.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
         self.source_chunk_planning_mode = mode;
         self
     }
@@ -283,8 +281,8 @@ impl ExecutionContextBuilder {
     }
 
     /// Sets the bounded wait for blocking lakehouse cache maintenance resources.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_lakehouse_cache_fill_acquire_timeout(mut self, timeout: Duration) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_lakehouse_cache_fill_acquire_timeout(mut self, timeout: Duration) -> Self {
         self.lakehouse_cache_fill_config.get_or_insert_with(Default::default).acquire_timeout = timeout;
         self
     }
@@ -303,16 +301,9 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Selects the execution contract for floating statistical aggregates.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
-        self.statistical_aggregate_execution_mode = mode;
-        self
-    }
-
     /// Sets expert local-throughput source chunk planning policy.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
         self.source_chunk_planning_options = options;
         self
     }
@@ -405,8 +396,6 @@ impl ExecutionContextBuilder {
         if let Some(service_stream_pool_size) = self.service_stream_pool_size {
             validate_service_stream_pool_size(service_stream_pool_size)?;
         }
-        let deployment_io_capability =
-            self.deployment_io_capability.unwrap_or_else(DeploymentIoCapability::cached_current_host);
         let mut lakehouse_cache_fill_config = self.lakehouse_cache_fill_config.unwrap_or_default();
         if let Some(lakehouse_cache_fill_budget_bytes) = self.lakehouse_cache_fill_budget_bytes {
             lakehouse_cache_fill_config.budget_bytes = Some(lakehouse_cache_fill_budget_bytes);
@@ -456,7 +445,6 @@ impl ExecutionContextBuilder {
                 runtime_stream_lease_scope: RuntimeStreamLeaseScope::default(),
                 runtime,
                 gpu_execution_pool,
-                memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
                 memory_grant: None,
                 grant_memory_domain: None,
@@ -479,7 +467,6 @@ impl ExecutionContextBuilder {
                 lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
                 object_store_control_runtime,
                 source_object_stores,
-                deployment_io_capability,
                 cancellation: self.cancellation,
                 statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
                 datafusion_order_tracking: false,
@@ -542,7 +529,6 @@ impl ExecutionContextBuilder {
             runtime_stream_lease_scope: RuntimeStreamLeaseScope::default(),
             runtime,
             gpu_execution_pool,
-            memory_policy,
             memory_control_policy: self.memory_control_policy,
             memory_grant: None,
             grant_memory_domain: None,
@@ -565,7 +551,6 @@ impl ExecutionContextBuilder {
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             object_store_control_runtime,
             source_object_stores,
-            deployment_io_capability,
             cancellation: self.cancellation,
             statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
             datafusion_order_tracking: false,

@@ -62,7 +62,7 @@ impl MlAlgorithmParams {
         std::iter::once(first).chain(second)
     }
 
-    pub const fn relation_role(&self, index: usize) -> MlRelationRole {
+    pub(crate) const fn relation_role(&self, index: usize) -> MlRelationRole {
         match self {
             Self::LogisticRegression(_) | Self::RandomForestClassifier(_) | Self::RandomForestRegressor(_)
                 if index == 0 =>
@@ -76,8 +76,7 @@ impl MlAlgorithmParams {
         }
     }
 
-    #[doc(hidden)]
-    pub fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
+    pub(crate) fn remap_relation_inputs(&mut self, mut remap: impl FnMut(NodeId) -> NodeId) {
         match self {
             Self::Tsvd(params) => params.input.input = remap(params.input.input),
             Self::Hdbscan(params) => params.input.input = remap(params.input.input),
@@ -99,7 +98,7 @@ impl MlAlgorithmParams {
 pub struct MlAlgorithmSpec {
     pub algorithm: MlAlgorithm,
     pub params: MlAlgorithmParams,
-    pub output_schema: SchemaRef,
+    pub(crate) output_schema: SchemaRef,
 }
 
 impl MlAlgorithmSpec {

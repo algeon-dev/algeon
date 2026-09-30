@@ -41,12 +41,6 @@ impl BoundaryMetrics {
         self.device_to_host_materialized_bytes += bytes;
     }
 
-    /// Records one device-to-device copy.
-    pub fn record_device_to_device_copy(&mut self, bytes: u64) {
-        self.device_to_device_copies += 1;
-        self.device_to_device_copied_bytes += bytes;
-    }
-
     pub(super) fn merge_from(&mut self, other: BoundaryMetrics) {
         self.gpu_resident_input_handoffs =
             self.gpu_resident_input_handoffs.saturating_add(other.gpu_resident_input_handoffs);

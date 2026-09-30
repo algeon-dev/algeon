@@ -1,26 +1,17 @@
-use std::{
-    collections::BTreeMap,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use arrow::datatypes::{Schema as ArrowSchema, SchemaRef as ArrowSchemaRef};
-use cudf::NullPolicy;
 use query_planning::util::fnv1a64;
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateFunction, AggregateSpec,
-    AggregateStrategyCandidateRejection, AggregateStrategyCapabilityDecision, DataFrame, DropDuplicatesOptions,
-    DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, NodeId,
-    PartialAggregateInputEvidence, QueryError, QueryErrorCode, ReduceAgg, Result, SourceChunk,
-    attach_budget_token_failure_facts, budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
+    AggregateStrategyCandidateRejection, AggregateStrategyCapabilityDecision, ExecutionMetrics, Expr, NodeId,
+    PartialAggregateInputEvidence, SourceChunk,
 };
 use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
     datatypes::arrow_fixed_width_byte_size,
     exec::execution_metrics::PriorEvidenceScope,
-    observability::{
-        RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, RuntimeOperatorStageKind, stage_context_from_execution,
-    },
     source::parquet_source_path_fact,
 };
 
@@ -358,26 +349,6 @@ struct PriorAggregateCardinalityEvidence {
     evidence_scope: &'static str,
 }
 
-#[derive(Debug, Clone)]
-pub(in crate::exec::operators::aggregate) struct ExactSingleKeyCardinalityProbe {
-    pub(in crate::exec::operators::aggregate) key_column: String,
-    pub(in crate::exec::operators::aggregate) input_rows: u64,
-    pub(in crate::exec::operators::aggregate) non_null_distinct_count: u64,
-    pub(in crate::exec::operators::aggregate) null_count: u64,
-    pub(in crate::exec::operators::aggregate) num_groups: u64,
-    pub(in crate::exec::operators::aggregate) reduction_ratio_ppm: u64,
-    pub(in crate::exec::operators::aggregate) elapsed: Duration,
-}
-
-#[derive(Debug, Clone)]
-pub(in crate::exec::operators::aggregate) struct ExactGroupedKeyCardinalityProbe {
-    pub(in crate::exec::operators::aggregate) key_columns: Vec<String>,
-    pub(in crate::exec::operators::aggregate) input_rows: u64,
-    pub(in crate::exec::operators::aggregate) num_groups: u64,
-    pub(in crate::exec::operators::aggregate) reduction_ratio_ppm: u64,
-    pub(in crate::exec::operators::aggregate) elapsed: Duration,
-}
-
 fn prior_partial_cardinality_evidence(
     metrics: &ExecutionMetrics,
     node_id: Option<NodeId>,
@@ -444,296 +415,6 @@ fn prepared_sort_groupby_should_run_for_prior_evidence(
     let group_keys = decision.facts.get("group_key_count").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
 
     fixed_width_keys > 0 || group_keys > 1 || string_keys == 0
-}
-
-#[cfg(test)]
-pub(super) fn exact_single_key_cardinality_probe_candidate<'a>(
-    decision: &AggregateStrategyCapabilityDecision,
-    spec: &'a AggregateSpec,
-    input_schema: &ArrowSchema,
-    input_rows: u64,
-) -> Option<&'a str> {
-    exact_single_key_cardinality_probe_candidate_with_options(
-        decision,
-        spec,
-        input_schema,
-        input_rows,
-        AggregateStrategyExecutionOptions::default(),
-    )
-}
-
-pub(super) fn exact_single_key_cardinality_probe_candidate_with_options<'a>(
-    decision: &AggregateStrategyCapabilityDecision,
-    spec: &'a AggregateSpec,
-    input_schema: &ArrowSchema,
-    input_rows: u64,
-    options: AggregateStrategyExecutionOptions,
-) -> Option<&'a str> {
-    // Hot-path selection never admits throwaway exact probes. Keep the public
-    // helper signature for report/expert paths that call the probe primitives
-    // deliberately; strategy selection marks them disabled above.
-    let _ = (decision, spec, input_schema, input_rows, options);
-    None
-}
-
-#[cfg(test)]
-pub(super) fn exact_grouped_key_cardinality_probe_candidate(
-    decision: &AggregateStrategyCapabilityDecision,
-    spec: &AggregateSpec,
-    input_schema: &ArrowSchema,
-    input_rows: u64,
-) -> Option<Vec<String>> {
-    exact_grouped_key_cardinality_probe_candidate_with_options(
-        decision,
-        spec,
-        input_schema,
-        input_rows,
-        AggregateStrategyExecutionOptions::default(),
-    )
-}
-
-pub(super) fn exact_grouped_key_cardinality_probe_candidate_with_options(
-    decision: &AggregateStrategyCapabilityDecision,
-    spec: &AggregateSpec,
-    input_schema: &ArrowSchema,
-    input_rows: u64,
-    options: AggregateStrategyExecutionOptions,
-) -> Option<Vec<String>> {
-    // Hot-path selection never admits throwaway exact multi-key probes.
-    let _ = (decision, spec, input_schema, input_rows, options);
-    None
-}
-
-pub(super) fn exact_single_key_cardinality_probe(
-    context: &ExecutionContext,
-    frame: &DataFrame,
-    key_column: &str,
-    input_rows: u64,
-    token: &ExecutionBudgetToken,
-    metrics: &ExecutionMetrics,
-) -> Result<ExactSingleKeyCardinalityProbe> {
-    let timer = Instant::now();
-    let series = frame.series(key_column).map_err(|error| {
-        cudf_query_error(
-            "query_engine.aggregate.exact_single_key_cardinality_probe.input",
-            "failed to access exact-cardinality probe key column",
-            error,
-        )
-    })?;
-    let null_count = series.null_count() as u64;
-    let prepared =
-        series.prepare_scalar_reduction(ReduceAgg::NUnique { null_policy: NullPolicy::Exclude }).map_err(|error| {
-            cudf_query_error(
-                "query_engine.aggregate.exact_single_key_cardinality_probe.prepare_nunique",
-                "failed to prepare exact cardinality reduction for grouped aggregate key column",
-                error,
-            )
-        })?;
-    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
-    let stage_guard = RuntimeOperatorStageGuard::start(
-        observation,
-        plan_execution_id,
-        parent_span_id,
-        RuntimeOperatorStageKind::ExactCardinalityProbe,
-        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows).with_strategy_label("nunique"),
-    );
-    let scalar = match prepared.execute_with_budget(token).map_err(|error| {
-        cudf_query_error_with_budget_details(
-            "query_engine.aggregate.exact_single_key_cardinality_probe.nunique",
-            "failed to compute exact cardinality for grouped aggregate key column",
-            error,
-        )
-    }) {
-        Ok(outcome) => {
-            budgeted_value(outcome, metrics, "query_engine.aggregate.exact_single_key_cardinality_probe.nunique")
-                .into_scalar()
-        },
-        Err(error) => {
-            stage_guard.fail(&error);
-            return Err(error);
-        },
-    };
-    let non_null_distinct_count = if scalar.is_valid().map_err(|error| {
-        cudf_query_error(
-            "query_engine.aggregate.exact_single_key_cardinality_probe.read_nunique",
-            "failed to read exact cardinality scalar validity",
-            error,
-        )
-    })? {
-        let count = scalar.value::<i32>().map_err(|error| {
-            cudf_query_error(
-                "query_engine.aggregate.exact_single_key_cardinality_probe.read_nunique",
-                "failed to read exact cardinality scalar value",
-                error,
-            )
-        })?;
-        u64::try_from(count).map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "query_engine.aggregate.exact_single_key_cardinality_probe.read_nunique",
-                "exact cardinality scalar was negative",
-            )
-            .with_fact("distinct_count", count)
-        })?
-    } else {
-        0
-    };
-    let num_groups = non_null_distinct_count.saturating_add(u64::from(null_count > 0));
-    stage_guard.finish(Some(num_groups), None);
-    Ok(ExactSingleKeyCardinalityProbe {
-        key_column: key_column.to_string(),
-        input_rows,
-        non_null_distinct_count,
-        null_count,
-        num_groups,
-        reduction_ratio_ppm: reduction_ratio_ppm(input_rows, num_groups),
-        elapsed: timer.elapsed(),
-    })
-}
-
-pub(super) fn exact_grouped_key_cardinality_probe(
-    context: &ExecutionContext,
-    frame: &DataFrame,
-    key_columns: &[String],
-    input_rows: u64,
-    token: &ExecutionBudgetToken,
-) -> Result<ExactGroupedKeyCardinalityProbe> {
-    let timer = Instant::now();
-    let key_refs = key_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let keys = frame.select(key_refs.clone()).map_err(|error| {
-        cudf_query_error(
-            "query_engine.aggregate.exact_grouped_key_cardinality_probe.input",
-            "failed to project exact-cardinality probe key columns",
-            error,
-        )
-    })?;
-    let overrides = token.execution_overrides();
-    let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
-    let stage_guard = RuntimeOperatorStageGuard::start(
-        observation,
-        plan_execution_id,
-        parent_span_id,
-        RuntimeOperatorStageKind::ExactCardinalityProbe,
-        RuntimeOperatorStageIdentity::new().with_input_rows(input_rows).with_strategy_label("drop_duplicates"),
-    );
-    let groups = match keys
-        .with_execution(&overrides)
-        .drop_duplicates(
-            DropDuplicatesOptions::builder().subset(key_refs.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
-        )
-        .map_err(|error| {
-            attach_budget_token_failure_facts(
-                cudf_query_error(
-                    "query_engine.aggregate.exact_grouped_key_cardinality_probe.distinct_keys",
-                    "failed to compute exact grouped-key cardinality for partial aggregate",
-                    error,
-                ),
-                token,
-            )
-        }) {
-        Ok(groups) => groups,
-        Err(error) => {
-            stage_guard.fail(&error);
-            return Err(error);
-        },
-    };
-    let num_groups = groups.num_rows() as u64;
-    stage_guard.finish(Some(num_groups), None);
-    Ok(ExactGroupedKeyCardinalityProbe {
-        key_columns: key_columns.to_vec(),
-        input_rows,
-        num_groups,
-        reduction_ratio_ppm: reduction_ratio_ppm(input_rows, num_groups),
-        elapsed: timer.elapsed(),
-    })
-}
-
-pub(super) fn add_exact_single_key_cardinality_probe_facts(
-    decision: &mut AggregateStrategyCapabilityDecision,
-    probe: &ExactSingleKeyCardinalityProbe,
-) {
-    decision.facts.insert("exact_cardinality_probe_status", "measured".to_string());
-    decision.facts.insert("exact_cardinality_probe_key", probe.key_column.clone());
-    decision.facts.insert("exact_cardinality_probe_input_rows", probe.input_rows.to_string());
-    decision.facts.insert("exact_cardinality_probe_non_null_distinct_count", probe.non_null_distinct_count.to_string());
-    decision.facts.insert("exact_cardinality_probe_null_count", probe.null_count.to_string());
-    decision.facts.insert("exact_cardinality_probe_num_groups", probe.num_groups.to_string());
-    decision.facts.insert("exact_cardinality_probe_reduction_ratio_ppm", probe.reduction_ratio_ppm.to_string());
-    decision.facts.insert("exact_cardinality_probe_elapsed_ns", duration_ns(probe.elapsed).to_string());
-    decision.facts.insert("prepared_sort_groupby_num_groups", probe.num_groups.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_input_rows", probe.input_rows.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_output_group_count", probe.num_groups.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_reduction_ratio_ppm", probe.reduction_ratio_ppm.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_strategy", "exact_cardinality_probe".to_string());
-}
-
-pub(super) fn add_exact_grouped_key_cardinality_probe_facts(
-    decision: &mut AggregateStrategyCapabilityDecision,
-    probe: &ExactGroupedKeyCardinalityProbe,
-) {
-    decision.facts.insert("exact_cardinality_probe_status", "measured".to_string());
-    decision.facts.insert("exact_cardinality_probe_key", probe.key_columns.join(","));
-    decision.facts.insert("exact_cardinality_probe_input_rows", probe.input_rows.to_string());
-    decision.facts.insert("exact_cardinality_probe_non_null_distinct_count", "unknown".to_string());
-    decision.facts.insert("exact_cardinality_probe_null_count", "unknown".to_string());
-    decision.facts.insert("exact_cardinality_probe_num_groups", probe.num_groups.to_string());
-    decision.facts.insert("exact_cardinality_probe_reduction_ratio_ppm", probe.reduction_ratio_ppm.to_string());
-    decision.facts.insert("exact_cardinality_probe_elapsed_ns", duration_ns(probe.elapsed).to_string());
-    decision.facts.insert("prepared_sort_groupby_num_groups", probe.num_groups.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_input_rows", probe.input_rows.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_output_group_count", probe.num_groups.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_reduction_ratio_ppm", probe.reduction_ratio_ppm.to_string());
-    decision.facts.insert("prepared_sort_groupby_prior_strategy", "exact_cardinality_probe".to_string());
-}
-
-#[cfg(test)]
-pub(super) fn exact_cardinality_probe_should_select_prepared_sort_groupby(
-    decision: &AggregateStrategyCapabilityDecision,
-    probe: &ExactSingleKeyCardinalityProbe,
-) -> bool {
-    exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-        decision,
-        probe,
-        AggregateStrategyExecutionOptions::default(),
-    )
-}
-
-pub(super) fn exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-    decision: &AggregateStrategyCapabilityDecision,
-    probe: &ExactSingleKeyCardinalityProbe,
-    options: AggregateStrategyExecutionOptions,
-) -> bool {
-    exact_cardinality_probe_values_should_select_prepared_sort_groupby(
-        decision,
-        probe.num_groups,
-        probe.reduction_ratio_ppm,
-        options,
-    )
-}
-
-#[cfg(test)]
-pub(super) fn exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby(
-    decision: &AggregateStrategyCapabilityDecision,
-    probe: &ExactGroupedKeyCardinalityProbe,
-) -> bool {
-    exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-        decision,
-        probe,
-        AggregateStrategyExecutionOptions::default(),
-    )
-}
-
-pub(super) fn exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
-    decision: &AggregateStrategyCapabilityDecision,
-    probe: &ExactGroupedKeyCardinalityProbe,
-    options: AggregateStrategyExecutionOptions,
-) -> bool {
-    exact_cardinality_probe_values_should_select_prepared_sort_groupby(
-        decision,
-        probe.num_groups,
-        probe.reduction_ratio_ppm,
-        options,
-    )
 }
 
 fn exact_cardinality_probe_values_should_select_prepared_sort_groupby(
@@ -839,16 +520,6 @@ fn select_prepared_sort_groupby_for_prior_cardinality(
     )
 }
 
-pub(super) fn select_prepared_sort_groupby_for_exact_cardinality(
-    decision: AggregateStrategyCapabilityDecision,
-) -> AggregateStrategyCapabilityDecision {
-    select_prepared_sort_groupby_with_cost_model(
-        decision,
-        "selected_exact_cardinality_low_cardinality",
-        "exact_cardinality_reduction_ratio_at_or_below_threshold",
-    )
-}
-
 fn select_prepared_sort_groupby_with_cost_model(
     mut decision: AggregateStrategyCapabilityDecision,
     cost_model_status: &'static str,
@@ -880,16 +551,6 @@ fn select_prepared_sort_groupby_with_cost_model(
     }
     update_rejected_candidate_summary(&mut decision);
     decision
-}
-
-pub(super) fn reject_prepared_sort_groupby_for_exact_cardinality(
-    decision: AggregateStrategyCapabilityDecision,
-) -> AggregateStrategyCapabilityDecision {
-    reject_prepared_sort_groupby_with_cost_model(
-        decision,
-        "prepared_sort_groupby_exact_cardinality_high_cardinality",
-        "exact_cardinality_reduction_ratio_above_threshold",
-    )
 }
 
 fn reject_prepared_sort_groupby_with_cost_model(

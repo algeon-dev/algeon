@@ -12,7 +12,7 @@ use crate::{
         AggregateNode, EdgeNormalizeNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
         GraphEdgePredicateInput, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2VertexAttributesInput,
         GraphPageRankPersonalizationInput, GraphPredicateInput, GraphVertexPairInput, NodeId, PlanNode, ProjectionNode,
-        ProjectionOutput, QueryNode, QueryPlan, ResultSink, UnionNode, WindowFrame, WindowFunction, WindowNode,
+        QueryNode, QueryPlan, ResultSink, UnionNode, WindowFrame, WindowFunction, WindowNode,
         graph_result_schema_for_vertex_type,
     },
     prepared::{
@@ -35,17 +35,15 @@ mod types;
 
 #[doc(hidden)]
 pub use aggregate::{
-    global_count_star_expr, global_valid_count_state_alias, host_group_expr_output_name, validate_aggregate_capability,
-    validate_aggregate_output_names, validate_avg_output_fields, validate_avg_state_alias_collisions,
-    validate_final_aggregate_capability, validate_global_aggregate_capability,
-    validate_global_valid_count_state_alias_collisions,
+    global_count_star_expr, global_valid_count_state_alias, validate_aggregate_capability,
+    validate_aggregate_output_names, validate_avg_output_fields, validate_final_aggregate_capability,
+    validate_global_aggregate_capability,
 };
 use expressions::{comma_separated, validate_expr, validate_projection_output_expr};
 #[doc(hidden)]
 pub use expressions::{substring_stop_position, target_integral_max};
 use join::validate_join_capability;
-#[doc(hidden)]
-pub use join::walk_join_residual_column_sides;
+pub(crate) use join::walk_join_residual_column_sides;
 #[doc(hidden)]
 pub use types::{is_integral_type, is_string_type};
 use types::{require_boolean, require_scalar_operator_value, require_timezone_free_operator_key};
@@ -414,15 +412,6 @@ fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&Quer
         .with_fact("consumer", consumer)
         .with_fact("input", input)
     })
-}
-
-#[doc(hidden)]
-pub fn projection_output_type(
-    output: &ProjectionOutput,
-    input_schema: &SchemaRef,
-    ctx: AnalysisContext<'_>,
-) -> Result<ArrowDataType> {
-    validate_projection_output_expr(output, input_schema, &schema_column_names(input_schema), ctx)
 }
 
 fn available_columns(columns_by_node: &[BTreeSet<String>], input: NodeId) -> Result<&BTreeSet<String>> {

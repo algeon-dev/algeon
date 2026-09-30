@@ -11,10 +11,10 @@ use std::error::Error as StdError;
 
 #[cfg(any(feature = "cuvs", feature = "cuml"))]
 use query_planning::error::{QueryError, QueryErrorCode, redact_uri_tokens};
-pub use query_runtime::native_error::{
-    cudf_budget_exhaustion, cudf_message_fact, cudf_query_error, cudf_query_error_with_budget_details,
-    cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
-    query_error_code_for_cudf_error,
+pub use query_runtime::native_error::{cudf_message_fact, cudf_query_error, query_error_code_for_cudf_error};
+pub(crate) use query_runtime::native_error::{
+    cudf_query_error_with_budget_details, cudf_query_error_without_source,
+    cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
 };
 
 /// Wraps a `cuvs::Error` at the native vector-execution boundary.
@@ -22,7 +22,7 @@ pub use query_runtime::native_error::{
 /// Classification is derived only from the typed cuVS kind and status; foreign
 /// message text remains diagnostic and never drives retry policy.
 #[cfg(feature = "cuvs")]
-pub fn cuvs_query_error(operation: &'static str, message: impl Into<String>, source: cuvs::Error) -> QueryError {
+pub(crate) fn cuvs_query_error(operation: &'static str, message: impl Into<String>, source: cuvs::Error) -> QueryError {
     let code = query_error_code_for_cuvs_error(&source);
     let error = QueryError::new(code, operation, message)
         .with_fact("cuvs_kind", source.kind())
@@ -53,7 +53,7 @@ pub fn cuvs_query_error(operation: &'static str, message: impl Into<String>, sou
 /// point is therefore an execution-binding invariant, not a second user-input
 /// validation surface.
 #[cfg(feature = "cuvs")]
-pub fn cudf_interop_query_error<E>(
+pub(crate) fn cudf_interop_query_error<E>(
     operation: &'static str,
     message: impl Into<String>,
     source_kind: impl Into<String>,
@@ -70,7 +70,7 @@ where
 
 /// Classifies a `cuvs::Error` into the native-engine error taxonomy.
 #[cfg(feature = "cuvs")]
-pub fn query_error_code_for_cuvs_error(error: &cuvs::Error) -> QueryErrorCode {
+pub(crate) fn query_error_code_for_cuvs_error(error: &cuvs::Error) -> QueryErrorCode {
     match error.kind() {
         cuvs::ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
         cuvs::ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,

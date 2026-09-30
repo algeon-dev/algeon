@@ -1,7 +1,7 @@
 use super::{
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinLeafSourceStreamDynamicFilterStage,
-    BoundedSourceBatchingPolicy, ExecutionContext, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    SourceChunk, SourceChunkBatch, annotate_source_chunk_batching_reasons, plan_source_chunk_batches,
+    BoundedSourceBatchingPolicy, ExecutionContext, LocalParquetSource, MemoryControlPolicy, SourceChunk,
+    SourceChunkBatch, annotate_source_chunk_batching_reasons, plan_source_chunk_batches,
 };
 use crate::{rapids_backend::rapids_analysis_context, source::ParquetReadStrategy};
 
@@ -91,9 +91,6 @@ pub(super) fn join_leaf_source_batching_disabled_reason(source: &LocalParquetSou
     }
     if !source.partition_columns.is_empty() {
         return Some("source_gate:partition_columns");
-    }
-    if source.files.iter().any(LocalParquetFile::has_row_delete_files) {
-        return Some("source_gate:row_deletes");
     }
     None
 }

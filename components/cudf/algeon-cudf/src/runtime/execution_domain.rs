@@ -34,11 +34,15 @@
 //! operations execute on the correct GPU regardless of the calling thread's
 //! current CUDA device.
 
+#[cfg(any(test, feature = "test-hooks"))]
 use std::{
     collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+use std::{
     num::NonZeroU64,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -46,18 +50,20 @@ use std::{
 use super::{
     affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeAffinityOwner},
     binding_extension::BindingExtensions,
-    boundary::{BoundaryObservation, BoundaryObserverRef},
     device::DeviceId,
     device_guard::DeviceGuard,
     event::CudaEvent,
     placement::ExecutionPlacement,
     stream::CudaStream,
 };
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::core::error;
 use crate::core::{
-    error::{self, DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
+    error::{DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
     memory::DeviceMemoryResource,
 };
 
+#[cfg(any(test, feature = "test-hooks"))]
 static DEBUG_EXPLICIT_DOMAINS: OnceLock<Mutex<HashMap<u64, Arc<ExecutionDomain>>>> = OnceLock::new();
 static NEXT_WORKFLOW_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_BUNDLE_ID: AtomicU64 = AtomicU64::new(1);
@@ -74,7 +80,6 @@ pub(crate) struct ExecutionDomain {
     bundle_id: ExecutionBundleId,
     binding_id: ExecutionBindingId,
     affinity_owner: Arc<RuntimeAffinityOwner>,
-    boundary_observer: Option<BoundaryObserverRef>,
     retained_lifetimes: RetainedLifetimes,
     /// Parquet read/decompression scratch limit in bytes, or 0 for no limit.
     parquet_pass_read_limit: u64,
@@ -252,7 +257,6 @@ impl ExecutionDomain {
         device: DeviceId,
         stream: CudaStream,
         mr: DeviceMemoryResource,
-        boundary_observer: Option<BoundaryObserverRef>,
     ) -> Result<Arc<Self>> {
         mr.register_stream_for_retirement(&stream);
         Ok(Arc::new(Self {
@@ -266,11 +270,11 @@ impl ExecutionDomain {
             bundle_id: Self::next_bundle_id()?,
             binding_id: ExecutionBindingId::next()?,
             affinity_owner: RuntimeAffinityOwner::new()?,
-            boundary_observer,
             retained_lifetimes: RetainedLifetimes::default(),
         }))
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn debug_explicit(identity: u64) -> Result<Arc<Self>> {
         let cache = DEBUG_EXPLICIT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cache = cache.lock().map_err(|_| {
@@ -298,7 +302,6 @@ impl ExecutionDomain {
             bundle_id: Self::next_bundle_id()?,
             binding_id: ExecutionBindingId::next()?,
             affinity_owner: RuntimeAffinityOwner::new()?,
-            boundary_observer: None,
             retained_lifetimes: RetainedLifetimes::default(),
         });
         cache.insert(identity, Arc::clone(&domain));
@@ -376,16 +379,6 @@ impl ExecutionDomain {
             && Arc::ptr_eq(&left.affinity_owner, &right.affinity_owner)
     }
 
-    pub(crate) fn boundary_observer(&self) -> Option<BoundaryObserverRef> {
-        self.boundary_observer.clone()
-    }
-
-    pub(crate) fn observe_boundary(&self, observation: BoundaryObservation) {
-        if let Some(observer) = &self.boundary_observer {
-            observer.observe(observation);
-        }
-    }
-
     /// Synchronize this domain's stream so that the host can read device memory
     /// produced on it.
     ///
@@ -441,7 +434,6 @@ impl ExecutionDomain {
             bundle_id: input.bundle_id,
             binding_id: input.binding_id,
             affinity_owner: Arc::clone(&input.affinity_owner),
-            boundary_observer: input.boundary_observer.clone(),
             retained_lifetimes: input.retained_lifetimes.clone(),
             parquet_pass_read_limit: limit,
         })
@@ -504,7 +496,6 @@ impl ExecutionDomain {
             bundle_id: Self::next_bundle_id()?,
             binding_id: ExecutionBindingId::next()?,
             affinity_owner: Arc::clone(&input.affinity_owner),
-            boundary_observer: input.boundary_observer.clone(),
             retained_lifetimes: input.retained_lifetimes.clone(),
         }))
     }
@@ -527,7 +518,6 @@ impl ExecutionDomain {
             bundle_id: Self::next_bundle_id()?,
             binding_id: input.binding_id,
             affinity_owner: Arc::clone(&input.affinity_owner),
-            boundary_observer: input.boundary_observer.clone(),
             retained_lifetimes,
         }))
     }
@@ -547,11 +537,11 @@ impl ExecutionDomain {
             bundle_id: Self::next_bundle_id()?,
             binding_id: input.binding_id,
             affinity_owner: Arc::clone(&input.affinity_owner),
-            boundary_observer: input.boundary_observer.clone(),
             retained_lifetimes,
         }))
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn debug_retained_lifetime_count(&self) -> usize {
         self.retained_lifetimes.len()
     }
@@ -582,7 +572,6 @@ impl ExecutionDomain {
             bundle_id: Self::next_bundle_id()?,
             binding_id: input.binding_id,
             affinity_owner: Arc::clone(&source.affinity_owner),
-            boundary_observer: input.boundary_observer.clone(),
             retained_lifetimes: input.retained_lifetimes.clone(),
         }))
     }

@@ -606,7 +606,6 @@ fn process_partitioned_source_adjacent_independent_batch(
     match final_outputs {
         Ok(final_outputs) => output.outputs.extend(final_outputs),
         Err(error) => {
-            release_aligned_partials_reverse(output.outputs);
             return Err(error);
         },
     }
@@ -734,11 +733,7 @@ fn process_partitioned_source_adjacent_batch(
         }
         Ok(())
     })();
-    if let Err(error) = result {
-        release_nested_partition_inputs_reverse(pending.take().unwrap_or_default());
-        release_aligned_partials_reverse(outputs);
-        return Err(error);
-    }
+    result?;
     Ok(PartitionedSourceBatchOutput { pending, partition_count, outputs, samples, commits })
 }
 
@@ -806,8 +801,6 @@ fn process_partitioned_source_adjacent_final_batches(
         ) {
             Ok(mut partials) => outputs.append(&mut partials),
             Err(error) => {
-                release_partition_inputs_reverse(inputs);
-                release_aligned_partials_reverse(outputs);
                 return Err(error);
             },
         }
@@ -888,7 +881,6 @@ fn execute_source_adjacent_batch_local_reduction(
         ) {
             Ok(partitions) => partitions,
             Err(error) => {
-                release_aligned_partials_reverse(outputs);
                 return Err(error);
             },
         };
@@ -936,18 +928,11 @@ fn execute_source_adjacent_raw_source_batch(
                     raw_inputs.append(&mut right_inputs);
                     Ok(raw_inputs)
                 },
-                Err(error) => {
-                    release_raw_source_inputs_reverse(raw_inputs);
-                    Err(error)
-                },
+                Err(error) => Err(error),
             }
         },
         Err(error) => Err(error),
     }
-}
-
-fn release_raw_source_inputs_reverse(mut inputs: Vec<(Vec<SourceChunk>, RawSourceInput)>) {
-    while inputs.pop().is_some() {}
 }
 
 /// Plans the next raw source batch from the remaining chunks.
@@ -973,7 +958,6 @@ fn source_adjacent_raw_source_batches(
     max_batch_rows: Option<u64>,
 ) -> Vec<SourceChunkBatch> {
     if !bounded.source.partition_columns.is_empty()
-        || bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         || bounded.source.scan_limit.is_some()
         || bounded.source.reader_predicate.as_ref().is_some_and(|predicate| {
             !bounded.source.reader_predicate_is_supported(predicate, rapids_analysis_context())
@@ -1039,12 +1023,12 @@ fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[S
     BoundedSourceBatchingPolicy::default().source_adjacent_partition_batch_ready(
         inputs.len(),
         inputs.iter().map(|input| input.source_row_group_count).sum(),
-        source_adjacent_partition_batch_reserved_bytes(inputs),
+        source_adjacent_partition_batch_observed_device_bytes(inputs),
         bounded_device_budget_bytes(context),
     )
 }
 
-fn source_adjacent_partition_batch_reserved_bytes(inputs: &[SourceAdjacentPartitionInput]) -> u64 {
+fn source_adjacent_partition_batch_observed_device_bytes(inputs: &[SourceAdjacentPartitionInput]) -> u64 {
     if inputs.len() <= 1 {
         return 0;
     }
@@ -1178,7 +1162,6 @@ fn partition_source_adjacent_raw_chunk(
         ) {
             Ok(frame) => partitions.push(frame),
             Err(error) => {
-                release_optional_partials_reverse(partitions);
                 return Err(error);
             },
         }
@@ -1382,9 +1365,7 @@ fn concatenate_partition_inputs(
         node_id,
         partition_index,
         inputs,
-        ReservationKind::OperatorOutput,
         "source_adjacent_aggregate_partition_concat",
-        "source_adjacent_aggregate_partition_concat_output",
         "query_engine.bounded.aggregate.source_adjacent_partition_concat.budget_token",
         "failed to create source-adjacent aggregate partition concat budget token",
         "query_engine.bounded.aggregate.source_adjacent_partition_concat",
@@ -1465,38 +1446,25 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
                 partials.append(&mut right_partials);
                 Ok(partials)
             },
-            Err(error) => {
-                release_partials_reverse(partials);
-                Err(error)
-            },
+            Err(error) => Err(error),
         }
     } else {
-        execute_source_adjacent_partition_aggregate_with_upper_bound(
-            execution,
-            bounded,
-            stage,
-            partition_index,
-            input,
-            input_evidence,
-            upper_bound_bytes,
-        )
-        .map(|partial| vec![partial])
+        execute_source_adjacent_partition_aggregate(execution, bounded, stage, partition_index, input, input_evidence)
+            .map(|partial| vec![partial])
     }
 }
 
-fn execute_source_adjacent_partition_aggregate_with_upper_bound(
+fn execute_source_adjacent_partition_aggregate(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     stage: &'static str,
     partition_index: usize,
     input: CommittedPartial,
     input_evidence: PartialAggregateInputEvidence,
-    upper_bound_bytes: u64,
 ) -> Result<CommittedPartial> {
     let input_rows = input.frame.num_rows() as u64;
     let input_frame = input.frame;
     let task_id = source_adjacent_aggregate_task_id(bounded.aggregate_id, stage, format!("partition{partition_index}"));
-    let _ = upper_bound_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
         execution.device_budget_bytes(),
@@ -1657,9 +1625,7 @@ fn concatenate_committed_frames(
     node_id: NodeId,
     partition_index: usize,
     mut inputs: Vec<CommittedPartial>,
-    reservation_kind: ReservationKind,
     stage: &'static str,
-    output_boundary: &'static str,
     token_operation: &'static str,
     token_message: &'static str,
     concat_operation: &'static str,
@@ -1683,7 +1649,6 @@ fn concatenate_committed_frames(
     ) {
         Ok(token) => token,
         Err(error) => {
-            release_partials_reverse(inputs);
             return Err(error);
         },
     };
@@ -1703,7 +1668,6 @@ fn concatenate_committed_frames(
             )
         })
     };
-    release_partials_reverse(inputs);
 
     let concatenated = match concatenated {
         Ok(frame) => GpuDataFrame::new(frame),
@@ -1717,26 +1681,7 @@ fn concatenate_committed_frames(
             return Err(error);
         },
     };
-    let _ = (reservation_kind, output_boundary);
     Ok(ResidentGpuFrame::with_device_bytes(concatenated, output_bytes))
-}
-
-fn release_nested_partition_inputs_reverse(mut partitions: Vec<Vec<SourceAdjacentPartitionInput>>) {
-    while let Some(partition) = partitions.pop() {
-        release_partition_inputs_reverse(partition);
-    }
-}
-
-fn release_partition_inputs_reverse(mut inputs: Vec<SourceAdjacentPartitionInput>) {
-    while inputs.pop().is_some() {}
-}
-
-fn release_optional_partials_reverse(mut partials: Vec<Option<CommittedPartial>>) {
-    while partials.pop().is_some() {}
-}
-
-fn release_aligned_partials_reverse(mut partials: Vec<SourceAdjacentAlignedPartial>) {
-    while partials.pop().is_some() {}
 }
 
 fn unique_source_adjacent_partition_column_name(frame: &cudf::DataFrame) -> String {

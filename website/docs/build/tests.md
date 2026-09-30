@@ -141,10 +141,6 @@ The Arrow Flight SQL server is launched by the separate `algeon-server` package;
 `cugraph`, `cuvs`, `cuml`, and `nvml` features forward the corresponding
 adapter and engine capabilities.
 
-Iceberg remains part of the supported source design. Its Cargo feature and
-release acceptance resume after the upstream iceberg-rust 0.12 release is
-available and validated.
-
 ```bash
 cargo run -p algeon-server --all-features --bin algeon_server
 ```

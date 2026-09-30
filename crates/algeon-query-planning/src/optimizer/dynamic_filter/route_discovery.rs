@@ -14,15 +14,13 @@ use super::{
 };
 use crate::optimizer::NativeOptimizerChange;
 
-#[doc(hidden)]
-pub struct DynamicFilterRouteDiscoveryResult {
-    pub plan: QueryPlan,
-    pub change: NativeOptimizerChange,
-    pub diagnostics: DynamicFilterRouteDiscoveryDiagnostics,
+pub(crate) struct DynamicFilterRouteDiscoveryResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: NativeOptimizerChange,
+    pub(crate) diagnostics: DynamicFilterRouteDiscoveryDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_dynamic_filter_route_discovery(
+pub(crate) fn optimize_dynamic_filter_route_discovery(
     plan: QueryPlan,
     options: &DynamicFilterRouteDiscoveryOptions,
     ctx: AnalysisContext<'_>,

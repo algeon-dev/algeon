@@ -578,6 +578,7 @@ impl Scalar {
     pub(crate) fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
         let target = ExecutionDomain::debug_explicit(identity)?;
         let _consumer_fence = ExecutionDomain::insert_stream_dependency(
@@ -834,6 +835,7 @@ impl Scalar {
     }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_negative_string_length_error_for_test() -> Result<()> {
     Err(negative_string_length_error("scalar::string_value", -1))
 }

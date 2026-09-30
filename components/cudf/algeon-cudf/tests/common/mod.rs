@@ -2,10 +2,16 @@
 
 use std::{
     ffi::c_void,
+    fs::File,
     ptr,
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
+use arrow::{
+    array::{ArrayRef, Int64Array, Int64Builder, ListBuilder, StringArray, StructArray},
+    datatypes::Field,
+    record_batch::RecordBatch,
+};
 use cudf::{
     DataFrame, DataType, DeviceId, ErrorCode, Runtime, Series, TimestampResolution, TypeId,
     core::{
@@ -33,7 +39,9 @@ use cudf_sys::{
         cudf_test_table_view_fail_next_negative_num_columns, cudf_test_table_view_fail_next_negative_num_rows,
     },
 };
+use parquet::arrow::ArrowWriter;
 use rapids_interop::{ColumnLayout, InteropError, Placement};
+use tempfile::TempDir;
 
 pub fn sample_df() -> DataFrame {
     let ids = column_from_slice(&[3i32, 1, 4, 1, 5]).unwrap();
@@ -526,4 +534,54 @@ pub fn run_named_cases(cases: &[(&str, fn())]) {
         .map(|(name, _)| *name)
         .collect::<Vec<_>>();
     assert!(failed.is_empty(), "{} of {} cases failed: {}", failed.len(), cases.len(), failed.join(", "));
+}
+
+pub fn int64_array(values: &[i64]) -> ArrayRef {
+    Arc::new(Int64Array::from(values.to_vec()))
+}
+
+pub fn utf8_array(values: &[&str]) -> ArrayRef {
+    Arc::new(StringArray::from(values.to_vec()))
+}
+
+pub fn int64_list_array(rows: &[Vec<i64>]) -> ArrayRef {
+    let mut builder = ListBuilder::new(Int64Builder::new());
+    for row in rows {
+        builder.values().append_slice(row);
+        builder.append(true);
+    }
+    Arc::new(builder.finish())
+}
+
+pub fn nested_int64_list_array(rows: &[Vec<Vec<i64>>]) -> ArrayRef {
+    let mut builder = ListBuilder::new(ListBuilder::new(Int64Builder::new()));
+    for row in rows {
+        for inner in row {
+            builder.values().values().append_slice(inner);
+            builder.values().append(true);
+        }
+        builder.append(true);
+    }
+    Arc::new(builder.finish())
+}
+
+pub fn struct_array(children: Vec<(&str, ArrayRef)>) -> ArrayRef {
+    let fields = children
+        .into_iter()
+        .map(|(name, array)| (Arc::new(Field::new(name, array.data_type().clone(), false)), array))
+        .collect::<Vec<_>>();
+    Arc::new(StructArray::from(fields))
+}
+
+/// Read Arrow columns into a frame through Parquet. The host Arrow import has
+/// no Struct or List-of-List support, so Parquet is the route to nested cudf
+/// columns.
+pub fn nested_dataframe(runtime: &Runtime, columns: Vec<(&str, ArrayRef)>) -> DataFrame {
+    let batch = RecordBatch::try_from_iter(columns).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("nested.parquet");
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), batch.schema(), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    DataFrame::read_parquet(runtime, &path).unwrap()
 }

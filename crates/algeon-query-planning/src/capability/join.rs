@@ -35,23 +35,23 @@ pub struct KeyedHashJoinStrategyOptions {
 
 impl KeyedHashJoinStrategyOptions {
     /// Past this build scale, reusable hash residency is risky enough to prefer partitioning.
-    pub const DEFAULT_LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
+    pub(crate) const DEFAULT_LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
     /// Byte-size large-build gate used alongside row evidence.
-    pub const DEFAULT_LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
+    pub(crate) const DEFAULT_LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
     /// Large probes can turn one reusable build into too much gather/output pressure.
-    pub const DEFAULT_LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+    pub(crate) const DEFAULT_LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
     /// Builds below this row scale are cheap enough to prebuild even for one probe.
-    pub const DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
+    pub(crate) const DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
     /// Byte-size small-build gate used alongside row evidence.
-    pub const DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
+    pub(crate) const DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
     /// Small probes avoid the scheduling overhead of the partitioned path.
-    pub const DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
+    pub(crate) const DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
     /// Large-but-contained right builds can still be cheaper than partitioning
     /// when a left join's preserved probe side is already small.
-    pub const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD: u64 = 128_000_000;
+    pub(crate) const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD: u64 = 128_000_000;
     /// Byte guard paired with
     /// [`DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD`](Self::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD).
-    pub const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+    pub(crate) const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 
     pub fn large_keyed_hash_build_row_threshold(&self) -> u64 {
         self.large_keyed_hash_build_row_threshold
@@ -123,6 +123,7 @@ impl KeyedHashJoinStrategyOptions {
         self
     }
 
+    #[cfg(test)]
     pub fn with_large_keyed_hash_probe_bytes_threshold(mut self, bytes: u64) -> Self {
         self.large_keyed_hash_probe_bytes_threshold = bytes;
         self
@@ -138,18 +139,9 @@ impl KeyedHashJoinStrategyOptions {
         self
     }
 
+    #[cfg(test)]
     pub fn with_small_one_shot_probe_bytes_threshold(mut self, bytes: u64) -> Self {
         self.small_one_shot_probe_bytes_threshold = bytes;
-        self
-    }
-
-    pub fn with_max_small_probe_left_one_shot_build_row_threshold(mut self, rows: u64) -> Self {
-        self.max_small_probe_left_one_shot_build_row_threshold = rows;
-        self
-    }
-
-    pub fn with_max_small_probe_left_one_shot_build_bytes_threshold(mut self, bytes: u64) -> Self {
-        self.max_small_probe_left_one_shot_build_bytes_threshold = bytes;
         self
     }
 }
@@ -228,8 +220,7 @@ pub enum KeyedHashJoinStrategy {
 }
 
 impl KeyedHashJoinStrategy {
-    #[doc(hidden)]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::ReusableHashEqui => "reusable_hash_equi",
             Self::OneShotEqui => "one_shot_equi",
@@ -270,8 +261,7 @@ pub enum KeyedHashJoinStrategyDecision {
 }
 
 impl KeyedHashJoinStrategyDecision {
-    #[doc(hidden)]
-    pub fn facts(&self) -> &BTreeMap<&'static str, String> {
+    pub(crate) fn facts(&self) -> &BTreeMap<&'static str, String> {
         match self {
             Self::Selected { facts, .. } | Self::Rejected { facts, .. } => facts,
         }
@@ -289,8 +279,7 @@ pub enum KeylessConditionalJoinKind {
 }
 
 impl KeylessConditionalJoinKind {
-    #[doc(hidden)]
-    pub fn try_from_join(join: &JoinNode) -> Option<Self> {
+    pub(crate) fn try_from_join(join: &JoinNode) -> Option<Self> {
         if !join.spec.keys.is_empty()
             || join.spec.residual_predicate.is_none()
             || join.spec.output_projection.is_empty()
@@ -315,8 +304,7 @@ pub fn join_node_execution_capability(join: &JoinNode) -> Option<JoinExecutionCa
     single_join_node_execution_capability(join).or_else(|| multi_join_subtree_join_execution_capability(join))
 }
 
-#[doc(hidden)]
-pub fn single_join_node_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
+pub(crate) fn single_join_node_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
     if keyed_hash_join_capable(join) {
         return Some(JoinExecutionCapability::KeyedHash);
     }
@@ -338,8 +326,7 @@ pub fn single_join_node_execution_capability(join: &JoinNode) -> Option<JoinExec
     None
 }
 
-#[doc(hidden)]
-pub fn multi_join_subtree_join_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
+pub(crate) fn multi_join_subtree_join_execution_capability(join: &JoinNode) -> Option<JoinExecutionCapability> {
     if keyed_hash_join_capable(join) {
         return Some(JoinExecutionCapability::KeyedHash);
     }
@@ -361,8 +348,7 @@ pub fn keyed_hash_join_capable(join: &JoinNode) -> bool {
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
-#[doc(hidden)]
-pub fn keyed_hash_join_strategy_decision_for_plan(
+pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
     plan: &QueryPlan,
     node_id: NodeId,
     join: &JoinNode,
@@ -375,8 +361,7 @@ pub fn keyed_hash_join_strategy_decision_for_plan(
     )
 }
 
-#[doc(hidden)]
-pub fn keyed_hash_join_strategy_decision_for_plan_with_options(
+pub(crate) fn keyed_hash_join_strategy_decision_for_plan_with_options(
     plan: &QueryPlan,
     node_id: NodeId,
     join: &JoinNode,
@@ -447,8 +432,7 @@ pub fn keyed_hash_join_strategy_decision(
     keyed_hash_join_strategy_decision_with_options(join, input, &KeyedHashJoinStrategyOptions::default())
 }
 
-#[doc(hidden)]
-pub fn keyed_hash_join_strategy_decision_with_options(
+pub(crate) fn keyed_hash_join_strategy_decision_with_options(
     join: &JoinNode,
     input: KeyedHashJoinStrategyInputFacts,
     options: &KeyedHashJoinStrategyOptions,
@@ -746,8 +730,7 @@ pub fn partitioned_keyed_residual_join_supported(join: &JoinNode) -> bool {
     !keyed_residual_left_match_join_capable(join) && keyed_residual_mixed_join_capable(join)
 }
 
-#[doc(hidden)]
-pub fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
+pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
     !join.spec.keys.is_empty()
         && !join.spec.output_projection.is_empty()
         && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
@@ -756,8 +739,7 @@ pub fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
-#[doc(hidden)]
-pub fn join_residual_requires_post_join_filter(join: &JoinNode) -> bool {
+pub(crate) fn join_residual_requires_post_join_filter(join: &JoinNode) -> bool {
     join.spec.residual_predicate.as_ref().is_some_and(expr_requires_post_join_filter)
 }
 
@@ -918,16 +900,14 @@ pub fn keyed_filtered_semi_anti_join_capable(join: &JoinNode) -> bool {
         && (join.spec.join_type != JoinType::LeftMark || join.spec.mark_column_name.is_some())
 }
 
-#[doc(hidden)]
-pub fn projected_cross_join_capable(join: &JoinNode) -> bool {
+pub(crate) fn projected_cross_join_capable(join: &JoinNode) -> bool {
     join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()
         && join.spec.join_type == JoinType::Cross
 }
 
-#[doc(hidden)]
-pub fn keyless_outer_cross_join_capable(join: &JoinNode) -> bool {
+pub(crate) fn keyless_outer_cross_join_capable(join: &JoinNode) -> bool {
     join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()
@@ -968,8 +948,7 @@ pub fn keyed_residual_left_match_join_capable(join: &JoinNode) -> bool {
         && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
 }
 
-#[doc(hidden)]
-pub fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
+pub(crate) fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
     matches!(join.spec.join_type, JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti)
         && keyed_residual_mixed_join_capable(join)
 }

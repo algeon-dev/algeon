@@ -32,8 +32,7 @@ pub struct PlanFacts {
 }
 
 impl PlanFacts {
-    #[doc(hidden)]
-    pub fn device(output_schema: SchemaRef, schema_behavior: SchemaBehavior) -> Self {
+    pub(crate) fn device(output_schema: SchemaRef, schema_behavior: SchemaBehavior) -> Self {
         Self { output_schema, output_ordering: Vec::new(), placement: DataPlacement::Device, schema_behavior }
     }
 
@@ -68,7 +67,7 @@ impl fmt::Display for DataPlacement {
 /// Describes how a node's output schema relates to its inputs.
 ///
 /// This is a diagnostic and validation fact. It is intentionally coarse: the
-/// concrete schema is still carried by [`PlanFacts::output_schema`].
+/// concrete schema is still carried by `PlanFacts::output_schema`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SchemaBehavior {
     /// Schema is established by a source.

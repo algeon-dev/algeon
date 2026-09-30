@@ -218,6 +218,7 @@ pub(crate) fn native_execution_metrics(plan: &dyn ExecutionPlan) -> Vec<Executio
 }
 
 /// Whether `plan` contains a native execution wrapper.
+#[cfg(feature = "server")]
 pub(crate) fn contains_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
     native_execution_wrapper_metrics(plan).is_some()
         || plan.children().into_iter().any(|child| contains_native_execution_wrapper(child.as_ref()))

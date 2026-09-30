@@ -9,7 +9,9 @@ use super::{
     GraphResidencyPlanAnalysis, GraphSourceFingerprintBypassReason, Schema, as_algeon_native_composed_exec,
     as_algeon_native_exec, graph_residency_descriptor_for_edge_plan, is_logical_vertex_type, native_algorithm,
 };
-use crate::native::{graph_residency_descriptor_for_datafusion_local_parquet_scan, lower_physical_plan_to_native};
+use crate::native::{
+    FooterScope, graph_residency_descriptor_for_datafusion_local_parquet_scan, lower_physical_plan_to_native,
+};
 
 pub(super) fn cugraph_graph_residency_descriptor(
     spec: &CugraphAlgorithmSpec,
@@ -52,6 +54,7 @@ pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
 ) -> GraphResidencyPlanAnalysis {
+    let _footers = FooterScope::enter();
     let direct_parquet_descriptor = edge_source
         .as_ref()
         .downcast_ref::<DataSourceExec>()

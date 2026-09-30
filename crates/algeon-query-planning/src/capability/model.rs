@@ -5,10 +5,7 @@
 //! add new labels instead of reusing old whole-plan family names.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId,
-    aggregate::AggregateStateContract,
-};
+use super::{AggregateFunction, GraphAlgorithm, JoinSide, JoinType, NodeId, aggregate::AggregateStateContract};
 use crate::plan::{
     EdgeDedupStrategy, EdgeWeightCombiner, MlAlgorithm, MlRelationRole, VectorAlgorithm, VectorAlgorithmNode,
     VectorAlgorithmParams,
@@ -27,7 +24,7 @@ pub enum CapabilityScope {
 
 impl CapabilityScope {
     /// Stable snake-case label emitted in contract diagnostics.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Node => "node",
             Self::Edge => "edge",
@@ -36,53 +33,27 @@ impl CapabilityScope {
     }
 }
 
-/// Rejection code for precision-sensitive floating statistical aggregates over
-/// join pipelines whose final output is a full sort. The aggregate itself may
-/// have a DataFusion-exact host Welford implementation, but capability-envelope
-/// admission still needs a plan-level order/batch and full-sort bound evidence.
-pub const STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS: &str =
-    "statistical_join_final_sort_requires_exact_contracts";
-
 /// A symbolic dependency that a conditional capability is waiting for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintRef {
     /// Graph scope that owns the prerequisite.
-    pub scope: ConstraintScope,
+    pub(crate) scope: ConstraintScope,
     /// Stable local constraint name within that scope.
-    pub name: &'static str,
+    pub(crate) name: &'static str,
 }
 
 impl ConstraintRef {
     /// Creates a prerequisite reference owned by a node.
-    pub const fn node(node_id: NodeId, name: &'static str) -> Self {
+    pub(crate) const fn node(node_id: NodeId, name: &'static str) -> Self {
         Self { scope: ConstraintScope::Node(node_id), name }
-    }
-
-    /// Creates a prerequisite reference owned by a producer-consumer edge.
-    pub const fn edge(producer: NodeId, consumer: EdgeConsumer, name: &'static str) -> Self {
-        Self { scope: ConstraintScope::Edge { producer, consumer }, name }
-    }
-
-    /// Creates a prerequisite reference owned by a subgraph invariant.
-    pub const fn invariant(invariant_id: InvariantId, name: &'static str) -> Self {
-        Self { scope: ConstraintScope::Invariant(invariant_id), name }
     }
 }
 
 /// The graph scope where a constraint belongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ConstraintScope {
+pub(crate) enum ConstraintScope {
     /// Constraint attached to one native plan node.
     Node(NodeId),
-    /// Constraint attached to one producer-consumer boundary.
-    Edge {
-        /// Producer node on the dependency edge.
-        producer: NodeId,
-        /// Consumer endpoint on the dependency edge.
-        consumer: EdgeConsumer,
-    },
-    /// Constraint attached to a non-local subgraph invariant.
-    Invariant(InvariantId),
 }
 
 /// Capability result for a node, edge, or invariant.
@@ -110,7 +81,7 @@ impl CapabilityDecision {
     }
 
     /// Returns the stable rejection code for rejected decisions.
-    pub const fn rejection_reason(&self) -> Option<&'static str> {
+    pub(crate) const fn rejection_reason(&self) -> Option<&'static str> {
         match self {
             Self::Rejected { reason, .. } => Some(reason),
             Self::Satisfied | Self::Conditional { .. } => None,
@@ -118,7 +89,7 @@ impl CapabilityDecision {
     }
 
     /// Returns the stable rejection fact map for rejected decisions.
-    pub fn rejection_facts(&self) -> Option<&BTreeMap<&'static str, String>> {
+    pub(crate) fn rejection_facts(&self) -> Option<&BTreeMap<&'static str, String>> {
         match self {
             Self::Rejected { facts, .. } => Some(facts),
             Self::Satisfied | Self::Conditional { .. } => None,
@@ -136,7 +107,7 @@ pub struct NodeCapability {
     /// Whether this node is executable before considering downstream edges.
     pub executable: CapabilityDecision,
     /// Properties this node makes available to consumers.
-    pub produced_properties: Vec<ProducedProperty>,
+    pub(crate) produced_properties: Vec<ProducedProperty>,
     /// Aggregate state contract, set on aggregate nodes with a classifiable
     /// spec; edges consult it instead of re-deriving setop/dedup proofs.
     pub aggregate_state: Option<AggregateStateContract>,
@@ -257,15 +228,15 @@ pub enum ResidualRequirement {
 
 /// Properties produced by a node for downstream edge contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProducedProperty {
+pub(crate) enum ProducedProperty {
     /// Output is a resident cudf frame available to downstream consumers.
-    ResidentFrame,
+    Resident,
     /// Output is a grouped aggregate frame.
-    GroupedFrame,
+    Grouped,
     /// Output is a one-row scalar aggregate frame.
-    ScalarFrame,
+    Scalar,
     /// Output ordering is established for downstream order-sensitive consumers.
-    OrderedFrame,
+    Ordered,
 }
 
 /// Producer-consumer capability for one dependency edge.
@@ -416,8 +387,7 @@ pub enum VectorInputRole {
 }
 
 impl VectorInputRole {
-    #[doc(hidden)]
-    pub fn for_vector_input(vector: &VectorAlgorithmNode, input_index: usize) -> Self {
+    pub(crate) fn for_vector_input(vector: &VectorAlgorithmNode, input_index: usize) -> Self {
         match (&vector.spec.params, input_index) {
             (
                 VectorAlgorithmParams::BruteForceKnn(_)
@@ -441,18 +411,6 @@ impl VectorInputRole {
             _ => Self::Input,
         }
     }
-
-    /// Stable snake-case diagnostic label.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Dataset => "dataset",
-            Self::Queries => "queries",
-            Self::Input => "input",
-            Self::X => "x",
-            Self::Y => "y",
-            Self::InitialCentroids => "initial_centroids",
-        }
-    }
 }
 
 /// Stable identifier for an invariant inside one analysis result.
@@ -461,7 +419,7 @@ pub struct InvariantId(pub usize);
 
 impl InvariantId {
     /// Returns the zero-based index within one capability analysis.
-    pub const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self.0
     }
 }
@@ -470,15 +428,15 @@ impl InvariantId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubgraphInvariant {
     /// Stable identifier within this capability analysis result.
-    pub invariant_id: InvariantId,
+    pub(crate) invariant_id: InvariantId,
     /// The kind of non-local graph property being proven.
     pub kind: SubgraphInvariantKind,
     /// Nodes covered by the invariant.
     pub nodes: Vec<NodeId>,
     /// Scheduling property required from the compiled pipeline.
-    pub required_schedule: ScheduleConstraint,
+    pub(crate) required_schedule: ScheduleConstraint,
     /// Resident resources whose lifetime participates in the evidence.
-    pub required_resources: Vec<ResidentResource>,
+    pub(crate) required_resources: Vec<ResidentResource>,
     /// Whether the invariant is satisfied for this graph.
     pub decision: CapabilityDecision,
 }
@@ -491,17 +449,6 @@ pub enum SubgraphInvariantKind {
     BuildBeforeProbe {
         /// Join whose build side must be scheduled before its probe side.
         join_id: NodeId,
-    },
-    /// The reachable join region below the root is closed over supported join,
-    /// projection, filter, and source nodes.
-    ///
-    /// Retired in Step S3: multi-join aggregate scope is decided by the
-    /// compiled `Aggregate`/`JoinBuild`/`JoinProbe`/`JoinMaterialize` task
-    /// contracts, not by a plan-shape invariant. The variant stays so
-    /// downstream exhaustive matches keep compiling.
-    ClosedJoinSubtree {
-        /// Root join of the closed resident join region.
-        root_join_id: NodeId,
     },
     /// The compiled graph can schedule all reachable joins in dependency order
     /// so build/probe residency requirements are not violated by join nesting.
@@ -535,12 +482,6 @@ pub enum SubgraphInvariantKind {
         /// Join whose residual predicate is being checked.
         join_id: NodeId,
     },
-    /// A root projection is bounded by its immediate fetch-bearing limit input.
-    ///
-    /// Retired in Step S1: the limit/projection hand-off is decided by the
-    /// compiled `Limit`/`Unary` task contracts, not by a plan-shape invariant.
-    /// The variant stays so downstream exhaustive matches keep compiling.
-    LimitBoundedProjection,
     /// A floating statistical aggregate participates in a join pipeline whose
     /// final output is a full sort; capability-envelope admission needs an explicit
     /// exactness envelope before this can replace the DataFusion baseline.
@@ -553,7 +494,7 @@ pub enum SubgraphInvariantKind {
 
 /// Scheduling evidence required by an invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ScheduleConstraint {
+pub(crate) enum ScheduleConstraint {
     /// No non-local scheduling constraint is required.
     None,
     /// Build-side work must complete before probe-side work.
@@ -593,7 +534,7 @@ pub struct CapabilityRejectionProjection {
     /// Stable rejection category for report/fact projections.
     pub category: CapabilityRejectionCategory,
     /// Contract scope used by capability-envelope reports.
-    pub contract_scope: CapabilityScope,
+    pub(crate) contract_scope: CapabilityScope,
     /// Stable diagnostic boundary label.
     pub boundary: &'static str,
     /// Stable rejection code.
@@ -623,7 +564,7 @@ pub enum CapabilityRejectionCategory {
 
 impl CapabilityRejectionCategory {
     /// Stable snake-case label emitted in diagnostics.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::UnsupportedExpressionFamily => "unsupported_expression_family",
             Self::UnsupportedArrowDtype => "unsupported_arrow_dtype",
@@ -698,40 +639,7 @@ pub enum CapabilityEnvelope {
     ComposedPipeline,
 }
 
-impl CapabilityEnvelope {
-    /// Stable snake-case label emitted in diagnostics.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::RootJoin => "root_join",
-            Self::SingleJoinPostRootPipeline => "single_join_post_root_pipeline",
-            Self::ClosedMultiJoinSubgraph => "closed_multi_join_subgraph",
-            Self::MultiJoinAggregateOverJoinSubplanTopK => "multi_join_aggregate_over_join_subplan_topk",
-            Self::RootTopKJoinAggregate => "root_topk_join_aggregate",
-            Self::RootFullSortJoinAggregate => "root_full_sort_join_aggregate",
-            Self::ExactStatisticalJoinFinalFullSort => "exact_statistical_join_final_full_sort",
-            Self::TolerantStatisticalJoinFinalFullSort => "tolerant_statistical_join_final_full_sort",
-            Self::ProjectionGlobalLimit => "projection_global_limit",
-            Self::ProjectionScalarSetop => "projection_scalar_setop",
-            Self::MixedKeyedResidualJoinResidentGroupedAggregateInput => {
-                "mixed_keyed_residual_join_resident_grouped_aggregate_input"
-            },
-            Self::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK => {
-                "hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk"
-            },
-            Self::RollupRankTopKAfterAggregateJoinPushdown => "rollup_rank_topk_after_aggregate_join_pushdown",
-            Self::KeyedHashJoinResidentSubplan => "keyed_hash_join_resident_subplan",
-            Self::KeylessConditionalJoinInputSubplan => "keyless_conditional_join_input_subplan",
-            Self::KeylessConditionalJoinAggregateOverJoinSubplanInputs => {
-                "keyless_conditional_join_aggregate_over_join_subplan_inputs"
-            },
-            Self::MultiJoinResidentGroupedAggregateSubqueryFilter => {
-                "multi_join_resident_grouped_aggregate_subquery_filter"
-            },
-            Self::UnionPipeline => "union_pipeline",
-            Self::ComposedPipeline => "composed_pipeline",
-        }
-    }
-}
+impl CapabilityEnvelope {}
 
 /// Capability authority result for capability-envelope selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -761,10 +669,8 @@ pub struct CapabilityAnalysis {
     pub edges: Vec<EdgeContract>,
     /// Non-local scheduling, lifetime, and shared-resource facts.
     pub invariants: Vec<SubgraphInvariant>,
-    /// Node-local aggregate strategy capability facts.
-    pub aggregate_strategies: Vec<AggregateStrategyCapability>,
     /// Capability root-join compiled-envelope admission.
-    pub root_join_admission: CapabilityDecision,
+    pub(crate) root_join_admission: CapabilityDecision,
     /// Capability multi-join aggregate/top-k compiled-envelope admission.
     pub multi_join_aggregate_over_join_subplan_topk_admission: CapabilityDecision,
     /// Capability root top-k join/aggregate envelope admission.
@@ -772,13 +678,13 @@ pub struct CapabilityAnalysis {
     /// Capability root full-sort join/aggregate envelope admission.
     pub root_full_sort_join_aggregate_admission: CapabilityDecision,
     /// Capability exact statistical join/final-full-sort envelope admission.
-    pub exact_statistical_join_final_full_sort_admission: CapabilityDecision,
+    pub(crate) exact_statistical_join_final_full_sort_admission: CapabilityDecision,
     /// Capability mixed keyed/residual resident-aggregate compiled-envelope admission.
     pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
     /// Capability hash-join resident-aggregate post-join/top-k envelope admission.
     pub hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: CapabilityDecision,
     /// Capability rollup/rank/top-k post aggregate-join-pushdown envelope admission.
-    pub rollup_rank_topk_after_aggregate_join_pushdown_admission: CapabilityDecision,
+    pub(crate) rollup_rank_topk_after_aggregate_join_pushdown_admission: CapabilityDecision,
     /// Capability shared resident-subplan compiled-envelope admission.
     pub keyed_hash_join_resident_subplan_admission: CapabilityDecision,
     /// Capability keyless conditional input-subplan envelope admission.
@@ -788,7 +694,7 @@ pub struct CapabilityAnalysis {
     /// Capability multi-join resident aggregate subquery-filter envelope admission.
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
     /// Capability union compiled-envelope admission.
-    pub union_pipeline_admission: CapabilityDecision,
+    pub(crate) union_pipeline_admission: CapabilityDecision,
     /// Sink-reachable node ids of the analyzed plan.
     ///
     /// Local rejections on nodes, edges, and invariants outside this set never

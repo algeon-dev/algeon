@@ -38,7 +38,7 @@ pub(crate) use query_planning::prepared::{
     datafusion_exact_host_group_key_supported, lower_column_expr, lower_named_column_expr, lower_sort_spec,
 };
 
-pub fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
+pub(crate) fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
     match expr {
         Expr::Column(column) => Ok(col(column.name())),
         Expr::Literal(value) => lower_literal(value),
@@ -108,7 +108,7 @@ pub fn lower_expr(expr: &Expr) -> Result<CudfExpr> {
     }
 }
 
-pub fn lower_filter_predicate_expr(expr: &Expr) -> Result<CudfExpr> {
+pub(crate) fn lower_filter_predicate_expr(expr: &Expr) -> Result<CudfExpr> {
     match expr {
         Expr::Not(expr) => Ok(!lower_filter_predicate_expr(expr)?),
         Expr::IsNull(expr) => Ok(lower_filter_predicate_expr(expr)?.is_null()),
@@ -122,8 +122,7 @@ pub fn lower_filter_predicate_expr(expr: &Expr) -> Result<CudfExpr> {
     }
 }
 
-#[doc(hidden)]
-pub fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<CudfExpr> {
+pub(crate) fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<CudfExpr> {
     lower_expr_with_expected_type(&output.expr, Some(output.field.data_type()))
 }
 
@@ -195,8 +194,7 @@ fn is_integer_type(data_type: &ArrowDataType) -> bool {
     )
 }
 
-#[doc(hidden)]
-pub fn lower_literal(value: &LiteralValue) -> Result<CudfExpr> {
+pub(crate) fn lower_literal(value: &LiteralValue) -> Result<CudfExpr> {
     match value {
         LiteralValue::Boolean(value) => Ok(lit(*value)),
         LiteralValue::Int8(value) => Ok(lit(*value)),

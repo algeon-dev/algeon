@@ -27,11 +27,11 @@ pub(super) fn materialize_bounded_to_host(
     executable_schema: &SchemaRef,
     output_schema: &SchemaRef,
 ) -> Result<RecordBatch> {
-    let input_reserved_bytes = input.device_bytes();
+    let input_device_bytes = input.device_bytes();
     materialize_bounded_frame_to_host(
         execution,
         input.frame,
-        input_reserved_bytes,
+        input_device_bytes,
         final_node_id,
         executable_schema,
         output_schema,

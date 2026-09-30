@@ -2,8 +2,6 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use serde_json::{Value, json};
-
 use crate::{
     admission::BoundedPipelineAdmission,
     capability::{
@@ -13,7 +11,6 @@ use crate::{
     correlation::{QueryId, TraceId},
     error::{QueryError, QueryErrorCode, Result},
     mode::CapabilityEnvelopeStatus,
-    pipeline::CompiledPipeline,
     plan::NodeId,
 };
 
@@ -33,12 +30,6 @@ impl CapabilityContractReport {
         decision_rows: Vec<CapabilityDecisionRow>,
     ) -> Result<Self> {
         Self::new(execution_mode, decision_rows)
-    }
-
-    /// Builds a report after validating the compiled pipeline.
-    pub fn from_compiled_pipeline(analysis: &CapabilityAnalysis, pipeline: &CompiledPipeline) -> Result<Self> {
-        pipeline.validate()?;
-        Self::from_capability_analysis(analysis)
     }
 
     /// Builds a report from an admitted artifact.
@@ -82,16 +73,6 @@ impl CapabilityContractReport {
         self.execution_mode == CapabilityEnvelopeStatus::Admitted
     }
 
-    /// Returns the query-wide diagnostic correlation id, when assigned.
-    pub fn query_id(&self) -> Option<&QueryId> {
-        self.query_id.as_ref()
-    }
-
-    /// Returns the optional parent trace id.
-    pub fn trace_id(&self) -> Option<&TraceId> {
-        self.trace_id.as_ref()
-    }
-
     /// Returns this report with a query id assigned.
     #[must_use]
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
@@ -104,24 +85,6 @@ impl CapabilityContractReport {
     pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
         self.trace_id = Some(trace_id.into());
         self
-    }
-
-    /// Serializes each decision as stable comma-separated key/value pairs.
-    pub fn stable_kv_rows(&self) -> Vec<String> {
-        self.decision_rows.iter().map(CapabilityDecisionRow::to_stable_kv_row).collect()
-    }
-
-    /// Serializes the report.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "schema": "query_engine.capability_report.v2",
-            "query_id": self.query_id.as_ref().map(QueryId::as_str),
-            "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
-            "triage": self.triage_summary().to_json(),
-            "execution_mode": self.execution_mode.as_str(),
-            "capability_ready": self.is_ready(),
-            "decision_rows": self.decision_rows.iter().map(CapabilityDecisionRow::to_json).collect::<Vec<_>>(),
-        })
     }
 
     fn new(execution_mode: CapabilityEnvelopeStatus, decision_rows: Vec<CapabilityDecisionRow>) -> Result<Self> {
@@ -215,20 +178,6 @@ impl CapabilityDecisionRow {
             self.status.as_str(),
         )
     }
-
-    pub fn to_json(&self) -> Value {
-        json!({
-            "execution_mode": self.execution_mode.as_str(),
-            "scope": self.scope.as_str(),
-            "decision_id": self.decision_id.to_string(),
-            "owner": self.owner.to_string(),
-            "category": self.category.map(CapabilityRejectionCategory::as_str),
-            "boundary": self.boundary,
-            "reason": self.reason,
-            "status": self.status.as_str(),
-            "facts": self.facts,
-        })
-    }
 }
 
 impl fmt::Display for CapabilityDecisionRow {
@@ -256,7 +205,7 @@ pub enum CapabilityDecisionStatus {
 }
 
 impl CapabilityDecisionStatus {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Deferred => "deferred",
             Self::Rejected => "rejected",

@@ -928,7 +928,7 @@ fn option_error(code: &'static str, message: impl Into<String>) -> GpuOptionVali
 
 /// Vector algorithm identity carried by the native IR.
 ///
-/// Ref: https://docs.nvidia.com/cuvs/api-reference/c-api-documentation
+/// Ref: <https://docs.nvidia.com/cuvs/api-reference/c-api-documentation>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VectorAlgorithm {
     /// Exact brute-force k-nearest-neighbor search.

@@ -129,6 +129,7 @@ impl DeviceMemoryResource {
     /// `handle` must be a non-null, uniquely owned memory-resource handle
     /// created for `device`. It must not be borrowed elsewhere and must be
     /// destroyed with `cudf_memory_resource_destroy` exactly once.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) unsafe fn adopt_owned_for_testing(
         handle: cudf_sys::cudf_memory_resource_handle,
         device: DeviceId,

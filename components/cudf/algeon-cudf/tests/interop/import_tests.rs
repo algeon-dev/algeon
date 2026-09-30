@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use cudf::{
     DataFrame, Runtime, Series, TypeId,
     core::{Column, Table},
-    frame::dataframe::JsonReadOptions,
     ops::dictionary,
     testing::{interop::column_export_with_lease_backend_for_test, prelude::*},
 };
@@ -11,7 +10,6 @@ use rapids_interop::{
     BufferBinding, ColumnLayout, InteropError, InteropErrorKind, PhysicalValidity, PreparedAccess,
     PreparedColumnExport, PreparedExportProfile, SemanticColumn,
 };
-use tempfile::TempDir;
 
 use crate::common::{self, run_named_cases};
 
@@ -19,13 +17,26 @@ fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()) }.to_vec()
 }
 
-fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join(filename);
-    std::fs::write(&path, rows).unwrap();
+fn nested_source_frame() -> DataFrame {
     let runtime = Runtime::builder().build().unwrap();
-    DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
-        .unwrap()
+    common::nested_dataframe(
+        &runtime,
+        vec![
+            ("category", common::utf8_array(&["beta", "alpha", "beta"])),
+            (
+                "nested",
+                common::nested_int64_list_array(&[vec![vec![1, 2], vec![3]], vec![vec![], vec![4, 5]], vec![vec![6]]]),
+            ),
+            (
+                "point",
+                common::struct_array(vec![
+                    ("coords", common::int64_list_array(&[vec![1, 2], vec![], vec![3]])),
+                    ("label", common::utf8_array(&["one", "two", "three"])),
+                ]),
+            ),
+            ("id", common::int64_array(&[10, 20, 30])),
+        ],
+    )
 }
 
 fn binding_map<'a>(bindings: &'a [BufferBinding<'a>]) -> HashMap<u32, &'a BufferBinding<'a>> {
@@ -287,8 +298,8 @@ fn assert_named_numeric_dataframe(imported: &DataFrame, left_name: &str, right_n
     assert_eq!(imported.series(right_name).unwrap().to_vec_strict::<i64>().unwrap(), vec![10, 20, 30]);
 }
 
-fn dictionary_backed_nested_frame(filename: &str, rows: &str) -> DataFrame {
-    let frame = read_json_dataframe(filename, rows);
+fn dictionary_backed_nested_frame() -> DataFrame {
+    let frame = nested_source_frame();
     let category = frame.series("category").unwrap();
     let nested = frame.series("nested").unwrap();
     let point = frame.series("point").unwrap();
@@ -379,14 +390,13 @@ mod column_import_contracts {
     }
 
     fn prepared_list_column_export_import_round_trips_recursive_nested_children() {
-        let frame = read_json_dataframe(
-            "prepared_import_lists.jsonl",
-            "{\"nested\":[[1,2],[3]]}
-\
-             {\"nested\":[[],[4,5]]}
-\
-             {\"nested\":[[6]]}
-",
+        let runtime = Runtime::builder().build().unwrap();
+        let frame = common::nested_dataframe(
+            &runtime,
+            vec![(
+                "nested",
+                common::nested_int64_list_array(&[vec![vec![1, 2], vec![3]], vec![vec![], vec![4, 5]], vec![vec![6]]]),
+            )],
         );
         let nested = frame.series("nested").unwrap();
         let source = nested.as_column();
@@ -530,15 +540,7 @@ mod table_import_contracts {
     }
 
     fn prepared_device_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
-        let frame = dictionary_backed_nested_frame(
-            "prepared_import_nested.jsonl",
-            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
-\
-             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
-\
-             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
-",
-        );
+        let frame = dictionary_backed_nested_frame();
         let (source, _names) = frame.try_into_table().unwrap();
         let export = source.try_prepare_device_table_export().unwrap();
         let destination_runtime = common::sample_runtime();
@@ -553,15 +555,7 @@ mod table_import_contracts {
     }
 
     fn prepared_host_table_export_import_round_trips_recursive_nested_columns_into_destination_runtime() {
-        let frame = dictionary_backed_nested_frame(
-            "prepared_host_import_nested.jsonl",
-            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
-\
-             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
-\
-             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
-",
-        );
+        let frame = dictionary_backed_nested_frame();
         let (source, _names) = frame.try_into_table().unwrap();
         let export = source.try_prepare_host_table_export().unwrap();
         let destination_runtime = common::sample_runtime();
@@ -605,15 +599,7 @@ mod dataframe_import_contracts {
     use super::*;
 
     fn dataframe_import_from_prepared_table_export_uses_root_names_for_recursive_nested_layouts() {
-        let frame = read_json_dataframe(
-            "prepared_dataframe_import_nested.jsonl",
-            "{\"category\":\"beta\",\"nested\":[[1,2],[3]],\"point\":{\"coords\":[1,2],\"label\":\"one\"},\"id\":10}
-\
-             {\"category\":\"alpha\",\"nested\":[[],[4,5]],\"point\":{\"coords\":[],\"label\":\"two\"},\"id\":20}
-\
-             {\"category\":\"beta\",\"nested\":[[6]],\"point\":{\"coords\":[3],\"label\":\"three\"},\"id\":30}
-",
-        );
+        let frame = nested_source_frame();
 
         let export_frame = frame.clone();
         let export = export_frame.try_prepare_device_table_export().unwrap();

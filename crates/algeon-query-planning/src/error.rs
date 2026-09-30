@@ -26,9 +26,8 @@ pub type Result<T> = std::result::Result<T, QueryError>;
 /// Stable, machine-readable native-engine error codes.
 ///
 /// Codes describe the closest actionable cause. [`QueryErrorKind`] and
-/// [`QueryErrorStatus`] are derived from the code by [`kind_for_code`] and
-/// [`status_for_code`]; consumers should not infer those policies from variant
-/// names.
+/// [`QueryErrorStatus`] are derived from the code; consumers should not infer
+/// those policies from variant names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorCode {
     /// Query execution was cancelled by the caller.
@@ -240,7 +239,7 @@ pub enum QueryErrorKind {
 
 impl QueryErrorKind {
     /// Stable snake-case category label used in reports and error text.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Cancelled => "cancelled",
             Self::Planning => "planning",
@@ -302,7 +301,7 @@ impl fmt::Display for QueryErrorStatus {
 /// `kind` is the broad bucket used for diagnostics and aggregation. It is less
 /// specific than [`QueryErrorCode`] and should remain stable for consumers that
 /// group failures without depending on every code variant.
-pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
+pub(crate) const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
     match code {
         QueryErrorCode::Cancelled => QueryErrorKind::Cancelled,
         QueryErrorCode::UnsupportedPlanShape
@@ -347,7 +346,7 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 /// dependency failure that requires escalation or intervention, while
 /// [`QueryErrorStatus::Permanent`] means the request, input, configuration, or
 /// code must change before the same operation can succeed.
-pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
+pub(crate) const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
         QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
         QueryErrorCode::CudfResourceExhausted
@@ -383,8 +382,7 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     }
 }
 
-#[doc(hidden)]
-pub const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageCode {
+pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> TriageCode {
     match code {
         QueryErrorCode::Cancelled => TriageCode::Cancelled,
         QueryErrorCode::UnsupportedPlanShape => TriageCode::UnsupportedPlanShape,
@@ -513,8 +511,7 @@ impl AttemptFailureCode {
     }
 }
 
-#[doc(hidden)]
-pub const fn attempt_failure_code_for_query_error(code: QueryErrorCode) -> AttemptFailureCode {
+pub(crate) const fn attempt_failure_code_for_query_error(code: QueryErrorCode) -> AttemptFailureCode {
     match code {
         QueryErrorCode::Cancelled => AttemptFailureCode::Cancelled,
         QueryErrorCode::UnsupportedPlanShape => AttemptFailureCode::UnsupportedPlanShape,
@@ -572,13 +569,13 @@ pub struct Facts {
 }
 
 /// Fact key recording rejected duplicate or empty decoration keys.
-pub const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
+pub(crate) const FACT_COLLISION_KEYS: &str = "fact_collision_keys";
 
 /// Placeholder recorded when a decoration key is empty.
-pub const EMPTY_FACT_KEY: &str = "<empty>";
+pub(crate) const EMPTY_FACT_KEY: &str = "<empty>";
 
 impl Facts {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -648,7 +645,7 @@ pub enum CugraphAllocationSource {
 }
 
 impl CugraphAllocationSource {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Unknown => "unknown",
             Self::RmmOutOfMemory => "rmm_out_of_memory",
@@ -711,7 +708,7 @@ impl QueryError {
     /// the diagnostic contract once exposed. `value` is stringified with
     /// [`ToString`]. A duplicate or empty key never panics and never replaces
     /// the primary error's facts: the first value wins and the rejected key is
-    /// recorded under [`FACT_COLLISION_KEYS`]. Layered `with_fact` calls must
+    /// recorded under the `fact_collision_keys` fact. Layered `with_fact` calls must
     /// therefore use distinct keys per layer; wrapping an error must not
     /// re-emit a key the wrapped error already owns.
     #[must_use]

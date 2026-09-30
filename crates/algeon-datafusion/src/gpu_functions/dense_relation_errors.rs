@@ -94,18 +94,18 @@ impl DenseRelationErrorContext {
         expected: impl ToString,
     ) -> DataFusionError {
         let expected = expected.to_string();
+        // `field` and `actual_type` name the caller's own schema (nested Arrow
+        // types print field names), so they stay out of the logged message and
+        // the log-safe facts. The Flight status text composes them from the facts.
         Error::new(
             ErrorCode::UnsupportedType,
             self.validate_schema_operation,
-            format!(
-                "{} {relation_role} field '{field}' has an unsupported type; supported types: {expected}",
-                self.family
-            ),
+            format!("{} {relation_role} field has an unsupported type; supported types: {expected}", self.family),
         )
         .with_log_safe_fact(self.operation_fact, operation)
         .with_log_safe_fact("relation_role", relation_role)
         .with_fact("field", field)
-        .with_log_safe_fact("actual_type", actual)
+        .with_fact("actual_type", actual)
         .with_log_safe_fact("expected_type", expected)
         .into()
     }

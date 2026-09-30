@@ -36,6 +36,7 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::SizeOverflow, ErrorStatus::Permanent),
     (ErrorCode::HostMaterializationLimitExceeded, ErrorStatus::Permanent),
     (ErrorCode::HostStagingLimitExceeded, ErrorStatus::Permanent),
+    (ErrorCode::HostMemoryExhausted, ErrorStatus::Temporary),
     (ErrorCode::CudfTemporaryFailure, ErrorStatus::Temporary),
     (ErrorCode::CudfPersistentFailure, ErrorStatus::Persistent),
     (ErrorCode::CudfDependencyFailure, ErrorStatus::Permanent),
@@ -200,6 +201,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::HostStagingLimitExceeded.as_str(), "host_staging_limit_exceeded");
     assert_eq!(ErrorCode::HostStagingLimitExceeded.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::HostStagingLimitExceeded.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::HostMemoryExhausted.as_str(), "host_memory_exhausted");
+    assert_eq!(ErrorCode::HostMemoryExhausted.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::HostMemoryExhausted.status(), ErrorStatus::Temporary);
 
     assert_eq!(ErrorCode::CudfPersistentFailure.as_str(), "cudf_persistent_failure");
     assert_eq!(ErrorCode::CudfPersistentFailure.kind(), ErrorKind::DependencyFailure);

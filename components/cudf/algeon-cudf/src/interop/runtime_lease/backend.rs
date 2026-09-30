@@ -15,9 +15,7 @@ use super::{
 };
 use crate::{
     interop::map_cudf_error,
-    runtime::{
-        BoundaryObservation, BoundaryObserverRef, CudaEvent, DeviceId, record_boundary_observation_for_observer,
-    },
+    runtime::{CudaEvent, DeviceId},
 };
 
 struct SharedCudaLeaseActivation {
@@ -27,10 +25,7 @@ struct SharedCudaLeaseActivation {
 impl ActiveLeaseActivation for SharedCudaLeaseActivation {}
 
 #[derive(Clone)]
-struct SharedCudaLeaseBackend {
-    observation: BoundaryObservation,
-    observer: Option<BoundaryObserverRef>,
-}
+struct SharedCudaLeaseBackend;
 
 impl ActiveLeaseBackend for SharedCudaLeaseBackend {
     fn activate(
@@ -44,7 +39,6 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
         match read_start {
             ReadStartAuthority::SynchronousByReturn => {
                 synchronize_producer_readiness(producer_readiness, SHARED_ACTIVATE_LEASE_OP)?;
-                record_boundary_observation_for_observer(self.observer.as_ref(), self.observation);
                 Ok(LeaseActivation::noop())
             },
             ReadStartAuthority::ConsumerStream { stream } => {
@@ -57,8 +51,6 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
                     consumer_device,
                     SHARED_ACTIVATE_LEASE_OP,
                 )?;
-
-                record_boundary_observation_for_observer(self.observer.as_ref(), self.observation);
 
                 Ok(match barrier {
                     Some(barrier) => {
@@ -114,9 +106,6 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
     }
 }
 
-pub(crate) fn shared_cuda_lease_backend_with_observation(
-    observation: BoundaryObservation,
-    observer: Option<BoundaryObserverRef>,
-) -> LeaseBackend {
-    LeaseBackend::new(SharedCudaLeaseBackend { observation, observer })
+pub(crate) fn shared_cuda_lease_backend() -> LeaseBackend {
+    LeaseBackend::new(SharedCudaLeaseBackend)
 }

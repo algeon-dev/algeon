@@ -375,7 +375,7 @@ impl GraphBfsSingleflight {
     /// retried generations find no drain and are unaffected.
     fn signal_handoff_copy_settled(&self, key: &GraphBfsSingleflightKey, generation: u64) {
         let Ok(mut state) = self.inner.state.lock() else {
-            eprintln!("[algeon-datafusion] warning: failed to signal poisoned BFS singleflight GPU handoff drain");
+            tracing::warn!("failed to signal poisoned BFS singleflight GPU handoff drain");
             return;
         };
         state.signal_handoff_drain_locked(key, generation);
@@ -406,7 +406,7 @@ impl GraphBfsSingleflight {
                 sender
             },
             Err(_error) => {
-                eprintln!("[algeon-datafusion] warning: failed to abandon poisoned BFS singleflight state");
+                tracing::warn!("failed to abandon poisoned BFS singleflight state");
                 None
             },
         };
@@ -430,7 +430,7 @@ impl GraphBfsSingleflight {
             self.inner.counters.cancelled_waiters.fetch_add(1, Ordering::Relaxed);
         }
         let Ok(mut state) = self.inner.state.lock() else {
-            eprintln!("[algeon-datafusion] warning: failed to leave poisoned BFS singleflight state");
+            tracing::warn!("failed to leave poisoned BFS singleflight state");
             return;
         };
         if state.signal_handoff_drain_locked(key, generation) {
@@ -452,9 +452,7 @@ impl GraphBfsSingleflight {
         action: &'static str,
     ) {
         let Ok(mut state) = self.inner.state.lock() else {
-            eprintln!(
-                "[algeon-datafusion] warning: failed to record BFS singleflight event after state mutex poisoning"
-            );
+            tracing::warn!("failed to record BFS singleflight event after state mutex poisoning");
             return;
         };
         state.record_event(key, correlation_fingerprint, generation, action);

@@ -23,8 +23,7 @@ where T: TryFrom<u128> {
     reader_predicate_unsigned_literal_raw(value).and_then(|value| T::try_from(value).ok())
 }
 
-#[doc(hidden)]
-pub fn reader_predicate_unsigned_literal_raw(value: &LiteralValue) -> Option<u128> {
+pub(crate) fn reader_predicate_unsigned_literal_raw(value: &LiteralValue) -> Option<u128> {
     match value {
         LiteralValue::UInt8(value) => Some(u128::from(*value)),
         LiteralValue::UInt16(value) => Some(u128::from(*value)),
@@ -38,8 +37,7 @@ pub fn reader_predicate_unsigned_literal_raw(value: &LiteralValue) -> Option<u12
     }
 }
 
-#[doc(hidden)]
-pub fn reader_predicate_integer_literal_raw(value: &LiteralValue) -> Option<i128> {
+pub(crate) fn reader_predicate_integer_literal_raw(value: &LiteralValue) -> Option<i128> {
     match value {
         LiteralValue::Int8(value) => Some(i128::from(*value)),
         LiteralValue::Int16(value) => Some(i128::from(*value)),
@@ -64,8 +62,7 @@ pub fn reader_predicate_integer_literal_as_decimal_raw(
     reader_predicate_decimal_raw_for_integer_value(raw, target_scale).map(Some)
 }
 
-#[doc(hidden)]
-pub fn reader_predicate_decimal_raw_for_integer_value(
+pub(crate) fn reader_predicate_decimal_raw_for_integer_value(
     value: i128,
     target_scale: i32,
 ) -> Result<i128, ReaderPredicateDecimalScaleError> {

@@ -26,7 +26,11 @@ use query_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::{capability::CapabilityReason, native::ExpressionRejection};
+use crate::{
+    capability::CapabilityReason,
+    error::{Error, ErrorCode, Result},
+    native::ExpressionRejection,
+};
 
 /// Stable reason code for a candidate deferred pending resident producer
 /// output evidence. The engine no longer models missing-fact/owner-term
@@ -122,6 +126,32 @@ mod tests {
         assert_eq!(json["outcomes"][0]["outcome"], "deferred");
         assert_eq!(json["outcomes"][0]["planning_stage"], "physical_optimizer");
         assert_eq!(json["outcomes"][0]["reason_code"], DEFERRED_PRODUCER_BINDING_REASON_CODE);
+    }
+
+    #[test]
+    fn not_supported_details_transfer_only_between_reports_with_equal_outcome_counts() {
+        let detail = NotSupportedDetail {
+            column: Some(UnsupportedColumnDetail::new("countDetail", "List(Int64)", "projected")),
+            expression: None,
+        };
+        let mut source = PlanningReport::new();
+        source.push_not_supported_with_detail(
+            GpuCandidate::new("ParquetExec", 1),
+            CapabilityReason::UnsupportedType,
+            detail.clone(),
+        );
+
+        let mut same_count = PlanningReport::new();
+        same_count.push_not_supported(GpuCandidate::new("ParquetExec", 1), CapabilityReason::UnsupportedType);
+        let same_count = same_count.with_not_supported_details_from(&source).expect("equal counts share details");
+        assert_eq!(same_count.unsupported_column(0), detail.column.as_ref());
+
+        let mut longer = same_count;
+        longer.push_selected(GpuCandidate::new("SortExec", 1));
+        let error = longer.with_not_supported_details_from(&source).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(error.fact_value("target_outcomes"), Some("2"));
+        assert_eq!(error.fact_value("source_outcomes"), Some("1"));
     }
 
     #[test]
@@ -423,11 +453,22 @@ impl PlanningReport {
         self.not_supported_details.get(outcome_index).and_then(|detail| detail.expression.as_ref())
     }
 
-    pub(crate) fn with_not_supported_details_from(mut self, other: &PlanningReport) -> Self {
-        if self.outcomes.len() == other.outcomes.len() {
-            self.not_supported_details.clone_from(&other.not_supported_details);
+    /// Adopts `other`'s not-supported details for the same outcomes.
+    ///
+    /// Details are stored beside outcomes by position, so reports with
+    /// different outcome counts cannot share them.
+    pub(crate) fn with_not_supported_details_from(mut self, other: &PlanningReport) -> Result<Self> {
+        if self.outcomes.len() != other.outcomes.len() {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                "algeon_datafusion.report.with_not_supported_details",
+                "planning reports with different outcome counts cannot share not-supported details",
+            )
+            .with_log_safe_fact("target_outcomes", self.outcomes.len())
+            .with_log_safe_fact("source_outcomes", other.outcomes.len()));
         }
-        self
+        self.not_supported_details.clone_from(&other.not_supported_details);
+        Ok(self)
     }
 
     pub fn selected_count(&self) -> usize {

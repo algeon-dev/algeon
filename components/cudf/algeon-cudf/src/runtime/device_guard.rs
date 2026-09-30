@@ -10,10 +10,9 @@ use super::{
     DeviceId,
     device_health::{self, DeviceFaultKind},
 };
-use crate::{
-    core::error::{self, Error, ErrorCode, Result},
-    testing::device_safety::{cuda_get_device, cuda_set_device},
-};
+use crate::core::error::{self, Error, ErrorCode, Result};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::testing::device_safety::{injected_get_device, injected_set_device};
 
 /// Thread-scoped proof that the current host thread entered one owner device.
 ///
@@ -72,6 +71,24 @@ fn poison_thread_authority(poison: ThreadAuthorityPoison) {
         let mut authority = authority.borrow_mut();
         authority.poison.get_or_insert(poison);
     });
+}
+
+fn cuda_get_device(current: &mut i32) -> cudf_sys::cudf_status_t {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(status) = injected_get_device(current) {
+        return status;
+    }
+    // SAFETY: `current` is a valid out pointer for the duration of this call.
+    unsafe { cudf_sys::cudf_cuda_get_device(current) }
+}
+
+fn cuda_set_device(target: i32) -> cudf_sys::cudf_status_t {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(status) = injected_set_device(target) {
+        return status;
+    }
+    // SAFETY: the caller validated the target device ordinal.
+    unsafe { cudf_sys::cudf_cuda_set_device(target) }
 }
 
 fn translate_explicit_device_status(status: cudf_sys::cudf_status_t, operation: &'static str) -> Error {
@@ -250,6 +267,7 @@ pub(crate) fn current_entered_device() -> Option<DeviceId> {
     THREAD_AUTHORITY.with(|authority| authority.borrow().entered_devices.last().copied())
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn reset_thread_authority_for_testing() {
     THREAD_AUTHORITY.with(|authority| {
         let mut authority = authority.borrow_mut();

@@ -60,30 +60,13 @@ impl AttemptExecutionOccurrence {
         }
     }
 
-    #[doc(hidden)]
-    pub fn occurrence_id(&self) -> &str {
-        &self.occurrence_id
-    }
-
-    #[doc(hidden)]
-    pub fn producer_identity(&self) -> &str {
-        &self.producer_identity
-    }
-
-    #[doc(hidden)]
-    pub fn predecessors(&self) -> &[String] {
-        &self.predecessors
-    }
-
-    #[doc(hidden)]
-    pub fn matches_plan(&self, plan: &QueryPlan) -> bool {
+    pub(crate) fn matches_plan(&self, plan: &QueryPlan) -> bool {
         let exact = canonical_execution_scope_fingerprint(plan);
         self.execution_scope_fingerprint == exact
             || self.deferred_execution_scope_identity.as_ref().is_some_and(|expected| expected.matches(plan))
     }
 
-    #[doc(hidden)]
-    pub fn matches_schema(&self, plan: &QueryPlan) -> bool {
+    pub(crate) fn matches_schema(&self, plan: &QueryPlan) -> bool {
         self.output_schema_fingerprint == log_safe_fingerprint(&format!("{:?}", plan.output_schema()))
     }
 }
@@ -108,8 +91,7 @@ impl AttemptExecutionManifest {
         &self.occurrences
     }
 
-    #[doc(hidden)]
-    pub fn occurrence(&self, occurrence_id: &str) -> Option<&AttemptExecutionOccurrence> {
+    pub(crate) fn occurrence(&self, occurrence_id: &str) -> Option<&AttemptExecutionOccurrence> {
         self.occurrences.iter().find(|occurrence| occurrence.occurrence_id == occurrence_id)
     }
 
@@ -121,6 +103,7 @@ impl AttemptExecutionManifest {
     /// Validates the exact host-materializing occurrence about to execute and
     /// returns its already-validated predecessor identities.
     #[doc(hidden)]
+    #[cfg(test)]
     pub fn validate_host_occurrence(&self, occurrence_id: &str, plan: &QueryPlan) -> Result<Vec<String>> {
         self.validate_host_occurrence_for_producer(occurrence_id, occurrence_id, plan)
     }
@@ -286,8 +269,7 @@ impl AttemptExecutionScope {
         &self.producer_occurrences
     }
 
-    #[doc(hidden)]
-    pub fn push_producer_occurrence(&mut self, occurrence: AttemptProducerOccurrence) {
+    pub(crate) fn push_producer_occurrence(&mut self, occurrence: AttemptProducerOccurrence) {
         self.producer_occurrences.push(occurrence);
     }
 

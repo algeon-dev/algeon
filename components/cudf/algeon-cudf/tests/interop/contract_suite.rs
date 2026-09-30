@@ -1,5 +1,3 @@
-#[path = "arrow_device_tests.rs"]
-mod arrow_device_tests;
 #[path = "import_tests.rs"]
 mod import_tests;
 #[path = "prepared_export_tests.rs"]

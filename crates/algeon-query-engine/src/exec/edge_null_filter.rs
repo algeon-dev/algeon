@@ -16,10 +16,10 @@ use crate::{metrics::OperatorMetrics, plan::GraphEdgeColumnBindings};
 pub(super) struct EdgeNullFilterScope {
     /// Whether a null `weight` should drop its edge. True only for algorithms
     /// that read edge weights (SSSP, minimum spanning tree).
-    pub weight: bool,
+    pub(super) weight: bool,
     /// Whether a null `edge_id` should drop its edge. True only when edge ids
     /// are consumed (edge-id graph construction / edge-id predicates).
-    pub edge_id: bool,
+    pub(super) edge_id: bool,
 }
 
 pub(super) fn filter_null_edge_rows(

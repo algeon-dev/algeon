@@ -5,8 +5,7 @@ struct ScalarAggregateDerivationRewrite {
     derived_spec: AggregateSpec,
 }
 
-#[doc(hidden)]
-pub fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> SharedSubplanMaterializationResult {
+pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> SharedSubplanMaterializationResult {
     let discovery = discover_scalar_aggregate_from_grouped_aggregate_candidates(&plan);
     if discovery.rewrites.is_empty() {
         return SharedSubplanMaterializationResult {

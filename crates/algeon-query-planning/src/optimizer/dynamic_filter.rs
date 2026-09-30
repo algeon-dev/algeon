@@ -37,8 +37,7 @@ use residual_equality::{
     large_keyset_dimension_sized_local_parquet_consumer_is_not_promising, producer_keyset_exceeds_runtime_limit,
     residual_equality_route_candidates,
 };
-#[doc(hidden)]
-pub use route_discovery::optimize_dynamic_filter_route_discovery;
+pub(crate) use route_discovery::optimize_dynamic_filter_route_discovery;
 
 /// Stable rule name used in optimizer diagnostics.
 pub const DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME: &str = "dynamic_filter_route_discovery";
@@ -78,12 +77,12 @@ pub struct DynamicFilterRouteDiscoveryDiagnostics {
 
 impl DynamicFilterRouteDiscoveryDiagnostics {
     /// Returns true when the pass produced no route evidence.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.route_count == 0 && self.candidates.is_empty()
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.route_count += other.route_count;
         self.candidates.extend(other.candidates);
@@ -94,17 +93,17 @@ impl DynamicFilterRouteDiscoveryDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynamicFilterRouteCandidateDiagnostics {
     /// Stable rule name for this diagnostic row.
-    pub rule_name: &'static str,
+    pub(crate) rule_name: &'static str,
     /// Join node considered as a dynamic-filter producer.
     pub candidate_node_id: NodeId,
     /// Route id when a route was admitted.
-    pub dynamic_filter_id: Option<DynamicFilterId>,
+    pub(crate) dynamic_filter_id: Option<DynamicFilterId>,
     /// Join build side used as the producer.
     pub producer_build_side: Option<JoinSide>,
     /// Build-side input node.
     pub producer_input_node_id: Option<NodeId>,
     /// Consumer input node before lineage tracing.
-    pub consumer_input_node_id: Option<NodeId>,
+    pub(crate) consumer_input_node_id: Option<NodeId>,
     /// Runtime consumer kind selected for the admitted route.
     pub consumer_kind: Option<String>,
     /// Runtime consumer node selected for the admitted route.

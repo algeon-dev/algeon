@@ -9,7 +9,7 @@ use super::{
     CompiledMixedSizeData, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result, compiled_join_input_columns,
     dataframe_mixed_join_options, execution_overrides, join_index_error, lower_join_residual_predicate,
     materialize_compiled_indices_output, orient_prepared_inputs, prepare_bounded_join_side_input_from_resident_frame,
-    probe_side, release_bounded_join_side_frame, release_streamed_join_outputs_reverse, residual_input_columns,
+    probe_side, release_bounded_join_side_frame, residual_input_columns,
     stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
 };
 
@@ -115,7 +115,6 @@ pub(super) fn execute_compiled_mixed_join_probe_from_stream(
     match stream_result {
         Ok(()) => Ok(BoundedCompiledJoinProbeState::MixedStreamed { build, outputs }),
         Err(error) => {
-            release_streamed_join_outputs_reverse(outputs);
             release_bounded_join_side_frame(build.input);
             Err(error)
         },

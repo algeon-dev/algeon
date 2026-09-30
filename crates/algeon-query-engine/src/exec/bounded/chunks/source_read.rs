@@ -1,15 +1,12 @@
 use std::time::Instant;
 
 use super::{
-    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetFile,
-    LocalParquetSource, MemoryControlPolicy, NodeId, QueryError, ResidentGpuFrame, Result,
-    ScheduledLocalParquetReadOutput, SourceChunk, apply_source_scan_limit_to_frame, chunk_retry_facts,
-    cudf_query_error,
+    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetSource,
+    MemoryControlPolicy, NodeId, QueryError, ResidentGpuFrame, Result, ScheduledLocalParquetReadOutput, SourceChunk,
+    chunk_retry_facts, cudf_query_error,
     execution::{reported_source_chunk_read_row_groups, source_chunk_batch_static_read_row_groups},
     execution_overrides, is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches,
-    read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error,
-    source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error,
-    split_retryable_chunk,
+    read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error, split_retryable_chunk,
 };
 use crate::{
     chunk::SourceChunkBatch, exec::retry::backoff_before_retry, observability::SourceReadFact,
@@ -70,76 +67,18 @@ fn read_local_parquet_chunks_serial(
     chunks: &[SourceChunk],
     memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    if source.has_position_delete_visible_scan_limit() {
-        return read_local_parquet_chunks_serial_with_position_delete_visible_limit(
-            execution,
-            source,
-            chunks,
-            memory_boundary,
-        );
-    }
-
     let batches = generic_source_chunk_batches(execution.context(), source, chunks);
     let mut outputs = Vec::with_capacity(batches.len());
     for batch in batches {
-        if let Err(error) = execution.context().check_cancellation("query_engine.exec.bounded.serial_source_chunk") {
-            release_source_read_outputs_reverse(outputs);
-            return Err(error);
-        }
+        execution.context().check_cancellation("query_engine.exec.bounded.serial_source_chunk")?;
         match read_local_parquet_source_batch_or_split(execution, source, batch, memory_boundary) {
             Ok(mut batch_outputs) => outputs.append(&mut batch_outputs),
             Err(error) => {
-                release_source_read_outputs_reverse(outputs);
                 return Err(error);
             },
         }
     }
     Ok(outputs)
-}
-
-fn read_local_parquet_chunks_serial_with_position_delete_visible_limit(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    source: &LocalParquetSource,
-    chunks: &[SourceChunk],
-    memory_boundary: &'static str,
-) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    let mut outputs = Vec::with_capacity(chunks.len());
-    let mut remaining_rows = source.scan_limit;
-    for chunk in chunks {
-        if let Err(error) = execution.context().check_cancellation("query_engine.exec.bounded.serial_source_chunk") {
-            release_source_read_outputs_reverse(outputs);
-            return Err(error);
-        }
-        match read_local_parquet_chunk_required_only(
-            execution,
-            source,
-            chunk,
-            memory_boundary,
-            Some(&mut remaining_rows),
-        ) {
-            Ok(output) => {
-                record_position_delete_visible_limit_chunk_metrics(&output.chunk, execution);
-                outputs.push(output);
-            },
-            Err(error) => {
-                release_source_read_outputs_reverse(outputs);
-                return Err(error);
-            },
-        }
-        if remaining_rows == Some(0) {
-            break;
-        }
-    }
-    Ok(outputs)
-}
-
-fn record_position_delete_visible_limit_chunk_metrics(chunk: &SourceChunk, execution: &BoundedExecutionAttempt<'_>) {
-    execution.record_source_read(SourceReadFact::ParquetSource {
-        files: 1,
-        known_bytes: chunk.known_row_group_bytes.or(chunk.known_file_bytes).unwrap_or(0),
-        selected_row_groups: chunk.known_read_row_group_count().unwrap_or(0) as u64,
-        read_columns: chunk.read_columns.len() as u64,
-    });
 }
 
 fn read_local_parquet_source_batch_or_split(
@@ -183,10 +122,7 @@ fn read_local_parquet_source_batch_or_split(
                     outputs.append(&mut right_outputs);
                     Ok(outputs)
                 },
-                Err(error) => {
-                    release_source_read_outputs_reverse(outputs);
-                    Err(error)
-                },
+                Err(error) => Err(error),
             }
         },
         Err(error) => Err(error),
@@ -212,15 +148,7 @@ fn read_local_parquet_chunk_required_only_or_split(
     min_retry_chunk_row_groups: usize,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     execution.context().check_cancellation("query_engine.exec.bounded.serial_source_chunk_retry")?;
-    match read_local_parquet_chunk_required_only_attempt(
-        execution,
-        source,
-        &chunk,
-        memory_boundary,
-        None,
-        attempt,
-        max_attempts,
-    ) {
+    match read_local_parquet_chunk_required_only(execution, source, &chunk, memory_boundary) {
         Ok(output) => Ok(vec![output]),
         Err(error) if is_retryable_chunk_error(&error) => {
             record_chunk_retry_error(&error, execution.metrics());
@@ -251,10 +179,7 @@ fn read_local_parquet_chunk_required_only_or_split(
                         outputs.append(&mut right_outputs);
                         Ok(outputs)
                     },
-                    Err(error) => {
-                        release_source_read_outputs_reverse(outputs);
-                        Err(error)
-                    },
+                    Err(error) => Err(error),
                 }
             } else {
                 Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
@@ -269,85 +194,17 @@ fn read_local_parquet_chunk_required_only(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     memory_boundary: &'static str,
-    visible_limit_remaining: Option<&mut Option<usize>>,
-) -> Result<ScheduledLocalParquetReadOutput> {
-    read_local_parquet_chunk_required_only_attempt(
-        execution,
-        source,
-        chunk,
-        memory_boundary,
-        visible_limit_remaining,
-        1,
-        1,
-    )
-}
-
-fn read_local_parquet_chunk_required_only_attempt(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    source: &LocalParquetSource,
-    chunk: &SourceChunk,
-    memory_boundary: &'static str,
-    visible_limit_remaining: Option<&mut Option<usize>>,
-    attempt: usize,
-    max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     execution.record_source_read(SourceReadFact::ChunkAttempted);
     let source_token_budget = execution.device_budget_bytes();
-    let frame = match read_local_parquet_chunk(
+    let frame = read_local_parquet_chunk(
         execution.context(),
         source,
         chunk,
         source_token_budget,
         memory_boundary,
         execution.metrics(),
-    ) {
-        Ok(frame) => frame,
-        Err(error) => {
-            match try_read_local_parquet_chunk_with_corrected_budget_after_error(
-                execution,
-                source,
-                chunk,
-                memory_boundary,
-                &error,
-                attempt,
-                max_attempts,
-            ) {
-                Ok(Some(frame)) => frame,
-                Ok(None) => {
-                    return Err(error);
-                },
-                Err(retry_error) => {
-                    return Err(retry_error);
-                },
-            }
-        },
-    };
-    let frame = if let Some(remaining_rows) = visible_limit_remaining {
-        match apply_source_scan_limit_to_frame(
-            execution.context(),
-            frame.frame().clone(),
-            *remaining_rows,
-            execution.metrics(),
-        ) {
-            Ok((limited, remaining)) => {
-                *remaining_rows = remaining;
-                // A slice may retain aliases into a checked-out cache frame.
-                // Keep its pin until the derived source result is released so
-                // an LRU promotion cannot evict the cache allocation early.
-                match GpuDataFrame::try_new_with_source_residency(limited, &frame) {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        return Err(error);
-                    },
-                }
-            },
-            Err(error) => {
-                return Err(error);
-            },
-        }
-    } else {
-        frame
-    };
+    )?;
     let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     let output =
         ScheduledLocalParquetReadOutput { chunk: chunk.clone(), frame, observed_bytes, observed_row_group_count: None };
@@ -410,7 +267,6 @@ fn generic_source_chunk_batches(
 // chunk carrying `scan_limit_rows`.
 fn generic_source_chunk_batching_supported(source: &LocalParquetSource) -> bool {
     source.partition_columns.is_empty()
-        && !source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && source
             .reader_predicate
             .as_ref()
@@ -440,10 +296,6 @@ fn source_chunk_batch_decode_scratch_risk(source: &LocalParquetSource, chunks: &
             chunk.known_pure_filter_compressed_bytes.unwrap_or(0) > 0
                 || chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0) > 0
         })
-}
-
-pub(in crate::exec::bounded) fn release_source_read_outputs_reverse(mut chunks: Vec<ScheduledLocalParquetReadOutput>) {
-    while chunks.pop().is_some() {}
 }
 
 #[cfg(test)]

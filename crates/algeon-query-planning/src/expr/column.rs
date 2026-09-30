@@ -45,24 +45,6 @@ impl ColumnRef {
         }
     }
 
-    /// Build a column reference scoped to a query-plan node identifier.
-    pub fn node(node_id: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            qualifier: Some(ColumnQualifier::Node { id: node_id.into() }),
-            name: name.into(),
-            display_name: display_name.into(),
-        }
-    }
-
-    /// Build a column reference scoped to a named relation.
-    pub fn relation(relation: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            qualifier: Some(ColumnQualifier::Relation { name: relation.into() }),
-            name: name.into(),
-            display_name: display_name.into(),
-        }
-    }
-
     pub fn qualifier(&self) -> Option<&ColumnQualifier> {
         self.qualifier.as_ref()
     }

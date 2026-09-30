@@ -168,7 +168,7 @@ entries before source entries, then releases the allocation-domain owner.
 
 | Change | Owning code |
 | --- | --- |
-| Lakehouse configuration and source resolution | `crates/algeon-datafusion/src/table_format/scan/config.rs`, `crates/algeon-datafusion/src/table_format/scan/source_resolution.rs` |
+| Lakehouse configuration and source resolution | `crates/algeon-datafusion/src/native/source/s3_parquet.rs` |
 | Lakehouse fill, publication, pins, and retention | `crates/algeon-query-engine/src/exec/source/lakehouse_cache/` |
 | Shared GPU allocation and residency lifecycle | `crates/algeon-query-runtime/src/runtime/cache/factory.rs`, `crates/algeon-query-runtime/src/runtime/cache/residency.rs` |
 | Decoded source identity and caching | `crates/algeon-query-runtime/src/runtime/source_identity/local_parquet.rs`, `crates/algeon-query-runtime/src/runtime/cache/local_parquet/mod.rs` |

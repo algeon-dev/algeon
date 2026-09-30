@@ -1,6 +1,4 @@
-use super::{
-    GpuCandidate, NativeAggregateShapeKind, NativeStackRoot, NormalizedNativeInput, NormalizedNativeScan, wrap_shape,
-};
+use super::{GpuCandidate, NativeAggregateShapeKind, NativeStackRoot, NormalizedNativeInput, wrap_shape};
 
 // Shape strings are diagnostics/report contract values. The grammar is a
 // compact wrapper form: `Operator`, `Operator(child)`, and for binary inputs
@@ -44,9 +42,7 @@ pub(super) fn global_aggregate_candidate_for_input(
     has_pre_projection: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
-    if let NormalizedNativeInput::Source(source) = input
-        && matches!(source.scan, NormalizedNativeScan::LocalParquet(_))
-    {
+    if let NormalizedNativeInput::Source(source) = input {
         return global_aggregate_candidate(
             output_schema_fields,
             has_post_projection,
@@ -79,9 +75,7 @@ pub(super) fn native_stack_candidate_for_input(
     has_pre_aggregate_projection: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
-    if let NormalizedNativeInput::Source(source) = input
-        && matches!(source.scan, NormalizedNativeScan::LocalParquet(_))
-    {
+    if let NormalizedNativeInput::Source(source) = input {
         return native_stack_candidate(
             root,
             output_schema_fields,

@@ -113,12 +113,12 @@ impl CompiledGpuResource {
         }
     }
 
-    pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
+    pub(in crate::exec::bounded) fn observed_device_bytes(&self) -> u64 {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.device_bytes(),
-            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.live_reservation_bytes(),
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
-            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => prefetch.reservation_bytes(),
+            CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.live_observed_device_bytes(),
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => 0,
         }
     }
 

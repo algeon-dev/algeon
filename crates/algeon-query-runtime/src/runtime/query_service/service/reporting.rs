@@ -11,10 +11,9 @@ use query_planning::error::Result;
 #[cfg(test)]
 use query_planning::error::{QueryError, QueryErrorCode};
 
-use super::{
-    super::config::{QueryExecutionConfig, QueueBounds},
-    QueryService,
-};
+#[cfg(test)]
+use super::super::config::QueueBounds;
+use super::{super::config::QueryExecutionConfig, QueryService};
 #[cfg(test)]
 use crate::runtime::deadline::DeadlineMutexLockError;
 #[cfg(test)]
@@ -35,8 +34,7 @@ use crate::runtime::{
 };
 
 impl QueryService {
-    #[doc(hidden)]
-    pub fn backend_device_startup_facts(
+    pub(crate) fn backend_device_startup_facts(
         &self,
     ) -> Vec<(
         DeviceFacts,
@@ -194,7 +192,7 @@ impl QueryService {
     /// rollback still retains a lane or immutable grant cause the call to wait
     /// until `timeout` expires.
     #[cfg(test)]
-    pub fn wait_for_stream_pools_idle(&self, timeout: Duration) -> Result<()> {
+    pub(crate) fn wait_for_stream_pools_idle(&self, timeout: Duration) -> Result<()> {
         let Some(resources) = &self.inner.resources else {
             return Ok(());
         };
@@ -259,7 +257,7 @@ impl QueryService {
     /// Omitted configured devices expect zero leases. Duplicate or unknown
     /// ordinals are rejected instead of being silently merged.
     #[cfg(test)]
-    pub fn wait_for_stream_pools_quiescent(
+    pub(crate) fn wait_for_stream_pools_quiescent(
         &self,
         expected_leased_runtimes: &[(usize, usize)],
         timeout: Duration,
@@ -303,7 +301,8 @@ impl QueryService {
     }
 
     /// Returns the controller-owned bounded admission queue policy.
-    pub fn queue_bounds(&self) -> &QueueBounds {
+    #[cfg(test)]
+    pub(crate) fn queue_bounds(&self) -> &QueueBounds {
         &self.inner.queue_bounds
     }
 
@@ -376,7 +375,7 @@ impl QueryService {
 
 impl QueryService {
     /// Largest device managed capacity represented by this query service.
-    pub fn max_device_capacity_bytes(&self) -> u64 {
+    pub(crate) fn max_device_capacity_bytes(&self) -> u64 {
         self.inner.resources.as_ref().map_or_else(
             || {
                 self.inner

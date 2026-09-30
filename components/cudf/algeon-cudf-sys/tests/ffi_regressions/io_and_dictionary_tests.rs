@@ -65,18 +65,6 @@ fn test_table_view_null_handle_clears_out() {
 }
 
 #[test]
-fn test_io_read_csv_missing_file_clears_out() {
-    let _shim_state = lock_shim_state();
-    let (_stream, _mr, exec) = io_exec_options();
-    let path = unique_missing_path("csv");
-    let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
-    let status = unsafe { cudf_sys::cudf_io_read_csv_ex(path.as_ptr(), b',' as c_char, 1, &mut out, &exec) };
-
-    assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
-    assert!(out.is_null());
-}
-
-#[test]
 fn test_io_read_parquet_missing_file_clears_out() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
@@ -339,45 +327,6 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
     assert!(out_names.is_null());
     assert_eq!(out_num_names, 0);
     assert_eq!(pruning_evidence.input_row_groups, -1);
-}
-
-#[test]
-fn test_io_write_csv_negative_num_columns_rejected() {
-    let _shim_state = lock_shim_state();
-    let (_stream, _mr, exec) = io_exec_options();
-    let col = make_i32_column(&[1, 2]);
-    let tbl = make_table_from_one_column(col);
-    let tv = make_table_view(tbl);
-    let path = unique_missing_path("csv");
-
-    let out_status =
-        unsafe { cudf_sys::cudf_io_write_csv_ex(tv, path.as_ptr(), ptr::null_mut(), -1, b',' as i8, 1, &exec) };
-    assert_eq!(out_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
-
-    unsafe {
-        cudf_sys::cudf_table_view_destroy(tv);
-        cudf_sys::cudf_table_destroy(tbl);
-    }
-}
-
-#[test]
-fn test_io_write_csv_null_column_name_entry_rejected() {
-    let _shim_state = lock_shim_state();
-    let (_stream, _mr, exec) = io_exec_options();
-    let col = make_i32_column(&[1, 2]);
-    let tbl = make_table_from_one_column(col);
-    let tv = make_table_view(tbl);
-    let path = unique_missing_path("csv");
-    let mut names = [ptr::null()];
-
-    let status =
-        unsafe { cudf_sys::cudf_io_write_csv_ex(tv, path.as_ptr(), names.as_mut_ptr(), 1, b',' as i8, 1, &exec) };
-    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
-
-    unsafe {
-        cudf_sys::cudf_table_view_destroy(tv);
-        cudf_sys::cudf_table_destroy(tbl);
-    }
 }
 
 #[test]

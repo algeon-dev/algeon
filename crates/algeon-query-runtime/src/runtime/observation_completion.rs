@@ -65,8 +65,7 @@ enum ObservationCompletionMessage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum ObservationCompletionWorkerLane {
+pub(crate) enum ObservationCompletionWorkerLane {
     Observation,
     ActivityTail,
 }
@@ -294,8 +293,7 @@ impl ProcessExitShutdown for ObservationCompletionSupervisor {
 /// after that fence is gone. Each lane has a pre-created worker and neither
 /// holds a GPU resource.
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct ObservationCompletionDispatcher {
+pub(crate) struct ObservationCompletionDispatcher {
     observation_sender: mpsc::Sender<ObservationCompletionMessage>,
     observation_state: Arc<ObservationCompletionExecutorState>,
     activity_tail_sender: mpsc::Sender<ObservationCompletionMessage>,
@@ -314,8 +312,7 @@ impl ObservationCompletionDispatcher {
     /// A stopped or disconnected worker cannot consume the payload, so the
     /// dispatcher synchronously executes it. A recoverable worker fault does
     /// not take this path: the pre-created worker records it and continues.
-    #[doc(hidden)]
-    pub fn dispatch<F>(&self, completion: F)
+    pub(crate) fn dispatch<F>(&self, completion: F)
     where F: FnOnce() + Send + 'static {
         self.dispatch_to(&self.observation_sender, &self.observation_state, completion);
     }
@@ -323,8 +320,7 @@ impl ObservationCompletionDispatcher {
     /// Runs opaque activity destruction after the observation lane released
     /// its permit. This distinct lane prevents a blocking activity callback
     /// from starving later observation completion required by backend close.
-    #[doc(hidden)]
-    pub fn dispatch_activity_tail<F>(&self, completion: F)
+    pub(crate) fn dispatch_activity_tail<F>(&self, completion: F)
     where F: FnOnce() + Send + 'static {
         self.dispatch_to(&self.activity_tail_sender, &self.activity_tail_state, completion);
     }
@@ -373,15 +369,13 @@ impl ObservationCompletionDispatcher {
 /// senders until every future completion has either been enqueued or
 /// synchronously finalized.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct ObservationCompletionExecutor {
+pub(crate) struct ObservationCompletionExecutor {
     dispatcher: ObservationCompletionDispatcher,
     supervisor: Arc<ObservationCompletionSupervisor>,
 }
 
 impl ObservationCompletionExecutor {
-    #[doc(hidden)]
-    pub fn spawn() -> Result<Self> {
+    pub(crate) fn spawn() -> Result<Self> {
         Self::spawn_with_lane_spawner(|lane, state, supervisor| supervisor.spawn_worker(lane, state))
     }
 
@@ -428,14 +422,12 @@ impl ObservationCompletionExecutor {
     /// Registers both lanes only after backend service construction has
     /// entered CUDA. This keeps the engine's `atexit` callback ahead of
     /// libcudart while preserving the executor's detached delivery contract.
-    #[doc(hidden)]
-    pub fn activate_process_exit(&self) {
+    pub(crate) fn activate_process_exit(&self) {
         self.supervisor.activate_process_exit();
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn spawn_with_lane_failure_for_test(failing_lane: ObservationCompletionWorkerLane) -> Result<Self> {
+    pub(crate) fn spawn_with_lane_failure_for_test(failing_lane: ObservationCompletionWorkerLane) -> Result<Self> {
         Self::spawn_with_lane_spawner(|lane, state, supervisor| {
             if lane == failing_lane {
                 return Err(QueryError::new(
@@ -450,8 +442,7 @@ impl ObservationCompletionExecutor {
         })
     }
 
-    #[doc(hidden)]
-    pub fn dispatcher(&self) -> ObservationCompletionDispatcher {
+    pub(crate) fn dispatcher(&self) -> ObservationCompletionDispatcher {
         self.dispatcher.clone()
     }
 

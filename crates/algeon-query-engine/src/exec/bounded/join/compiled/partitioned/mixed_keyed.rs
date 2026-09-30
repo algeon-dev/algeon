@@ -10,8 +10,7 @@ use super::{
     partitioned_join_target_bytes_for_context, partitioned_mixed_join_partition_count,
     projected_output_columns_for_retained_sizing, record_partitioned_join_operator_metrics,
     record_partitioned_join_selection, record_partitioned_join_sides, release_partitioned_join_side,
-    release_streamed_join_outputs_reverse, residual_input_columns, run_partitioned_join_driver,
-    validate_partitioned_mixed_keyed_residual_join,
+    residual_input_columns, run_partitioned_join_driver, validate_partitioned_mixed_keyed_residual_join,
 };
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
@@ -356,7 +355,7 @@ impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
     }
 
     fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {
-        release_streamed_join_outputs_reverse(self.pending_outputs.drain(..).collect());
+        self.pending_outputs.clear();
         if let Some(left) = self.left_partitioned.take() {
             release_partitioned_join_side(left);
         }

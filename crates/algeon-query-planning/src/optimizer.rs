@@ -27,10 +27,11 @@ mod shared_subplan_materialization;
 mod source_target_policy;
 mod stream_fanout_replay;
 
+pub use access::local_parquet_source;
+pub(crate) use access::reader_projection_indices;
 use access::{
     consumers_by_node, simple_projection_column, simple_projection_column_single_alias, unique_join_output_for_name,
 };
-pub use access::{local_parquet_source, predicate_columns, reader_projection_indices};
 pub use aggregate_join_pushdown::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
     AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
@@ -39,17 +40,16 @@ pub use count_non_null_pruning::{
     COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME, CountNonNullColumnPruningCandidateDiagnostics,
     CountNonNullColumnPruningDiagnostics, CountNonNullColumnPruningOptions, CountNonNullColumnPruningRejectedReason,
 };
+pub(crate) use dimension_pruning::apply_local_parquet_row_group_selections;
 pub use dimension_pruning::{
     DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, DIMENSION_KEY_FILTER_MAX_RUNS, DimensionDerivedApplyResult,
     DimensionDerivedPruningRequest, DimensionDerivedRowGroupPruningCandidateDiagnostics,
     DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
     DimensionDerivedRowGroupPruningRejectedReason, DimensionKeyAccumulator, DimensionKeyFilter,
     I64ExprRangeAccumulator, KeyRange, LocalParquetPruningResolver, LocalParquetRowGroupSelection,
-    LocalParquetRowGroupSelectionApplyResult, NoDimensionPruningFacts, RowGroupOverlapSelection,
-    apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
-    dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests,
-    optimize_dimension_derived_row_group_pruning, seed_dimension_derived_reader_predicates,
-    select_overlapping_row_groups,
+    apply_dimension_derived_pruning_with_stats, dimension_key_filter_from_batch,
+    discover_dimension_derived_pruning_requests, optimize_dimension_derived_row_group_pruning,
+    seed_dimension_derived_reader_predicates,
 };
 pub use dynamic_filter::{
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterRouteCandidateDiagnostics,
@@ -79,8 +79,7 @@ pub use projection_simplification::{
     PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationCandidateDiagnostics,
     ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions, ProjectionSimplificationRejectedReason,
 };
-#[doc(hidden)]
-pub use rewrite::parent_counts;
+pub(crate) use rewrite::parent_counts;
 pub use semijoin_reduction::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, SEMIJOIN_REDUCTION_RULE_NAME,
     SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
@@ -181,7 +180,7 @@ pub enum NativeOptimizerChange {
 }
 
 impl NativeOptimizerChange {
-    pub fn changed(self) -> bool {
+    pub(crate) fn changed(self) -> bool {
         matches!(self, Self::Changed)
     }
 }

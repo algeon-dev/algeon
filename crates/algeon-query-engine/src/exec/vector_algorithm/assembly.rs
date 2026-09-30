@@ -16,11 +16,11 @@ use crate::{
 const ASSEMBLY_OPERATION: &str = "query_engine.vector_algorithm.assemble";
 
 pub(in crate::exec) struct KnnAssemblyParams<'a> {
-    pub dataset: &'a VectorRelationBinding,
-    pub queries: &'a VectorRelationBinding,
-    pub k: usize,
-    pub metric: VectorDistanceMetric,
-    pub missing_neighbor: Option<i64>,
+    pub(in crate::exec) dataset: &'a VectorRelationBinding,
+    pub(in crate::exec) queries: &'a VectorRelationBinding,
+    pub(in crate::exec) k: usize,
+    pub(in crate::exec) metric: VectorDistanceMetric,
+    pub(in crate::exec) missing_neighbor: Option<i64>,
 }
 
 #[cfg(test)]

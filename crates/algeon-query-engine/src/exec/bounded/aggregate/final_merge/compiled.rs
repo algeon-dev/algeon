@@ -12,7 +12,7 @@ use super::{
     final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget, lower_final_aggregate_spec,
     observe_device_memory_bytes, partition_final_merge_partial, partitioned_final_merge_partition_count,
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
-    reduce_merge_fan_in, release_nested_partials_reverse, release_partials_reverse, validate_aggregate_output_names,
+    reduce_merge_fan_in, validate_aggregate_output_names,
 };
 use crate::exec::retry::{backoff_before_retry, is_retryable_resource_error, record_retryable_resource_error};
 
@@ -30,7 +30,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     let all_empty_grouping_sets = aggregate.spec.grouping_sets.is_some()
         && (partials.is_empty() || partials.iter().all(|partial| partial.frame.num_rows() == 0));
     if all_empty_grouping_sets {
-        release_partials_reverse(partials);
+        // The empty-input aggregate allocates below, so the partials cannot wait for end of scope.
+        drop(partials);
         return execute_compiled_bounded_aggregate_from_empty_input(
             execution,
             node_id,
@@ -122,11 +123,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
                         continue;
                     }
 
-                    release_partials_reverse(partials);
                     return Err(error);
                 },
                 Err(error) => {
-                    release_partials_reverse(partials);
                     return Err(error);
                 },
             }
@@ -182,8 +181,6 @@ fn execute_compiled_partitioned_final_aggregate_merge(
         ) {
             Ok(partitions) => partitions,
             Err(error) => {
-                release_nested_partials_reverse(partition_inputs);
-                release_partials_reverse(pending);
                 return Err(error);
             },
         };
@@ -217,10 +214,6 @@ fn execute_compiled_partitioned_final_aggregate_merge(
         ) {
             Ok(merged) => merged_partitions.push(merged),
             Err(error) => {
-                release_partials_reverse(merged_partitions);
-                release_nested_partials_reverse(
-                    pending_partition_inputs.into_iter().map(|(_, inputs)| inputs).collect(),
-                );
                 return Err(error);
             },
         }
@@ -274,7 +267,6 @@ fn execute_compiled_partitioned_final_merge_group(
     ) {
         Ok(token) => token,
         Err(error) => {
-            release_partials_reverse(inputs);
             return Err(error);
         },
     };
@@ -383,7 +375,6 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
         match concatenated {
             Ok(frame) => frame,
             Err(error) => {
-                release_partials_reverse(partials);
                 return Err(attach_budget_token_failure_facts(
                     cudf_query_error(
                         "query_engine.compiled_final_merge.partitioned_concat_partials",
@@ -402,12 +393,12 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     match observe_device_memory_bytes(&concatenated, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            release_partials_reverse(partials);
             return Err(error);
         },
     };
 
-    release_partials_reverse(partials);
+    // The final aggregate allocates below, so the concatenated inputs cannot wait for end of scope.
+    drop(partials);
     execute_compiled_final_aggregate(
         execution.context(),
         node_id,
@@ -534,7 +525,6 @@ fn execute_compiled_final_merge_level_attempt(
         ) {
             Ok(partial) => output.push(CompiledMergeLevelItem::Merged(Box::new(partial))),
             Err(error) => {
-                release_compiled_merge_level_items(output);
                 return Err(error);
             },
         }
@@ -645,13 +635,7 @@ fn commit_compiled_final_merge_level(
         }
     }
 
-    while partials.pop().is_some() {}
-
     next_partials
-}
-
-fn release_compiled_merge_level_items(mut items: Vec<CompiledMergeLevelItem>) {
-    while items.pop().is_some() {}
 }
 
 fn is_retryable_compiled_final_merge_error(error: &QueryError) -> bool {

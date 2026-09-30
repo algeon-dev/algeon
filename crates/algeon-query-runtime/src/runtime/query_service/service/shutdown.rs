@@ -83,12 +83,11 @@ impl QueryService {
     /// Time spent acquiring the admission lock or closing the service consumes
     /// this same deadline instead of starting a second grace period.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub fn close_and_wait_for_quiescence_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn close_and_wait_for_quiescence_until(&self, deadline: Instant) -> Result<()> {
         self.close_drain_step_until(deadline).into_result()
     }
 
-    #[doc(hidden)]
-    pub fn close_drain_step_until(&self, deadline: Instant) -> QueryServiceDrainOutcome {
+    pub(crate) fn close_drain_step_until(&self, deadline: Instant) -> QueryServiceDrainOutcome {
         let operation = "query_engine.query_service.close_and_wait_for_quiescence";
         self.inner.admission_open.store(false, Ordering::Release);
         self.inner.service_epoch.invalidate();
@@ -223,6 +222,8 @@ impl QueryService {
         let mut waited_for_quiescence = false;
         loop {
             if state.lifecycle.is_quiescent() && state.queued.is_empty() && state.pending_preflight.is_empty() {
+                // Quiescence first observed at or after the absolute deadline is not accepted, matching the
+                // final-completion phase.
                 if waited_for_quiescence && deadline_expired(deadline) {
                     return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
                         phase: QueryServiceDrainPhase::AdmissionQuiescence,
@@ -249,7 +250,9 @@ impl QueryService {
             let waited = self.inner.admission_available.wait_timeout(state, remaining);
             #[cfg(test)]
             self.inner.shutdown_waiters.fetch_sub(1, Ordering::AcqRel);
-            let (next, timeout) = match waited {
+            // A timed-out wait is not terminal by itself: the loop head re-checks quiescence on the reacquired
+            // state before it reports the deadline.
+            let (next, _timeout) = match waited {
                 Ok(waited) => waited,
                 Err(_error) => {
                     return QueryServiceDrainPhaseOutcome::PermanentFailure {
@@ -263,12 +266,6 @@ impl QueryService {
                 },
             };
             state = next;
-            if timeout.timed_out() {
-                return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
-                    phase: QueryServiceDrainPhase::AdmissionQuiescence,
-                    error: query_service_shutdown_timeout(operation, Some(&state), "admission_quiescence"),
-                };
-            }
         }
     }
 }

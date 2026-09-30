@@ -10,10 +10,7 @@ use arrow::record_batch::RecordBatch;
 use cudf::{
     DataFrame, Runtime, Series,
     core::{Column, Table},
-    interop::{
-        arrow_device::{DeviceArrowColumnExport, DeviceArrowTableExport},
-        arrow_host, cuda_stream_handle,
-    },
+    interop::{arrow_host, cuda_stream_handle},
     runtime::CudaStream,
 };
 use rapids_interop::{
@@ -102,11 +99,6 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: fn(Column) -> std::result::Result<PreparedColumnExport<'static>, InteropError>,
     ) {
     }
-    fn assert_column_device_arrow_export(_f: fn(Column) -> std::result::Result<DeviceArrowColumnExport, cudf::Error>) {}
-    fn assert_column_device_arrow_export_with_deep_copy(
-        _f: for<'a> fn(&'a Column) -> std::result::Result<DeviceArrowColumnExport, cudf::Error>,
-    ) {
-    }
     fn assert_table_prepared_export(
         _f: for<'a> fn(&'a Table) -> std::result::Result<PreparedTableExport<'a>, InteropError>,
     ) {
@@ -115,17 +107,10 @@ fn interop_low_level_adapter_surface_smoke() {
         _f: fn(Table) -> std::result::Result<PreparedTableExport<'static>, InteropError>,
     ) {
     }
-    fn assert_table_device_arrow_export_with_deep_copy(
-        _f: for<'a> fn(&'a Table) -> std::result::Result<DeviceArrowTableExport, cudf::Error>,
-    ) {
-    }
 
     assert_column_prepared_root_export(Column::try_into_prepared_device_column_export);
-    assert_column_device_arrow_export(Column::try_prepare_device_arrow_export);
-    assert_column_device_arrow_export_with_deep_copy(Column::try_prepare_device_arrow_export_with_deep_copy);
     assert_table_prepared_export(Table::try_prepare_device_table_export);
     assert_table_prepared_root_export(Table::try_into_prepared_device_table_export);
-    assert_table_device_arrow_export_with_deep_copy(Table::try_prepare_device_arrow_export_with_deep_copy);
 }
 
 #[test]

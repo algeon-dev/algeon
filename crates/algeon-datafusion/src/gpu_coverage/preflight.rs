@@ -19,12 +19,11 @@ use query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunk
 use super::{
     ALGEON_EXPLAIN_COVERAGE_FUNCTION, COVERAGE_VALIDATOR_RECURSION_REASON_CODE, GPU_COVERAGE_REJECTION_REASON_FACT,
     model::{QueryGpuRejectionPhase, QueryGpuValidatedUnder},
-    physical::planning_diagnostics_did_io,
     recursion_guard::query_mentions_coverage_table_function,
 };
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics, Result},
-    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy, NativePlanningDiagnostics},
+    planner::{AlgeonNativeOptimizerConfig, DataFusionCpuExecutionPolicy},
     session::installed_algeon_native_optimizer_config,
 };
 
@@ -246,11 +245,8 @@ pub(super) fn classify_physical_planning_error(error: &DataFusionError) -> Query
     }
 }
 
-pub(super) fn planning_did_io_for_physical_error(
-    phase: QueryGpuRejectionPhase,
-    diagnostics: Option<&NativePlanningDiagnostics>,
-) -> bool {
-    diagnostics.is_some_and(planning_diagnostics_did_io) || phase == QueryGpuRejectionPhase::PlanningIo
+pub(super) fn planning_did_io_for_physical_error(phase: QueryGpuRejectionPhase) -> bool {
+    phase == QueryGpuRejectionPhase::PlanningIo
 }
 
 fn fingerprint_debug(value: &impl std::fmt::Debug) -> String {

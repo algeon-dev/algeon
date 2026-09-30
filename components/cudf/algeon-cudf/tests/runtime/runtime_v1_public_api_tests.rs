@@ -7,7 +7,7 @@ use cudf::{
     AggSpec, DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
     core::{Scalar, memory::DeviceMemoryResource},
-    frame::dataframe::{JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
+    frame::dataframe::{ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
     runtime::CudaStream,
     testing::prelude::*,
@@ -447,7 +447,7 @@ fn runtime_seeded_readers_use_runtime_stream() {
 fn write_options_and_runtime_overrides_use_expected_runtime() {
     let dir = TempDir::new().unwrap();
     let parquet_path = dir.path().join("runtime_write.parquet");
-    let json_path = dir.path().join("runtime_write.jsonl");
+    let override_path = dir.path().join("runtime_write_override.parquet");
 
     let data_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -463,8 +463,10 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
 
     reset_sync_observation();
     reset_exec_observation();
-    df.write_json_with_options(JsonWriteOptions::builder().filepath(&json_path).with_runtime(&target_rt).build())
-        .unwrap();
+    df.write_parquet_with_options(
+        ParquetWriteOptions::builder().filepath(&override_path).with_runtime(&target_rt).build(),
+    )
+    .unwrap();
     assert_eq!(last_exec_stream_value(), target_rt.stream().testing_raw_handle_value());
     assert_eq!(last_exec_mr_value(), target_rt.memory_resource().testing_raw_handle_value());
     assert_eq!(last_sync_stream_value(), target_rt.stream().testing_raw_handle_value());

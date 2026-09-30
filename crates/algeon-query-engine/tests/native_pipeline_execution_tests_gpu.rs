@@ -53,11 +53,9 @@ use query_engine::{
     },
     rapids_backend::rapids_analysis_context,
     runtime::{
-        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, KvikioCompatModeStatus,
-        NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
-        resident::GpuResidentInputMap,
+        AdmittedQueryContext, ExecutionContext, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, resident::GpuResidentInputMap,
     },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
@@ -112,11 +110,6 @@ use remaining_topologies::{
 static PIPELINE_BACKEND: Mutex<Option<GpuBackendCore>> = Mutex::new(None);
 
 fn build_suite_backend() -> Result<GpuBackendCore> {
-    let deployment = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    );
     let policy = QueryExecutionConfig {
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
@@ -135,7 +128,7 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(5, 1, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()
+    GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller)).build()
 }
 
 fn ensure_suite_backend(backend: &mut Option<GpuBackendCore>) -> Result<()> {

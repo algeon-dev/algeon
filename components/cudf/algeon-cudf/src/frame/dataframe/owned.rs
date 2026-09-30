@@ -6,6 +6,8 @@
 //! data.
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::frame::testing_hooks;
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -17,7 +19,7 @@ use crate::{
     hash::{FastIndexMap, fast_index_map, fast_index_map_with_capacity},
     internal::{reassemble::dataframe_from_table_and_names, resolve::validate_no_duplicate_names},
     ops::groupby,
-    runtime::{BoundaryKind, ExecutionPlacement, QueryStageKind, Runtime, execution_domain::ExecutionDomain},
+    runtime::{ExecutionPlacement, Runtime, execution_domain::ExecutionDomain},
 };
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
@@ -380,22 +382,18 @@ impl DataFrame {
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Self> {
         let operation = "dataframe::copy_into_runtime";
         let output_domain = Arc::clone(runtime.execution_domain());
+        #[cfg(any(test, feature = "test-hooks"))]
         let should_copy = self
             .columns
             .values()
             .any(|column| !ExecutionDomain::same_provenance(column.execution_domain(), &output_domain));
         let columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
         let domain = resolve_frame_domain_from_authoritative_source(&columns, &output_domain, operation)?;
-        let frame = Self { columns, row_count: self.row_count, domain };
+        #[cfg(any(test, feature = "test-hooks"))]
         if should_copy {
-            frame.record_boundary_observation_for_query_stage(
-                BoundaryKind::DeviceToDeviceCopy,
-                QueryStageKind::OperatorOutput,
-                false,
-                operation,
-            )?;
+            testing_hooks::record_device_to_device_copy();
         }
-        Ok(frame)
+        Ok(Self { columns, row_count: self.row_count, domain })
     }
 
     /// Consume the `DataFrame`, returning an owned table and column names.
@@ -477,15 +475,19 @@ impl DataFrame {
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
         &self.domain
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_execution_domain_stream_value(&self) -> usize {
         self.domain.debug_stream_value()
     }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn __debug_execution_domain_mr_value(&self) -> usize {
         self.domain.debug_mr_value()
     }

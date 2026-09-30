@@ -15,7 +15,6 @@ use super::{
     concatenate_partitioned_final_merge_outputs, execute_compiled_bounded_aggregate_from_empty_input,
     execution_budget_token_for_boundary, lower_final_aggregate_spec, observe_device_memory_bytes,
     partition_final_merge_partial, partitioned_aggregate_partition_count, reduce_merge_fan_in,
-    release_partials_reverse,
 };
 use crate::{
     exec::{
@@ -90,14 +89,14 @@ pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMer
 }
 
 pub(in crate::exec::bounded::aggregate) struct IncrementalPartitionStates {
-    pub partitions: Vec<(usize, CommittedPartial)>,
-    pub partition_count: usize,
-    pub input_rows: u64,
-    pub partial_count: usize,
-    pub flush_count: usize,
-    pub max_partition_fan_in: usize,
-    pub max_pending_partials: usize,
-    pub merge_time: Duration,
+    pub(in crate::exec::bounded::aggregate) partitions: Vec<(usize, CommittedPartial)>,
+    pub(in crate::exec::bounded::aggregate) partition_count: usize,
+    pub(in crate::exec::bounded::aggregate) input_rows: u64,
+    pub(in crate::exec::bounded::aggregate) partial_count: usize,
+    pub(in crate::exec::bounded::aggregate) flush_count: usize,
+    pub(in crate::exec::bounded::aggregate) max_partition_fan_in: usize,
+    pub(in crate::exec::bounded::aggregate) max_pending_partials: usize,
+    pub(in crate::exec::bounded::aggregate) merge_time: Duration,
 }
 
 impl<'a> CompiledIncrementalPartitionedMerge<'a> {
@@ -434,7 +433,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
                 return Err(error);
             },
         };
-        release_partials_reverse(batch);
+        // Each flush below allocates, so the raw batch cannot wait for end of scope.
+        drop(batch);
         self.pending_raw_bytes = 0;
         for (partition_index, partition) in partitions.into_iter().enumerate() {
             if partition.frame.num_rows() == 0 {
@@ -550,17 +550,15 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.merge_time = self.merge_time.saturating_add(timer.elapsed());
         let frame = result?;
         let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
-        let released = match inputs {
+        match inputs {
             MergeInputs::PendingSlices => {
-                let released = self.pending[partition_index].drain(..take).collect::<Vec<_>>();
-                let released_bytes = released.iter().map(CommittedPartial::device_bytes).sum::<u64>();
+                let released_bytes =
+                    self.pending[partition_index].drain(..take).map(|partial| partial.device_bytes()).sum::<u64>();
                 self.pending_bytes[partition_index] =
                     self.pending_bytes[partition_index].saturating_sub(released_bytes);
-                released
             },
-            MergeInputs::MergedStates => self.merged[partition_index].drain(..take).collect::<Vec<_>>(),
-        };
-        release_partials_reverse(released);
+            MergeInputs::MergedStates => self.merged[partition_index].drain(..take).for_each(drop),
+        }
         self.merged[partition_index].push(CommittedPartial::with_device_bytes(frame, output_bytes));
         self.flush_count += 1;
         self.max_partition_fan_in = self.max_partition_fan_in.max(fan_in);

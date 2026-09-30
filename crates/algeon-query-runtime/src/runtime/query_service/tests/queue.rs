@@ -387,11 +387,10 @@ fn queue_timeout_reports_the_queue_length_at_sweep() {
 #[test]
 #[ignore = "requires at least 2 GPUs"]
 fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
-    let service = QueryService::new_with_device_ordinals_and_deployment(
+    let service = QueryService::new_with_device_ordinals(
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         vec![0, 1],
-        non_gds_deployment(),
     )
     .expect("two-device runtime-backed service");
     service

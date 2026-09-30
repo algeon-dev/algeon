@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::Runtime;
 use crate::{
     core::{
         column::Column,
@@ -23,8 +25,7 @@ use crate::{
     },
     ops::{ast::AstExpression, join, replace},
     runtime::{
-        Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
-        execution_resolver::ResolvedExecution,
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
@@ -251,6 +252,7 @@ fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, ri
     .with_detail("right_on_count", right_count.to_string())
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_merge_reassembly_key_count_error_for_test() -> Result<DataFrame> {
     let runtime = Runtime::new()?;
     let left = DataFrame::from_series([("id", runtime.series(&[1i32])?)])?;
@@ -267,6 +269,7 @@ pub(crate) fn trigger_merge_reassembly_key_count_error_for_test() -> Result<Data
     )
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_projected_cross_join_output_row_overflow_for_test() -> Result<usize> {
     let runtime = Runtime::new()?;
     let left = DataFrame::from_series([("id", runtime.series(&[1i32])?)])?;
@@ -279,6 +282,7 @@ pub(crate) fn trigger_projected_cross_join_output_row_overflow_for_test() -> Res
         .map(|plan| plan.output_rows())
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn trigger_projected_cross_join_input_row_limit_for_test() -> Result<usize> {
     let runtime = Runtime::new()?;
     let left = DataFrame::from_series([("id", runtime.series(&[1i32])?)])?;

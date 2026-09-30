@@ -32,6 +32,16 @@ if ! "${CHECK_SCRIPT}" "${scratch}/clean.md" >/dev/null 2>&1; then
   fail "clean file unexpectedly failed check_prose_slop"
 fi
 
+# 1b. Default targets that are absent (gitignored private trees) are skipped.
+mkdir -p "${scratch}/checkout/website/docs"
+cp "${scratch}/clean.md" "${scratch}/checkout/website/docs/clean.md"
+if ! (cd "${scratch}/checkout" && "${CHECK_SCRIPT}" >/dev/null 2>&1); then
+  fail "default scan failed in a checkout without docs/ or note/"
+fi
+if (cd "${scratch}/checkout" && "${CHECK_SCRIPT}" missing.md >/dev/null 2>&1); then
+  fail "an explicitly named missing path unexpectedly passed"
+fi
+
 # 2. Em-dash is detected.
 cat <<'EOF' >"${scratch}/em_dash.md"
 This is an architecture document — it explains memory limits.

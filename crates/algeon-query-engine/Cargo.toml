@@ -44,7 +44,6 @@ workspace = true
 
 [dependencies]
 arrow = { workspace = true }
-blake3 = { workspace = true }
 bytes = { workspace = true }
 cudf = { workspace = true }
 # Direct edge so build.rs receives both the runtime directory and the shared
@@ -56,7 +55,6 @@ cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 cuml = { workspace = true, optional = true }
 cuml-sys = { workspace = true, optional = true }
-fnv = { workspace = true }
 futures = { workspace = true }
 query-planning = { workspace = true }
 query-runtime = { workspace = true }
@@ -71,6 +69,7 @@ rapids-build-support = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+cudf = { workspace = true, features = ["test-hooks"] }
 query-planning = { workspace = true, features = ["test-hooks"] }
 query-runtime = { workspace = true, features = ["test-hooks"] }
 

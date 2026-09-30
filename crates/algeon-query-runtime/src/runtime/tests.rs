@@ -392,11 +392,13 @@ fn cache_fill_byte_budget_two_holders_growing_past_the_remainder_never_deadlock(
     let (first_grew, second_grew) = std::thread::scope(|scope| {
         let first_handle = scope.spawn(move || {
             first_gate.wait();
-            first.try_grow(1024)
+            // Return the permit so its release cannot land before the other fill tries to grow.
+            (first.try_grow(1024), first)
         });
         second_gate.wait();
         let second_grew = second.try_grow(1024);
-        (first_handle.join().unwrap(), second_grew)
+        let (first_grew, _first) = first_handle.join().unwrap();
+        (first_grew, second_grew)
     });
     assert_eq!((first_grew.unwrap(), second_grew.unwrap()), (false, false));
 }

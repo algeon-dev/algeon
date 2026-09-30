@@ -502,8 +502,8 @@ fn unique_lookup_bounded_side(
         return None;
     }
 
-    let left_unique = builder.output_is_unique_on(left.node, &left_keys).unwrap_or(false);
-    let right_unique = builder.output_is_unique_on(right.node, &right_keys).unwrap_or(false);
+    let left_unique = builder.output_is_unique_on(left.node, &left_keys);
+    let right_unique = builder.output_is_unique_on(right.node, &right_keys);
     let bounded_datafusion_side = match join.join.join_type() {
         JoinType::Inner if right_unique => DataFusionJoinSide::Left,
         JoinType::Inner if left_unique => DataFusionJoinSide::Right,

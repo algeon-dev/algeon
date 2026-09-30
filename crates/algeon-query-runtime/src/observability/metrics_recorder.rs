@@ -164,21 +164,6 @@ impl MetricsRecorder {
         self.source(SourceReadFact::PrefetchAbandoned);
     }
 
-    /// Adds source-read queue wait time.
-    pub fn record_source_read_queue_wait(&self, elapsed: Duration) {
-        self.source(SourceReadFact::QueueWait(elapsed));
-    }
-
-    /// Adds source metadata load time.
-    pub fn add_source_metadata_load_time(&self, elapsed: Duration) {
-        self.source(SourceReadFact::MetadataLoadTime(elapsed));
-    }
-
-    /// Adds time spent inside the Parquet read call.
-    pub fn add_parquet_read_time(&self, elapsed: Duration) {
-        self.source(SourceReadFact::ParquetReadTime(elapsed));
-    }
-
     /// Adds source-read orchestration time.
     pub fn add_source_read_time(&self, elapsed: Duration) {
         self.source(SourceReadFact::SourceReadTime(elapsed));
@@ -226,11 +211,6 @@ impl MetricsRecorder {
     /// Records a device-to-host materialization.
     pub fn record_device_to_host_materialization(&self, rows: u64, bytes: u64) {
         self.apply(|metrics| metrics.boundary.record_device_to_host_materialization(rows, bytes));
-    }
-
-    /// Records a device-to-device copy.
-    pub fn record_device_to_device_copy(&self, bytes: u64) {
-        self.apply(|metrics| metrics.boundary.record_device_to_device_copy(bytes));
     }
 
     // ---- memory and operators -----------------------------------------
@@ -514,20 +494,6 @@ impl MetricsRecorder {
         let compiled_task_id = compiled_task_id.to_string();
         let operator_kind = operator_kind.into();
         self.apply(|metrics| metrics.record_compiled_pipeline_task_execution(compiled_task_id, operator_kind));
-    }
-
-    /// Records execution of a task id and operator kind.
-    pub fn record_task_execution(&self, task_id: impl ToString, operator_kind: impl Into<String>) {
-        let task_id = task_id.to_string();
-        let operator_kind = operator_kind.into();
-        self.apply(|metrics| metrics.record_task_execution(task_id, operator_kind));
-    }
-
-    /// Registers one task definition.
-    pub fn register_task_definition(&self, task_id: impl ToString, operator_kind: impl Into<String>) {
-        let task_id = task_id.to_string();
-        let operator_kind = operator_kind.into();
-        self.apply(|metrics| metrics.register_task_definition(task_id, operator_kind));
     }
 
     /// Records one compiled task's plan mapping.

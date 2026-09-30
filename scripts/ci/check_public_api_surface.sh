@@ -203,10 +203,22 @@ fi
 
 # `cargo public-api` omits `#[doc(hidden)]` items, so hidden cross-crate
 # feature contracts are license-checked against a per-symbol ledger instead.
+# Each entry is: package, source directory, library root module (`[lib] name`).
+HIDDEN_LEDGER_CRATES=(
+  "algeon-cudf components/cudf/algeon-cudf/src cudf"
+  "algeon-datafusion crates/algeon-datafusion/src algeon_datafusion"
+  "algeon-query-engine crates/algeon-query-engine/src query_engine"
+  "algeon-query-planning crates/algeon-query-planning/src query_planning"
+  "algeon-query-runtime crates/algeon-query-runtime/src query_runtime"
+)
 if [[ "${PUBLIC_API_SKIP_HIDDEN_POLICY:-0}" != "1" ]]; then
-  if ! python3 scripts/ci/check_public_api_hidden.py "${SNAPSHOT_DIR}/algeon-datafusion-hidden.tsv"; then
-    status=1
-  fi
+  for entry in "${HIDDEN_LEDGER_CRATES[@]}"; do
+    read -r package source_dir root_module <<<"${entry}"
+    if ! python3 scripts/ci/check_public_api_hidden.py "${source_dir}" "${root_module}" \
+      "${SNAPSHOT_DIR}/${package}-hidden.tsv"; then
+      status=1
+    fi
+  done
 fi
 
 exit "${status}"

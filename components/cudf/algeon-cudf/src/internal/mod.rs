@@ -9,4 +9,5 @@
 
 pub(crate) mod reassemble;
 pub(crate) mod resolve;
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod testing_hooks;

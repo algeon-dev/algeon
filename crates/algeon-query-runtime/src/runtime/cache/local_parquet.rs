@@ -16,8 +16,7 @@ use std::{
 use arrow::datatypes::SchemaRef;
 use query_planning::error::{QueryError, QueryErrorCode, Result};
 
-#[doc(hidden)]
-pub use crate::runtime::source_identity::GpuLocalParquetSourceCacheKey;
+pub(crate) use crate::runtime::source_identity::GpuLocalParquetSourceCacheKey;
 use crate::runtime::{
     ExecutionContext,
     cache::{
@@ -39,8 +38,7 @@ const MAX_SOURCE_EVENT_SNAPSHOTS: usize = 256;
 /// the former means capacity was reserved before the copy but the cache-domain
 /// allocator could not complete it; the latter performs no device copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum GpuLocalParquetSourceCachePromotion {
+pub(crate) enum GpuLocalParquetSourceCachePromotion {
     /// A new cache-owned copy was retained.
     Inserted,
     /// An equivalent entry was already present or being promoted by another
@@ -58,14 +56,10 @@ pub enum GpuLocalParquetSourceCachePromotion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct GpuLocalParquetSourceCachePromotionResult {
-    #[doc(hidden)]
-    pub outcome: GpuLocalParquetSourceCachePromotion,
-    #[doc(hidden)]
-    pub retained_device_bytes: u64,
-    #[doc(hidden)]
-    pub evicted_device_bytes: u64,
-    #[doc(hidden)]
-    pub allocation_failure_code: Option<QueryErrorCode>,
+    pub(crate) outcome: GpuLocalParquetSourceCachePromotion,
+    pub(crate) retained_device_bytes: u64,
+    pub(crate) evicted_device_bytes: u64,
+    pub(crate) allocation_failure_code: Option<QueryErrorCode>,
 }
 
 impl GpuLocalParquetSourceCachePromotionResult {
@@ -238,8 +232,7 @@ pub enum GpuLocalParquetSourceCacheLoad {
 /// a cloned result retain the same one lease; the state machine sees one final
 /// release only after the final result clone is gone.
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct GpuLocalParquetSourceCachePin {
+pub(crate) struct GpuLocalParquetSourceCachePin {
     _inner: Arc<CacheResidencyPin>,
 }
 
@@ -280,8 +273,7 @@ impl fmt::Debug for GpuLocalParquetSourceCache {
 impl GpuLocalParquetSourceCache {
     /// Creates one accounted source-cache subdomain on an already-created
     /// cache allocation domain.
-    #[doc(hidden)]
-    pub fn new(allocation_lease: cudf::CacheAllocationLease, ledger: DeviceLedger) -> Result<Self> {
+    pub(crate) fn new(allocation_lease: cudf::CacheAllocationLease, ledger: DeviceLedger) -> Result<Self> {
         let domain = allocation_lease.domain();
         if domain.device().ordinal() != ledger.device_ordinal() {
             return Err(QueryError::new(
@@ -321,8 +313,7 @@ impl GpuLocalParquetSourceCache {
 
     /// Stable allocation-domain identity used by this cache.
     #[cfg(all(test, feature = "cugraph"))]
-    #[doc(hidden)]
-    pub fn allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
+    pub(crate) fn allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
         self.inner.allocation_lease.domain_id()
     }
 
@@ -335,8 +326,7 @@ impl GpuLocalParquetSourceCache {
 
     /// Exact cache-owned bytes currently represented by completed entries.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn retained_device_bytes(&self) -> Result<u64> {
+    pub(crate) fn retained_device_bytes(&self) -> Result<u64> {
         self.lock("retained_device_bytes")?.entries.values().try_fold(0u64, |sum, entry| {
             sum.checked_add(entry.residency.bytes()).ok_or_else(|| {
                 QueryError::new(QueryErrorCode::Internal, OPERATION, "source-cache retained byte total overflowed")
@@ -348,8 +338,7 @@ impl GpuLocalParquetSourceCache {
     /// Cumulative activity plus the live key count.  These counters describe
     /// cache work only; byte residency remains the authoritative ledger and
     /// allocation-domain observations published by the service.
-    #[doc(hidden)]
-    pub fn activity(&self) -> Result<CacheSourceActivity> {
+    pub(crate) fn activity(&self) -> Result<CacheSourceActivity> {
         let state = self.lock("activity")?;
         Ok(CacheSourceActivity {
             entry_count: state.entries.len(),
@@ -370,8 +359,7 @@ impl GpuLocalParquetSourceCache {
     /// Sequence numbers are local to the allocation domain and let an
     /// observer retain the after-snapshot delta without reconstructing cache
     /// behavior from aggregate counters.
-    #[doc(hidden)]
-    pub fn event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
+    pub(crate) fn event_snapshots(&self) -> Result<Vec<CacheSourceEventSnapshot>> {
         Ok(self.lock("event_snapshots")?.recent_events.iter().cloned().collect())
     }
 
@@ -527,8 +515,7 @@ impl GpuLocalParquetSourceCache {
 
     /// Looks up and pins a cache entry before copying it into `context`.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn get(
+    pub(crate) fn get(
         &self,
         key: &GpuLocalParquetSourceCacheKey,
         context: &ExecutionContext,
@@ -613,8 +600,7 @@ impl GpuLocalParquetSourceCache {
     /// Promotes a decoded attempt-owned source frame by making a cache-domain
     /// copy. An active attempt allocation domain is the source of this copy,
     /// never a rejection condition.
-    #[doc(hidden)]
-    pub fn promote(
+    pub(crate) fn promote(
         &self,
         key: GpuLocalParquetSourceCacheKey,
         context: &ExecutionContext,
@@ -853,8 +839,7 @@ impl GpuLocalParquetSourceCache {
     ///
     /// Refuses to close a pinned source cache rather than dropping its map
     /// ownership and relying on a later pin release to discover teardown.
-    #[doc(hidden)]
-    pub fn close_and_drain(&self) -> Result<()> {
+    pub(crate) fn close_and_drain(&self) -> Result<()> {
         let entries = {
             let mut state = self.lock("close_and_drain")?;
             if state.closed {

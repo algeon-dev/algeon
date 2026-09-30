@@ -34,8 +34,7 @@ use crate::{
 /// service queue. This lets async servers wait without parking a blocking
 /// thread inside [`QueryService::admit_query`].
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct QueryAdmissionWaiter {
+pub(crate) struct QueryAdmissionWaiter {
     pub(super) service: QueryService,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
@@ -280,6 +279,12 @@ impl Drop for AdmissionTicket {
         match self.transition_to_cleanup().and_then(|()| self.tracker.finish_cleanup(self.id)) {
             Ok(()) => {
                 if let Some(service) = self.service.upgrade() {
+                    // The tracker has its own mutex, so removing the ticket does not touch the admission mutex.
+                    // Locking it before the wakeup keeps the notify from landing between a waiter's quiescence
+                    // check and its wait. No ticket drops on a thread holding this mutex: creators release it
+                    // before moving the ticket on, and envelope teardown drops the grant, whose release observer
+                    // also locks it, before the ticket.
+                    let _admission = service.admission.lock().unwrap_or_else(PoisonError::into_inner);
                     service.notify_admission_available();
                 }
             },
@@ -465,8 +470,7 @@ pub(super) fn missing_device_admission_entry_error(device_ordinal: usize) -> Que
 /// lease so activity callbacks cannot run while admission or resource locks
 /// are held.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct QueryCompletion {
+pub(crate) struct QueryCompletion {
     observation_owner: Option<RuntimeObservationOwner>,
     attempt_finalizer_slot: Option<AttemptFinalizerSlot>,
     attempt_finalizer: Option<AttemptFinalizer>,
@@ -841,7 +845,7 @@ impl QueryAdmissionWaiter {
     /// or a compatible device's current capacity/health constraint. Queue
     /// timeout and service close remove the request and return a structured
     /// error.
-    pub fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
+    pub(crate) fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
         if let Some(error) = self.terminal.take() {
             self.queued = false;
             return Err(error);
@@ -1107,7 +1111,7 @@ impl QueryAdmissionWaiter {
     }
 
     /// Remaining time before this queued admission reaches the service timeout.
-    pub fn remaining_wait(&self) -> Duration {
+    pub(crate) fn remaining_wait(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
     }
 }

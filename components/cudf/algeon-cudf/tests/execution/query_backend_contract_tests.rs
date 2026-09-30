@@ -24,14 +24,14 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    BoundaryKind, DataFrame, DenseMatrixLayout, DeviceId, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
+    DataFrame, DenseMatrixLayout, DeviceId, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
     core::{
         DeviceMemoryResource,
         error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue},
     },
     frame::dataframe::{GpuRecordBatch, HostBatchCursorConfig},
     ops::expr::col,
-    runtime::{BindingExtensionInitError, QueryStageKind},
+    runtime::BindingExtensionInitError,
     testing::{self, core::adopt_owned_memory_resource_for_test, prelude::*},
 };
 use cudf_sys::test_support;
@@ -953,7 +953,7 @@ fn independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not
     assert!(companion.affinity_anchor().is_alive());
 }
 
-fn host_record_batch_import_and_export_are_observable_boundaries() {
+fn host_record_batch_import_and_export_keep_runtime_residency() {
     let _observation_lock = lock_event_observation();
     let runtime = sample_runtime();
     let runtime_stream = runtime.stream().testing_raw_handle_value();
@@ -963,21 +963,8 @@ fn host_record_batch_import_and_export_are_observable_boundaries() {
     let import_count_before = testing::arrow::arrow_host_import_call_count_for_test();
     let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
     let import_count_after = testing::arrow::arrow_host_import_call_count_for_test();
-    let import_observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
     assert!(import_count_after > import_count_before);
-    assert_eq!(import_observation.kind, BoundaryKind::HostToDevice);
-    assert_eq!(import_observation.query_stage, Some(QueryStageKind::InteropImport));
-    assert_eq!(import_observation.placement, runtime.placement());
-    assert_eq!(import_observation.rows, 4);
-    assert_eq!(import_observation.columns, 2);
-    assert!(!import_observation.synchronized_for_host);
-    assert!(import_observation.memory.payload_bytes.unwrap() > 0);
-    assert!(
-        import_observation.memory.device_allocated_bytes.unwrap() >= import_observation.memory.payload_bytes.unwrap()
-    );
-    assert_eq!(import_observation.memory.uploaded_bytes, import_observation.memory.payload_bytes);
-    assert_eq!(import_observation.memory.downloaded_bytes, None);
     assert_frame_residency(&df, runtime.testing_execution_domain_id(), runtime_stream, runtime_mr);
     assert_eq!(df.column_names(), vec!["id", "value"]);
 
@@ -985,84 +972,11 @@ fn host_record_batch_import_and_export_are_observable_boundaries() {
     testing::arrow::reset_arrow_host_interop_observation_for_test();
     let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
     let exported = df.to_record_batch().unwrap();
-    let export_observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
     assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
-    assert_eq!(export_observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(export_observation.query_stage, Some(QueryStageKind::FinalMaterialize));
-    assert_eq!(export_observation.placement, df.placement());
-    assert_eq!(export_observation.rows, 4);
-    assert_eq!(export_observation.columns, 2);
-    assert!(export_observation.synchronized_for_host);
-    assert_eq!(export_observation.memory.downloaded_bytes, export_observation.memory.payload_bytes);
-    assert_eq!(export_observation.memory.uploaded_bytes, None);
     assert_eq!(last_sync_stream_value(), runtime_stream);
     assert_eq!(int32_array(&exported, 0).values().as_ref(), &[1, 2, 3, 4]);
     assert_eq!(int32_array(&exported, 1).values().as_ref(), &[10, 20, 30, 40]);
-}
-
-fn runtime_boundary_observer_receives_opt_in_observations() {
-    let _observation_lock = lock_event_observation();
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_records = Arc::clone(&observed);
-    let runtime = Runtime::builder()
-        .with_boundary_observer(move |observation| {
-            observer_records.lock().unwrap().push(observation);
-        })
-        .build()
-        .unwrap();
-
-    let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
-    let _exported = df.to_record_batch().unwrap();
-
-    let observations = observed.lock().unwrap();
-    assert_eq!(observations.len(), 2);
-    assert_eq!(observations[0].kind, BoundaryKind::HostToDevice);
-    assert_eq!(observations[0].query_stage, Some(QueryStageKind::InteropImport));
-    assert_eq!(observations[0].placement, runtime.placement());
-    assert_eq!(observations[0].rows, 4);
-    assert_eq!(observations[0].columns, 2);
-    assert!(!observations[0].synchronized_for_host);
-    assert_eq!(observations[1].kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observations[1].query_stage, Some(QueryStageKind::FinalMaterialize));
-    assert_eq!(observations[1].placement, df.placement());
-    assert_eq!(observations[1].rows, 4);
-    assert_eq!(observations[1].columns, 2);
-    assert!(observations[1].synchronized_for_host);
-}
-
-fn dataframe_query_stage_memory_observation_is_explicit_and_observable() {
-    let _observation_lock = lock_event_observation();
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_records = Arc::clone(&observed);
-    let runtime = Runtime::builder()
-        .with_boundary_observer(move |observation| {
-            observer_records.lock().unwrap().push(observation);
-        })
-        .build()
-        .unwrap();
-    let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
-
-    testing::boundary::reset_boundary_observation_for_test();
-    let observation = df.observe_query_stage(QueryStageKind::OperatorOutput).unwrap();
-    let recorded = testing::boundary::last_boundary_observation_for_test().unwrap();
-
-    assert_eq!(observation.kind, BoundaryKind::QueryStage);
-    assert_eq!(observation.query_stage, Some(QueryStageKind::OperatorOutput));
-    assert_eq!(observation.rows, 4);
-    assert_eq!(observation.columns, 2);
-    assert!(!observation.synchronized_for_host);
-    assert_eq!(observation.memory.uploaded_bytes, None);
-    assert_eq!(observation.memory.downloaded_bytes, None);
-    assert!(observation.memory.payload_bytes.unwrap() > 0);
-    assert!(observation.memory.device_allocated_bytes.unwrap() >= observation.memory.payload_bytes.unwrap());
-    assert_eq!(recorded, observation);
-    assert_eq!(*observed.lock().unwrap().last().unwrap(), observation);
-
-    let memory = df.query_memory_observation().unwrap();
-    assert_eq!(memory.payload_bytes, observation.memory.payload_bytes);
-    assert_eq!(memory.device_allocated_bytes, observation.memory.device_allocated_bytes);
-    assert_eq!(memory.reservation_bytes, None);
 }
 
 fn query_execution_context_packages_runtime_handles_for_query_operations() {
@@ -1117,15 +1031,9 @@ fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit()
     testing::arrow::reset_arrow_host_interop_observation_for_test();
     let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
     let materialized = gpu.to_host_record_batch().unwrap();
-    let observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
     assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
     assert_eq!(materialized.schema().as_ref(), schema.as_ref());
-    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observation.placement, df.placement());
-    assert_eq!(observation.rows, 4);
-    assert_eq!(observation.columns, 2);
-    assert!(observation.synchronized_for_host);
 
     let (unwrapped, unwrapped_schema, mapped_schema) = gpu.into_parts();
     assert_eq!(unwrapped.column_names(), vec!["id", "value"]);
@@ -1178,10 +1086,6 @@ fn host_batch_cursor_exports_one_schema_preserving_batch_for_an_empty_gpu_result
     assert_eq!(first.schema().as_ref(), schema.as_ref());
     assert_eq!(first.num_rows(), 0);
     assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 1);
-    let observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
-    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(observation.rows, 0);
-    assert_eq!(observation.columns, schema.fields().len());
 
     assert!(cursor.next_batch().unwrap().is_none());
     assert!(!cursor.has_next_batch());
@@ -1227,8 +1131,9 @@ fn host_batch_cursor_rejects_four_concurrent_oversized_utf8_rows_before_d2h_and_
                     error.detail_value("estimated_materialization_bytes").unwrap().parse::<usize>().unwrap()
                         > HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES
                 );
-                assert!(
-                    testing::arrow::last_arrow_host_boundary_observation_for_test().is_none(),
+                assert_eq!(
+                    testing::arrow::arrow_host_export_call_count_for_test(),
+                    0,
                     "hard-limit rejection must happen before the host export boundary"
                 );
             })
@@ -1279,12 +1184,9 @@ fn host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free() {
         .unwrap();
     let prepared = equal.prepare_next_batch().unwrap().unwrap();
     assert_eq!(prepared.estimated_materialization_bytes(), exact_materialization_bytes);
-    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
     assert_eq!(equal.materialize_prepared_batch(prepared).unwrap(), host);
-    assert_eq!(
-        testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap().kind,
-        BoundaryKind::DeviceToHost
-    );
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     testing::arrow::reset_arrow_host_interop_observation_for_test();
     let below = gpu
@@ -1296,7 +1198,7 @@ fn host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free() {
         .unwrap();
     let error = below.prepare_next_batch().expect_err("one byte below the exact payload must reject");
     assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
-    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
 }
 
 fn host_batch_cursor_estimates_final_string_layouts_before_d2h() {
@@ -1517,17 +1419,9 @@ fn fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices() {
     let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
 
     testing::dataframe::reset_fixed_size_list_structural_proof_build_count_for_test();
-    testing::boundary::reset_boundary_observation_for_test();
     let gpu = GpuRecordBatch::new(frame, schema).unwrap();
     assert_eq!(testing::dataframe::fixed_size_list_structural_proof_build_count_for_test(), 1);
-    let observation = testing::boundary::last_boundary_observation_for_test().unwrap();
-    assert_eq!(observation.kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(observation.rows, 4);
-    assert_eq!(observation.columns, 2);
-    assert!(observation.synchronized_for_host);
-    assert_eq!(observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
 
-    testing::boundary::reset_boundary_observation_for_test();
     let mut cursor = gpu
         .into_host_batch_cursor(HostBatchCursorConfig {
             target_materialization_bytes: usize::MAX,
@@ -1537,17 +1431,14 @@ fn fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices() {
         .unwrap();
     let first = cursor.prepare_next_batch().unwrap().unwrap();
     assert_eq!(testing::dataframe::fixed_size_list_structural_proof_build_count_for_test(), 1);
-    assert!(testing::boundary::last_boundary_observation_for_test().is_none());
     cursor.materialize_prepared_batch(first).unwrap();
 
-    testing::boundary::reset_boundary_observation_for_test();
     let _second = cursor.prepare_next_batch().unwrap().unwrap();
     assert_eq!(
         testing::dataframe::fixed_size_list_structural_proof_build_count_for_test(),
         1,
         "cursor slices must retain the original structural proof instead of rebuilding it"
     );
-    assert!(testing::boundary::last_boundary_observation_for_test().is_none());
 }
 
 fn fixed_size_list_export_retains_proof_binding_range_and_lease_root() {
@@ -1566,15 +1457,6 @@ fn fixed_size_list_export_retains_proof_binding_range_and_lease_root() {
     assert_eq!(validated.child_byte_offset(), validated.child_offset() * std::mem::size_of::<f32>());
     assert_eq!(validated.binding_id(), runtime.binding_id());
     assert_eq!(validated.placement(), runtime.placement());
-    let observation = validated.structural_observation().unwrap();
-    assert_eq!(observation.kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
-    let finite_observation = validated.finite_observation().unwrap();
-    assert_eq!(finite_observation.kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(finite_observation.rows, validated.child_len());
-    assert_eq!(finite_observation.columns, 1);
-    assert_eq!(finite_observation.placement, runtime.placement());
-    assert_eq!(finite_observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
     assert_eq!(validated.export().column().id(), validated.root_column_id());
     assert!(validated.export().semantic_columns().iter().any(|column| column.id() == validated.child_column_id()));
     let values = validated.child_values_binding();
@@ -1678,7 +1560,6 @@ fn fixed_size_list_float32_finite_validation_covers_only_the_active_child_range(
 
     assert_eq!(validated.rows(), 1);
     assert_eq!(validated.child_len(), 2);
-    assert_eq!(validated.finite_observation().unwrap().rows, 2);
 }
 
 fn fixed_size_list_export_rejects_detached_foreign_proof_identity() {
@@ -1748,16 +1629,6 @@ fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root()
     assert_eq!(validated.child_byte_offset(), validated.child_offset() * std::mem::size_of::<f32>());
     assert_eq!(validated.binding_id(), runtime.binding_id());
     assert_eq!(validated.placement(), runtime.placement());
-    let offsets_observation = validated.offsets_observation();
-    assert_eq!(offsets_observation.kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(offsets_observation.rows, 3);
-    assert_eq!(offsets_observation.columns, 2);
-    assert_eq!(offsets_observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
-    let finite_observation = validated.finite_observation().unwrap();
-    assert_eq!(finite_observation.kind, BoundaryKind::BoundedControlScalar);
-    assert_eq!(finite_observation.rows, 6);
-    assert_eq!(finite_observation.columns, 1);
-    assert_eq!(finite_observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
     assert_eq!(validated.export().column().id(), validated.root_column_id());
     assert!(validated.export().bindings().iter().any(|binding| binding.id() == validated.offsets_buffer_id()));
     assert!(validated.export().semantic_columns().iter().any(|column| column.id() == validated.child_column_id()));
@@ -1804,7 +1675,6 @@ fn uniform_list_export_fails_closed_when_empty_dimension_is_unavailable() {
     let runtime = sample_runtime();
     let gpu = uniform_list_float32_gpu_batch(&runtime, vec![0], vec![], None);
 
-    testing::boundary::reset_boundary_observation_for_test();
     let error = gpu
         .try_prepare_uniform_list_export(0)
         .expect_err("empty variable-width List cannot prove a positive dimension");
@@ -1814,7 +1684,6 @@ fn uniform_list_export_fails_closed_when_empty_dimension_is_unavailable() {
         error.fact_value(FactKeyName::ValidationReason),
         Some(&FactValue::Str("uniform_list_dimension_unavailable".into()))
     );
-    assert!(testing::boundary::last_boundary_observation_for_test().is_none());
 }
 
 fn uniform_list_export_rejects_zero_width_and_ragged_rows() {
@@ -1913,8 +1782,6 @@ fn uniform_list_export_covers_only_the_sliced_active_child_range() {
     assert_eq!(validated.rows(), 2);
     assert_eq!(validated.dimension(), 2);
     assert_eq!(validated.child_len(), 4);
-    assert_eq!(validated.offsets_observation().rows, 2);
-    assert_eq!(validated.finite_observation().unwrap().rows, 4);
 }
 
 fn uniform_list_export_rejects_foreign_offset_proof_identity() {
@@ -1974,7 +1841,7 @@ fn host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_w
             "destination estimate must exceed the hard limit"
         );
         assert!(source_width < 32, "source payload alone would have passed this limit");
-        assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+        assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
 
         let mut materializing = gpu
             .into_host_batch_cursor(HostBatchCursorConfig {
@@ -2007,7 +1874,7 @@ fn host_batch_cursor_rejects_oversized_nested_list_row_before_d2h() {
     let error = cursor.prepare_next_batch().expect_err("an oversized nested row must reject before D2H");
     assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(error.detail_value("reason"), Some("host_materialization_hard_limit_exceeded"));
-    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
 }
 
 fn materialized_host_chunk_does_not_retain_gpu_or_runtime_backing() {
@@ -2072,29 +1939,22 @@ fn gpu_record_batch_host_materialization_uses_stored_arrow_schema_contract() {
 }
 
 #[test]
-fn arrow_host_testing_counts_cross_threads_and_keeps_last_observation_thread_local() {
+fn arrow_host_testing_counts_calls_dispatched_to_other_threads() {
     let _observation_lock = lock_event_observation();
     let import_count_before = testing::arrow::arrow_host_import_call_count_for_test();
     let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
-    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 
     std::thread::spawn(|| {
         let runtime = sample_runtime();
         let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
 
         let _ = df.to_record_batch().unwrap();
-
-        assert_eq!(
-            testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap().kind,
-            BoundaryKind::DeviceToHost
-        );
     })
     .join()
     .unwrap();
 
     assert!(testing::arrow::arrow_host_import_call_count_for_test() > import_count_before);
     assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
-    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
 fn gpu_record_batch_rejects_incompatible_external_schema_before_materialization() {
@@ -2173,15 +2033,8 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     testing::arrow::reset_arrow_host_interop_observation_for_test();
     let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
     let exported = projected.to_record_batch().unwrap();
-    let export_observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
     assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
-    assert_eq!(export_observation.kind, BoundaryKind::DeviceToHost);
-    assert_eq!(export_observation.query_stage, Some(QueryStageKind::FinalMaterialize));
-    assert_eq!(export_observation.placement, projected.placement());
-    assert_eq!(export_observation.rows, 3);
-    assert_eq!(export_observation.columns, 3);
-    assert!(export_observation.synchronized_for_host);
     assert_eq!(last_sync_stream_value(), ctx_stream);
     assert_eq!(exported.column(0).len(), 3);
     assert_eq!(int32_array(&exported, 0).values().as_ref(), &[2, 3, 4]);
@@ -2189,82 +2042,20 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     assert_eq!(int32_array(&exported, 2).values().as_ref(), &[22, 33, 44]);
 }
 
-fn explicit_runtime_relocation_is_an_observable_boundary() {
+fn explicit_runtime_relocation_counts_one_device_copy_only_across_provenance() {
     let _observation_lock = lock_event_observation();
     let source_runtime = sample_runtime();
     let target_runtime = sample_runtime();
     let df = DataFrame::from_record_batch(&source_runtime, &sample_record_batch()).unwrap();
 
-    testing::boundary::reset_boundary_observation_for_test();
+    let copies_before = testing::device_copy::device_to_device_copy_count_for_test();
+    let same_provenance = df.copy_into_runtime(&source_runtime).unwrap();
+    assert_eq!(testing::device_copy::device_to_device_copy_count_for_test(), copies_before);
+    assert_eq!(same_provenance.placement(), source_runtime.placement());
+
     let relocated = df.copy_into_runtime(&target_runtime).unwrap();
-    let observation = testing::boundary::last_boundary_observation_for_test().unwrap();
-
-    assert_eq!(observation.kind, BoundaryKind::DeviceToDeviceCopy);
-    assert_eq!(observation.query_stage, Some(QueryStageKind::OperatorOutput));
-    assert_eq!(observation.placement, target_runtime.placement());
-    assert_eq!(observation.rows, 4);
-    assert_eq!(observation.columns, 2);
-    assert!(!observation.synchronized_for_host);
+    assert_eq!(testing::device_copy::device_to_device_copy_count_for_test(), copies_before + 1);
     assert_eq!(relocated.placement(), target_runtime.placement());
-}
-
-fn arrow_c_device_export_and_import_are_observable_boundaries() {
-    let _observation_lock = lock_event_observation();
-    let producer_runtime = sample_runtime();
-    let consumer_runtime = sample_runtime();
-    let df = DataFrame::from_record_batch(&producer_runtime, &sample_record_batch()).unwrap();
-
-    testing::boundary::reset_boundary_observation_for_test();
-    let export = df.try_prepare_device_arrow_export().unwrap();
-    let export_observation = testing::boundary::last_boundary_observation_for_test().unwrap();
-
-    assert_eq!(export_observation.kind, BoundaryKind::DeviceAbiHandoff);
-    assert_eq!(export_observation.query_stage, Some(QueryStageKind::InteropExport));
-    assert_eq!(export_observation.placement, df.placement());
-    assert_eq!(export_observation.rows, 4);
-    assert_eq!(export_observation.columns, 2);
-    assert!(!export_observation.synchronized_for_host);
-
-    let foreign = export.into_foreign();
-    let imported = DataFrame::try_import_from_device_arrow_table_into_runtime(&foreign, &consumer_runtime).unwrap();
-    let import_observation = testing::boundary::last_boundary_observation_for_test().unwrap();
-
-    assert_eq!(import_observation.kind, BoundaryKind::DeviceAbiHandoff);
-    assert_eq!(import_observation.query_stage, Some(QueryStageKind::InteropImport));
-    assert_eq!(import_observation.placement, consumer_runtime.placement());
-    assert_eq!(import_observation.rows, 4);
-    assert_eq!(import_observation.columns, 2);
-    assert!(!import_observation.synchronized_for_host);
-    assert_eq!(imported.placement(), consumer_runtime.placement());
-}
-
-fn prepared_interop_lease_activation_is_an_observable_boundary() {
-    let _observation_lock = lock_event_observation();
-    let observed = Arc::new(Mutex::new(Vec::new()));
-    let observer_records = Arc::clone(&observed);
-    let runtime = Runtime::builder()
-        .with_boundary_observer(move |observation| {
-            observer_records.lock().unwrap().push(observation);
-        })
-        .build()
-        .unwrap();
-    let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
-    let export = df.try_prepare_device_table_export().unwrap();
-
-    testing::boundary::reset_boundary_observation_for_test();
-    let lease = export
-        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
-        .unwrap();
-    let observation = testing::boundary::last_boundary_observation_for_test().unwrap();
-
-    assert_eq!(observation.kind, BoundaryKind::InteropLease);
-    assert_eq!(observation.query_stage, Some(QueryStageKind::InteropExport));
-    assert_eq!(observation.placement, df.placement());
-    assert_eq!(observation.rows, 4);
-    assert_eq!(observation.columns, 2);
-    assert!(!observation.synchronized_for_host);
-    assert_eq!(*observed.lock().unwrap().last().unwrap(), observation);
-    assert!(lease.complete().unwrap().is_ready().unwrap());
 }
 
 #[test]
@@ -2326,16 +2117,8 @@ fn query_backend_contract_tests_cases() {
             independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease,
         ),
         (
-            "host_record_batch_import_and_export_are_observable_boundaries",
-            host_record_batch_import_and_export_are_observable_boundaries,
-        ),
-        (
-            "runtime_boundary_observer_receives_opt_in_observations",
-            runtime_boundary_observer_receives_opt_in_observations,
-        ),
-        (
-            "dataframe_query_stage_memory_observation_is_explicit_and_observable",
-            dataframe_query_stage_memory_observation_is_explicit_and_observable,
+            "host_record_batch_import_and_export_keep_runtime_residency",
+            host_record_batch_import_and_export_keep_runtime_residency,
         ),
         (
             "query_execution_context_packages_runtime_handles_for_query_operations",
@@ -2457,16 +2240,8 @@ fn query_backend_contract_tests_cases() {
             query_style_chain_keeps_one_override_until_host_materialization,
         ),
         (
-            "explicit_runtime_relocation_is_an_observable_boundary",
-            explicit_runtime_relocation_is_an_observable_boundary,
-        ),
-        (
-            "arrow_c_device_export_and_import_are_observable_boundaries",
-            arrow_c_device_export_and_import_are_observable_boundaries,
-        ),
-        (
-            "prepared_interop_lease_activation_is_an_observable_boundary",
-            prepared_interop_lease_activation_is_an_observable_boundary,
+            "explicit_runtime_relocation_counts_one_device_copy_only_across_provenance",
+            explicit_runtime_relocation_counts_one_device_copy_only_across_provenance,
         ),
     ]);
 }

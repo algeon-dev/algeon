@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::runtime::BoundaryObserverRef;
 
 struct DeviceTableProjection<'a> {
     columns: Vec<SemanticColumn>,
@@ -18,8 +17,6 @@ struct HostTableProjection {
 
 pub(super) struct DeviceTableExportContext<'a> {
     operation: &'static str,
-    placement: ExecutionPlacement,
-    observer: Option<BoundaryObserverRef>,
     default_device: i32,
     readiness: ProducerReadiness<'a>,
 }
@@ -27,7 +24,7 @@ pub(super) struct DeviceTableExportContext<'a> {
 impl<'a> DeviceTableExportContext<'a> {
     fn from_domain(operation: &'static str, domain: &Arc<ExecutionDomain>) -> Result<Self, InteropError> {
         let (default_device, readiness) = prepared_device_readiness(operation, domain)?;
-        Ok(Self::new(operation, domain, default_device, readiness))
+        Ok(Self { operation, default_device, readiness })
     }
 
     pub(super) fn from_event(
@@ -36,22 +33,7 @@ impl<'a> DeviceTableExportContext<'a> {
         event: &'a CudaEvent,
     ) -> Result<Self, InteropError> {
         let (default_device, readiness) = prepared_device_event_readiness(operation, domain, event)?;
-        Ok(Self::new(operation, domain, default_device, readiness))
-    }
-
-    fn new(
-        operation: &'static str,
-        domain: &Arc<ExecutionDomain>,
-        default_device: i32,
-        readiness: ProducerReadiness<'a>,
-    ) -> Self {
-        Self {
-            operation,
-            placement: domain.placement(),
-            observer: domain.boundary_observer(),
-            default_device,
-            readiness,
-        }
+        Ok(Self { operation, default_device, readiness })
     }
 }
 
@@ -202,18 +184,13 @@ pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
     readiness: ProducerReadiness<'a>,
 ) -> Result<PreparedTableExport<'a>, InteropError> {
     let (num_rows, _) = table_dimensions(view, operation)?;
-    let observation = table_view_boundary_observation(BoundaryKind::InteropLease, view, operation)?;
-    let observer = view.execution_domain().boundary_observer();
     let projection = build_device_table_projection_from_view(view, operation, default_device)?;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
     PreparedTableExport::try_new(
         table,
         projection.semantic_columns,
         projection.bindings,
-        PreparedAccess::Device {
-            readiness,
-            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
-        },
+        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
     )
     .map_err(|error| error.with_context("operation", operation))
 }
@@ -256,19 +233,13 @@ where
 {
     let operation = context.operation;
     let projection = build_device_table_projection_from_columns(columns, operation, context.default_device)?;
-    let observation =
-        boundary_observation(BoundaryKind::InteropLease, context.placement, num_rows, projection.columns.len(), false);
     let readiness = context.readiness;
-    let observer = context.observer;
     let table = SemanticTable::new(num_rows, projection.columns.iter().map(|column| column.id()).collect(), names);
     PreparedTableExport::try_new(
         table,
         projection.semantic_columns,
         projection.bindings,
-        PreparedAccess::Device {
-            readiness,
-            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
-        },
+        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
     )
     .map_err(|error| error.with_context("operation", operation))
 }
@@ -283,8 +254,6 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
     let retained_table = Arc::new(table);
     let view =
         retained_table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let observation = table_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
-    let observer = retained_table.execution_domain().boundary_observer();
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let default_device = retained_table.execution_domain().device_id().ordinal() as i32;
     let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
@@ -295,7 +264,7 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
         to_static_bindings(operation, projection.bindings)?,
         PreparedAccess::Device {
             readiness: to_static_readiness(operation, readiness)?,
-            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
+            backend: runtime_lease::shared_cuda_lease_backend(),
         },
     )
     .map(|export| {

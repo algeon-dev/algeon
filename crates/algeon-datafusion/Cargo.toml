@@ -85,6 +85,7 @@ uuid = { version = "1.23", features = ["v4"], optional = true }
 rapids-build-support = { workspace = true }
 
 [dev-dependencies]
+cudf = { workspace = true, features = ["test-hooks"] }
 # Test-only engine seams for owner-crate white-box tests.
 query-engine = { workspace = true, features = ["test-hooks"] }
 workloads = { workspace = true }

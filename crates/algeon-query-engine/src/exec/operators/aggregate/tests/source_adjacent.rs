@@ -436,7 +436,7 @@ fn source_adjacent_runtime_preflight_uses_exact_facts_for_prepared_or_libcudf() 
 #[test]
 fn source_adjacent_runtime_preflight_declines_only_retryable_resource_errors() {
     let decision = partial_strategy_for_multi_key_sum(5_000_000);
-    let code = QueryErrorCode::CudfResourceExhausted;
+    let code = QueryErrorCode::QueryMemoryLimitExceeded;
     let declined = decline_prepared_sort_groupby_runtime_preflight_for_resource_error(
         decision,
         &QueryError::new(code, "query_engine.test", "resource pressure"),

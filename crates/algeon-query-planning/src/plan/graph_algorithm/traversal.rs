@@ -47,13 +47,8 @@ impl GraphBfsParams {
         }
     }
 
-    /// Returns true when this BFS call has any predicate side input.
-    pub fn has_predicates(&self) -> bool {
-        self.predicates.has_inputs()
-    }
-
     /// Visits every side-input node id in stable role order.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.source_vertices.iter().map(|input| input.input).chain(self.predicates.node_ids())
     }
 }
@@ -113,17 +108,8 @@ pub struct GraphBfsPredicateInputs {
 }
 
 impl GraphBfsPredicateInputs {
-    /// Returns true when any predicate input is present.
-    pub fn has_inputs(&self) -> bool {
-        self.include_vertices.is_some()
-            || self.exclude_vertices.is_some()
-            || self.target_vertices.is_some()
-            || self.include_edge_ids.is_some()
-            || self.include_edges.is_some()
-    }
-
     /// Visits every side-input node id in stable role order.
-    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.include_vertices
             .iter()
             .map(|input| input.input)
@@ -209,7 +195,7 @@ impl std::fmt::Display for GraphSsspSource {
 
 impl GraphSsspParams {
     /// Visits the source side-input node when this call uses one.
-    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         match &self.source_vertex {
             GraphSsspSource::I64(_) => None,
             GraphSsspSource::Input(input) => Some(input.input),

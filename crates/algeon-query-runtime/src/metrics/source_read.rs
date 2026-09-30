@@ -185,7 +185,7 @@ impl QueryMetrics {
     /// so applying the same checkpoint twice leaves the value unchanged. The
     /// observation owner is the only writer of this family; nothing else may
     /// set these fields, or this projection would overwrite it.
-    pub fn apply_source_read_checkpoint(&mut self, checkpoint: &QueryMetricsCheckpoint) {
+    pub(crate) fn apply_source_read_checkpoint(&mut self, checkpoint: &QueryMetricsCheckpoint) {
         let totals = &checkpoint.summary.source_read;
         self.input_batches = totals.input_batches;
         self.input_rows = totals.input_rows;
@@ -294,11 +294,6 @@ impl QueryMetrics {
     /// Records an abandoned source-read prefetch.
     pub fn record_source_read_prefetch_abandoned(&mut self) {
         self.source_read_prefetches_abandoned = self.source_read_prefetches_abandoned.saturating_add(1);
-    }
-
-    /// Adds source-read queue wait time.
-    pub fn record_source_read_queue_wait(&mut self, elapsed: Duration) {
-        self.source_read_queue_wait_time += elapsed;
     }
 }
 

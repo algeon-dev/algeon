@@ -27,7 +27,7 @@ pub enum GraphResidencyOrientation {
 
 impl GraphResidencyOrientation {
     /// Stable lowercase orientation code.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Forward => "forward",
             Self::Transposed => "transposed",
@@ -75,7 +75,7 @@ impl GraphSourceFingerprint {
 /// Reason a graph edge source cannot produce a safe graph-residency key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphSourceFingerprintBypassReason {
-    /// The graph input is not backed by a local/table-format Parquet source.
+    /// The graph input is not backed by a local Parquet source.
     NonLocalParquetSource,
     /// A non-column projection or row-changing operator sits between the source
     /// and the graph edge input.
@@ -84,12 +84,6 @@ pub enum GraphSourceFingerprintBypassReason {
     MissingEdgeColumn,
     /// Source and destination edge columns exist but do not share a vertex type.
     EdgeVertexDataTypeMismatch,
-    /// Per-file field-id remapping can change the physical rowset behind a
-    /// logical edge column; v1 bypasses until that contract is fingerprinted.
-    FieldIdReadBindingsPresent,
-    /// Iceberg/table-format delete files are present; v1 bypasses until delete
-    /// identity is modeled for graph rowsets.
-    DeleteFilesPresent,
     /// The source lacks a stable content identity strong enough for a
     /// process-lifetime graph cache.
     UnstableSourceIdentity,
@@ -97,14 +91,12 @@ pub enum GraphSourceFingerprintBypassReason {
 
 impl GraphSourceFingerprintBypassReason {
     /// Stable lowercase bypass code.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::NonLocalParquetSource => "non_local_parquet_source",
             Self::UnsupportedTransformedInput => "unsupported_transformed_input",
             Self::MissingEdgeColumn => "missing_edge_column",
             Self::EdgeVertexDataTypeMismatch => "edge_vertex_data_type_mismatch",
-            Self::FieldIdReadBindingsPresent => "field_id_read_bindings_present",
-            Self::DeleteFilesPresent => "delete_files_present",
             Self::UnstableSourceIdentity => "unstable_source_identity",
         }
     }
@@ -240,34 +232,34 @@ impl GraphResidencyDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResidentGraphKey {
     /// Stable source rowset fingerprint.
-    pub source_fingerprint: GraphSourceFingerprint,
+    pub(crate) source_fingerprint: GraphSourceFingerprint,
     /// Source-vertex binding at the graph operator boundary.
-    pub source_column: String,
+    pub(crate) source_column: String,
     /// Destination-vertex binding at the graph operator boundary.
-    pub destination_column: String,
+    pub(crate) destination_column: String,
     /// Semantic weight binding only when the algorithm consumes weights.
     pub weight_column: Option<String>,
     /// Stable edge-id binding, when present.
-    pub edge_id_column: Option<String>,
+    pub(crate) edge_id_column: Option<String>,
     /// Whether graph construction treats edges as directed.
-    pub directed: bool,
+    pub(crate) directed: bool,
     /// Whether cuGraph may renumber vertices internally.
-    pub renumber: bool,
+    pub(crate) renumber: bool,
     /// Edge preparation performed before raw cuGraph construction.
-    pub edge_preparation: GraphEdgePreparationKey,
+    pub(crate) edge_preparation: GraphEdgePreparationKey,
     /// Concrete cuGraph graph orientation.
     pub orientation: GraphResidencyOrientation,
     /// Arrow dtype of the graph vertex columns.
-    pub vertex_data_type: ArrowDataType,
+    pub(crate) vertex_data_type: ArrowDataType,
     /// Arrow dtype of the semantic weight column when consumed.
-    pub weight_data_type: Option<ArrowDataType>,
+    pub(crate) weight_data_type: Option<ArrowDataType>,
     /// Arrow dtype of the edge-id column when present.
-    pub edge_id_data_type: Option<ArrowDataType>,
+    pub(crate) edge_id_data_type: Option<ArrowDataType>,
 }
 
 /// Edge preparation contract folded into resident graph keys.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum GraphEdgePreparationKey {
+pub(crate) enum GraphEdgePreparationKey {
     /// The graph consumes the edge rowset as-is.
     None,
     /// The builder inserted Python-compatible edge normalization.
@@ -497,13 +489,6 @@ fn graph_residency_descriptor_for_local_parquet_source_with_bindings(
     if source.scan_limit.is_some() {
         return Err(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput);
     }
-    if source.files.iter().any(|file| !file.position_delete_files.is_empty() || !file.equality_delete_files.is_empty())
-    {
-        return Err(GraphSourceFingerprintBypassReason::DeleteFilesPresent);
-    }
-    if source.files.iter().any(|file| !file.field_id_read_bindings.is_empty()) {
-        return Err(GraphSourceFingerprintBypassReason::FieldIdReadBindingsPresent);
-    }
     if source.files.iter().any(|file| !local_parquet_file_identity_is_graph_stable(file)) {
         return Err(GraphSourceFingerprintBypassReason::UnstableSourceIdentity);
     }
@@ -570,17 +555,13 @@ fn graph_source_field<'a>(
 }
 
 fn local_parquet_file_identity_is_graph_stable(file: &LocalParquetFile) -> bool {
-    let table_format_identity = file.stable_id.starts_with("table-format:");
-    let strong_content_identity =
-        file.resolved_source.content_identity.as_deref().is_some_and(graph_content_identity_is_strong);
     match &file.location {
         ParquetSourceLocation::LocalPath(_) => {
-            (file.file_size_bytes.is_some()
-                && file.stable_id.starts_with("local:")
-                && file.stable_id.contains(":mtime="))
-                || (table_format_identity && strong_content_identity)
+            file.file_size_bytes.is_some() && file.stable_id.starts_with("local:") && file.stable_id.contains(":mtime=")
         },
-        ParquetSourceLocation::ObjectStoreUri { .. } => strong_content_identity,
+        ParquetSourceLocation::ObjectStoreUri { .. } => {
+            file.resolved_source.content_identity.as_deref().is_some_and(graph_content_identity_is_strong)
+        },
     }
 }
 

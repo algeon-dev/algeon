@@ -22,8 +22,7 @@ const OPERATION: &str = "query_engine.runtime.cache.residency";
 
 /// Logical ownership state of one cache entry's resident GPU bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum CacheResidencyState {
+pub(crate) enum CacheResidencyState {
     /// Bytes remain owned by their producing attempt while retention is being
     /// prepared. The matching charge transaction may be rolled back.
     #[cfg(test)]
@@ -75,8 +74,7 @@ impl CacheResidencyInner {
 /// Its `Drop` path returns the exact pre-reserved evictable charge once unless
 /// it has been consumed by [`Self::commit_evictable`].
 #[must_use = "dropping a cache charge transaction rolls its reservation back; commit it only after retention succeeds"]
-#[doc(hidden)]
-pub struct CacheResidencyChargeTransaction {
+pub(crate) struct CacheResidencyChargeTransaction {
     ledger: DeviceLedger,
     bytes: u64,
     charged: bool,
@@ -85,8 +83,7 @@ pub struct CacheResidencyChargeTransaction {
 impl CacheResidencyChargeTransaction {
     /// State represented before the concrete cache entry accepts this charge.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub const fn state(&self) -> CacheResidencyState {
+    pub(crate) const fn state(&self) -> CacheResidencyState {
         CacheResidencyState::AttemptOwned
     }
 
@@ -104,8 +101,7 @@ impl CacheResidencyChargeTransaction {
     /// so callers must reserve a conservative upper bound. If the observed
     /// allocation is larger, destroy it while this transaction remains live
     /// and then roll the transaction back.
-    #[doc(hidden)]
-    pub fn shrink_to(&mut self, retained_bytes: u64) -> Result<bool> {
+    pub(crate) fn shrink_to(&mut self, retained_bytes: u64) -> Result<bool> {
         if retained_bytes > self.bytes {
             return Ok(false);
         }
@@ -117,8 +113,7 @@ impl CacheResidencyChargeTransaction {
 
     /// Consumes this linear transaction after the cache has safely retained
     /// the concrete GPU object.
-    #[doc(hidden)]
-    pub fn commit_evictable(mut self) -> CacheResidency {
+    pub(crate) fn commit_evictable(mut self) -> CacheResidency {
         self.charged = false;
         CacheResidency {
             inner: Arc::new(CacheResidencyInner {
@@ -135,8 +130,7 @@ impl CacheResidencyChargeTransaction {
     }
 
     /// Explicitly rolls this prospective charge back before cache retention.
-    #[doc(hidden)]
-    pub fn rollback(mut self) -> Result<()> {
+    pub(crate) fn rollback(mut self) -> Result<()> {
         self.rollback_inner()
     }
 
@@ -145,8 +139,7 @@ impl CacheResidencyChargeTransaction {
     /// allocations may still survive native destruction, so automatic rollback
     /// would create an unowned physical-allocation window.
     #[cfg(feature = "cugraph")]
-    #[doc(hidden)]
-    pub fn retain_charge_after_unsafe_teardown(mut self) {
+    pub(crate) fn retain_charge_after_unsafe_teardown(mut self) {
         self.charged = false;
     }
 
@@ -156,8 +149,7 @@ impl CacheResidencyChargeTransaction {
     /// callers close admission rather than risk releasing later without a new
     /// teardown proof.
     #[cfg(feature = "cugraph")]
-    #[doc(hidden)]
-    pub fn release_after_proven_empty(mut self) -> Result<()> {
+    pub(crate) fn release_after_proven_empty(mut self) -> Result<()> {
         if !self.charged {
             return Ok(());
         }
@@ -192,8 +184,7 @@ impl Drop for CacheResidencyChargeTransaction {
 /// Cache entries keep this object by value (usually inside their entry `Arc`).
 /// Checkout callers receive [`CacheResidencyPin`] leases; they must never mint
 /// another residency authority or byte charge for the same GPU allocation.
-#[doc(hidden)]
-pub struct CacheResidency {
+pub(crate) struct CacheResidency {
     inner: Arc<CacheResidencyInner>,
 }
 
@@ -201,8 +192,10 @@ impl CacheResidency {
     /// Pre-reserves an evictable charge before a cache copies or adopts bytes
     /// from an attempt domain. A failed reservation returns `Ok(None)` and
     /// leaves the ledger untouched.
-    #[doc(hidden)]
-    pub fn begin_attempt_owned(ledger: DeviceLedger, bytes: u64) -> Result<Option<CacheResidencyChargeTransaction>> {
+    pub(crate) fn begin_attempt_owned(
+        ledger: DeviceLedger,
+        bytes: u64,
+    ) -> Result<Option<CacheResidencyChargeTransaction>> {
         if !ledger.try_reserve_evictable_bytes(bytes)? {
             return Ok(None);
         }
@@ -210,14 +203,12 @@ impl CacheResidency {
     }
 
     /// Current lifecycle state.
-    #[doc(hidden)]
-    pub fn state(&self) -> Result<CacheResidencyState> {
+    pub(crate) fn state(&self) -> Result<CacheResidencyState> {
         Ok(self.inner.lock("state")?.state)
     }
 
     /// Exact bytes owned by this lifecycle authority.
-    #[doc(hidden)]
-    pub fn bytes(&self) -> u64 {
+    pub(crate) fn bytes(&self) -> u64 {
         self.inner.bytes
     }
 
@@ -226,8 +217,7 @@ impl CacheResidency {
     /// A final pin is refused after eviction begins or after destruction. The
     /// first pin moves the whole charge into the ledger's pinned field; later
     /// pins share that one charge until the final lease drops.
-    #[doc(hidden)]
-    pub fn try_pin(&self) -> Result<Option<CacheResidencyPin>> {
+    pub(crate) fn try_pin(&self) -> Result<Option<CacheResidencyPin>> {
         let mut state = self.inner.lock("try_pin")?;
         match state.state {
             CacheResidencyState::Evictable if !state.eviction_in_progress => {
@@ -255,8 +245,7 @@ impl CacheResidency {
     /// Pinned entries are deliberately refused without changing their charge.
     /// The returned token keeps the evictable charge in the ledger until the
     /// caller has destroyed its concrete GPU object.
-    #[doc(hidden)]
-    pub fn begin_eviction(&self) -> Result<Option<CacheResidencyDestruction>> {
+    pub(crate) fn begin_eviction(&self) -> Result<Option<CacheResidencyDestruction>> {
         let mut state = self.inner.lock("begin_eviction")?;
         if state.state != CacheResidencyState::Evictable || state.eviction_in_progress {
             return Ok(None);
@@ -280,19 +269,20 @@ impl CacheResidency {
 /// allowing an uncharged physical allocation.
 #[cfg(feature = "cugraph")]
 #[must_use = "transient cache-domain work must release its ledger charge only after physical destruction"]
-#[doc(hidden)]
-pub struct CacheExecutionReservation {
+#[cfg(test)]
+pub(crate) struct CacheExecutionReservation {
     residency: CacheResidency,
     pin: Option<CacheResidencyPin>,
 }
 
 #[cfg(feature = "cugraph")]
+#[cfg(test)]
 impl CacheExecutionReservation {
     /// Conservatively reserves `bytes` before transient cache-domain work can
     /// allocate. `None` means the one aggregate cache cap cannot prove the
     /// operation safe.
-    #[doc(hidden)]
-    pub fn begin(ledger: DeviceLedger, bytes: u64) -> Result<Option<Self>> {
+    #[cfg(test)]
+    pub(crate) fn begin(ledger: DeviceLedger, bytes: u64) -> Result<Option<Self>> {
         let Some(transaction) = CacheResidency::begin_attempt_owned(ledger, bytes)? else {
             return Ok(None);
         };
@@ -310,8 +300,8 @@ impl CacheExecutionReservation {
 
     /// Releases this charge after all transient objects allocated in the
     /// shared cache domain have been destroyed.
-    #[doc(hidden)]
-    pub fn release_after_destroy(mut self) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) fn release_after_destroy(mut self) -> Result<()> {
         // The transient CUDA objects are already gone, so expose the charge
         // as evictable before committing its exact ledger release.
         drop(self.pin.take());
@@ -329,8 +319,7 @@ impl CacheExecutionReservation {
 
 /// Non-cloneable in-use lease for one resident cache entry.
 #[must_use = "dropping a cache pin returns the entry to evictable residency after the final lease"]
-#[doc(hidden)]
-pub struct CacheResidencyPin {
+pub(crate) struct CacheResidencyPin {
     inner: Option<Arc<CacheResidencyInner>>,
 }
 
@@ -373,15 +362,13 @@ fn release_pin(inner: &CacheResidencyInner) -> Result<()> {
 /// Cache code must remove the map entry and destroy the concrete GPU object
 /// before consuming this token with [`Self::commit_after_destroy`].
 #[must_use = "a destruction token retains the ledger charge until destruction is committed or explicitly aborted"]
-#[doc(hidden)]
-pub struct CacheResidencyDestruction {
+pub(crate) struct CacheResidencyDestruction {
     inner: Option<Arc<CacheResidencyInner>>,
 }
 
 impl CacheResidencyDestruction {
     /// Releases the exact ledger charge after GPU-safe concrete destruction.
-    #[doc(hidden)]
-    pub fn commit_after_destroy(mut self) -> Result<()> {
+    pub(crate) fn commit_after_destroy(mut self) -> Result<()> {
         let Some(inner) = self.inner.take() else {
             return Ok(());
         };
@@ -406,8 +393,7 @@ impl CacheResidencyDestruction {
     /// This is the quarantine path: callers must close the owning device
     /// ledger before returning, because the charge remains while native memory
     /// may still be resident and the cache object is no longer reusable.
-    #[doc(hidden)]
-    pub fn retain_charge_after_failed_destruction(mut self) -> Result<()> {
+    pub(crate) fn retain_charge_after_failed_destruction(mut self) -> Result<()> {
         let Some(inner) = self.inner.take() else {
             return Ok(());
         };

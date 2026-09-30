@@ -13,7 +13,6 @@ use datafusion::{
     logical_expr::Operator,
     parquet::file::{
         metadata::{ColumnChunkMetaData, RowGroupMetaData},
-        reader::{FileReader, SerializedFileReader},
         statistics::Statistics,
     },
     physical_expr::{
@@ -27,7 +26,7 @@ use datafusion::{
 };
 use query_engine::source::PredicateDisposition as NativePredicateDisposition;
 
-use super::expression_contract::validate_physical_expr_contract;
+use super::{expression_contract::validate_physical_expr_contract, footers::parquet_footer};
 use crate::capability::CapabilityReason;
 
 mod row_groups;
@@ -166,9 +165,7 @@ fn row_groups_for_byte_ranges(coverage: &mut FileCoverage<'_>) -> Result<Vec<usi
         return Err(CapabilityReason::NativeSourceByteRange);
     }
     let path = local_object_path_to_filesystem(coverage.location.as_str());
-    let reader =
-        SerializedFileReader::try_from(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
-    let metadata = reader.metadata();
+    let metadata = parquet_footer(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceByteRange)?;
     let row_group_count = metadata.num_row_groups();
     let ranges = coverage
         .ranges

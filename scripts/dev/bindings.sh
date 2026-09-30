@@ -104,7 +104,7 @@ generate_cudf() {
         --allowlist-function '^cudf_test_.*' \
         --allowlist-type '^cudf_test_.*' \
         --allowlist-var '^CUDF_TEST_.*' \
-        --blocklist-type '^cudf_(status_t|stream_handle|memory_resource_handle|memory_manager_handle|column_view_handle|type_id_t|arrow_device_array_handle)(_state)?$' \
+        --blocklist-type '^cudf_(status_t|stream_handle|memory_resource_handle|memory_manager_handle|column_view_handle|type_id_t)(_state)?$' \
         --default-enum-style consts \
         --no-prepend-enum-name \
         --no-layout-tests \

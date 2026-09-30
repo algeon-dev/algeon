@@ -19,25 +19,20 @@ use super::{DeviceRegistry, DeviceResourceProfile};
 /// Internal placement input derived from planner-owned capability evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-#[doc(hidden)]
-pub struct PlacementRequest {
+pub(crate) struct PlacementRequest {
     /// Explicit query cap. `None` lets each device resolve its configured
     /// default against the same resident snapshot used for admission.
-    #[doc(hidden)]
-    pub requested_query_cap_bytes: Option<u64>,
+    pub(crate) requested_query_cap_bytes: Option<u64>,
     /// Device-independent requirement resolved once per candidate ledger.
-    #[doc(hidden)]
-    pub attempt_requirement: Option<AttemptRequirement>,
+    pub(crate) attempt_requirement: Option<AttemptRequirement>,
     /// Device capabilities that must be present before this request can enter
     /// capacity ranking. These are a safety predicate, not a placement hint.
-    #[doc(hidden)]
-    pub required_capabilities: Vec<ExecutionCapability>,
+    pub(crate) required_capabilities: Vec<ExecutionCapability>,
 }
 
 impl PlacementRequest {
     /// Creates a placement request. Zero selects the configured default.
-    #[doc(hidden)]
-    pub fn new(query_cap_bytes: u64) -> Self {
+    pub(crate) fn new(query_cap_bytes: u64) -> Self {
         Self {
             requested_query_cap_bytes: (query_cap_bytes > 0).then_some(query_cap_bytes),
             attempt_requirement: None,
@@ -46,15 +41,13 @@ impl PlacementRequest {
     }
 
     /// Retains capability evidence for device executability filtering.
-    #[doc(hidden)]
-    pub fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self
     }
 
     /// Adds immutable device capabilities required by the attempt.
-    #[doc(hidden)]
-    pub fn with_required_capabilities(
+    pub(crate) fn with_required_capabilities(
         mut self,
         required_capabilities: impl IntoIterator<Item = ExecutionCapability>,
     ) -> Self {
@@ -62,7 +55,7 @@ impl PlacementRequest {
         self
     }
 
-    pub fn with_requested_query_cap_bytes(mut self, requested_query_cap_bytes: Option<u64>) -> Self {
+    pub(crate) fn with_requested_query_cap_bytes(mut self, requested_query_cap_bytes: Option<u64>) -> Self {
         self.requested_query_cap_bytes = requested_query_cap_bytes;
         self
     }
@@ -70,27 +63,19 @@ impl PlacementRequest {
 
 /// One candidate device's placement view at one ledger observation sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct PlacementCandidate {
-    #[doc(hidden)]
-    pub ordinal: usize,
+pub(crate) struct PlacementCandidate {
+    pub(crate) ordinal: usize,
     /// Cap resolved against this candidate's resident snapshot.
-    #[doc(hidden)]
-    pub query_cap_bytes: u64,
+    pub(crate) query_cap_bytes: u64,
     /// Capacity remaining after this admission.
-    #[doc(hidden)]
-    pub spare_capacity_bytes: u64,
-    #[doc(hidden)]
-    pub active_attempts: usize,
-    #[doc(hidden)]
-    pub live_grants_bytes: u64,
+    pub(crate) spare_capacity_bytes: u64,
+    pub(crate) active_attempts: usize,
+    pub(crate) live_grants_bytes: u64,
     /// Logical worker slots committed by active attempts in the atomic ledger
     /// snapshot.
-    #[doc(hidden)]
-    pub worker_depth: usize,
+    pub(crate) worker_depth: usize,
     /// Logical stream slots still available in that same snapshot.
-    #[doc(hidden)]
-    pub stream_slots_available: usize,
+    pub(crate) stream_slots_available: usize,
 }
 
 /// One atomic ledger observation used for both queue and direct placement.
@@ -101,18 +86,14 @@ pub struct PlacementCandidate {
 /// transaction, so this helper never turns a ranking observation into a
 /// second admission authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct PlacementCandidateSnapshot {
-    #[doc(hidden)]
-    pub candidate: PlacementCandidate,
-    #[doc(hidden)]
-    pub can_admit_now: bool,
+pub(crate) struct PlacementCandidateSnapshot {
+    pub(crate) candidate: PlacementCandidate,
+    pub(crate) can_admit_now: bool,
     /// Whether the immutable device profile can ever satisfy this candidate's
     /// resolved floor, independent of concurrent grants. This belongs beside
     /// the snapshot so callers do not reconstruct a different permanent-
     /// capacity classification after ranking.
-    #[doc(hidden)]
-    pub can_ever_fit_query_cap: bool,
+    pub(crate) can_ever_fit_query_cap: bool,
 }
 
 impl PlacementCandidate {
@@ -130,8 +111,10 @@ impl PlacementCandidate {
 /// 4. worker depth, ascending;
 /// 5. stream availability, descending;
 /// 6. device ordinal, ascending (deterministic tie-break).
-#[doc(hidden)]
-pub fn compare_placement_candidates(left: &PlacementCandidate, right: &PlacementCandidate) -> std::cmp::Ordering {
+pub(crate) fn compare_placement_candidates(
+    left: &PlacementCandidate,
+    right: &PlacementCandidate,
+) -> std::cmp::Ordering {
     right
         .spare_after()
         .cmp(&left.spare_after())
@@ -146,16 +129,14 @@ pub fn compare_placement_candidates(left: &PlacementCandidate, right: &Placement
 ///
 /// Both direct placement and queue admission call this helper so that a
 /// queue waiter cannot silently diverge from normal device ranking.
-#[doc(hidden)]
-pub fn preferred_placement_candidate(
+pub(crate) fn preferred_placement_candidate(
     candidates: impl IntoIterator<Item = PlacementCandidate>,
 ) -> Option<PlacementCandidate> {
     candidates.into_iter().min_by(compare_placement_candidates)
 }
 
 #[cfg(test)]
-#[doc(hidden)]
-pub fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>, query_cap_bytes: u64) -> Vec<usize> {
+pub(crate) fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>, query_cap_bytes: u64) -> Vec<usize> {
     for candidate in &mut candidates {
         candidate.query_cap_bytes = query_cap_bytes;
     }

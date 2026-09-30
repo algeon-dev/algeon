@@ -13,10 +13,7 @@ use crate::{
         error::{self, Error, ErrorCode, Result},
         types::TypeId,
     },
-    interop::{
-        arrow_device::DeviceArrowTableExport,
-        arrow_host::{ArrowHostSchema, estimate_arrow_host_record_batch_memory_bytes},
-    },
+    interop::arrow_host::{ArrowHostSchema, estimate_arrow_host_record_batch_memory_bytes},
     ops::validation,
     runtime::{ExecutionPlacement, execution_domain::ExecutionDomain},
 };
@@ -29,6 +26,7 @@ mod schema_contract;
 pub use host_batch_cursor::{HostBatchCursor, HostBatchCursorConfig, PreparedHostBatch};
 use list_export::{FixedSizeListStructuralProof, UniformListProof};
 pub use list_export::{ValidatedFixedSizeListExport, ValidatedUniformListExport};
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) use list_validation::{
     fixed_size_list_structural_proof_build_count_for_test, reset_fixed_size_list_structural_proof_build_count_for_test,
 };
@@ -248,7 +246,6 @@ impl GpuRecordBatch {
             export: parts.export,
             producer_domain: RetainedProducerDomain(Arc::clone(producer.execution_domain())),
             proof,
-            finite_proof,
             root_column_id: parts.root_column_id,
             child_column_id: parts.child_column_id,
             child_values_buffer_id: parts.child_values_buffer_id,
@@ -364,7 +361,6 @@ impl GpuRecordBatch {
             export: parts.export,
             producer_domain: RetainedProducerDomain(Arc::clone(producer.execution_domain())),
             proof,
-            finite_proof,
             root_column_id: parts.root_column_id,
             offsets_buffer_id: parts.offsets_buffer_id,
             child_column_id: parts.child_column_id,
@@ -372,6 +368,7 @@ impl GpuRecordBatch {
         })
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn trigger_uniform_list_proof_identity_mismatch_for_test(
         &self,
         proof_owner: &Self,
@@ -387,6 +384,7 @@ impl GpuRecordBatch {
         self.try_prepare_uniform_list_export_with_proof(field_index, proof).map(drop)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn trigger_fixed_size_list_proof_identity_mismatch_for_test(
         &self,
         proof_owner: &Self,
@@ -417,13 +415,6 @@ impl GpuRecordBatch {
     pub fn to_host_record_batch(&self) -> Result<RecordBatch> {
         let batch = self.frame.to_record_batch_with_arrow_schema(&self.mapped_schema)?;
         record_batch_with_schema_contract(batch, &self.schema)
-    }
-
-    /// Prepare Arrow C Device ABI export for the wrapped GPU DataFrame.
-    ///
-    /// This is a device-backed interop boundary, not host materialization.
-    pub fn try_prepare_device_arrow_export(&self) -> Result<DeviceArrowTableExport> {
-        self.frame.try_prepare_device_arrow_export()
     }
 
     /// Consume the wrapper and return the GPU DataFrame.

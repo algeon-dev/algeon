@@ -186,7 +186,7 @@ pub enum GraphVertexIdTypeSupport {
 
 impl GraphVertexIdTypeSupport {
     /// Stable lowercase capability code.
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Int32OrInt64 => "int32_or_int64",
             Self::Int32OnlyLegacyEdgeType => "int32_only_legacy_edge_type",
@@ -226,14 +226,6 @@ pub enum GraphSourceVertexRequirement {
 }
 
 impl GraphSourceVertexRequirement {
-    /// Stable lowercase source-vertex requirement code.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Required => "required",
-        }
-    }
-
     /// Whether the algorithm requires a source vertex.
     pub const fn requires_source_vertex(self) -> bool {
         matches!(self, Self::Required)
@@ -254,15 +246,6 @@ pub enum GraphWeightPolicy {
 }
 
 impl GraphWeightPolicy {
-    /// Stable lowercase policy code used by metadata projections.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ignored => "ignored",
-            Self::Optional => "optional",
-            Self::Required => "required",
-        }
-    }
-
     /// Whether this policy means the native executor consumes weights as an
     /// algorithm input when a weight column is bound.
     pub const fn consumes_weight(self) -> bool {
@@ -378,20 +361,7 @@ impl EmptyGraphSideInputPolicy {
     }
 }
 
-impl GraphOutputSchemaKind {
-    /// Stable lowercase schema-kind code used by metadata projections.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Fixed => "fixed",
-            Self::DefaultMode => "default_mode",
-        }
-    }
-
-    /// Whether this algorithm has adapter-visible mode schemas.
-    pub const fn has_mode_schemas(self) -> bool {
-        matches!(self, Self::DefaultMode)
-    }
-}
+impl GraphOutputSchemaKind {}
 
 /// Registry-level metadata for a graph operation.
 ///
@@ -414,7 +384,7 @@ pub struct GraphOperationDefinition {
 
 impl GraphOperationDefinition {
     /// Result columns whose dtype is the graph's vertex-id domain.
-    pub const fn vertex_output_columns(&self) -> &'static [&'static str] {
+    pub(crate) const fn vertex_output_columns(&self) -> &'static [&'static str] {
         match self.algorithm {
             GraphAlgorithm::Bfs => &["vertex", "predecessor", "source", "target"],
             GraphAlgorithm::Sssp => &["vertex", "predecessor"],
@@ -477,7 +447,7 @@ impl GraphOperationDefinition {
     }
 
     /// Whether the stable result contains at most one row for each `vertex`.
-    pub const fn output_vertex_is_unique(&self) -> bool {
+    pub(crate) const fn output_vertex_is_unique(&self) -> bool {
         matches!(
             self.algorithm,
             GraphAlgorithm::PageRank
@@ -520,7 +490,7 @@ impl GraphOperationDefinition {
     }
 
     /// Vertex-id dtype support for this algorithm.
-    pub const fn vertex_id_type_support(&self) -> GraphVertexIdTypeSupport {
+    pub(crate) const fn vertex_id_type_support(&self) -> GraphVertexIdTypeSupport {
         match self.algorithm {
             GraphAlgorithm::MinimumSpanningTree | GraphAlgorithm::SpectralModularityMaximization => {
                 GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType

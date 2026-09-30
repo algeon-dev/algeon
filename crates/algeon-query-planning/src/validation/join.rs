@@ -18,7 +18,7 @@ use crate::{
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
 };
 
-pub fn validate_join_capability(
+pub(crate) fn validate_join_capability(
     join: &JoinNode,
     left_schema: &SchemaRef,
     left_available: &BTreeSet<String>,
@@ -27,23 +27,6 @@ pub fn validate_join_capability(
     output_schema: &SchemaRef,
     ctx: AnalysisContext<'_>,
 ) -> Result<()> {
-    if !matches!(
-        join.spec.join_type,
-        JoinType::Inner
-            | JoinType::Left
-            | JoinType::Full
-            | JoinType::LeftSemi
-            | JoinType::LeftAnti
-            | JoinType::Cross
-            | JoinType::LeftMark
-    ) {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "query_engine.join.validate",
-            "native join execution currently supports inner, left, full, left semi, left anti, left mark, and cross joins",
-        )
-        .with_fact("join_type", join.spec.join_type));
-    }
     if join.spec.null_aware && (join.spec.join_type != JoinType::LeftAnti || join.spec.keys.len() != 1) {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -397,7 +380,7 @@ fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
 ///
 /// Returns `UnsupportedExpression` for a column that is not qualified with
 /// input 0 or 1, so `on_input` only ever sees those two indices.
-pub fn walk_join_residual_column_sides(
+pub(crate) fn walk_join_residual_column_sides(
     expr: &Expr,
     operation: &'static str,
     bad_qualifier_message: &'static str,

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use query_planning::error::Result;
 
 use super::{
-    super::{AttemptWorkLease, MemoryResourcePolicy, StreamLease},
+    super::{AttemptWorkLease, StreamLease},
     AttemptAuxiliaryPermit, ExecutionContext, ExecutionContextParts, LeasedExecutionContext,
     validate_service_stream_pool_device,
 };
@@ -135,7 +135,6 @@ impl ExecutionContext {
             runtime_stream_lease_scope: self.runtime_stream_lease_scope.clone(),
             runtime: Arc::new(runtime),
             gpu_execution_pool: self.gpu_execution_pool.clone(),
-            memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant.clone(),
             grant_memory_domain: self.grant_memory_domain.clone(),
@@ -158,7 +157,6 @@ impl ExecutionContext {
             lakehouse_cache_fill_events: self.lakehouse_cache_fill_events.clone(),
             object_store_control_runtime: Arc::clone(&self.object_store_control_runtime),
             source_object_stores: Arc::clone(&self.source_object_stores),
-            deployment_io_capability: self.deployment_io_capability.clone(),
             cancellation: self.cancellation.clone(),
             statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
             datafusion_order_tracking: self.datafusion_order_tracking,
@@ -171,7 +169,7 @@ impl ExecutionContext {
     }
 
     /// Builds a context and keeps the stream lease alive in the returned wrapper.
-    pub fn with_owned_stream_lease(&self, stream_lease: StreamLease) -> Result<LeasedExecutionContext> {
+    pub(crate) fn with_owned_stream_lease(&self, stream_lease: StreamLease) -> Result<LeasedExecutionContext> {
         let stream_lease_guard = Arc::new(stream_lease);
         let mut context = self.with_stream_lease(stream_lease_guard.as_ref())?;
         context.stream_lease_guard = Some(stream_lease_guard);
@@ -183,8 +181,7 @@ impl ExecutionContext {
     /// The permit is reference-counted with the stream guard, so cloning an
     /// outward context cannot retain the stream while releasing its attempt
     /// envelope share early.
-    #[doc(hidden)]
-    pub fn with_auxiliary_stream_permit_guard(mut self, permit: AttemptAuxiliaryPermit) -> Self {
+    pub(crate) fn with_auxiliary_stream_permit_guard(mut self, permit: AttemptAuxiliaryPermit) -> Self {
         debug_assert!(self.stream_lease_guard.is_some(), "auxiliary permit must be paired with an owned stream lease");
         debug_assert!(
             self.auxiliary_stream_permit_guard.is_none(),

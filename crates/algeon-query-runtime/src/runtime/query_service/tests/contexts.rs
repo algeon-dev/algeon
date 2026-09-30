@@ -52,7 +52,7 @@ fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
 #[test]
 fn expired_shutdown_deadline_reports_final_timeout() {
     let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
-    let service = QueryService::new_with_deployment(config, QueueBounds::default(), non_gds_deployment()).unwrap();
+    let service = QueryService::new_with_device_ordinals(config, QueueBounds::default(), vec![0]).unwrap();
 
     let outcome = service.close_drain_step_until(Instant::now());
     let final_completion = outcome

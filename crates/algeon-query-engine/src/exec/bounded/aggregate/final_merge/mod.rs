@@ -115,13 +115,7 @@ pub(super) fn partition_final_merge_partial(
     drop(frame);
     let (partitioned_frame, offsets) = partitioned.into_parts();
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics()) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(error);
-        },
-    };
-    let _ = partitioned_bytes;
+    record_device_memory_observation(&partitioned_gpu, execution.metrics())?;
 
     let mut partitions = Vec::with_capacity(partition_count);
     for partition in 0..partition_count {
@@ -135,7 +129,6 @@ pub(super) fn partition_final_merge_partial(
         ) {
             Ok(frame) => partitions.push(frame),
             Err(error) => {
-                release_partials_reverse(partitions);
                 return Err(error);
             },
         }
@@ -313,7 +306,6 @@ pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_o
     ) {
         Ok(token) => token,
         Err(error) => {
-            release_partials_reverse(inputs);
             return Err(error);
         },
     };
@@ -335,7 +327,6 @@ pub(in crate::exec::bounded::aggregate) fn concatenate_partitioned_final_merge_o
             )
         })
     };
-    release_partials_reverse(inputs);
     let concatenated = match concatenated {
         Ok(frame) => GpuDataFrame::new(frame),
         Err(error) => {

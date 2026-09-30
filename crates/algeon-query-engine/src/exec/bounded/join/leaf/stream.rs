@@ -199,9 +199,9 @@ fn read_join_leaf_source_batch_with_stages(
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     batch: &SourceChunkBatch,
 ) -> Result<ResidentGpuFrame> {
-    let (frame, reservation) =
+    let (frame, device_bytes) =
         read_join_leaf_source_batch_attempt(execution, &stream.source, batch, &stream.reader_dynamic_filters)?;
-    let input = ResidentGpuFrame::with_device_bytes(frame, reservation);
+    let input = ResidentGpuFrame::with_device_bytes(frame, device_bytes);
     apply_join_leaf_source_stream_stages(execution, stream, input)
 }
 
@@ -313,7 +313,7 @@ fn read_join_leaf_source_chunk_with_stages(
     attempt: usize,
 ) -> Result<ResidentGpuFrame> {
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_stream")?;
-    let (frame, reservation) = read_join_leaf_source_chunk_attempt(
+    let (frame, device_bytes) = read_join_leaf_source_chunk_attempt(
         execution,
         &stream.source,
         stream.node_id,
@@ -322,7 +322,7 @@ fn read_join_leaf_source_chunk_with_stages(
         attempt,
         stream.max_attempts,
     )?;
-    apply_join_leaf_source_stream_stages(execution, stream, ResidentGpuFrame::with_device_bytes(frame, reservation))
+    apply_join_leaf_source_stream_stages(execution, stream, ResidentGpuFrame::with_device_bytes(frame, device_bytes))
 }
 
 pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(
@@ -336,14 +336,7 @@ where
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
     execution.context().check_cancellation("query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
-    start_next_required_join_leaf_read(
-        execution,
-        &stream.source,
-        &stream.chunks,
-        &mut pending,
-        &mut next_chunk_index,
-        stream.max_attempts,
-    )?;
+    start_next_required_join_leaf_read(execution, &stream.source, &stream.chunks, &mut pending, &mut next_chunk_index)?;
 
     for (index, chunk) in stream.chunks.iter().enumerate() {
         if let Err(error) =
@@ -355,7 +348,7 @@ where
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
-        let output = match scheduled.finish(execution) {
+        let output = match scheduled.finish() {
             Ok(output) => output,
             Err(error) if is_retryable_chunk_error(&error) => {
                 if is_prefetch {
@@ -422,7 +415,6 @@ where
             &stream.chunks,
             &mut pending,
             &mut next_chunk_index,
-            stream.max_attempts,
         ) {
             abandon_join_leaf_reads(execution, pending);
             return Err(error);
@@ -435,7 +427,6 @@ where
                 &stream.chunks,
                 &mut pending,
                 &mut next_chunk_index,
-                stream.max_attempts,
             )
         {
             return Err(error);

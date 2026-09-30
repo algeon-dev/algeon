@@ -13,7 +13,6 @@
 
 mod affinity;
 mod binding_extension;
-mod boundary;
 mod budget;
 mod cache_allocation;
 pub mod device;
@@ -34,11 +33,6 @@ pub mod stream;
 pub use affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeLeaseAnchor};
 pub use binding_extension::{
     BindingExtensionGuard, BindingExtensionInitError, BindingExtensionLease, MAX_BINDING_EXTENSION_SLOTS_PER_BINDING,
-};
-pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver, QueryMemoryObservation, QueryStageKind};
-pub(crate) use boundary::{
-    BoundaryObserverRef, last_boundary_observation, record_boundary_observation,
-    record_boundary_observation_for_observer, record_boundary_observation_in_domain,
 };
 pub use budget::{
     BudgetedExecutionOutcome, ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest,

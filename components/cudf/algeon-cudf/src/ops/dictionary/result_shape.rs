@@ -74,6 +74,7 @@ pub(super) fn validate_match_dictionaries_result_shape(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(super) fn validate_owned_handles_result_shape_for_test(
     handles: &[cudf_sys::cudf_column_handle],
     expected_count: i32,

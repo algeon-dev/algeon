@@ -749,7 +749,7 @@ pub fn canonicalize_cuml_options(operation: CumlOperation, raw: &str) -> Result<
 
 /// ML algorithm identity carried by the native IR.
 ///
-/// Ref: https://docs.nvidia.com/cuml/latest/api/
+/// Ref: <https://docs.nvidia.com/cuml/latest/api/>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MlAlgorithm {
     /// <https://docs.nvidia.com/cuml/latest/api/generated/cuml.decomposition.TruncatedSVD/>

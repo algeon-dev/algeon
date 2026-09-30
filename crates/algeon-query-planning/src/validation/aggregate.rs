@@ -9,7 +9,7 @@ use crate::backend::{AggregateBinding, AnalysisContext};
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__algeon_native_global_valid_count_";
 
-pub fn host_group_expr_output_name(expr: &Expr) -> String {
+pub(crate) fn host_group_expr_output_name(expr: &Expr) -> String {
     match expr {
         Expr::Alias { alias, .. } => alias.clone(),
         Expr::Column(column) => column.display_name().to_string(),
@@ -43,7 +43,7 @@ pub fn global_count_star_expr(expr: &Expr) -> bool {
     )
 }
 
-pub fn validate_avg_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {
+pub(crate) fn validate_avg_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {
     if !aggregate_spec_has_avg(spec) {
         return Ok(());
     }
@@ -87,7 +87,10 @@ pub fn global_valid_count_state_alias(alias: &str) -> String {
     format!("{GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX}{alias}")
 }
 
-pub fn validate_global_valid_count_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {
+pub(crate) fn validate_global_valid_count_state_alias_collisions(
+    spec: &AggregateSpec,
+    operation: &'static str,
+) -> Result<()> {
     let reserved_aliases = spec
         .aggr_exprs
         .iter()

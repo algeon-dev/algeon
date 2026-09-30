@@ -169,7 +169,6 @@ fn test_support_generated_surface_is_namespaced_to_test_symbols() {
         "pub type cudf_memory_manager_handle",
         "pub type cudf_column_view_handle",
         "pub type cudf_type_id_t",
-        "pub type cudf_arrow_device_array_handle",
     ] {
         assert!(
             !TEST_BINDINGS.contains(production_alias),

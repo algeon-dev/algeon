@@ -1,4 +1,4 @@
-//! Parquet and JSON read and write option types.
+//! Parquet read and write option types.
 
 use std::{
     path::{Path, PathBuf},
@@ -9,10 +9,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::error::{Error, ErrorCode, Result},
-    io::{
-        json::{JsonTableReadOptions, JsonTableWriteOptions},
-        parquet::{ParquetDictionaryPolicy, ParquetTableReadOptions, ParquetTableWriteOptions},
-    },
+    io::parquet::{ParquetDictionaryPolicy, ParquetTableReadOptions, ParquetTableWriteOptions},
     ops::ast::AstExpression,
     runtime::Runtime,
 };
@@ -132,31 +129,6 @@ impl MultiParquetReadOptions {
     }
 }
 
-/// Options for [`DataFrame::read_json_with_options`](crate::DataFrame::read_json_with_options).
-///
-/// This is the schema-aware JSON reader API for `DataFrame`. It controls the
-/// file-format interpretation while keeping JSON object keys as DataFrame
-/// schema names when the reader can recover them truthfully.
-///
-/// # Defaults
-///
-/// - `lines` = `true` (JSON Lines / NDJSON format, one JSON object per line)
-#[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonReadOptions {
-    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
-    filepath: PathBuf,
-    #[builder(default = true)]
-    lines: bool,
-    #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
-    runtime: Runtime,
-}
-
-impl JsonReadOptions {
-    pub(super) fn to_table_options(&self) -> JsonTableReadOptions {
-        JsonTableReadOptions::from_parts(self.filepath.clone(), self.lines, self.runtime.clone())
-    }
-}
-
 pub(super) fn empty_parquet_projection_error(operation: &'static str) -> Error {
     Error::new_with(ErrorCode::EmptyInput, operation, "parquet projection requires at least one column name")
         .with_detail("resource", "columns")
@@ -171,50 +143,6 @@ pub(super) fn validate_parquet_projection(columns: Option<&[String]>, operation:
     }
 
     Ok(())
-}
-
-/// Options for [`DataFrame::write_json_with_options`](crate::DataFrame::write_json_with_options).
-///
-/// Column names always come from the DataFrame schema. This type only
-/// controls file-format knobs such as whether to write JSON Lines format
-/// and whether to include null fields.
-///
-/// # Defaults
-///
-/// - `lines` = `true` (JSON Lines / NDJSON format)
-/// - `include_nulls` = `true`
-#[derive(Debug, Clone, TypedBuilder)]
-pub struct JsonWriteOptions {
-    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
-    filepath: PathBuf,
-    /// If `true` (default), write as JSON Lines (one JSON object per line).
-    #[builder(default = true)]
-    lines: bool,
-    /// If `true` (default), include null fields in output.
-    #[builder(default = true)]
-    include_nulls: bool,
-    #[builder(default, setter(prefix = "with_", transform = |runtime: &Runtime| Some(runtime.clone())))]
-    runtime: Option<Runtime>,
-}
-
-impl JsonWriteOptions {
-    pub(super) fn to_table_options(&self, column_names: &[&str]) -> JsonTableWriteOptions {
-        match self.runtime.as_ref() {
-            Some(rt) => JsonTableWriteOptions::builder()
-                .filepath(&self.filepath)
-                .column_names(column_names)
-                .lines(self.lines)
-                .include_nulls(self.include_nulls)
-                .with_runtime(rt)
-                .build(),
-            None => JsonTableWriteOptions::builder()
-                .filepath(&self.filepath)
-                .column_names(column_names)
-                .lines(self.lines)
-                .include_nulls(self.include_nulls)
-                .build(),
-        }
-    }
 }
 
 /// Options for [`DataFrame::write_parquet_with_options`](crate::DataFrame::write_parquet_with_options).

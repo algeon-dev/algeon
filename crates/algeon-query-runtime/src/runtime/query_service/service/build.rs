@@ -27,8 +27,7 @@ use crate::runtime::backend_core::GpuBackendDeviceProfile;
 #[cfg(test)]
 use crate::runtime::gpu::GpuInventory;
 use crate::runtime::{
-    AlgeonGpuInventory, CacheFillByteBudget, DeploymentIoCapability, DeviceLedger, GpuDeviceMemoryLimit,
-    GpuMemoryOwnership,
+    AlgeonGpuInventory, CacheFillByteBudget, DeviceLedger, GpuDeviceMemoryLimit, GpuMemoryOwnership,
     allocator_correlation::AllocatorEventCorrelationIndex,
     backend_core::{
         ConstructionResourceJournal, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe,
@@ -51,8 +50,7 @@ use crate::runtime::{
 use crate::runtime::{backend_core::GpuBackendCoreDraft, gpu::claim_live_backend};
 
 impl QueryService {
-    #[doc(hidden)]
-    pub fn validate_controller_policy_for_backend(
+    pub(crate) fn validate_controller_policy_for_backend(
         config: &QueryExecutionConfig,
         queue_bounds: &QueueBounds,
         device_ordinals: &[usize],
@@ -60,24 +58,12 @@ impl QueryService {
         validate_controller_policy_preflight(config, queue_bounds, device_ordinals)
     }
 
-    /// Creates a service entry point with caller-supplied deployment diagnostics.
+    /// Creates a service entry point over explicit devices.
     #[cfg(test)]
-    pub fn new_with_deployment(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        deployment_io_capability: DeploymentIoCapability,
-    ) -> Result<Self> {
-        let device_ordinals = vec![0];
-        Self::new_with_device_ordinals_and_deployment(config, queue_bounds, device_ordinals, deployment_io_capability)
-    }
-
-    /// Creates a service entry point over explicit devices with caller-supplied deployment diagnostics.
-    #[cfg(test)]
-    pub fn new_with_device_ordinals_and_deployment(
+    pub(crate) fn new_with_device_ordinals(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
         device_ordinals: Vec<usize>,
-        deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
         let device_profiles = device_ordinals
             .into_iter()
@@ -88,25 +74,19 @@ impl QueryService {
                 )
             })
             .collect();
-        Self::new_with_device_profiles_and_deployment_for_test(
-            config,
-            queue_bounds,
-            device_profiles,
-            deployment_io_capability,
-        )
+        Self::new_with_device_profiles_for_test(config, queue_bounds, device_profiles)
     }
 
     /// Test-only runtime construction over explicit immutable device profiles.
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
-    pub fn new_with_device_profiles_and_deployment_for_test(
+    pub fn new_with_device_profiles_for_test(
         config: QueryExecutionConfig,
         queue_bounds: QueueBounds,
         device_profiles: Vec<GpuBackendDeviceConfig>,
-        deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
         let controller = GpuBackendControllerDraft::new(config, queue_bounds);
-        let mut draft = GpuBackendCoreDraft::new(device_profiles, controller.clone(), deployment_io_capability.clone());
+        let mut draft = GpuBackendCoreDraft::new(device_profiles, controller.clone());
         draft.normalize_installation_bounds()?;
         draft.validate()?;
         let device_profiles = draft.devices().to_vec();
@@ -120,7 +100,6 @@ impl QueryService {
         Self::install_for_backend(
             device_ordinals,
             controller,
-            deployment_io_capability,
             &token,
             &device_profiles,
             &probe,
@@ -133,15 +112,9 @@ impl QueryService {
     /// owner token. The caller retains the live-backend lease and must release
     /// it only after destroying the returned service and every derived GPU
     /// resource.
-    #[doc(hidden)]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "service construction inputs are distinct admission and ownership values"
-    )]
-    pub fn install_for_backend(
+    pub(crate) fn install_for_backend(
         device_ordinals: Vec<usize>,
         controller: GpuBackendControllerDraft,
-        deployment_io_capability: DeploymentIoCapability,
         owner: &DeviceOwnerToken<'_>,
         device_profiles: &[GpuBackendDeviceConfig],
         probe: &dyn GpuBackendConstructionProbe,
@@ -155,7 +128,6 @@ impl QueryService {
         let resolved_plans = DeviceRegistry::resolve_install_plans(&AlgeonGpuInventory, &registry_config, Some(probe))?;
         let resources = Self::install_runtime_resources(
             &config,
-            deployment_io_capability,
             owner,
             device_profiles,
             probe,
@@ -166,13 +138,8 @@ impl QueryService {
         Self::build(config, queue_bounds, Some(resources))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "service construction inputs are distinct admission and ownership values"
-    )]
     fn install_runtime_resources(
         config: &QueryExecutionConfig,
-        deployment_io_capability: DeploymentIoCapability,
         owner: &DeviceOwnerToken<'_>,
         device_profiles: &[GpuBackendDeviceConfig],
         probe: &dyn GpuBackendConstructionProbe,
@@ -248,7 +215,6 @@ impl QueryService {
             source_object_stores: Arc::new(SourceObjectStoreRegistry::with_profiles(
                 config.source_storage_profiles.clone(),
             )?),
-            deployment_io_capability,
         })
     }
 

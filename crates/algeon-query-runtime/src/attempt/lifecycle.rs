@@ -32,30 +32,29 @@ impl fmt::Display for AttemptLifecycleError {
 impl Error for AttemptLifecycleError {}
 
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct AttemptLifecycle {
-    pub submitted: u64,
-    pub planning_started: Option<u64>,
-    pub planning_finished: Option<u64>,
-    pub admission_requested: Option<u64>,
-    pub admitted: Option<(u64, AttemptAdmissionFact)>,
-    pub admission_wait: Option<AttemptAdmissionWaitFact>,
-    pub composed_schedule: Option<AttemptComposedScheduleProjection>,
-    pub physical: Option<u64>,
-    pub gpu: Option<u64>,
-    pub terminal: Option<(u64, RuntimeTerminalOutcome)>,
-    pub cleanup: Option<u64>,
-    pub ready: Option<u64>,
-    pub disposition: Option<AttemptDisposition>,
-    pub cleanup_failures: u64,
-    pub cleanup_failures_complete: bool,
-    pub primary_failure: Option<AttemptFailureSummary>,
-    pub first_cleanup_failure: Option<CleanupFailureSummary>,
-    pub terminal_commit: Option<AttemptTerminalCommit>,
+pub(crate) struct AttemptLifecycle {
+    pub(crate) submitted: u64,
+    pub(crate) planning_started: Option<u64>,
+    pub(crate) planning_finished: Option<u64>,
+    pub(crate) admission_requested: Option<u64>,
+    pub(crate) admitted: Option<(u64, AttemptAdmissionFact)>,
+    pub(crate) admission_wait: Option<AttemptAdmissionWaitFact>,
+    pub(crate) composed_schedule: Option<AttemptComposedScheduleProjection>,
+    pub(crate) physical: Option<u64>,
+    pub(crate) gpu: Option<u64>,
+    pub(crate) terminal: Option<(u64, RuntimeTerminalOutcome)>,
+    pub(crate) cleanup: Option<u64>,
+    pub(crate) ready: Option<u64>,
+    pub(crate) disposition: Option<AttemptDisposition>,
+    pub(crate) cleanup_failures: u64,
+    pub(crate) cleanup_failures_complete: bool,
+    pub(crate) primary_failure: Option<AttemptFailureSummary>,
+    pub(crate) first_cleanup_failure: Option<CleanupFailureSummary>,
+    pub(crate) terminal_commit: Option<AttemptTerminalCommit>,
     /// A terminal report may be sealed only after its one finalizer has been
     /// consumed. Admitted attempts consume it with their cleanup/capacity
     /// commit; all other attempts consume it with `NotRequired` finalization.
-    pub finalized: bool,
+    pub(crate) finalized: bool,
 }
 
 fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str) -> Result<(), AttemptLifecycleError> {
@@ -70,8 +69,7 @@ fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str)
 }
 
 impl AttemptLifecycle {
-    #[doc(hidden)]
-    pub fn new(submitted: u64) -> Self {
+    pub(crate) fn new(submitted: u64) -> Self {
         Self {
             submitted,
             planning_started: None,
@@ -95,13 +93,11 @@ impl AttemptLifecycle {
         }
     }
 
-    #[doc(hidden)]
-    pub fn planning_started(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn planning_started(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         first(&mut self.planning_started, at, self.submitted, "planning_started")
     }
 
-    #[doc(hidden)]
-    pub fn planning_finished(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn planning_finished(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         first(&mut self.planning_finished, at, self.planning_started.unwrap_or(self.submitted), "planning_finished")
     }
 
@@ -117,8 +113,7 @@ impl AttemptLifecycle {
         }
     }
 
-    #[doc(hidden)]
-    pub fn admission_requested(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn admission_requested(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         self.rejects_gpu_boundary("admission_requested")?;
         if self.disposition.is_none() {
             // The final plan is always classified before GPU admission can be
@@ -137,8 +132,7 @@ impl AttemptLifecycle {
         )
     }
 
-    #[doc(hidden)]
-    pub fn admitted(&mut self, fact: AttemptAdmissionFact, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn admitted(&mut self, fact: AttemptAdmissionFact, at: u64) -> Result<(), AttemptLifecycleError> {
         self.rejects_gpu_boundary("admitted")?;
         if self.admitted.is_some() {
             return Ok(());
@@ -159,8 +153,7 @@ impl AttemptLifecycle {
     /// Retains the controller-owned final queue state after admission has
     /// succeeded. A second identical observation is harmless; conflicting
     /// state would make the immutable sealed report ambiguous.
-    #[doc(hidden)]
-    pub fn admission_wait(&mut self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn admission_wait(&mut self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
         if self.admitted.is_none() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_wait",
@@ -184,8 +177,7 @@ impl AttemptLifecycle {
     /// attempt can publish its report. Repeated identical attachment is
     /// harmless; a conflicting or late attachment would make the sealed
     /// report ambiguous and is rejected.
-    #[doc(hidden)]
-    pub fn composed_schedule(
+    pub(crate) fn composed_schedule(
         &mut self,
         projection: AttemptComposedScheduleProjection,
     ) -> Result<(), AttemptLifecycleError> {
@@ -239,8 +231,7 @@ impl AttemptLifecycle {
         }
     }
 
-    #[doc(hidden)]
-    pub fn physical(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn physical(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         if self.planning_started.is_some() && self.planning_finished.is_none() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "physical_execution_started",
@@ -257,8 +248,7 @@ impl AttemptLifecycle {
         first(&mut self.physical, at, previous, "physical_execution_started")
     }
 
-    #[doc(hidden)]
-    pub fn gpu(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn gpu(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         let Some((admitted, _)) = self.admitted else {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "gpu_execution_started",
@@ -268,8 +258,7 @@ impl AttemptLifecycle {
         first(&mut self.gpu, at, admitted, "gpu_execution_started")
     }
 
-    #[doc(hidden)]
-    pub fn disposition(&mut self, d: AttemptDisposition) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn disposition(&mut self, d: AttemptDisposition) -> Result<(), AttemptLifecycleError> {
         match self.disposition {
             None => {
                 let has_gpu = self.admission_requested.is_some() || self.admitted.is_some() || self.gpu.is_some();
@@ -293,8 +282,11 @@ impl AttemptLifecycle {
         }
     }
 
-    #[doc(hidden)]
-    pub fn terminalize(&mut self, outcome: RuntimeTerminalOutcome, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn terminalize(
+        &mut self,
+        outcome: RuntimeTerminalOutcome,
+        at: u64,
+    ) -> Result<(), AttemptLifecycleError> {
         if self.terminal.is_some() {
             return Err(AttemptLifecycleError::DoubleTerminalization);
         }
@@ -334,8 +326,7 @@ impl AttemptLifecycle {
     /// grant. This boundary deliberately excludes an admitted or physically
     /// executing attempt, which remains owned by its attempt owner and
     /// release-commit path.
-    #[doc(hidden)]
-    pub fn terminalize_admission_rejection(
+    pub(crate) fn terminalize_admission_rejection(
         &mut self,
         outcome: RuntimeTerminalOutcome,
         at: u64,
@@ -364,8 +355,7 @@ impl AttemptLifecycle {
     /// Records a primary failure while it is still borrowed by the execution
     /// path. First-wins preserves the terminal failure that was returned to
     /// the caller; a later cleanup failure cannot replace it.
-    #[doc(hidden)]
-    pub fn primary_failure(&mut self, summary: AttemptFailureSummary) {
+    pub(crate) fn primary_failure(&mut self, summary: AttemptFailureSummary) {
         if self.primary_failure.is_none() {
             self.primary_failure = Some(summary);
         }
@@ -391,8 +381,7 @@ impl AttemptLifecycle {
     /// Retains only the first cleanup failure while accounting every observed
     /// cleanup failure. Overflow is marked incomplete rather than published as
     /// a saturated exact value.
-    #[doc(hidden)]
-    pub fn cleanup_failure(&mut self, summary: CleanupFailureSummary) {
+    pub(crate) fn cleanup_failure(&mut self, summary: CleanupFailureSummary) {
         if let Some(first) = &mut self.first_cleanup_failure {
             // The report retains one representative summary. Once another
             // cleanup failure is observed that representative is necessarily
@@ -410,8 +399,11 @@ impl AttemptLifecycle {
     /// Commits the cleanup and capacity outcome observed by the admitting
     /// query service. It must happen after the primary outcome but before the
     /// report-ready boundary; first-wins preserves exactly one release fact.
-    #[doc(hidden)]
-    pub fn terminal_commit(&mut self, commit: AttemptTerminalCommit, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn terminal_commit(
+        &mut self,
+        commit: AttemptTerminalCommit,
+        at: u64,
+    ) -> Result<(), AttemptLifecycleError> {
         if self.ready.is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "terminal_commit",
@@ -442,8 +434,7 @@ impl AttemptLifecycle {
     /// Consumes the owner-held finalizer for an attempt that never acquired an
     /// admission grant. This is deliberately separate from an admitted
     /// terminal commit: no cleanup, capacity, health, or domain facts exist.
-    #[doc(hidden)]
-    pub fn finalize_not_admitted(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn finalize_not_admitted(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         if self.admitted.is_some() {
             return Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "attempt_finalization",
@@ -469,8 +460,7 @@ impl AttemptLifecycle {
         Ok(())
     }
 
-    #[doc(hidden)]
-    pub fn cleanup(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn cleanup(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         if self.cleanup.is_some() {
             return Ok(());
         }
@@ -483,8 +473,7 @@ impl AttemptLifecycle {
         first(&mut self.cleanup, at, terminal, "cleanup_complete")
     }
 
-    #[doc(hidden)]
-    pub fn ready(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
+    pub(crate) fn ready(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
         let Some((terminal, _)) = self.terminal else { return Err(AttemptLifecycleError::ReportBeforeTerminal) };
         if !self.finalized {
             return Err(AttemptLifecycleError::InvalidOrder {
@@ -498,8 +487,7 @@ impl AttemptLifecycle {
         first(&mut self.ready, at, self.cleanup.unwrap_or(terminal), "report_ready")
     }
 
-    #[doc(hidden)]
-    pub fn timestamps(&self) -> AttemptTimestamps {
+    pub(crate) fn timestamps(&self) -> AttemptTimestamps {
         AttemptTimestamps {
             submitted_ns: self.submitted,
             planning_started_ns: self.planning_started,

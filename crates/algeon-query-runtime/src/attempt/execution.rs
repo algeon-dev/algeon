@@ -45,16 +45,6 @@ impl AttemptExecutionRound {
         Self { manifest: manifest.map(Arc::new), state: Arc::new(Mutex::new(AttemptExecutionRoundState::default())) }
     }
 
-    /// Validates that the producer can cross a host boundary in this round.
-    #[doc(hidden)]
-    pub fn validate_host_producer(&self, producer_identity: &str, plan: &QueryPlan) -> Result<bool> {
-        let Some(manifest) = self.manifest.as_deref() else {
-            return Ok(false);
-        };
-        manifest.validate_host_producer(producer_identity, plan)?;
-        Ok(true)
-    }
-
     /// Claims the concrete final-plan occurrence selected by the adapter's
     /// execution-path lineage.
     #[doc(hidden)]
@@ -103,8 +93,8 @@ impl AttemptHostOccurrence {
     }
 
     /// Returns the unique invocation occurrence selected for this producer.
-    #[doc(hidden)]
-    pub fn occurrence_id(&self) -> &str {
+    #[cfg(test)]
+    pub(crate) fn occurrence_id(&self) -> &str {
         &self.occurrence_id
     }
 }

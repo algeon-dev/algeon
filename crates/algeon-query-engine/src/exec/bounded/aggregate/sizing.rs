@@ -18,7 +18,7 @@
 // columns. For string-typed group keys the caller must supply
 // `input_max_string_length_bytes` from the input frame.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
@@ -48,24 +48,6 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     };
     let columns =
         partial_aggregate_upper_bound_columns(execution, aggregate, input_schema, aggregate_output_schema, input)?;
-    partial_aggregate_upper_bound_bytes(shape, &columns)
-}
-
-pub(super) fn statistical_partial_aggregate_work_reservation_upper_bound_bytes(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    aggregate: &AggregateNode,
-    input_schema: &ArrowSchemaRef,
-    aggregate_output_schema: &ArrowSchemaRef,
-    input: &GpuDataFrame,
-) -> Result<u64> {
-    let shape = PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 };
-    let columns = statistical_partial_aggregate_upper_bound_columns(
-        execution,
-        &aggregate.spec,
-        input_schema,
-        aggregate_output_schema,
-        input,
-    )?;
     partial_aggregate_upper_bound_bytes(shape, &columns)
 }
 
@@ -300,76 +282,6 @@ fn grouped_partial_aggregate_upper_bound_columns(
     Ok(columns)
 }
 
-fn statistical_partial_aggregate_upper_bound_columns(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    spec: &AggregateSpec,
-    input_schema: &ArrowSchemaRef,
-    aggregate_output_schema: &ArrowSchemaRef,
-    input: &GpuDataFrame,
-) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
-    let mut columns =
-        Vec::with_capacity(spec.group_exprs.len().saturating_add(spec.aggr_exprs.len().saturating_mul(3)));
-
-    for expr in &spec.group_exprs {
-        let (input_column, output_name) =
-            lower_named_column_expr(expr, "query_engine.bounded.aggregate.statistical_partial_sizing_group_key")?;
-        let field = input_schema.field_with_name(input_column.as_str()).map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "query_engine.bounded.aggregate.statistical_partial_sizing",
-                "statistical partial aggregate group key is missing from its input schema",
-            )
-            .with_fact("column", input_column.as_str())
-            .with_fact("output_name", output_name.as_str())
-            .with_fact("arrow_error", error.to_string())
-        })?;
-        columns.push(partial_column_for_field_and_input_column(execution, field, input_column.as_str(), input)?);
-    }
-
-    let mut statistical_inputs = BTreeSet::new();
-    for expr in &spec.aggr_exprs {
-        let input_column =
-            lower_column_expr(&expr.expr, "query_engine.bounded.aggregate.statistical_partial_sizing_expr")?;
-        match expr.function {
-            function if function.is_floating_statistical() => {
-                if statistical_inputs.insert(input_column) {
-                    columns.push(fixed_partial_column_for_type(ArrowDataType::Float64));
-                    columns.push(fixed_partial_column_for_type(ArrowDataType::Int64));
-                    columns.push(fixed_partial_column_for_type(ArrowDataType::Float64));
-                }
-            },
-            AggregateFunction::Avg => {
-                let input_type = aggregate_input_data_type(&expr.expr, input_schema)?;
-                let output_field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
-                    QueryError::new(
-                        QueryErrorCode::InvalidPlan,
-                        "query_engine.bounded.aggregate.statistical_partial_sizing",
-                        "AVG output field is missing from aggregate output schema",
-                    )
-                    .with_fact("alias", expr.alias.as_str())
-                    .with_fact("arrow_error", error.to_string())
-                })?;
-                columns.push(fixed_partial_column_for_type(avg_sum_state_data_type(
-                    &input_type,
-                    output_field.data_type(),
-                )?));
-                columns.push(fixed_partial_column_for_type(ArrowDataType::Int64));
-            },
-            _ => {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "query_engine.bounded.aggregate.statistical_partial_sizing",
-                    "statistical partial aggregate sizing supports only floating statistical aggregates and avg",
-                )
-                .with_fact("alias", expr.alias.as_str())
-                .with_fact("function", expr.function.as_str()));
-            },
-        }
-    }
-
-    Ok(columns)
-}
-
 fn take_partial_field<'a>(
     fields_by_name: &mut BTreeMap<&'a str, &'a Field>,
     name: &str,
@@ -392,10 +304,6 @@ fn fixed_partial_column(field: &Field) -> JoinOutputColumnUpperBoundInput {
         input_max_string_length_bytes: None,
         input_total_string_bytes: None,
     }
-}
-
-fn fixed_partial_column_for_type(data_type: ArrowDataType) -> JoinOutputColumnUpperBoundInput {
-    JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes: None, input_total_string_bytes: None }
 }
 
 fn partial_column_for_field_and_optional_input(

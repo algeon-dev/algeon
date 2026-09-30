@@ -15,74 +15,33 @@ use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use tonic::transport::Channel;
 
-use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
+use crate::connection_retry::{ConnectionRetryConfig, connect_with_retry};
 
 type SmokeResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-const SOURCE_ENV: &str = "ALGEON_CUGRAPH_SMOKE_SOURCE";
-const ICEBERG_EDGE_TABLE_ENV: &str = "ALGEON_CUGRAPH_SMOKE_ICEBERG_EDGE_TABLE";
-const ICEBERG_SRC_COL_ENV: &str = "ALGEON_CUGRAPH_SMOKE_ICEBERG_SRC_COL";
-const ICEBERG_DST_COL_ENV: &str = "ALGEON_CUGRAPH_SMOKE_ICEBERG_DST_COL";
-const ICEBERG_WEIGHT_COL_ENV: &str = "ALGEON_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
 const RESULT_MODE_ENV: &str = "ALGEON_CUGRAPH_SMOKE_RESULT_MODE";
-
-const DEFAULT_ICEBERG_SRC_COL: &str = "src";
-const DEFAULT_ICEBERG_DST_COL: &str = "dst";
-const DEFAULT_ICEBERG_WEIGHT_COL: &str = "weight";
 
 pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     let url = server_url(url_arg);
-    let source = SmokeSource::from_env()?;
     let result_mode = GraphResultMode::from_env()?;
     let mut client = connect_flight_sql(&url).await?;
     let suffix = unique_suffix();
     let raw_table = format!("raw_edges_{suffix}");
     let target_view = format!("target_edges_{suffix}");
     let graph_view = format!("graph_hits_{suffix}");
-    let mut cleanup_dir = None;
-    let weight_col = source.weight_col();
-
-    match &source {
-        SmokeSource::LocalParquet => {
-            let dir = unique_temp_dir("algeon-datafusion-flight-sql-cugraph-smoke")?;
-            let parquet_path = dir.join("edges.parquet");
-            write_edge_parquet(&parquet_path)?;
-            execute_batches(
-                &mut client,
-                &format!(
-                    "CREATE EXTERNAL TABLE {raw_table} STORED AS PARQUET LOCATION '{}'",
-                    parquet_path.to_string_lossy()
-                ),
-            )
-            .await?;
-            execute_batches(
-                &mut client,
-                &format!("CREATE VIEW {target_view} AS SELECT src, dst, weight FROM {raw_table} WHERE src >= 0"),
-            )
-            .await?;
-            cleanup_dir = Some(dir);
-        },
-        SmokeSource::Iceberg { edge_table, src_col, dst_col, weight_col } => {
-            let weight_select = match weight_col {
-                Some(weight_col) => format!(", {weight_col} AS weight"),
-                None => String::new(),
-            };
-            let weight_filter = match weight_col {
-                Some(weight_col) => format!(" AND {weight_col} IS NOT NULL"),
-                None => String::new(),
-            };
-            execute_batches(
-                &mut client,
-                &format!(
-                    "CREATE VIEW {target_view} AS \
-                     SELECT {src_col} AS src, {dst_col} AS dst{weight_select} \
-                     FROM {edge_table} \
-                     WHERE {src_col} IS NOT NULL AND {dst_col} IS NOT NULL{weight_filter}",
-                ),
-            )
-            .await?;
-        },
-    }
+    let dir = unique_temp_dir("algeon-datafusion-flight-sql-cugraph-smoke")?;
+    let parquet_path = dir.join("edges.parquet");
+    write_edge_parquet(&parquet_path)?;
+    execute_batches(
+        &mut client,
+        &format!("CREATE EXTERNAL TABLE {raw_table} STORED AS PARQUET LOCATION '{}'", parquet_path.to_string_lossy()),
+    )
+    .await?;
+    execute_batches(
+        &mut client,
+        &format!("CREATE VIEW {target_view} AS SELECT src, dst, weight FROM {raw_table} WHERE src >= 0"),
+    )
+    .await?;
 
     let batches = execute_batches(
         &mut client,
@@ -112,25 +71,18 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     if details["edges"]["src_dtype"] != "Int64" || details["edges"]["dst_dtype"] != "Int64" {
         return Err(format!("unexpected cuGraph edge dtypes: {details}").into());
     }
-    match weight_col {
-        Some(_) if details["edges"]["weight_dtype"] != "Float64" => {
-            return Err(format!("unexpected cuGraph edge weight dtype: {details}").into());
-        },
-        None if !details["edges"]["weight_dtype"].is_null() => {
-            return Err(format!("unexpected cuGraph edge weight dtype: {details}").into());
-        },
-        _ => {},
+    if details["edges"]["weight_dtype"] != "Float64" {
+        return Err(format!("unexpected cuGraph edge weight dtype: {details}").into());
     }
     require_bool(batch, 4, 0, true)?;
 
-    let edge_projection = weight_col.map(|_| "src, dst, weight").unwrap_or("src, dst");
     execute_batches(
         &mut client,
         &format!(
             r#"CREATE VIEW {graph_view} AS
                SELECT *
                FROM cugraph_bfs(
-                 edges => (SELECT {edge_projection} FROM {target_view}), source_vertex => 0, depth_limit => 2)"#
+                 edges => (SELECT src, dst, weight FROM {target_view}), source_vertex => 0, depth_limit => 2)"#
         ),
     )
     .await?;
@@ -143,55 +95,12 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
         execute_full_unbounded_graph_smoke(&mut client, &graph_view).await?;
     }
 
-    if let Some(dir) = cleanup_dir {
-        let _ = fs::remove_dir_all(&dir);
-    }
+    let _ = fs::remove_dir_all(&dir);
     println!(
-        "flight-sql-cugraph-smoke ok url={url} source={} result_mode={} target_view={target_view} graph_view={graph_view}",
-        source.label(),
+        "flight-sql-cugraph-smoke ok url={url} source=local_parquet result_mode={} target_view={target_view} graph_view={graph_view}",
         result_mode.label()
     );
     Ok(())
-}
-
-enum SmokeSource {
-    LocalParquet,
-    Iceberg { edge_table: String, src_col: String, dst_col: String, weight_col: Option<String> },
-}
-
-impl SmokeSource {
-    fn from_env() -> SmokeResult<Self> {
-        match std::env::var(SOURCE_ENV).unwrap_or_else(|_| "local_parquet".to_string()).as_str() {
-            "local_parquet" | "local" => Ok(Self::LocalParquet),
-            "iceberg" | "remote_iceberg" => Ok(Self::Iceberg {
-                edge_table: required_nonempty_env(ICEBERG_EDGE_TABLE_ENV)?,
-                src_col: env_or_default(ICEBERG_SRC_COL_ENV, DEFAULT_ICEBERG_SRC_COL),
-                dst_col: env_or_default(ICEBERG_DST_COL_ENV, DEFAULT_ICEBERG_DST_COL),
-                weight_col: optional_nonempty_env(ICEBERG_WEIGHT_COL_ENV).or_else(|| {
-                    if std::env::var(ICEBERG_WEIGHT_COL_ENV).is_ok() {
-                        None
-                    } else {
-                        Some(DEFAULT_ICEBERG_WEIGHT_COL.to_string())
-                    }
-                }),
-            }),
-            other => Err(format!("unsupported {SOURCE_ENV}={other:?}; expected local_parquet or iceberg").into()),
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            Self::LocalParquet => "local_parquet",
-            Self::Iceberg { .. } => "iceberg",
-        }
-    }
-
-    fn weight_col(&self) -> Option<&str> {
-        match self {
-            Self::LocalParquet => Some("weight"),
-            Self::Iceberg { weight_col, .. } => weight_col.as_deref(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,18 +126,6 @@ impl GraphResultMode {
             Self::FullUnbounded => "full_unbounded",
         }
     }
-}
-
-fn env_or_default(name: &str, default: &str) -> String {
-    optional_nonempty_env(name).unwrap_or_else(|| default.to_string())
-}
-
-fn required_nonempty_env(name: &str) -> SmokeResult<String> {
-    optional_nonempty_env(name).ok_or_else(|| format!("{name} must be set when {SOURCE_ENV}=iceberg").into())
-}
-
-fn optional_nonempty_env(name: &str) -> Option<String> {
-    std::env::var(name).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
 }
 
 fn server_url(url_arg: Option<String>) -> String {
@@ -274,7 +171,6 @@ async fn connect_flight_sql(url: &str) -> SmokeResult<FlightSqlServiceClient<Cha
     connect_with_retry(
         url,
         ConnectionRetryConfig::fixed_attempts(50, Duration::from_millis(50)),
-        || Ok(BeforeConnect::Continue),
         FlightSqlServiceClient::new,
         |error| format!("Flight SQL server did not accept connections at {url}: {:?}", Some(error)),
     )

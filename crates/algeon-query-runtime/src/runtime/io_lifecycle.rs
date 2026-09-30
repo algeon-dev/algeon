@@ -73,11 +73,7 @@ impl IoLifecycle {
         self.inner.changed.notify_all();
     }
 
-    pub fn is_closed(&self) -> bool {
-        self.inner.lifecycle.load(Ordering::Acquire) & IO_LIFECYCLE_CLOSED != 0
-    }
-
-    pub fn active_leases(&self) -> usize {
+    pub(crate) fn active_leases(&self) -> usize {
         self.inner.lifecycle.load(Ordering::Acquire) & IO_LIFECYCLE_ACTIVE_MASK
     }
 

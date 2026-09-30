@@ -24,7 +24,7 @@ name = "cugraph"
 workspace = true
 
 [features]
-test-hooks = ["cudf-sys/test-hooks"]
+test-hooks = ["cudf/test-hooks", "cudf-sys/test-hooks"]
 
 [dependencies]
 cudf.workspace = true
@@ -33,6 +33,7 @@ cugraph-sys.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+cudf = { workspace = true, features = ["test-hooks"] }
 static_assertions.workspace = true
 
 [build-dependencies]

@@ -116,7 +116,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     .with_fact("plan_node_id", node_id)
                     .with_fact("pipeline_task_kind", task.kind().as_str()));
             };
-            let ResidentGpuFrame { frame: input_frame, device_bytes: input_reserved_bytes } = *frame;
+            let ResidentGpuFrame { frame: input_frame, device_bytes: input_device_bytes } = *frame;
             let result = execute_compiled_bounded_aggregate_from_frame(
                 &mut self.execution,
                 node_id,
@@ -131,7 +131,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     .output_schema(),
                 node.output_schema(),
                 input_frame,
-                input_reserved_bytes,
+                input_device_bytes,
             );
             match result.map(CompiledGpuResource::new) {
                 Ok(output) => Ok(output),
@@ -182,7 +182,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         .output_schema(),
                     node.output_schema(),
                     input_payload.clone_frame(),
-                    input_payload.reservation_bytes(),
+                    input_payload.observed_device_bytes(),
                 )
                 .map(CompiledGpuResource::new)
             }

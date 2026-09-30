@@ -150,7 +150,7 @@ impl AttemptAllocationDomain {
     /// stream for the attempt and the shared lease is cloned into per-stage
     /// budget tokens, which never attach a second member to the stream. The
     /// member detaches only when every clone drops.
-    pub fn create_member(&self, stream: &CudaStream) -> Result<cudf::StreamReservationLease> {
+    pub(crate) fn create_member(&self, stream: &CudaStream) -> Result<cudf::StreamReservationLease> {
         if stream.device().ordinal() != self.device_ordinal() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -227,11 +227,11 @@ impl AttemptAllocationDomain {
         Ok(AttemptStreamProviderRoute { registration, _member_leases: member_leases, _fork_streams: fork_streams })
     }
 
-    pub fn as_cudf(&self) -> &Arc<cudf::QueryMemoryDomain> {
+    pub(crate) fn as_cudf(&self) -> &Arc<cudf::QueryMemoryDomain> {
         &self.domain
     }
 
-    pub const fn domain_id(&self) -> u64 {
+    pub(crate) const fn domain_id(&self) -> u64 {
         self.grant_identity.generation
     }
 
@@ -240,7 +240,7 @@ impl AttemptAllocationDomain {
     }
 
     /// Immutable allocation cap copied from the admitted memory grant.
-    pub const fn cap_bytes(&self) -> u64 {
+    pub(crate) const fn cap_bytes(&self) -> u64 {
         self.member_limit_bytes
     }
 
@@ -248,7 +248,7 @@ impl AttemptAllocationDomain {
         self.domain.device().ordinal()
     }
 
-    pub fn usage(&self) -> Result<cudf::QueryMemoryDomainUsage> {
+    pub(crate) fn usage(&self) -> Result<cudf::QueryMemoryDomainUsage> {
         self.domain.usage().map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_allocation_domain.usage",
@@ -261,7 +261,7 @@ impl AttemptAllocationDomain {
 
     /// Permanently closes the producer domain to allocation after all attempt
     /// streams have drained and returns its measured resident charge.
-    pub fn freeze(&self) -> Result<cudf::QueryMemoryDomainUsage> {
+    pub(crate) fn freeze(&self) -> Result<cudf::QueryMemoryDomainUsage> {
         self.domain.freeze().map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_allocation_domain.freeze",
@@ -273,7 +273,7 @@ impl AttemptAllocationDomain {
     }
 
     /// Snapshots the allocations this domain's registry still owns.
-    pub fn live_allocations(&self) -> Result<Vec<cudf::QueryMemoryDomainAllocation>> {
+    pub(crate) fn live_allocations(&self) -> Result<Vec<cudf::QueryMemoryDomainAllocation>> {
         self.domain.live_allocations().map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_allocation_domain.live_allocations",
@@ -284,8 +284,7 @@ impl AttemptAllocationDomain {
         })
     }
 
-    #[doc(hidden)]
-    pub fn pool_usage(&self) -> Result<cudf::DeviceMemoryPoolUsage> {
+    pub(crate) fn pool_usage(&self) -> Result<cudf::DeviceMemoryPoolUsage> {
         self.domain.pool_usage().map_err(|error| {
             cudf_query_error(
                 "query_engine.runtime.attempt_allocation_domain.pool_usage",

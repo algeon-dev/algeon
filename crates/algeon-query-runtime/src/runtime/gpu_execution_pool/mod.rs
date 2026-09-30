@@ -82,7 +82,7 @@ pub enum GpuExecutionJobKind {
 /// never consume a future lifecycle slot: class permits are acquired before a
 /// job occupies a worker thread, and no hidden fallback pool exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GpuExecutionJobClass {
+pub(crate) enum GpuExecutionJobClass {
     /// Per-attempt lifecycle work: initial context setup and cleanup.
     Lifecycle,
     /// Bounded query execution and additional fragment setup.
@@ -117,8 +117,7 @@ impl GpuExecutionJobKind {
     /// is execution-class. Context setup is the one kind whose class depends
     /// on the attempt's own claim rather than on the kind, so it is selected
     /// explicitly through [`GpuExecutionPool::run_observed_scoped_in_class`].
-    #[doc(hidden)]
-    pub const fn job_class(self) -> GpuExecutionJobClass {
+    pub(crate) const fn job_class(self) -> GpuExecutionJobClass {
         match self {
             Self::ContextSetup | Self::QueryExecution | Self::Cleanup => GpuExecutionJobClass::Lifecycle,
             Self::AttemptWork => GpuExecutionJobClass::Execution,
@@ -141,30 +140,30 @@ pub struct GpuExecutionPoolSnapshot {
     /// Jobs that have started and not yet completed.
     pub active_jobs: usize,
     /// Highest observed value of [`Self::active_jobs`].
-    pub peak_active_jobs: usize,
+    pub(crate) peak_active_jobs: usize,
     /// Accepted jobs that have not started.
     pub queued_jobs: usize,
     /// Highest observed value of [`Self::queued_jobs`].
-    pub peak_queued_jobs: usize,
+    pub(crate) peak_queued_jobs: usize,
     /// Active query-execution jobs on this device.
     pub active_query_jobs: usize,
     /// Highest observed device-local query-execution concurrency.
     pub peak_active_query_jobs: usize,
     /// Configured lifecycle-class job slots (`root` diagnostic label).
-    pub root_job_capacity: usize,
+    pub(crate) root_job_capacity: usize,
     /// Configured execution-class job slots (`auxiliary` diagnostic label).
-    pub aux_job_capacity: usize,
+    pub(crate) aux_job_capacity: usize,
     /// Lifecycle-class job slots currently free (`root` diagnostic label).
-    pub root_jobs_available: usize,
+    pub(crate) root_jobs_available: usize,
     /// Execution-class job slots currently free (`auxiliary` diagnostic label).
-    pub aux_jobs_available: usize,
+    pub(crate) aux_jobs_available: usize,
 }
 
 /// Point-in-time counters shared by a group of GPU execution pools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GpuExecutionQuerySnapshot {
     /// Query-execution jobs active across all attached pools.
-    pub active_query_jobs: usize,
+    pub(crate) active_query_jobs: usize,
     /// Highest exact concurrent query-execution count across attached pools.
     pub peak_active_query_jobs: usize,
 }
@@ -176,21 +175,18 @@ pub struct GpuExecutionQuerySnapshot {
 /// Summing device-local peaks is not equivalent because those peaks may have
 /// occurred at different times.
 #[derive(Debug, Clone, Default)]
-#[doc(hidden)]
-pub struct GpuExecutionQueryTracker {
+pub(crate) struct GpuExecutionQueryTracker {
     counters: Arc<QueryCounters>,
 }
 
 impl GpuExecutionQueryTracker {
     /// Creates an empty aggregate query tracker.
-    #[doc(hidden)]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Returns the current and peak query concurrency across attached pools.
-    #[doc(hidden)]
-    pub fn snapshot(&self) -> GpuExecutionQuerySnapshot {
+    pub(crate) fn snapshot(&self) -> GpuExecutionQuerySnapshot {
         let active_query_jobs = self.counters.active.load(Ordering::Acquire);
         let peak_active_query_jobs = self.counters.peak.load(Ordering::Acquire).max(active_query_jobs);
         GpuExecutionQuerySnapshot { active_query_jobs, peak_active_query_jobs }
@@ -207,16 +203,14 @@ impl GpuExecutionQueryTracker {
 
 /// Fixed-width, per-device executor for work that can block on the GPU.
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct GpuExecutionPool {
+pub(crate) struct GpuExecutionPool {
     inner: Arc<GpuExecutionPoolInner>,
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
 }
 
 impl GpuExecutionPool {
     /// Creates a pool with an independent query-concurrency tracker.
-    #[doc(hidden)]
-    pub fn new(device_ordinal: usize, worker_count: usize) -> Result<Self> {
+    pub(crate) fn new(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         Self::new_with_tracker(device_ordinal, worker_count, GpuExecutionQueryTracker::new())
     }
 
@@ -226,8 +220,7 @@ impl GpuExecutionPool {
     /// `worker_count` lifecycle job slots and `worker_count` execution job slots.
     /// Backend-owned pools pass explicit `A_d`/`A_d * S_d` capacities from
     /// the device resource profile via [`Self::new_with_tracker_and_classes`].
-    #[doc(hidden)]
-    pub fn new_with_tracker(
+    pub(crate) fn new_with_tracker(
         device_ordinal: usize,
         worker_count: usize,
         query_tracker: GpuExecutionQueryTracker,
@@ -236,8 +229,7 @@ impl GpuExecutionPool {
     }
 
     /// Creates a pool with explicit lifecycle/execution job-slot capacities.
-    #[doc(hidden)]
-    pub fn new_with_tracker_and_classes(
+    pub(crate) fn new_with_tracker_and_classes(
         device_ordinal: usize,
         worker_count: usize,
         lifecycle_job_capacity: usize,
@@ -340,8 +332,7 @@ impl GpuExecutionPool {
     /// different width is rejected rather than silently constructing another
     /// executor for the same device. Once the last clone is dropped, a later
     /// call may install a new width.
-    #[doc(hidden)]
-    pub fn shared_for_device(device_ordinal: usize, worker_count: usize) -> Result<Self> {
+    pub(crate) fn shared_for_device(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         validate_worker_count(device_ordinal, worker_count)?;
 
         static SHARED_POOLS: OnceLock<Mutex<HashMap<usize, Weak<GpuExecutionPoolInner>>>> = OnceLock::new();
@@ -395,7 +386,7 @@ impl GpuExecutionPool {
     ///
     /// These events describe executor submission and host execution only. They
     /// do not claim CUDA kernel duration.
-    pub async fn run_observed<F, T>(
+    pub(crate) async fn run_observed<F, T>(
         &self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
@@ -431,8 +422,7 @@ impl GpuExecutionPool {
     /// admitted attempt's context reservation rather than inferred from that
     /// observability label. Initial setup uses the lifecycle class; additional
     /// fragment setup uses the execution class.
-    #[doc(hidden)]
-    pub async fn run_observed_scoped_in_class<B, F, T>(
+    pub(crate) async fn run_observed_scoped_in_class<B, F, T>(
         self,
         kind: GpuExecutionJobKind,
         class: GpuExecutionJobClass,
@@ -517,14 +507,14 @@ impl GpuExecutionPool {
     /// pool still accounts for the job, and its RAII counters are released if
     /// it completes, panics, or is cancelled during runtime shutdown.
     #[cfg(test)]
-    pub fn spawn<F>(&self, kind: GpuExecutionJobKind, future: F) -> Result<()>
+    pub(crate) fn spawn<F>(&self, kind: GpuExecutionJobKind, future: F) -> Result<()>
     where F: Future<Output = ()> + Send + 'static {
         self.spawn_observed(kind, RuntimeObservationHandle::disabled(), future)
     }
 
     /// Detaches one observed job onto the device pool.
     #[cfg(test)]
-    pub fn spawn_observed<F>(
+    pub(crate) fn spawn_observed<F>(
         &self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
@@ -560,8 +550,7 @@ impl GpuExecutionPool {
     /// Detaches one observed job and invokes `completion` after its terminal
     /// job event, including cancellation or panic cleanup.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn spawn_observed_with_completion<F, C>(
+    pub(crate) fn spawn_observed_with_completion<F, C>(
         &self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
@@ -603,8 +592,7 @@ impl GpuExecutionPool {
     /// dedicated `A_d`-sized permit set rather than waiting in an unbounded
     /// semaphore queue or competing with arbitrary root submissions. The
     /// cleanup still waits only behind the fixed-width device runtime.
-    #[doc(hidden)]
-    pub fn spawn_release_cleanup_observed_with_completion<F, C>(
+    pub(crate) fn spawn_release_cleanup_observed_with_completion<F, C>(
         &self,
         observation: RuntimeObservationHandle,
         future: F,
@@ -656,8 +644,7 @@ impl GpuExecutionPool {
     /// for. Capacity is released before completion is delivered, so a resolved
     /// join implies the slot is reusable. Pool shutdown drops the completion
     /// sender and the join reports a typed cancellation instead of hanging.
-    #[doc(hidden)]
-    pub fn submit_blocking<F, T>(
+    pub(crate) fn submit_blocking<F, T>(
         &self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
@@ -673,8 +660,7 @@ impl GpuExecutionPool {
     /// Submits blocking work with a terminal notification, including panic.
     /// The callback runs after the outcome can be joined and does not hold a
     /// pool slot; a coordinator can use it to receive workers in finish order.
-    #[doc(hidden)]
-    pub fn submit_blocking_with_completion<F, T, C>(
+    pub(crate) fn submit_blocking_with_completion<F, T, C>(
         &self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
@@ -774,7 +760,7 @@ impl GpuExecutionPool {
     }
 
     /// Returns device-local execution counters.
-    pub fn snapshot(&self) -> GpuExecutionPoolSnapshot {
+    pub(crate) fn snapshot(&self) -> GpuExecutionPoolSnapshot {
         let counters = &self.inner.counters;
         let active_jobs = counters.active.load(Ordering::Acquire);
         let queued_jobs = counters.queued.load(Ordering::Acquire);
@@ -798,7 +784,7 @@ impl GpuExecutionPool {
 
     /// Returns the aggregate query tracker attached to this pool.
     #[cfg(test)]
-    pub fn query_tracker(&self) -> GpuExecutionQueryTracker {
+    pub(crate) fn query_tracker(&self) -> GpuExecutionQueryTracker {
         self.inner.query_tracker.clone()
     }
 
@@ -807,41 +793,35 @@ impl GpuExecutionPool {
     /// The submission gate makes the close transition linearizable with task
     /// spawning: a task either enters the runtime before this call wins or is
     /// rejected as closed.
-    #[doc(hidden)]
-    pub fn close_submissions(&self) -> Result<()> {
+    pub(crate) fn close_submissions(&self) -> Result<()> {
         self.inner.close_submissions()
     }
 
     /// Asks the owning supervisor to drop its runtime and cancel any async work
     /// that did not drain after submissions were closed.
-    #[doc(hidden)]
-    pub fn request_supervisor_exit(&self) -> Result<()> {
+    pub(crate) fn request_supervisor_exit(&self) -> Result<()> {
         self.inner.request_supervisor_exit()
     }
 
     /// Waits for every accepted job guard to leave the queued or active state.
-    #[doc(hidden)]
-    pub fn wait_for_drain_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn wait_for_drain_until(&self, deadline: Instant) -> Result<()> {
         self.inner.wait_for_drain_until(deadline)
     }
 
     /// Waits for the runtime-owning supervisor to publish its terminal state.
-    #[doc(hidden)]
-    pub fn wait_for_supervisor_exit_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn wait_for_supervisor_exit_until(&self, deadline: Instant) -> Result<()> {
         self.inner.supervisor.wait_for_exit_until(deadline)
     }
 
     /// Reclaims the exited supervisor thread and reports join failure as a
     /// permanent cleanup failure.
-    #[doc(hidden)]
-    pub fn join_supervisor(&self) -> Result<()> {
+    pub(crate) fn join_supervisor(&self) -> Result<()> {
         self.inner.supervisor.join()
     }
 
     /// Compatibility composition for cleanup coordinators that have not yet
     /// split worker-pool cleanup into independently observed phases.
-    #[doc(hidden)]
-    pub fn close_and_wait_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn close_and_wait_until(&self, deadline: Instant) -> Result<()> {
         self.close_submissions()?;
         self.request_supervisor_exit()?;
         let drain_result = self.wait_for_drain_until(deadline);
@@ -891,8 +871,7 @@ impl GpuExecutionPool {
         self.inner.supervisor.join_for_process_exit();
     }
 
-    #[doc(hidden)]
-    pub fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
+    pub(crate) fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
         Self { inner: Arc::clone(&self.inner), resource_epoch: Some(resource_epoch) }
     }
 

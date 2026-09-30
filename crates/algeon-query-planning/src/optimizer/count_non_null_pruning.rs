@@ -53,7 +53,7 @@ impl CountNonNullColumnPruningDiagnostics {
     }
 
     /// Merges another diagnostics value into this one.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
         self.candidates.extend(other.candidates);
@@ -90,15 +90,13 @@ pub enum CountNonNullColumnPruningRejectedReason {
     NonNullCarrierUnavailable,
 }
 
-#[doc(hidden)]
-pub struct CountNonNullColumnPruningResult {
-    pub plan: QueryPlan,
-    pub change: super::NativeOptimizerChange,
-    pub diagnostics: CountNonNullColumnPruningDiagnostics,
+pub(crate) struct CountNonNullColumnPruningResult {
+    pub(crate) plan: QueryPlan,
+    pub(crate) change: super::NativeOptimizerChange,
+    pub(crate) diagnostics: CountNonNullColumnPruningDiagnostics,
 }
 
-#[doc(hidden)]
-pub fn optimize_count_non_null_column_pruning(
+pub(crate) fn optimize_count_non_null_column_pruning(
     plan: QueryPlan,
     options: &CountNonNullColumnPruningOptions,
 ) -> CountNonNullColumnPruningResult {

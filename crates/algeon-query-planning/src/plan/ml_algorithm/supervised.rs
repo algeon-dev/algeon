@@ -39,14 +39,7 @@ pub enum MlSplitCriterion {
     Entropy,
 }
 
-impl MlSplitCriterion {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Gini => "gini",
-            Self::Entropy => "entropy",
-        }
-    }
-}
+impl MlSplitCriterion {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MlRandomForestParams {

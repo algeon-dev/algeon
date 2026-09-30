@@ -2,21 +2,19 @@
 mod datetime_tests;
 mod join_hash_join_execution_tests {
     use cudf::{
-        DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, Runtime,
+        ErrorCode, ErrorKind, ExecutionOverrides, Runtime,
         core::Table,
-        frame::dataframe::JsonReadOptions,
         ops::{
             ast::AstExpression,
             join::{self, HashJoin, HashJoinOptions, JoinType, NullEquality},
         },
         testing::prelude::*,
     };
-    use tempfile::TempDir;
 
     use crate::common::{
-        column_from_strs_nullable, dependency_wait_call_count_for_stream, explicit_i32_column, last_exec_mr_value,
-        last_exec_stream_value, lock_event_observation, reset_dependency_observation, reset_exec_observation,
-        run_named_cases,
+        column_from_strs_nullable, dependency_wait_call_count_for_stream, explicit_i32_column, int64_array,
+        int64_list_array, last_exec_mr_value, last_exec_stream_value, lock_event_observation, nested_dataframe,
+        reset_dependency_observation, reset_exec_observation, run_named_cases, struct_array,
     };
 
     const JOIN_NO_MATCH: i32 = i32::MIN;
@@ -38,15 +36,6 @@ mod join_hash_join_execution_tests {
 
     fn left_less_than_right() -> AstExpression {
         AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap()
-    }
-
-    fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join(filename);
-        std::fs::write(&path, rows).unwrap();
-        let runtime = Runtime::builder().build().unwrap();
-        DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(&runtime).build())
-            .unwrap()
     }
 
     fn assert_hash_join_pre_build_invalid_argument(build: &Table, options: HashJoinOptions) {
@@ -394,11 +383,14 @@ mod join_hash_join_execution_tests {
     }
 
     fn hash_join_pre_build_reservation_rejects_nested_and_struct_build_keys() {
-        let frame = read_json_dataframe(
-            "hash_join_pre_build_nested.jsonl",
-            r#"{"items":[1,2],"point":{"x":1,"y":2},"id":1}
-{"items":[3],"point":{"x":3,"y":4},"id":2}
-"#,
+        let runtime = Runtime::builder().build().unwrap();
+        let frame = nested_dataframe(
+            &runtime,
+            vec![
+                ("items", int64_list_array(&[vec![1, 2], vec![3]])),
+                ("point", struct_array(vec![("x", int64_array(&[1, 3])), ("y", int64_array(&[2, 4]))])),
+                ("id", int64_array(&[1, 2])),
+            ],
         );
 
         for key in ["items", "point"] {

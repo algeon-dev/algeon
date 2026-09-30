@@ -39,7 +39,7 @@ SQL return the same coverage evidence before a query runs.
 | Example | Layer it teaches | Query entry point | Needs | Runs in |
 | --- | --- | --- | --- | --- |
 | [`attempt_lifecycle`](#attempt_lifecycle-the-per-query-contract) | The per-query contract every embedding uses | Explicit `backend.begin_attempt()` | One CUDA device | Seconds |
-| [`embedded_backend`](#embedded_backend-one-process-two-frontends) | A production-shaped service topology | `SessionContext::sql` (REST) and Flight SQL tickets | CUDA device, Docker stack, demo dataset | Minutes |
+| [`embedded_backend`](#embedded_backend-one-process-two-frontends) | A production-shaped service topology | `SessionContext::sql` (REST) and Flight SQL tickets | CUDA device, demo dataset | Minutes |
 | [`otlp_metrics_exporter`](#otlp_metrics_exporter-backend-metrics-over-otlp) | The metrics ownership split | `BackendMetricsOtlpExporter` in your process | Nothing; an OTLP collector is optional | Seconds |
 
 A common point of confusion: `embedded_backend` does **not** call
@@ -123,11 +123,8 @@ B: Flight SQL client ---->   Flight SQL frontend                 |
                         +------------------|---------------------+
                                            |
                                            v
-                         Iceberg REST catalog
-                         lake.citation_network tables
-                                           |
-                                           v
-                         RustFS/S3 staged Citation Network Parquet
+                         Citation Network Parquet files
+                         registered as external tables
 ```
 
 This topology is useful when an application has a small set of product-owned
@@ -139,9 +136,8 @@ execution shares one admission ledger.
 ### Data
 
 The example runs against the DBLP / AMiner Citation Network V12 demo dataset:
-4,894,081 papers and 45,564,149 citation edges. The E2E runner expects the
-local Iceberg REST catalog to contain `lake.citation_network.*` tables, and the
-server workspace overlay to expose these unqualified names:
+4,894,081 papers and 45,564,149 citation edges. The REST pipelines query
+these unqualified table names:
 
 - `papers`
 - `paper_fos`
@@ -159,21 +155,10 @@ plus Parquet output. The ingest script requires Python with `pyarrow`.
 python3 fixture/demo/citation_network/scripts/prepare.py --overwrite
 ```
 
-Start the local REST/RustFS stack and register the generated Parquet files with
-Iceberg `add_files`. This mode stages the Parquet files into RustFS and Iceberg
-references them in place, so do not delete the `staging/` prefix while the REST
-catalog metadata is live. The REST fixture stores metadata in ephemeral SQLite;
-rerun the loader after every fresh `docker compose up`.
-
-```bash
-docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/fixture.sh iceberg rest load \
-  --workload citation_network \
-  --load-mode add-files
-```
-
-If the Parquet files are missing, the loader and E2E suite fail fast with the
-same acquisition instructions instead of downloading the dataset automatically.
+Once the example is running, register the generated Parquet files as external
+tables through Flight SQL, as shown in the
+[citation network guide](https://algeon.dev/guides/datasets/citation-network).
+Registrations last until the process stops.
 
 ### Run
 
@@ -204,18 +189,10 @@ starts.
 
 The example consumes the normal Flight SQL server environment plus
 `EXAMPLE_REST_BIND`. `EXAMPLE_REST_BIND` is the bind address for this example's
-own axum HTTP API (`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the
-Iceberg REST catalog endpoint; the Iceberg REST catalog endpoint is
-`ALGEON_ICEBERG_REST_URI`.
+own axum HTTP API (`/healthz`, `/api/pipelines`, `/api/gpu`).
 
 The server has one bounded native admission contract; the example uses that
-shared query-service ledger. The manual run command assumes the local Iceberg
-REST/RustFS stack is already running and the `citation_network` tables have
-been loaded. A quick preflight:
-
-```bash
-curl --fail http://localhost:8181/v1/config
-```
+shared query-service ledger.
 
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
@@ -223,21 +200,6 @@ ALGEON_SERVER_BIND=127.0.0.1:50051 \
 ALGEON_SERVER_CUGRAPH_ENABLED=true \
 DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
 DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
-ALGEON_ICEBERG_CATALOG_KIND=rest \
-ALGEON_ICEBERG_CATALOG_NAME=lake \
-ALGEON_ICEBERG_NAMESPACE=citation_network \
-ALGEON_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
-ALGEON_ICEBERG_REST_URI=http://localhost:8181 \
-ALGEON_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
-ALGEON_ICEBERG_S3_REGION=us-east-1 \
-ALGEON_ICEBERG_S3_PATH_STYLE=true \
-ALGEON_ICEBERG_S3_ACCESS_KEY_ID=algeonadmin \
-ALGEON_ICEBERG_S3_SECRET_ACCESS_KEY=algeonadmin \
-ALGEON_SERVER_WORKSPACE_CATALOG=datafusion \
-ALGEON_SERVER_WORKSPACE_SCHEMA=public \
-ALGEON_SERVER_WORKSPACE_BACKING_CATALOG=lake \
-ALGEON_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
-ALGEON_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
 flock /tmp/cudf-gpu.lock \
 cargo run -p examples --all-features --bin embedded_backend
 ```
@@ -245,11 +207,6 @@ cargo run -p examples --all-features --bin embedded_backend
 `embedded_backend` is the crate's `default-run` binary, so a bare
 `cargo run -p examples --all-features` with the same environment works
 too.
-
-Use the exact Iceberg keys shown above. `ALGEON_ICEBERG_CATALOG=rest` is not a
-server config key, and `ALGEON_ICEBERG_REST_WAREHOUSE` is not read by the REST
-catalog path. If startup reports `AWS_REGION is required for Glue Iceberg`, the
-server did not see `ALGEON_ICEBERG_CATALOG_KIND=rest`.
 
 > **cuVS note.** Building with `--features cuvs` registers and executes the
 > `cuvs_*` UDTFs inside the backend-managed query memory domain.
@@ -307,20 +264,6 @@ printf '%s\n' \
   "SELECT vertex, value FROM cugraph_pagerank(edges => (SELECT src, dst, weight FROM citation_edges)) ORDER BY value DESC LIMIT 5" |
   arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output table
 ```
-
-### E2E
-
-The black-box E2E suite starts the local stack, loads the citation network with
-`--load-mode add-files`, starts this example, and checks REST, Flight SQL,
-shared ledger backpressure, and graceful shutdown:
-
-```bash
-crates/examples/scripts/e2e.sh
-```
-
-- `--skip-stack` when the REST catalog and RustFS are already running.
-- `--reload` to drop and re-add the Iceberg tables before the run.
-- `--gpu-parity` flag is reserved but not implemented yet.
 
 ## `otlp_metrics_exporter`: backend metrics over OTLP
 

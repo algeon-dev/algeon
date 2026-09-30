@@ -33,16 +33,15 @@ use owner::RuntimeObservationDeliveryGuard;
 pub use owner::RuntimeObservationOwner;
 #[cfg(test)]
 use owner::RuntimeObservationOwnerLifecycleState;
-#[doc(hidden)]
-pub use owner::in_runtime_observation_delivery;
-#[doc(hidden)]
-pub use session::QueryCleanupSealDelivery;
+pub(crate) use owner::in_runtime_observation_delivery;
+pub use session::RuntimeObservationSession;
 use session::{
     AttemptCleanupFailureRecorder, AttemptReportSealProvider, DeferredRuntimeObservationSeal,
     RuntimeObservationSealObserver, RuntimeObservationSessionInner, RuntimeObservationTerminalOutcomeResolver,
 };
-pub use session::{AttemptReportProvider, RuntimeObservationSession};
-pub use state::{BudgetWindow, BudgetWindowPeaks};
+pub(crate) use session::{AttemptReportProvider, QueryCleanupSealDelivery};
+pub(crate) use state::BudgetWindow;
+pub use state::BudgetWindowPeaks;
 use state::{PlanExecutionMetrics, RuntimeObservationRecorderState};
 
 /// Query-local recorder configuration.
@@ -74,7 +73,7 @@ impl RuntimeObservationConfig {
     }
 
     /// Returns whether payload construction and recording are enabled.
-    pub const fn is_enabled(self) -> bool {
+    pub(crate) const fn is_enabled(self) -> bool {
         self.enabled
     }
 
@@ -93,9 +92,9 @@ impl Default for RuntimeObservationConfig {
 /// Optional event identity attached outside the payload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeEventContext {
-    pub plan_execution_id: Option<PlanExecutionId>,
-    pub span_id: Option<RuntimeSpanId>,
-    pub parent_span_id: Option<RuntimeSpanId>,
+    pub(crate) plan_execution_id: Option<PlanExecutionId>,
+    pub(crate) span_id: Option<RuntimeSpanId>,
+    pub(crate) parent_span_id: Option<RuntimeSpanId>,
 }
 
 impl RuntimeEventContext {
@@ -134,25 +133,17 @@ pub struct SealedRuntimeObservationSnapshot {
 }
 
 #[derive(Debug, Clone)]
-#[doc(hidden)]
-pub struct RuntimeObservationSnapshotData {
-    #[doc(hidden)]
-    pub manifest: RuntimeObservationManifest,
-    #[doc(hidden)]
-    pub topology: Vec<RetainedTopologyRecord>,
-    #[doc(hidden)]
-    pub events: Vec<RuntimeTimelineEvent>,
-    #[doc(hidden)]
-    pub footer: RuntimeObservationFooter,
+pub(crate) struct RuntimeObservationSnapshotData {
+    pub(crate) manifest: RuntimeObservationManifest,
+    pub(crate) topology: Vec<RetainedTopologyRecord>,
+    pub(crate) events: Vec<RuntimeTimelineEvent>,
+    pub(crate) footer: RuntimeObservationFooter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct RetainedTopologyRecord {
-    #[doc(hidden)]
-    pub sequence: ObservationSequence,
-    #[doc(hidden)]
-    pub record: RuntimeTopologyRecord,
+pub(crate) struct RetainedTopologyRecord {
+    pub(crate) sequence: ObservationSequence,
+    pub(crate) record: RuntimeTopologyRecord,
 }
 
 macro_rules! snapshot_accessors {
@@ -195,8 +186,7 @@ snapshot_accessors!(LiveRuntimeObservationSnapshot);
 snapshot_accessors!(SealedRuntimeObservationSnapshot);
 
 impl SealedRuntimeObservationSnapshot {
-    #[doc(hidden)]
-    pub fn data(&self) -> &RuntimeObservationSnapshotData {
+    pub(crate) fn data(&self) -> &RuntimeObservationSnapshotData {
         &self.data
     }
 
@@ -206,7 +196,8 @@ impl SealedRuntimeObservationSnapshot {
     /// independently-created recorder sessions may share one external query
     /// identity. Ownership boundaries use this identity check to make repeated
     /// delivery idempotent without silently accepting another session.
-    pub fn is_same_snapshot(&self, other: &Self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_same_snapshot(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.data, &other.data)
     }
 }

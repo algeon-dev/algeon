@@ -21,7 +21,7 @@ use crate::{
         },
         source::{LocalParquetSource, LocalParquetSourceKind, SourceChunk, SourceReadMode, ZERO_COLUMN_COUNT_COLUMN},
     },
-    runtime::{BoundaryKind, BudgetedExecutionOutcome, ExecutionBudgetToken, QueryStageKind, Runtime},
+    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, Runtime},
 };
 
 pub(super) enum SourceChunkReadInput<'a> {
@@ -492,14 +492,7 @@ pub(super) fn dataframe_from_parquet_table_options(
 ) -> Result<DataFrame> {
     let result = parquet::read_parquet_table(table_options).map_err(|error| error.reanchor(operation))?;
     let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
-    let frame = DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))?;
-    frame.record_boundary_observation_for_query_stage(
-        BoundaryKind::HostToDevice,
-        QueryStageKind::SourceRead,
-        false,
-        operation,
-    )?;
-    Ok(frame)
+    DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))
 }
 
 /// Read/decompression scratch budget for one source-chunk read.
@@ -542,15 +535,6 @@ pub(super) fn read_parquet_source_chunk_with_budget_input(
         .frame()
         .device_allocated_size_bytes()
         .map_err(|error| error.reanchor(operation))
-        .map_err(|error| token.annotate_error(error, operation))?;
-    output
-        .frame()
-        .record_boundary_observation_for_query_stage(
-            BoundaryKind::HostToDevice,
-            QueryStageKind::SourceRead,
-            false,
-            operation,
-        )
         .map_err(|error| token.annotate_error(error, operation))?;
     let preflight = DataFrame::parquet_source_chunk_exact_preflight(source, chunk, mode)?;
     let mut report = token

@@ -44,12 +44,20 @@ def load_policy(path: Path) -> dict[str, Any]:
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise PolicyError(f"cannot load CPU packaging policy {path}: {error}") from error
 
-    if set(policy) != {"clean_environment", "cpu"}:
-        raise PolicyError("CPU packaging policy top-level keys must be exactly clean_environment and cpu")
+    if set(policy) != {"clean_environment", "cpu", "server"}:
+        raise PolicyError("CPU packaging policy top-level keys must be exactly clean_environment, cpu, and server")
     clean = policy.get("clean_environment")
     cpu = policy.get("cpu")
-    if not isinstance(clean, dict) or not isinstance(cpu, dict):
-        raise PolicyError("policy requires clean_environment and cpu")
+    server = policy.get("server")
+    if not isinstance(clean, dict) or not isinstance(cpu, dict) or not isinstance(server, dict):
+        raise PolicyError("policy requires clean_environment, cpu, and server tables")
+    if set(server) != {"features"}:
+        raise PolicyError("server must contain exactly features")
+    shipped = server["features"]
+    if not isinstance(shipped, list) or not all(isinstance(feature, str) for feature in shipped):
+        raise PolicyError("server.features must be a string list")
+    if shipped != canonical_features(",".join(shipped)):
+        raise PolicyError("server.features must be non-empty, sorted, and free of duplicates")
     for list_name in ("pass_through", "explicit_inputs"):
         value = clean.get(list_name)
         if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
@@ -317,6 +325,10 @@ def command_normalize_features(args: argparse.Namespace) -> None:
     print(",".join(canonical_features(args.features)))
 
 
+def command_shipped_features(args: argparse.Namespace) -> None:
+    print(",".join(load_policy(args.policy)["server"]["features"]))
+
+
 def command_build(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
@@ -507,6 +519,9 @@ def parser() -> argparse.ArgumentParser:
     features = subparsers.add_parser("normalize-features")
     features.add_argument("--features", required=True)
     features.set_defaults(function=command_normalize_features)
+
+    shipped_features = subparsers.add_parser("shipped-features")
+    shipped_features.set_defaults(function=command_shipped_features)
 
     build = subparsers.add_parser("build")
     build.add_argument("--features", required=True)

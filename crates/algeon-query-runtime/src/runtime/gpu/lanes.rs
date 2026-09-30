@@ -21,16 +21,14 @@ use query_planning::error::{QueryError, QueryErrorCode, Result};
 
 /// Per-device array of `A_d` attempt lanes.
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct DeviceLanePermits {
+pub(crate) struct DeviceLanePermits {
     device_ordinal: usize,
     lanes: Box<[AtomicBool]>,
 }
 
 /// One held attempt lane. Dropping the permit returns the lane to the array.
 #[derive(Debug, Clone)]
-#[doc(hidden)]
-pub struct DeviceLanePermit {
+pub(crate) struct DeviceLanePermit {
     lanes: Arc<DeviceLanePermits>,
     index: usize,
 }
@@ -39,24 +37,21 @@ pub struct DeviceLanePermit {
 /// and lane. Non-blocking by design: every field is already known once the
 /// admission transaction holds the ledger grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct DeviceWorkerScope {
+pub(crate) struct DeviceWorkerScope {
     device_ordinal: usize,
     pool_id: u64,
     lane_index: usize,
 }
 
 impl DeviceLanePermits {
-    #[doc(hidden)]
-    pub fn new(device_ordinal: usize, lane_count: usize) -> Self {
+    pub(crate) fn new(device_ordinal: usize, lane_count: usize) -> Self {
         Self { device_ordinal, lanes: (0..lane_count.max(1)).map(|_| AtomicBool::new(false)).collect() }
     }
 
     /// Takes the first free lane. Returns a structured error when every lane
     /// is held; the ledger's `active_attempts <= A_d` invariant makes that
     /// unreachable for attempts admitted through the controller.
-    #[doc(hidden)]
-    pub fn acquire(self: &Arc<Self>) -> Result<DeviceLanePermit> {
+    pub(crate) fn acquire(self: &Arc<Self>) -> Result<DeviceLanePermit> {
         for (index, held) in self.lanes.iter().enumerate() {
             if held.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 return Ok(DeviceLanePermit { lanes: Arc::clone(self), index });
@@ -73,8 +68,7 @@ impl DeviceLanePermits {
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn held_count(&self) -> usize {
+    pub(crate) fn held_count(&self) -> usize {
         self.lanes.iter().filter(|held| held.load(Ordering::Acquire)).count()
     }
 
@@ -86,8 +80,7 @@ impl DeviceLanePermits {
 }
 
 impl DeviceLanePermit {
-    #[doc(hidden)]
-    pub fn index(&self) -> usize {
+    pub(crate) fn index(&self) -> usize {
         self.index
     }
 }
@@ -99,23 +92,19 @@ impl Drop for DeviceLanePermit {
 }
 
 impl DeviceWorkerScope {
-    #[doc(hidden)]
-    pub fn new(device_ordinal: usize, pool_id: u64, lane_index: usize) -> Self {
+    pub(crate) fn new(device_ordinal: usize, pool_id: u64, lane_index: usize) -> Self {
         Self { device_ordinal, pool_id, lane_index }
     }
 
-    #[doc(hidden)]
-    pub fn device_ordinal(&self) -> usize {
+    pub(crate) fn device_ordinal(&self) -> usize {
         self.device_ordinal
     }
 
-    #[doc(hidden)]
-    pub fn pool_id(&self) -> u64 {
+    pub(crate) fn pool_id(&self) -> u64 {
         self.pool_id
     }
 
-    #[doc(hidden)]
-    pub fn lane_index(&self) -> usize {
+    pub(crate) fn lane_index(&self) -> usize {
         self.lane_index
     }
 }

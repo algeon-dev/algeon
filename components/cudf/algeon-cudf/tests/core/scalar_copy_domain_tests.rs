@@ -7,22 +7,22 @@
 
 use std::collections::HashMap;
 
+use arrow::array::ArrayRef;
 use cudf::{
     Runtime, Series, TimestampResolution,
     core::{DataType, TypeId},
-    frame::dataframe::JsonReadOptions,
     testing::prelude::*,
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, PhysicalValidity, PreparedExportProfile, SemanticColumn, TypeId as InteropTypeId,
 };
-use tempfile::TempDir;
 
 use crate::common::{
     decimal32_raw_scalar, decimal128_raw_scalar, dependency_wait_call_count_for_stream, duration_raw_scalar,
-    last_exec_mr_value, last_exec_stream_value, lock_event_observation, nullable_series, reset_dependency_observation,
-    reset_exec_observation, run_named_cases, sample_runtime as common_sample_runtime, scalar, series as common_series,
-    string_scalar, timestamp_raw_scalar, with_test_runtime,
+    int64_array, int64_list_array, last_exec_mr_value, last_exec_stream_value, lock_event_observation,
+    nested_dataframe, nullable_series, reset_dependency_observation, reset_exec_observation, run_named_cases,
+    sample_runtime as common_sample_runtime, scalar, series as common_series, string_scalar, struct_array,
+    timestamp_raw_scalar, utf8_array, with_test_runtime,
 };
 
 fn sample_runtime() -> Runtime {
@@ -236,14 +236,8 @@ fn assert_series_host_export_equivalent(expected: &Series, actual: &Series) {
     );
 }
 
-fn read_json_series(rt: &Runtime, filename: &str, rows: &str, column_name: &str) -> Series {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join(filename);
-    std::fs::write(&path, rows).unwrap();
-    let frame =
-        cudf::DataFrame::read_json_with_options(JsonReadOptions::builder().filepath(&path).with_runtime(rt).build())
-            .unwrap();
-    frame.series(column_name).unwrap()
+fn nested_series(rt: &Runtime, name: &str, array: ArrayRef) -> Series {
+    nested_dataframe(rt, vec![(name, array)]).series(name).unwrap()
 }
 
 // ── Timestamp / Duration ────────────────────────────────────────────
@@ -477,51 +471,31 @@ fn scalar_copy_dataframe_round_trip() {
 
 fn copy_into_domain_list_scalar() {
     let rt = sample_runtime();
-    let list_series = read_json_series(
-        &rt,
-        "scalar_copy_list.jsonl",
-        "{\"nested\":[1,2]}
-{\"nested\":[3]}
-",
-        "nested",
-    );
+    let list_series = nested_series(&rt, "nested", int64_list_array(&[vec![1, 2], vec![3]]));
 
     // libcudf min() on list columns returns the lexicographically smallest element.
     let scalar = list_series.min().unwrap();
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
-    let expected = read_json_series(
-        &rt,
-        "scalar_copy_list_expected.jsonl",
-        "{\"nested\":[1,2]}
-{\"nested\":[1,2]}
-",
-        "nested",
-    );
+    let expected = nested_series(&rt, "nested", int64_list_array(&[vec![1, 2], vec![1, 2]]));
 
     assert_series_host_export_equivalent(&expected, &result);
 }
 
 fn copy_into_domain_struct_scalar() {
     let rt = sample_runtime();
-    let struct_series = read_json_series(
+    let struct_series = nested_series(
         &rt,
-        "scalar_copy_struct.jsonl",
-        "{\"point\":{\"id\":1,\"label\":\"one\"}}
-{\"point\":{\"id\":2,\"label\":\"two\"}}
-",
         "point",
+        struct_array(vec![("id", int64_array(&[1, 2])), ("label", utf8_array(&["one", "two"]))]),
     );
 
     // libcudf min() on struct columns compares fields in order (id first, then label).
     let scalar = struct_series.min().unwrap();
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
-    let expected = read_json_series(
+    let expected = nested_series(
         &rt,
-        "scalar_copy_struct_expected.jsonl",
-        "{\"point\":{\"id\":1,\"label\":\"one\"}}
-{\"point\":{\"id\":1,\"label\":\"one\"}}
-",
         "point",
+        struct_array(vec![("id", int64_array(&[1, 1])), ("label", utf8_array(&["one", "one"]))]),
     );
 
     assert_series_host_export_equivalent(&expected, &result);

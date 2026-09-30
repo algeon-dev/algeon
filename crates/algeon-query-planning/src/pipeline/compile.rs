@@ -927,7 +927,6 @@ fn input_role_label(role: InputRole) -> &'static str {
 fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
     match kind {
         SubgraphInvariantKind::BuildBeforeProbe { .. } => "build_before_probe",
-        SubgraphInvariantKind::ClosedJoinSubtree { .. } => "closed_join_subtree",
         SubgraphInvariantKind::TopologicalBuildProbeSchedule => "topological_build_probe_schedule",
         SubgraphInvariantKind::SharedResidentSubplan => "shared_resident_subplan",
         SubgraphInvariantKind::AggregateDerivesFromSharedProducer => "aggregate_derives_from_shared_producer",
@@ -936,7 +935,6 @@ fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
         SubgraphInvariantKind::ProjectionTransparentResidency => "projection_transparent_residency",
         SubgraphInvariantKind::ResidentUnaryChainPreservesResidency => "resident_unary_chain_preserves_residency",
         SubgraphInvariantKind::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
-        SubgraphInvariantKind::LimitBoundedProjection => "limit_bounded_projection",
         SubgraphInvariantKind::StatisticalJoinFinalSortExactness => "statistical_join_final_sort_exactness",
         SubgraphInvariantKind::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
     }

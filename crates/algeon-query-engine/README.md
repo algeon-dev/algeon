@@ -10,8 +10,8 @@ the established planning and runtime module paths, and composes one planning
 proof with one runtime grant for native execution. It does not define another
 proof, ledger, grant, observation store, or error taxonomy.
 
-DataFusion-specific recognition, lowering, table-format integration, and
-`ExecutionPlan` wrappers belong in the DataFusion adapter crate.
+DataFusion-specific recognition, lowering, and `ExecutionPlan` wrappers belong
+in the DataFusion adapter crate.
 
 ## Main areas
 

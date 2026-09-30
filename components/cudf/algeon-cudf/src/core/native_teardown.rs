@@ -38,17 +38,3 @@ pub(crate) fn drop_device_owned_handle<T>(
         &format_args!("native teardown failed with status {status}"),
     );
 }
-
-/// Consume a device-owned handle whose owner device cannot be proven.
-///
-/// Native teardown is deliberately not called: selecting an ambient or
-/// guessed device could destroy the allocation in the wrong CUDA context.
-pub(crate) fn quarantine_unknown_device_owned_handle<T>(raw: *mut T, operation: &'static str) {
-    if raw.is_null() {
-        return;
-    }
-    runtime::device_health::quarantine_unknown_device_resource(
-        operation,
-        &"device-owned handle has no trustworthy owner-device provenance",
-    );
-}

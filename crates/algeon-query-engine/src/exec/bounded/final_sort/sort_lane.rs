@@ -22,9 +22,8 @@ use std::sync::Arc;
 
 use super::{
     BoundedExecutionAttempt, CommittedPartial, ExecutionBudgetRequest, GpuDataFrame, LimitSpec, NodeId,
-    ResidentGpuFrame, Result, SortNode, cudf_query_error_with_budget_details, estimate_rows_bytes,
-    execute_limit_spec_with_token, final_sort_runtime_facts, finalize_final_sort_output_reservation,
-    reserve_final_sort_output_bytes, sort_topk_candidate_with_budget,
+    ResidentGpuFrame, Result, SortNode, cudf_query_error_with_budget_details, execute_limit_spec_with_token,
+    final_sort_runtime_facts, observe_final_sort_output, sort_topk_candidate_with_budget,
 };
 use crate::{
     error::QueryError,
@@ -52,7 +51,6 @@ pub(super) struct SortLaneParams {
 pub(super) struct SortLaneCandidate {
     pub(super) input: ResidentGpuFrame,
     pub(super) slice: Option<(usize, usize)>,
-    pub(super) bytes_per_row: u64,
     pub(super) boundary: &'static str,
 }
 
@@ -86,7 +84,7 @@ pub(super) fn split_sort_candidate_ranges(input_rows: usize, rows_per_chunk: usi
 
 /// Sorts and truncates one owned candidate to `keep_rows` on this lane.
 ///
-/// Mirrors the serial per-chunk candidate exactly: same reservation boundary,
+/// Mirrors the serial per-chunk candidate exactly: same memory boundary,
 /// same budget token boundary, same comparator, same `fetch(keep_rows)`
 /// truncation with the offset left for the final limit. An empty input passes
 /// through untouched, matching the serial stream path.
@@ -104,14 +102,6 @@ pub(super) fn execute_sort_lane_candidate(
     if input_rows == 0 {
         return Ok(candidate.input);
     }
-    let output_rows = params.keep_rows.min(input_rows);
-    let output_reservation = reserve_final_sort_output_bytes(
-        execution,
-        params.node_id,
-        estimate_rows_bytes(candidate.bytes_per_row, output_rows),
-        params.attempt,
-        params.max_attempts,
-    )?;
     let work_token = lane_candidate_budget_token(execution, params, candidate.boundary)?;
     let frame = lane_candidate_frame(&candidate, &work_token)?;
     let sorted = match sort_topk_candidate_with_budget(
@@ -153,14 +143,7 @@ pub(super) fn execute_sort_lane_candidate(
             ));
         },
     };
-    finalize_final_sort_output_reservation(
-        execution,
-        params.node_id,
-        frame,
-        output_reservation,
-        params.attempt,
-        params.max_attempts,
-    )
+    observe_final_sort_output(execution, params.node_id, frame, params.attempt, params.max_attempts)
 }
 
 /// Ready-work hint for a frame stream: buffered frames are exact for eager

@@ -21,7 +21,7 @@ use crate::{
         project_backend_duration_histogram,
     },
     observability::{AttemptDisposition, RuntimeTerminalOutcome, SealedAttemptProjection},
-    runtime::gpu::{DeviceAdmissionHealth, DeviceMemoryFailureReport, DeviceTelemetryStatus, LedgerTransition},
+    runtime::gpu::{DeviceAdmissionHealth, DeviceTelemetryStatus, LedgerTransition},
 };
 
 const OPERATION: &str = "query_engine.backend_metrics";
@@ -161,11 +161,11 @@ impl BackendAttemptDuration {
 /// missing duration remains absent from its histogram rather than becoming a
 /// fabricated zero-duration sample.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BackendAttemptDurations {
-    pub total_ns: Option<u64>,
-    pub planning_ns: Option<u64>,
-    pub queue_wait_ns: Option<u64>,
-    pub physical_execution_ns: Option<u64>,
+pub(crate) struct BackendAttemptDurations {
+    pub(crate) total_ns: Option<u64>,
+    pub(crate) planning_ns: Option<u64>,
+    pub(crate) queue_wait_ns: Option<u64>,
+    pub(crate) physical_execution_ns: Option<u64>,
 }
 
 impl BackendAttemptDurations {
@@ -213,26 +213,13 @@ impl From<DeviceTelemetryStatus> for BackendTelemetryAvailability {
 /// provide the generation that owns the sampled report, so stale generations
 /// cannot be double-counted into a newer backend generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BackendMemoryFailureTelemetry {
-    pub device_ordinal: usize,
-    pub source_generation: u64,
-    pub allocation_failure_count: u64,
-    pub allocation_failure_bytes: u64,
-    pub largest_allocation_failure_bytes: u64,
-}
-
-impl BackendMemoryFailureTelemetry {
-    /// Converts one callback report after the owner has resolved its
-    /// installation generation.
-    pub fn from_report(source_generation: u64, report: &DeviceMemoryFailureReport) -> Self {
-        Self {
-            device_ordinal: report.device_ordinal,
-            source_generation,
-            allocation_failure_count: report.allocation_failure_count,
-            allocation_failure_bytes: report.total_failed_allocation_bytes,
-            largest_allocation_failure_bytes: report.largest_failed_allocation_bytes,
-        }
-    }
+#[cfg(test)]
+pub(crate) struct BackendMemoryFailureTelemetry {
+    pub(crate) device_ordinal: usize,
+    pub(crate) source_generation: u64,
+    pub(crate) allocation_failure_count: u64,
+    pub(crate) allocation_failure_bytes: u64,
+    pub(crate) largest_allocation_failure_bytes: u64,
 }
 
 /// Explicit telemetry refresh input for one configured device.
@@ -241,13 +228,14 @@ impl BackendMemoryFailureTelemetry {
 /// first refresh, snapshots expose no refresh record rather than zero-filling
 /// a sample time or age.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BackendTelemetryRefresh {
-    pub device_ordinal: usize,
-    pub source: BackendTelemetrySource,
-    pub sampled_at_unix_ms: u64,
-    pub age_ms: u64,
-    pub availability: BackendTelemetryAvailability,
-    pub memory_failures: Option<BackendMemoryFailureTelemetry>,
+#[cfg(test)]
+pub(crate) struct BackendTelemetryRefresh {
+    pub(crate) device_ordinal: usize,
+    pub(crate) source: BackendTelemetrySource,
+    pub(crate) sampled_at_unix_ms: u64,
+    pub(crate) age_ms: u64,
+    pub(crate) availability: BackendTelemetryAvailability,
+    pub(crate) memory_failures: Option<BackendMemoryFailureTelemetry>,
 }
 
 /// Closed admission health projected from the owning ledger.
@@ -263,7 +251,7 @@ pub enum BackendAdmissionHealth {
 pub struct BackendHistogramSnapshot {
     pub bucket_counts: [u64; BACKEND_ATTEMPT_DURATION_BUCKET_COUNT],
     pub count: u64,
-    pub sum: u64,
+    pub(crate) sum: u64,
 }
 
 impl BackendHistogramSnapshot {
@@ -389,7 +377,8 @@ where
 
 impl BackendMetricsSnapshot {
     /// Returns whether two snapshots cannot be combined as one coherent read.
-    pub const fn is_torn_against(&self, other: &Self) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn is_torn_against(&self, other: &Self) -> bool {
         self.backend_generation != other.backend_generation || self.generation != other.generation
     }
 
@@ -669,7 +658,7 @@ fn descriptor_attributes(
 
 /// Converts the fixed backend cumulative-by-upper-bound histogram snapshot
 /// into the descriptor-declared, OTLP-compatible disjoint representation.
-pub fn project_backend_histogram(
+pub(crate) fn project_backend_histogram(
     descriptor: &BackendMetricDescriptor,
     snapshot: BackendHistogramSnapshot,
 ) -> std::result::Result<BackendHistogramProjection, BackendMetricProjectionError> {
@@ -789,8 +778,11 @@ struct DeviceMetricsState {
     ledger_sequence: u64,
     admission: BackendAdmissionMetricsSnapshot,
     telemetry: BackendTelemetryMetricsSnapshot,
+    #[cfg(test)]
     memory_failure_source_generation: u64,
+    #[cfg(test)]
     observed_failure_count: u64,
+    #[cfg(test)]
     observed_failure_bytes: u64,
 }
 
@@ -801,8 +793,11 @@ impl DeviceMetricsState {
         ledger_sequence: 0,
         admission: BackendAdmissionMetricsSnapshot::EMPTY,
         telemetry: BackendTelemetryMetricsSnapshot::EMPTY,
+        #[cfg(test)]
         memory_failure_source_generation: 0,
+        #[cfg(test)]
         observed_failure_count: 0,
+        #[cfg(test)]
         observed_failure_bytes: 0,
     };
 
@@ -829,6 +824,7 @@ impl DeviceMetricsState {
         };
     }
 
+    #[cfg(test)]
     fn record_telemetry_refresh(&mut self, refresh: BackendTelemetryRefresh) -> BackendTelemetryRefreshSnapshot {
         let metadata = BackendTelemetryRefreshSnapshot {
             source: refresh.source,
@@ -888,16 +884,14 @@ impl BackendMetricsState {
 /// methods are crate-private so only the owning ledger observer, sealed-report
 /// sink, and explicit telemetry control path can feed it.
 #[derive(Clone, Debug)]
-#[doc(hidden)]
-pub struct BackendMetricsStore {
+pub(crate) struct BackendMetricsStore {
     backend_generation: u64,
     state: Arc<Mutex<BackendMetricsState>>,
 }
 
 impl BackendMetricsStore {
     /// Creates one fixed-slot store for a nonzero backend resource generation.
-    #[doc(hidden)]
-    pub fn new(backend_generation: u64, device_ordinals: &[usize]) -> Result<Self> {
+    pub(crate) fn new(backend_generation: u64, device_ordinals: &[usize]) -> Result<Self> {
         if backend_generation == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::Internal,
@@ -941,8 +935,7 @@ impl BackendMetricsStore {
 
     /// Records one exact in-lock ledger transition. Unknown ordinals are not
     /// part of this backend generation and are ignored defensively.
-    #[doc(hidden)]
-    pub fn record_ledger_transition(&self, transition: &LedgerTransition) {
+    pub(crate) fn record_ledger_transition(&self, transition: &LedgerTransition) {
         let device_ordinal = transition.snapshot.device_ordinal;
         let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         let Some(device) = state.devices.get_mut(device_ordinal) else {
@@ -959,16 +952,22 @@ impl BackendMetricsStore {
     ///
     /// The caller owns exactly-once delivery through the attempt completion
     /// sink; this method intentionally does not retain an attempt identity.
-    #[doc(hidden)]
-    pub fn record_sealed_attempt(&self, projection: &SealedAttemptProjection, durations: BackendAttemptDurations) {
+    pub(crate) fn record_sealed_attempt(
+        &self,
+        projection: &SealedAttemptProjection,
+        durations: BackendAttemptDurations,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         state.attempts.record(projection, durations);
         state.advance_generation();
     }
 
     /// Records one explicit, control-plane telemetry refresh.
-    #[doc(hidden)]
-    pub fn refresh_telemetry(&self, refresh: BackendTelemetryRefresh) -> Result<BackendTelemetryRefreshSnapshot> {
+    #[cfg(test)]
+    pub(crate) fn refresh_telemetry(
+        &self,
+        refresh: BackendTelemetryRefresh,
+    ) -> Result<BackendTelemetryRefreshSnapshot> {
         if refresh.memory_failures.is_some_and(|memory_failures| memory_failures.source_generation == 0) {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -1003,8 +1002,7 @@ impl BackendMetricsStore {
     }
 
     /// Returns one coherent pull snapshot without exposing the mutable store.
-    #[doc(hidden)]
-    pub fn snapshot(&self) -> BackendMetricsSnapshot {
+    pub(crate) fn snapshot(&self) -> BackendMetricsSnapshot {
         let state = self.state.lock().unwrap_or_else(sync::PoisonError::into_inner);
         BackendMetricsSnapshot {
             backend_generation: self.backend_generation,
@@ -1018,8 +1016,7 @@ impl BackendMetricsStore {
     /// store generation. This is useful to detect a torn multi-read without
     /// exposing a second mutable observation surface.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub fn is_snapshot_current(&self, snapshot: &BackendMetricsSnapshot) -> bool {
+    pub(crate) fn is_snapshot_current(&self, snapshot: &BackendMetricsSnapshot) -> bool {
         if snapshot.backend_generation != self.backend_generation {
             return false;
         }
@@ -1028,6 +1025,7 @@ impl BackendMetricsStore {
     }
 }
 
+#[cfg(test)]
 fn unknown_telemetry_device_error(device_ordinal: usize) -> QueryError {
     QueryError::new(
         QueryErrorCode::InvalidPlan,

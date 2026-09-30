@@ -6,20 +6,11 @@ use std::{
 use query_planning::error::QueryErrorCode;
 
 use crate::runtime::{
-    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
-    GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-    QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
+    GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
+    GpuMemoryOwnership, QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
-
-fn non_gds_deployment() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    )
-}
 
 fn service_claim_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -79,13 +70,8 @@ fn runtime_test_service(
     queue_bounds: QueueBounds,
     device_profiles: Vec<GpuBackendDeviceConfig>,
 ) -> QueryService {
-    QueryService::new_with_device_profiles_and_deployment_for_test(
-        config,
-        queue_bounds,
-        device_profiles,
-        non_gds_deployment(),
-    )
-    .expect("explicit multi-device runtime test profiles must install")
+    QueryService::new_with_device_profiles_for_test(config, queue_bounds, device_profiles)
+        .expect("explicit multi-device runtime test profiles must install")
 }
 
 #[test]
@@ -313,13 +299,8 @@ fn direct_test_services_do_not_retain_backend_ownership() {
     let queue_bounds = QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) };
     let profiles = test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES);
     let first_service = runtime_test_service(config.clone(), queue_bounds.clone(), profiles.clone());
-    let second_service = QueryService::new_with_device_profiles_and_deployment_for_test(
-        config,
-        queue_bounds,
-        profiles,
-        non_gds_deployment(),
-    )
-    .expect("test-only services borrow construction authority without becoming backend owners");
+    let second_service = QueryService::new_with_device_profiles_for_test(config, queue_bounds, profiles)
+        .expect("test-only services borrow construction authority without becoming backend owners");
 
     drop(first_service);
     drop(second_service);

@@ -16,17 +16,12 @@ fn prepare_from_column_view_with_readiness<'a>(
     default_device: i32,
     readiness: ProducerReadiness<'a>,
 ) -> Result<PreparedColumnExport<'a>, InteropError> {
-    let observation = column_view_boundary_observation(BoundaryKind::InteropLease, view, operation)?;
-    let observer = view.execution_domain().boundary_observer();
     let projection = prepared_column_projection_from_view(view, operation, default_device, 0, 0)?;
     PreparedColumnExport::try_new(
         projection.column.id(),
         projection.semantic_columns,
         projection.bindings,
-        PreparedAccess::Device {
-            readiness,
-            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
-        },
+        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
     )
     .map_err(|error| error.with_context("operation", operation))
 }
@@ -55,8 +50,6 @@ fn prepare_from_owned_column_root_with_readiness(
     let retained_column = Arc::new(column);
     let view =
         retained_column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let observation = column_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
-    let observer = retained_column.execution_domain().boundary_observer();
     let default_device = retained_column.execution_domain().device_id().ordinal() as i32;
     let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
     PreparedColumnExport::try_new(
@@ -65,7 +58,7 @@ fn prepare_from_owned_column_root_with_readiness(
         to_static_bindings(operation, projection.bindings)?,
         PreparedAccess::Device {
             readiness: to_static_readiness(operation, readiness)?,
-            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
+            backend: runtime_lease::shared_cuda_lease_backend(),
         },
     )
     .map(|export| {
@@ -84,18 +77,13 @@ pub(super) fn prepare_from_owned_column<'a>(
     operation: &'static str,
 ) -> Result<PreparedColumnExport<'a>, InteropError> {
     let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let observation = column_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
-    let observer = column.execution_domain().boundary_observer();
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
     let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
     PreparedColumnExport::try_new(
         projection.column.id(),
         projection.semantic_columns,
         projection.bindings,
-        PreparedAccess::Device {
-            readiness,
-            backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
-        },
+        PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
     )
     .map_err(|error| error.with_context("operation", operation))
 }
@@ -238,18 +226,13 @@ impl Column {
     ) -> Result<PreparedColumnExport<'a>, InteropError> {
         let operation = "interop::Column::try_prepare_device_column_export_with_event";
         let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let observation = column_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
-        let observer = self.execution_domain().boundary_observer();
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
         let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
         PreparedColumnExport::try_new(
             projection.column.id(),
             projection.semantic_columns,
             projection.bindings,
-            PreparedAccess::Device {
-                readiness,
-                backend: runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer),
-            },
+            PreparedAccess::Device { readiness, backend: runtime_lease::shared_cuda_lease_backend() },
         )
         .map_err(|error| error.with_context("operation", operation))
     }

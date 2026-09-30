@@ -108,9 +108,8 @@ use crate::{
     metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
     mode::StatisticalAggregateExecutionMode,
     native_error::{
-        cudf_budget_exhaustion, cudf_query_error, cudf_query_error_with_budget_details,
-        cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details,
-        cudf_unsupported_type_error,
+        cudf_query_error, cudf_query_error_with_budget_details, cudf_query_error_without_source,
+        cudf_query_error_without_source_with_budget_details, cudf_unsupported_type_error,
     },
     observability::{
         PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationRecordClass,
@@ -123,7 +122,7 @@ use crate::{
     prepared::*,
     rapids_backend::rapids_analysis_context,
     runtime::{
-        ExecutionContext, MemoryControlPolicy, ReservationKind, RetryFacts,
+        ExecutionContext, MemoryControlPolicy, RetryFacts,
         resident::{
             GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
         },

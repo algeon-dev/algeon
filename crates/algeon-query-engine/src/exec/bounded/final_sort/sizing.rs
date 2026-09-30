@@ -1,4 +1,4 @@
-use super::{ExecutionBudgetReport, LimitSpec, QueryError, QueryErrorCode, Result, limit_slice};
+use super::{ExecutionBudgetReport, QueryError, QueryErrorCode, Result};
 
 pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Result<u64> {
     let bytes = report.retained_bytes().ok_or_else(|| {
@@ -25,11 +25,6 @@ pub(super) fn estimated_bytes_per_row(bytes: u64, rows: usize) -> u64 {
 pub(super) fn estimate_rows_bytes(bytes_per_row: u64, rows: usize) -> u64 {
     let bytes = u128::from(bytes_per_row) * rows as u128;
     bytes.min(u128::from(u64::MAX)) as u64
-}
-
-pub(super) fn estimated_limited_output_bytes(input_bytes: u64, input_rows: usize, spec: LimitSpec) -> Result<u64> {
-    let (_, output_rows) = limit_slice(input_rows, spec)?;
-    Ok(estimate_rows_bytes(estimated_bytes_per_row(input_bytes, input_rows), output_rows))
 }
 
 pub(super) fn final_sort_rows_per_chunk(input_rows: usize, bytes_per_row: u64, available_bytes: u64) -> usize {

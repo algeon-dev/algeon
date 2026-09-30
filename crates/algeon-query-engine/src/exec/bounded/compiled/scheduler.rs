@@ -280,7 +280,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
     }
 
     /// Runs with explicit query/plan identity and task-attempt spans.
-    pub fn run_observed<E>(
+    pub(crate) fn run_observed<E>(
         &self,
         executor: &mut E,
         observation_scope: &RuntimeExecutionObservationScope,

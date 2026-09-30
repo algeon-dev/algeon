@@ -45,7 +45,7 @@ use tracing::Instrument;
 use super::auth::{AuthMode, TokenStore};
 #[cfg(test)]
 use super::coordinator::CoordinatorArtifact;
-#[cfg(all(test, feature = "iceberg"))]
+#[cfg(test)]
 use super::coordinator::RetainedUnavailableReason;
 use super::{
     admission::QueryAdmission,
@@ -90,14 +90,14 @@ mod rpc;
 mod service;
 mod statement;
 mod status;
-#[cfg(all(test, feature = "iceberg"))]
+#[cfg(test)]
 mod tests;
 mod tickets;
 
 use correlation::tracing_correlation_id;
 pub(super) use correlation::{attach_query_response_metadata, request_correlation_id};
 use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
-#[cfg(all(test, feature = "iceberg"))]
+#[cfg(test)]
 use execution::cancel_invalid_argument_status;
 use frame_limiter::encode_flight_data_stream;
 use metadata::*;

@@ -165,8 +165,8 @@ provide diagnostic fields and retry guidance.
   workspace supports views and `CREATE TABLE AS` tables, whose results are
   collected in host memory and uploaded again by a later native scan; nothing writes
   back to a source catalog. Non-Parquet files stay on the DataFusion path, and
-  [Iceberg integration](./integration/overview.mdx#iceberg-support) is
-  currently unavailable.
+  [Iceberg tables](./integration/overview.mdx#iceberg-support) are not a
+  supported source.
 - Vector indexes and fitted models live within one statement, and pretrained
   forest inference reads its external model file for each statement. Graphs
   are also built within a statement, except that a bounded server can retain

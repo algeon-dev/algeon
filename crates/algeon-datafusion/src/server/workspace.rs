@@ -13,11 +13,9 @@ use datafusion::{
 
 use crate::server::{
     adapter_error::{Error as AdapterError, ErrorCode as AdapterErrorCode},
-    config::{ServerConfig, WorkspaceOverlayConfig},
+    config::WorkspaceOverlayConfig,
     error::{Result, ServerError},
 };
-#[cfg(feature = "iceberg")]
-use crate::table_format::iceberg::catalog::AlgeonIcebergSchemaProvider;
 
 /// Mutable local workspace schema with optional read-through to one source schema.
 ///
@@ -47,21 +45,10 @@ impl AlgeonWorkspaceSchemaProvider {
     }
 
     fn backing_table_names(&self) -> Vec<String> {
-        let names = match &self.backing_aliases {
+        match &self.backing_aliases {
             Some(aliases) => aliases.iter().cloned().collect::<Vec<_>>(),
             None => self.backing.table_names(),
-        };
-        if self.backing_aliases.is_none() {
-            #[cfg(feature = "iceberg")]
-            {
-                let mut names = names;
-                if let Some(iceberg) = self.backing.downcast_ref::<AlgeonIcebergSchemaProvider>() {
-                    names.extend(iceberg.known_or_seeded_table_names());
-                }
-                return names;
-            }
         }
-        names
     }
 
     fn visible_backing_table_names(&self) -> impl Iterator<Item = String> + '_ {
@@ -77,10 +64,6 @@ impl AlgeonWorkspaceSchemaProvider {
         }
         if self.backing.table_exist(name) || self.backing_table_names().iter().any(|table_name| table_name == name) {
             return true;
-        }
-        #[cfg(feature = "iceberg")]
-        if let Some(iceberg) = self.backing.downcast_ref::<AlgeonIcebergSchemaProvider>() {
-            return iceberg.known_or_seeded_table_exists(name);
         }
         false
     }
@@ -183,58 +166,6 @@ pub(crate) fn install_workspace_overlay(ctx: &SessionContext, config: &Workspace
         "registered mutable workspace overlay"
     );
     Ok(())
-}
-
-pub(crate) fn warn_if_default_schema_is_read_only(ctx: &SessionContext, config: &ServerConfig) {
-    let state = ctx.state();
-    let options = state.config().options();
-    let default_catalog = options.catalog.default_catalog.as_str();
-    let default_schema = options.catalog.default_schema.as_str();
-    if config
-        .workspace
-        .as_ref()
-        .is_some_and(|workspace| workspace.catalog == default_catalog && workspace.schema == default_schema)
-    {
-        return;
-    }
-    let Some(catalog) = ctx.catalog(default_catalog) else {
-        return;
-    };
-    let Some(schema) = catalog.schema(default_schema) else {
-        return;
-    };
-    if schema_supports_session_ddl(schema.as_ref()) {
-        return;
-    }
-    tracing::warn!(
-        default_catalog,
-        default_schema,
-        iceberg_enabled = iceberg_enabled(config),
-        workspace_catalog = config.workspace.as_ref().map(|workspace| workspace.catalog.as_str()).unwrap_or("none"),
-        workspace_schema = config.workspace.as_ref().map(|workspace| workspace.schema.as_str()).unwrap_or("none"),
-        "default DataFusion catalog/schema is read-only for session DDL; use datafusion.public or enable the Algeon workspace overlay"
-    );
-}
-
-#[cfg(feature = "iceberg")]
-fn iceberg_enabled(config: &ServerConfig) -> bool {
-    config.iceberg.is_some()
-}
-
-#[cfg(not(feature = "iceberg"))]
-fn iceberg_enabled(_config: &ServerConfig) -> bool {
-    false
-}
-
-fn schema_supports_session_ddl(schema: &dyn SchemaProvider) -> bool {
-    if schema.is::<MemorySchemaProvider>() || schema.is::<AlgeonWorkspaceSchemaProvider>() {
-        return true;
-    }
-    #[cfg(feature = "iceberg")]
-    if schema.is::<AlgeonIcebergSchemaProvider>() {
-        return false;
-    }
-    true
 }
 
 #[cfg(test)]

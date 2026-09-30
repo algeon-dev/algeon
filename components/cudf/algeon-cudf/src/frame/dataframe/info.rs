@@ -4,14 +4,10 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorCode, Result, invariant_violation},
+        error::{Error, ErrorCode, Result},
         types::DataType,
     },
     hash::{FastHashMap, fast_hash_map_with_capacity},
-    runtime::{
-        BoundaryKind, BoundaryObservation, QueryMemoryObservation, QueryStageKind,
-        record_boundary_observation_in_domain,
-    },
 };
 
 bitflags::bitflags! {
@@ -401,87 +397,6 @@ impl DataFrame {
             })
             .collect();
         DataFrameMemoryIdentity { row_count: self.row_count, columns }
-    }
-
-    /// Return query-stage memory facts without requiring callers to use `info_with` as a metrics API.
-    ///
-    /// This reports the same payload and device-allocation accounting as
-    /// [`InfoDetail::MEMORY`], but in the stable query observation shape used
-    /// by [`BoundaryObservation`].
-    pub fn query_memory_observation(&self) -> Result<QueryMemoryObservation> {
-        let info = self.info_with(InfoDetail::MEMORY)?;
-        let memory = info.memory_accounting.ok_or_else(|| {
-            invariant_violation(
-                "dataframe::query_memory_observation",
-                "InfoDetail::MEMORY must populate top-level memory accounting",
-            )
-        })?;
-        Ok(QueryMemoryObservation::device_resident(memory.payload_bytes, memory.device_allocated_bytes))
-    }
-
-    /// Build a query-stage observation for this DataFrame without recording it.
-    ///
-    /// The returned observation uses [`BoundaryKind::QueryStage`] and carries
-    /// memory facts for the current DataFrame. Use
-    /// [`observe_query_stage`](Self::observe_query_stage) when the observation
-    /// should also be sent to the runtime's boundary observer.
-    pub fn query_stage_observation(&self, stage: QueryStageKind) -> Result<BoundaryObservation> {
-        self.boundary_observation_for_query_stage(
-            BoundaryKind::QueryStage,
-            stage,
-            false,
-            "dataframe::query_stage_observation",
-        )
-    }
-
-    /// Record a query-stage observation for this DataFrame and return it.
-    ///
-    /// This is the explicit hook for query engines to mark operator outputs,
-    /// reservation checkpoints, or other stage boundaries without host
-    /// materialization. The callback installed on the retained runtime receives
-    /// the same observation.
-    pub fn observe_query_stage(&self, stage: QueryStageKind) -> Result<BoundaryObservation> {
-        let observation = self.query_stage_observation(stage)?;
-        record_boundary_observation_in_domain(self.execution_domain(), observation);
-        Ok(observation)
-    }
-
-    pub(crate) fn boundary_observation_for_query_stage(
-        &self,
-        kind: BoundaryKind,
-        stage: QueryStageKind,
-        synchronized_for_host: bool,
-        operation: &'static str,
-    ) -> Result<BoundaryObservation> {
-        let mut memory = self.query_memory_observation().map_err(|error| error.reanchor(operation))?;
-        match kind {
-            BoundaryKind::HostToDevice => {
-                if let Some(payload_bytes) = memory.payload_bytes {
-                    memory = memory.with_uploaded_bytes(payload_bytes);
-                }
-            },
-            BoundaryKind::DeviceToHost => {
-                if let Some(payload_bytes) = memory.payload_bytes {
-                    memory = memory.with_downloaded_bytes(payload_bytes);
-                }
-            },
-            _ => {},
-        }
-        Ok(BoundaryObservation::new(kind, self.placement(), self.num_rows(), self.num_columns(), synchronized_for_host)
-            .with_query_stage(stage)
-            .with_memory(memory))
-    }
-
-    pub(crate) fn record_boundary_observation_for_query_stage(
-        &self,
-        kind: BoundaryKind,
-        stage: QueryStageKind,
-        synchronized_for_host: bool,
-        operation: &'static str,
-    ) -> Result<BoundaryObservation> {
-        let observation = self.boundary_observation_for_query_stage(kind, stage, synchronized_for_host, operation)?;
-        record_boundary_observation_in_domain(self.execution_domain(), observation);
-        Ok(observation)
     }
 }
 

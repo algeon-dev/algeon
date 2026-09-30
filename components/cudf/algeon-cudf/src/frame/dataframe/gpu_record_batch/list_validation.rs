@@ -1,5 +1,7 @@
 //! List schema and offset validators for numeric export proofs.
-use std::{cell::Cell, sync::Arc};
+#[cfg(any(test, feature = "test-hooks"))]
+use std::cell::Cell;
+use std::sync::Arc;
 
 use arrow::datatypes::FieldRef;
 use rapids_interop::{
@@ -28,12 +30,10 @@ use crate::{
         reduction::{self, ReduceAgg},
         unary,
     },
-    runtime::{
-        BoundaryKind, BoundaryObservation, QueryMemoryObservation, matrix_element_bytes,
-        record_boundary_observation_in_domain,
-    },
+    runtime::matrix_element_bytes,
 };
 
+#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT: Cell<usize> = const { Cell::new(0) };
 }
@@ -127,12 +127,11 @@ pub(super) fn validate_fixed_size_list_offsets(
             child_offset,
             child_len,
             producer,
-            None,
         ));
     }
     let widths = fixed_size_list_row_widths(view, rows, field_name, field_index, operation)?;
-    let (minimum, maximum, observation) =
-        fixed_size_list_width_bounds(&widths, view, producer, rows, dimension, field_name, field_index, operation)?;
+    let (minimum, maximum) =
+        fixed_size_list_width_bounds(&widths, view, rows, dimension, field_name, field_index, operation)?;
     if minimum != dimension || maximum != dimension {
         return Err(Error::new_with(
             ErrorCode::ColumnLengthMismatch,
@@ -157,7 +156,6 @@ pub(super) fn validate_fixed_size_list_offsets(
         child_offset,
         child_len,
         producer,
-        Some(observation),
     ))
 }
 
@@ -293,13 +291,12 @@ fn fixed_size_list_row_widths(
 fn fixed_size_list_width_bounds(
     widths: &Column,
     view: &ColumnView<'_>,
-    producer: &Arc<Column>,
     rows: usize,
     dimension: i32,
     field_name: &str,
     field_index: usize,
     operation: &'static str,
-) -> Result<(i32, i32, BoundaryObservation)> {
+) -> Result<(i32, i32)> {
     let widths_view = widths.view().map_err(|error| error.reanchor_if_needed(operation))?;
     let root_null_count = view.null_count().map_err(|error| error.reanchor_if_needed(operation))?;
     let filtered_widths = if root_null_count == 0 || root_null_count == rows {
@@ -326,8 +323,8 @@ fn fixed_size_list_width_bounds(
         })?)
     };
     let int32_type = DataType::new(TypeId::Int32);
-    let (minimum, maximum, downloaded_scalars) = if root_null_count == rows {
-        (dimension, dimension, 0usize)
+    let (minimum, maximum) = if root_null_count == rows {
+        (dimension, dimension)
     } else {
         let reduction_view = match filtered_widths.as_ref() {
             Some(filtered) => filtered.view().map_err(|error| error.reanchor_if_needed(operation))?,
@@ -340,21 +337,9 @@ fn fixed_size_list_width_bounds(
         (
             minimum.value::<i32>().map_err(|error| error.reanchor(operation))?,
             maximum.value::<i32>().map_err(|error| error.reanchor(operation))?,
-            2usize,
         )
     };
-    let observation = BoundaryObservation::new(
-        BoundaryKind::BoundedControlScalar,
-        producer.execution_domain().placement(),
-        rows,
-        downloaded_scalars,
-        true,
-    )
-    .with_memory(
-        QueryMemoryObservation::empty().with_downloaded_bytes(downloaded_scalars * std::mem::size_of::<i32>()),
-    );
-    record_boundary_observation_in_domain(producer.execution_domain(), observation);
-    Ok((minimum, maximum, observation))
+    Ok((minimum, maximum))
 }
 
 pub(super) fn validate_uniform_list_offsets(
@@ -377,7 +362,7 @@ pub(super) fn validate_uniform_list_offsets(
     }
 
     let (widths, root_offset) = uniform_list_offset_widths(view, rows, field_index, operation)?;
-    let (minimum, maximum, offsets_observation) = uniform_list_reduced_width_range(&widths, producer, rows, operation)?;
+    let (minimum, maximum) = uniform_list_reduced_width_range(&widths, operation)?;
 
     if minimum < 0 {
         return Err(error::foreign_invariant_violation(
@@ -446,7 +431,6 @@ pub(super) fn validate_uniform_list_offsets(
         producer_column_identity: Arc::as_ptr(producer) as usize,
         binding_id: producer.execution_domain().binding_id(),
         placement: producer.execution_domain().placement(),
-        offsets_observation,
     })
 }
 
@@ -510,12 +494,7 @@ fn uniform_list_offset_widths(
     Ok((widths, root_offset))
 }
 
-fn uniform_list_reduced_width_range(
-    widths: &Column,
-    producer: &Arc<Column>,
-    rows: usize,
-    operation: &'static str,
-) -> Result<(i32, i32, BoundaryObservation)> {
+fn uniform_list_reduced_width_range(widths: &Column, operation: &'static str) -> Result<(i32, i32)> {
     let widths_view = widths.view().map_err(|error| error.reanchor_if_needed(operation))?;
     let int32_type = DataType::new(TypeId::Int32);
     let minimum =
@@ -524,18 +503,7 @@ fn uniform_list_reduced_width_range(
         reduction::reduce(&widths_view, &ReduceAgg::Max, &int32_type).map_err(|error| error.reanchor(operation))?;
     let minimum = minimum.value::<i32>().map_err(|error| error.reanchor(operation))?;
     let maximum = maximum.value::<i32>().map_err(|error| error.reanchor(operation))?;
-    let offsets_observation = BoundaryObservation::new(
-        BoundaryKind::BoundedControlScalar,
-        producer.execution_domain().placement(),
-        rows,
-        2,
-        true,
-    )
-    .with_memory(
-        QueryMemoryObservation::empty().with_downloaded_bytes(2usize.saturating_mul(std::mem::size_of::<i32>())),
-    );
-    record_boundary_observation_in_domain(producer.execution_domain(), offsets_observation);
-    Ok((minimum, maximum, offsets_observation))
+    Ok((minimum, maximum))
 }
 
 fn uniform_list_active_child_span(
@@ -590,8 +558,8 @@ fn record_fixed_size_list_structural_proof(
     child_offset: usize,
     child_len: usize,
     producer: &Arc<Column>,
-    observation: Option<BoundaryObservation>,
 ) -> FixedSizeListStructuralProof {
+    #[cfg(any(test, feature = "test-hooks"))]
     FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(count.get() + 1));
     FixedSizeListStructuralProof {
         field_index,
@@ -603,7 +571,6 @@ fn record_fixed_size_list_structural_proof(
         producer_column_identity: Arc::as_ptr(producer) as usize,
         binding_id: producer.execution_domain().binding_id(),
         placement: producer.execution_domain().placement(),
-        observation,
     }
 }
 
@@ -663,7 +630,6 @@ pub(super) fn rebind_fixed_size_list_structural_proof(
         producer_column_identity: Arc::as_ptr(producer) as usize,
         binding_id: producer.execution_domain().binding_id(),
         placement: producer.execution_domain().placement(),
-        observation: proof.observation,
     })
 }
 
@@ -904,10 +870,12 @@ fn validity_proves_no_nulls(validity: &PhysicalValidity) -> bool {
     matches!(validity, PhysicalValidity::NoValidityBuffer | PhysicalValidity::ValidityMask { null_count: Some(0), .. })
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn reset_fixed_size_list_structural_proof_build_count_for_test() {
     FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(0));
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn fixed_size_list_structural_proof_build_count_for_test() -> usize {
     FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(Cell::get)
 }

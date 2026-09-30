@@ -9,7 +9,7 @@ use std::{
 };
 
 use arrow::{
-    datatypes::{DataType, SchemaRef},
+    datatypes::SchemaRef,
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 use cudf::{
@@ -23,13 +23,7 @@ use query_planning::{
     admission::canonical_execution_scope_fingerprint,
     error::{QueryError, QueryErrorCode, Result},
     naming::is_datafusion_order_column_name,
-    plan::{
-        GraphResidencyDescriptor, JoinNullEquality, QueryPlan,
-        column_evidence::{
-            PlanColumnEvidence, ResidentInputEvidence, ResidentInputEvidenceMap, StringPayloadBound,
-            StringPayloadLineage,
-        },
-    },
+    plan::{GraphResidencyDescriptor, JoinNullEquality, QueryPlan},
 };
 
 use crate::{
@@ -46,137 +40,6 @@ use crate::{
 /// Keys are plan-local input names, not global handles. All handles must be
 /// reusable by the same [`ExecutionContext`] that executes the consuming plan.
 pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
-
-#[doc(hidden)]
-pub fn resident_input_evidence_map(inputs: &GpuResidentInputMap) -> Result<ResidentInputEvidenceMap> {
-    inputs
-        .iter()
-        .map(|(input_name, handle)| {
-            let producer_execution_scope_fingerprint = handle.producer_execution_scope().map(str::to_owned);
-            let row_count = u64::try_from(handle.frame().num_rows()).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::SizeOverflow,
-                    "query_engine.admission.resident_evidence",
-                    "resident frame row count exceeds the admission integer range",
-                )
-                .with_fact("reason", "resident_evidence_row_count_overflow")
-                .with_fact("occurrence", input_name)
-            })?;
-            let column_evidence = resident_frame_column_evidence(
-                handle,
-                input_name,
-                producer_execution_scope_fingerprint.as_deref().unwrap_or("unscoped"),
-            )?;
-            Ok((
-                input_name.clone(),
-                ResidentInputEvidence {
-                    schema: Arc::clone(handle.schema()),
-                    producer_execution_scope_fingerprint,
-                    row_count,
-                    column_evidence,
-                },
-            ))
-        })
-        .collect()
-}
-
-fn resident_frame_column_evidence(
-    handle: &GpuResultHandle,
-    occurrence_id: &str,
-    execution_scope_fingerprint: &str,
-) -> Result<PlanColumnEvidence> {
-    let operation = "query_engine.admission.resident_evidence";
-    let frame = handle.frame();
-    let info = frame.info_with(InfoDetail::COLUMNS).map_err(|error| {
-        cudf_query_error(operation, "failed to inspect the admitted resident frame", error)
-            .with_fact("reason", "resident_column_metadata_unavailable")
-    })?;
-    let columns = info.columns.ok_or_else(|| {
-        QueryError::new(QueryErrorCode::Internal, operation, "resident frame metadata omitted column details")
-            .with_fact("reason", "resident_column_metadata_missing")
-    })?;
-    if columns.len() != handle.schema().fields().len() {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            operation,
-            "resident frame schema width differs from its admitted descriptor",
-        )
-        .with_fact("reason", "resident_evidence_schema_width_mismatch")
-        .with_fact("frame_columns", columns.len())
-        .with_fact("schema_fields", handle.schema().fields().len()));
-    }
-    let mut evidence = PlanColumnEvidence::default();
-    for (column, field) in columns.iter().zip(handle.schema().fields()) {
-        if !matches!(field.data_type(), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) {
-            continue;
-        }
-        if column.data_type.id() != cudf::TypeId::String {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                operation,
-                "resident string evidence is not backed by a physical string column",
-            )
-            .with_fact("reason", "resident_evidence_string_type_mismatch")
-            .with_fact("column", field.name())
-            .with_fact("physical_type", column.data_type.id()));
-        }
-        let series = frame.series(&column.name).map_err(|error| {
-            cudf_query_error(operation, "failed to resolve an admitted resident column", error)
-                .with_fact("reason", "resident_column_missing")
-                .with_fact("column", field.name())
-        })?;
-        let (chars_bytes, max_single_value_length_bytes) = if frame.num_rows() == 0 {
-            (0, 0)
-        } else {
-            let byte_counts = series.str().byte_count().map_err(|error| {
-                cudf_query_error(operation, "failed to measure resident string value lengths", error)
-                    .with_fact("column", field.name())
-            })?;
-            let chars_bytes = byte_counts.sum_value::<i64>().map_err(|error| {
-                cudf_query_error(operation, "failed to sum resident string value lengths", error)
-                    .with_fact("column", field.name())
-            })?;
-            let max_length = byte_counts.max_value::<i32>().map_err(|error| {
-                cudf_query_error(operation, "failed to reduce resident string value lengths", error)
-                    .with_fact("column", field.name())
-            })?;
-            let chars_bytes = u64::try_from(chars_bytes.max(0)).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::SizeOverflow,
-                    operation,
-                    "resident string payload exceeds the admission integer range",
-                )
-                .with_fact("reason", "resident_evidence_string_payload_overflow")
-                .with_fact("column", field.name())
-            })?;
-            let max_length = u64::try_from(max_length.unwrap_or(0).max(0)).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::SizeOverflow,
-                    operation,
-                    "resident string value length exceeds the admission integer range",
-                )
-                .with_fact("column", field.name())
-            })?;
-            (chars_bytes, max_length)
-        };
-        evidence.string_payload_bounds.insert(
-            field.name().clone(),
-            StringPayloadBound {
-                total_payload_upper_bound_bytes: Some(chars_bytes),
-                distinct_payload_upper_bound_bytes: Some(chars_bytes),
-                distinct_value_count_upper_bound: None,
-                row_multiplicity_upper_bound: Some(1),
-                max_single_value_length_bytes: Some(max_single_value_length_bytes),
-                lineages: std::collections::BTreeSet::from([StringPayloadLineage::Resident {
-                    execution_scope_fingerprint: execution_scope_fingerprint.to_owned(),
-                    occurrence_id: occurrence_id.to_owned(),
-                    column_index: column.position,
-                }]),
-            },
-        );
-    }
-    Ok(evidence)
-}
 
 /// Owned cuDF DataFrame plus the placement observed when it entered the engine.
 ///
@@ -385,8 +248,8 @@ impl GpuDataFrame {
     /// This is intentionally distinct from the frame's physical allocation:
     /// callers use it only to avoid reserving an overlapping live input twice.
     #[cfg(any(feature = "cugraph", test))]
-    #[doc(hidden)]
-    pub fn resident_owner_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn resident_owner_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
         match (self.resident_owner.as_ref(), grant) {
             (Some(owner), Some(grant)) if owner.belongs_to(grant) => owner.bytes(),
             _ => 0,
@@ -399,32 +262,9 @@ impl GpuDataFrame {
     }
 
     #[doc(hidden)]
-    pub fn has_resident_owner(&self) -> bool {
-        self.resident_owner.is_some()
-    }
-
-    #[doc(hidden)]
-    pub fn with_transferred_resident_owner(mut self, owner: Option<ResidentOwnerLease>) -> Self {
-        debug_assert!(owner.is_none() || self.resident_owner.is_none());
-        if owner.is_some() {
-            self.resident_owner = owner;
-        }
-        self
-    }
-
-    #[doc(hidden)]
     pub fn with_retained_normalization_source(mut self, owner: Option<ResidentOwnerLease>) -> Self {
         self.retained_normalization_source = owner;
         self
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[doc(hidden)]
-    pub fn retained_normalization_source_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
-        match (self.retained_normalization_source.as_ref(), grant) {
-            (Some(owner), Some(grant)) if owner.belongs_to(grant) => owner.bytes(),
-            _ => 0,
-        }
     }
 
     #[cfg(feature = "cugraph")]
@@ -463,8 +303,7 @@ pub struct ProducerExecutionIdentity {
 /// attempt whose decoded frame was copied into the cache. The lease keeps the
 /// device-scoped cache allocation domain alive until the concrete frame has
 /// been destroyed and its residency charge can be released.
-#[doc(hidden)]
-pub struct GpuLocalParquetCachedResult {
+pub(crate) struct GpuLocalParquetCachedResult {
     batch: GpuRecordBatch,
     allocation_lease: Arc<cudf::CacheAllocationLease>,
 }
@@ -559,14 +398,16 @@ impl GpuHostBatchCursor {
 
     /// Materialize the next bounded host chunk. Cancellation is checked before
     /// any new cuDF slice or device-to-host copy starts.
-    pub fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
+    #[cfg(test)]
+    pub(crate) fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
         let Some(prepared) = self.prepare_next_batch()? else {
             return Ok(None);
         };
         self.materialize_prepared_batch(prepared).map(Some)
     }
 
-    pub fn remaining_rows(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn remaining_rows(&self) -> usize {
         self.cursor.remaining_rows()
     }
 }
@@ -635,8 +476,7 @@ impl GpuResultHandle {
         })
     }
 
-    #[doc(hidden)]
-    pub fn retained_owner_identity_for(&self, grant: &MemoryGrant) -> Option<(usize, u64)> {
+    pub(crate) fn retained_owner_identity_for(&self, grant: &MemoryGrant) -> Option<(usize, u64)> {
         self.resident_owner
             .as_ref()
             .filter(|owner| owner.belongs_to(grant))
@@ -680,8 +520,7 @@ impl GpuResultHandle {
     ///
     /// Source-cache promotion uses this as its pre-reservation upper bound
     /// before creating any cache-domain allocation.
-    #[doc(hidden)]
-    pub fn device_allocated_size_bytes(&self) -> Result<u64> {
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<u64> {
         let info = self.batch.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
             cudf_query_error(
                 "query_engine.gpu_result_handle.device_memory",
@@ -705,15 +544,6 @@ impl GpuResultHandle {
         self.graph_residency.as_deref()
     }
 
-    /// Attach the producer scope proven by the frame this handle was copied
-    /// from. Singleflight followers reuse the leader's scope claim, which the
-    /// follower's own admission evidence re-verifies before use.
-    #[doc(hidden)]
-    pub fn with_producer_execution_scope(mut self, scope: impl Into<Arc<str>>) -> Self {
-        self.producer_execution = Some(Arc::new(ProducerExecutionIdentity { scope: scope.into(), plan: None }));
-        self
-    }
-
     #[doc(hidden)]
     pub fn with_producer_execution_plan(mut self, plan: QueryPlan) -> Self {
         let scope = canonical_execution_scope_fingerprint(&plan).into();
@@ -735,21 +565,18 @@ impl GpuResultHandle {
         self
     }
 
-    #[doc(hidden)]
-    pub fn producer_execution_scope(&self) -> Option<&str> {
+    pub(crate) fn producer_execution_scope(&self) -> Option<&str> {
         self.producer_execution.as_ref().map(|identity| identity.scope.as_ref())
     }
 
-    #[doc(hidden)]
-    pub fn producer_execution_plan(&self) -> Option<&QueryPlan> {
+    pub(crate) fn producer_execution_plan(&self) -> Option<&QueryPlan> {
         self.producer_execution.as_ref().and_then(|identity| identity.plan.as_deref())
     }
 
     /// Copies this attempt-owned source frame into the supplied cache-domain
     /// lease. The source handle is borrowed and remains owned by the attempt
     /// on every success, cancellation, or allocation-failure path.
-    #[doc(hidden)]
-    pub fn copy_for_local_parquet_cache(
+    pub(crate) fn copy_for_local_parquet_cache(
         &self,
         allocation_lease: Arc<cudf::CacheAllocationLease>,
     ) -> Result<GpuLocalParquetCachedResult> {
@@ -918,15 +745,13 @@ fn bind_host_output_schema(batch: RecordBatch, output_schema: &SchemaRef) -> Res
 }
 
 impl GpuLocalParquetCachedResult {
-    #[doc(hidden)]
-    pub fn schema(&self) -> &SchemaRef {
+    pub(crate) fn schema(&self) -> &SchemaRef {
         self.batch.schema()
     }
 
     /// Completes work submitted on the cache lease before the cached value is
     /// destroyed. Cache code must call this before releasing its ledger charge.
-    #[doc(hidden)]
-    pub fn synchronize_for_destruction(&self) -> Result<()> {
+    pub(crate) fn synchronize_for_destruction(&self) -> Result<()> {
         self.allocation_lease.runtime().synchronize().map_err(|error| {
             cudf_query_error(
                 "query_engine.gpu_local_parquet_source_cache.destroy",
@@ -936,8 +761,7 @@ impl GpuLocalParquetCachedResult {
         })
     }
 
-    #[doc(hidden)]
-    pub fn device_allocated_size_bytes(&self) -> Result<u64> {
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<u64> {
         let info = self.batch.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
             cudf_query_error(
                 "query_engine.gpu_local_parquet_source_cache.device_memory",
@@ -956,8 +780,11 @@ impl GpuLocalParquetCachedResult {
         Ok(bytes as u64)
     }
 
-    #[doc(hidden)]
-    pub fn checkout(&self, context: &ExecutionContext, pin: GpuLocalParquetSourceCachePin) -> Result<GpuResultHandle> {
+    pub(crate) fn checkout(
+        &self,
+        context: &ExecutionContext,
+        pin: GpuLocalParquetSourceCachePin,
+    ) -> Result<GpuResultHandle> {
         const OPERATION: &str = "query_engine.gpu_local_parquet_source_cache.checkout";
         let query_runtime = context.shared_runtime()?;
         if query_runtime.device() != self.allocation_lease.domain().device() {
@@ -1033,15 +860,13 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
 
 /// Reusable cuDF hash-join build artifact.
 ///
-/// The handle is runtime/device-affine and carries the build key,
-/// null-equality, and retained hash-table byte contract needed to reject unsafe
-/// reuse. Cloning shares the underlying cuDF artifact.
+/// The handle is runtime/device-affine and carries the retained hash-table byte
+/// contract needed to reject unsafe reuse. Cloning shares the underlying cuDF
+/// artifact.
 #[derive(Clone)]
 pub struct GpuHashJoinBuildHandle {
     hash_join: DataFrameHashJoin,
     runtime: Arc<cudf::Runtime>,
-    build_keys: Vec<String>,
-    null_equality: JoinNullEquality,
     device_allocated_size_bytes: u64,
 }
 
@@ -1053,8 +878,6 @@ pub struct GpuHashJoinBuildHandle {
 pub struct GpuFilteredJoinBuildHandle {
     filtered_join: DataFrameFilteredJoin,
     runtime: Arc<cudf::Runtime>,
-    build_keys: Vec<String>,
-    null_equality: JoinNullEquality,
     device_allocated_size_bytes: u64,
 }
 
@@ -1084,13 +907,7 @@ impl GpuFilteredJoinBuildHandle {
                 .with_fact("key_count", filtered_join.build_keys().len())
                 .with_fact("null_equality", null_equality)
             })?;
-        Ok(Self {
-            build_keys: filtered_join.build_keys().to_vec(),
-            filtered_join,
-            runtime: context.shared_runtime()?,
-            null_equality,
-            device_allocated_size_bytes,
-        })
+        Ok(Self { filtered_join, runtime: context.shared_runtime()?, device_allocated_size_bytes })
     }
 
     #[doc(hidden)]
@@ -1106,16 +923,6 @@ impl GpuFilteredJoinBuildHandle {
     /// Current cuDF execution placement for the retained build side.
     pub fn placement(&self) -> ExecutionPlacement {
         self.filtered_join.build().placement()
-    }
-
-    /// Build-key column names used to construct the artifact.
-    pub fn build_keys(&self) -> &[String] {
-        &self.build_keys
-    }
-
-    /// Null-equality policy required for safe reuse.
-    pub fn null_equality(&self) -> JoinNullEquality {
-        self.null_equality
     }
 
     /// Observed retained device bytes for this artifact.
@@ -1150,13 +957,7 @@ impl GpuHashJoinBuildHandle {
                 .with_fact("key_count", hash_join.build_keys().len())
                 .with_fact("null_equality", null_equality)
             })?;
-        Ok(Self {
-            build_keys: hash_join.build_keys().to_vec(),
-            hash_join,
-            runtime: context.shared_runtime()?,
-            null_equality,
-            device_allocated_size_bytes,
-        })
+        Ok(Self { hash_join, runtime: context.shared_runtime()?, device_allocated_size_bytes })
     }
 
     #[doc(hidden)]
@@ -1172,16 +973,6 @@ impl GpuHashJoinBuildHandle {
     /// Current cuDF execution placement for the retained build side.
     pub fn placement(&self) -> ExecutionPlacement {
         self.hash_join.build().placement()
-    }
-
-    /// Build-key column names used to construct the artifact.
-    pub fn build_keys(&self) -> &[String] {
-        &self.build_keys
-    }
-
-    /// Null-equality policy required for safe reuse.
-    pub fn null_equality(&self) -> JoinNullEquality {
-        self.null_equality
     }
 
     /// Observed retained device bytes for this artifact.

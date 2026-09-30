@@ -1,7 +1,5 @@
 #[cfg(feature = "cugraph")]
 use std::collections::BTreeMap;
-#[cfg(feature = "cugraph")]
-use std::iter::once;
 use std::{slice::from_ref, sync::Arc, time::Instant};
 
 use super::{
@@ -15,8 +13,8 @@ use super::{
     execute_source_adjacent_chunk_unary, execute_window, execution_budget_token_for_boundary, execution_overrides,
     materialize_bounded_to_host, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
     projection_regexp_replace_prepare, read_gpu_resident_source, read_literal_batch_source,
-    read_local_parquet_chunks_required_only, reject_bounded_join_plan, release_source_read_outputs_reverse,
-    unsupported_bounded_shape, validate_local_parquet_source,
+    read_local_parquet_chunks_required_only, reject_bounded_join_plan, unsupported_bounded_shape,
+    validate_local_parquet_source,
 };
 #[cfg(feature = "cugraph")]
 use super::{DataFrame, execute_graph_algorithm_sanitized, graph_preparation_bypass_input};
@@ -190,7 +188,7 @@ fn execute_bounded_generic_node(
                 .expect("validated aggregate input exists")
                 .output_schema();
             let output_schema = node.output_schema();
-            let input_reserved_bytes = input.device_bytes();
+            let input_device_bytes = input.device_bytes();
             execute_compiled_bounded_aggregate_from_frame(
                 execution,
                 id,
@@ -198,7 +196,7 @@ fn execute_bounded_generic_node(
                 input_schema,
                 output_schema,
                 input.frame,
-                input_reserved_bytes,
+                input_device_bytes,
             )
         },
         PlanNode::Join(_) => {
@@ -316,7 +314,6 @@ fn execute_bounded_generic_graph_algorithm(
                 side_inputs.insert(*input_id, frame);
             },
             Err(error) => {
-                release_resident_frames_reverse(once(input).chain(side_inputs.into_values()).collect());
                 return Err(error);
             },
         }
@@ -432,11 +429,6 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
 }
 
 #[cfg(feature = "cugraph")]
-pub(in crate::exec::bounded) fn release_resident_frames_reverse(mut frames: Vec<ResidentGpuFrame>) {
-    while frames.pop().is_some() {}
-}
-
-#[cfg(feature = "cugraph")]
 /// Runs the runtime graph vertex-count probe on the attempt's own runtime.
 ///
 /// This runtime sizing only informs betweenness seed selection. It carries no
@@ -456,7 +448,6 @@ fn graph_runtime_vertex_count_probe(
                 QueryErrorCode::QueryMemoryLimitExceeded
                     | QueryErrorCode::DeviceOutOfMemory
                     | QueryErrorCode::DeviceAllocationFailed
-                    | QueryErrorCode::CudfResourceExhausted
             ) =>
         {
             Ok(None)
@@ -479,9 +470,6 @@ fn try_execute_bounded_generic_source_adjacent_stream(
     let Some((source_id, source, stages)) = collect_bounded_generic_source_adjacent_stages(plan, root_id)? else {
         return Ok(None);
     };
-    if source.has_position_delete_visible_scan_limit() {
-        return Ok(None);
-    }
     execute_bounded_generic_local_parquet_source_with_stages(execution, source, source_id, &stages).map(Some)
 }
 
@@ -633,14 +621,12 @@ fn read_bounded_generic_source_adjacent_chunks(
         ) {
             Ok(source_chunk) => source_chunk,
             Err(error) => {
-                release_source_read_outputs_reverse(transformed);
                 return Err(error);
             },
         };
         let mut staged = match apply_bounded_generic_source_adjacent_stages(execution, source_chunk, stages) {
             Ok(staged) => staged,
             Err(error) => {
-                release_source_read_outputs_reverse(transformed);
                 return Err(error);
             },
         };
@@ -688,8 +674,6 @@ fn apply_bounded_generic_source_adjacent_stages(
             current = match result {
                 Ok(current) => current,
                 Err(error) => {
-                    release_source_read_outputs_reverse(pending);
-                    release_source_read_outputs_reverse(transformed);
                     return Err(error);
                 },
             };

@@ -17,20 +17,13 @@ use crate::server::{
 
 /// Stable bucket for common Flight SQL native capability-miss codes.
 ///
-/// The named variants cover common Iceberg-backed Flight SQL capability misses;
-/// all other [`CapabilityReason`] codes collapse into
-/// [`FlightSqlNativeNotSupportedClass::Other`].
+/// The named variant covers a common Flight SQL capability miss; all other
+/// [`CapabilityReason`] codes collapse into [`FlightSqlNativeNotSupportedClass::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlightSqlNativeNotSupportedClass {
     /// DataFusion left a `SortPreservingMergeExec` edge case that native
     /// lowering could not safely reproduce.
     NativeSortPreservingMerge,
-    /// The Iceberg source is backed by an object-store read that native
-    /// lowering cannot reproduce as a local Parquet read.
-    IcebergObjectStoreRead,
-    /// The Iceberg source has delete files attached, which native lowering
-    /// does not yet support.
-    IcebergDeleteFiles,
     /// Any capability-miss code outside the common Flight SQL classes.
     Other,
 }
@@ -38,15 +31,13 @@ pub enum FlightSqlNativeNotSupportedClass {
 impl FlightSqlNativeNotSupportedClass {
     /// Stable snake-case label used by log lines and tests.
     ///
-    /// The first four labels intentionally match the corresponding
-    /// [`CapabilityReason::code`] values so a single keyword search across server
+    /// The named label intentionally matches the corresponding
+    /// [`CapabilityReason::code`] value so a single keyword search across server
     /// logs covers both the capability-miss code and the bucket label. The
     /// residual bucket returns `"other"`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NativeSortPreservingMerge => "native_sort_preserving_merge_unsupported",
-            Self::IcebergObjectStoreRead => "iceberg_object_store_read_unsupported",
-            Self::IcebergDeleteFiles => "iceberg_delete_files_unsupported",
             Self::Other => "other",
         }
     }
@@ -54,8 +45,6 @@ impl FlightSqlNativeNotSupportedClass {
     pub const fn from_capability_reason(reason: CapabilityReason) -> Self {
         match reason {
             CapabilityReason::NativeSortPreservingMergeUnsupported => Self::NativeSortPreservingMerge,
-            CapabilityReason::IcebergObjectStoreReadUnsupported => Self::IcebergObjectStoreRead,
-            CapabilityReason::IcebergDeleteFilesUnsupported => Self::IcebergDeleteFiles,
             _ => Self::Other,
         }
     }
@@ -141,11 +130,6 @@ mod tests {
             FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge.as_str(),
             "native_sort_preserving_merge_unsupported"
         );
-        assert_eq!(
-            FlightSqlNativeNotSupportedClass::IcebergObjectStoreRead.as_str(),
-            "iceberg_object_store_read_unsupported"
-        );
-        assert_eq!(FlightSqlNativeNotSupportedClass::IcebergDeleteFiles.as_str(), "iceberg_delete_files_unsupported");
         assert_eq!(FlightSqlNativeNotSupportedClass::Other.as_str(), "other");
     }
 
@@ -157,16 +141,6 @@ mod tests {
             ),
             FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge,
         );
-        assert_eq!(
-            FlightSqlNativeNotSupportedClass::from_capability_reason(
-                CapabilityReason::IcebergObjectStoreReadUnsupported
-            ),
-            FlightSqlNativeNotSupportedClass::IcebergObjectStoreRead,
-        );
-        assert_eq!(
-            FlightSqlNativeNotSupportedClass::from_capability_reason(CapabilityReason::IcebergDeleteFilesUnsupported),
-            FlightSqlNativeNotSupportedClass::IcebergDeleteFiles,
-        );
     }
 
     #[test]
@@ -176,7 +150,7 @@ mod tests {
             CapabilityReason::UnsupportedExpression,
             CapabilityReason::UnsupportedType,
             CapabilityReason::NativeBoundedJoinUnsupported,
-            CapabilityReason::IcebergFieldIdMappingUnsupported,
+            CapabilityReason::NativeSourceSchemaMapping,
         ] {
             assert_eq!(
                 FlightSqlNativeNotSupportedClass::from_capability_reason(reason),

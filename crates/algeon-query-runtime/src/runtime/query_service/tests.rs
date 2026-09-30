@@ -37,9 +37,8 @@ use crate::{
         RuntimeTraceId, StreamLeaseLifecycleState,
     },
     runtime::{
-        BackendLifecycle, DeviceResourceEnvelope, DeviceResourceProfile, GdsDriverProbeStatus,
-        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, KvikioCompatModeStatus, LakehouseCacheFillEvent,
-        LakehouseCacheFillOutcome, NvidiaFsProbeStatus,
+        BackendLifecycle, DeviceResourceEnvelope, DeviceResourceProfile, GpuBackendDeviceInstallationBounds,
+        GpuBackendDeviceProfile, LakehouseCacheFillEvent, LakehouseCacheFillOutcome,
         gpu::DeviceAdmissionHealth,
         resident::{GpuDataFrame, GpuResultHandle},
         service_stream::{StreamCleanupOutcome, block_stream_cleanup_thread_for_test},

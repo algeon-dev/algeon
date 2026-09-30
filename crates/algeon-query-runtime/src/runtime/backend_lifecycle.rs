@@ -81,37 +81,30 @@ pub struct ObservationPermit {
 /// generation it protects.
 #[must_use = "a GPU lifecycle permit must be held until GPU resource work finishes"]
 #[derive(Debug)]
-#[doc(hidden)]
-pub struct GpuLifecyclePermit {
+pub(crate) struct GpuLifecyclePermit {
     lifecycle: BackendLifecycle,
 }
 
 /// Snapshot of the observation lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct BackendLifecycleSnapshot {
+pub(crate) struct BackendLifecycleSnapshot {
     /// Whether close has won the lifecycle gate.
-    #[doc(hidden)]
-    pub closing: bool,
+    pub(crate) closing: bool,
     /// Number of permits acquired before close and not yet dropped.
-    #[doc(hidden)]
-    pub active_observation_permits: usize,
+    pub(crate) active_observation_permits: usize,
     /// Number of GPU-resource permits acquired before close and not yet dropped.
-    #[doc(hidden)]
-    pub active_gpu_permits: usize,
+    pub(crate) active_gpu_permits: usize,
 }
 
 impl BackendLifecycleSnapshot {
     /// Returns whether no observation work remains.
     #[cfg(test)]
-    #[doc(hidden)]
-    pub const fn is_observation_quiescent(self) -> bool {
+    pub(crate) const fn is_observation_quiescent(self) -> bool {
         self.active_observation_permits == 0
     }
 
     #[cfg(test)]
-    #[doc(hidden)]
-    pub const fn is_gpu_quiescent(self) -> bool {
+    pub(crate) const fn is_gpu_quiescent(self) -> bool {
         self.active_gpu_permits == 0
     }
 }
@@ -162,8 +155,7 @@ impl BackendLifecycle {
     }
 
     /// Attempts to enter the current GPU resource generation before close.
-    #[doc(hidden)]
-    pub fn try_begin_gpu_resource(&self) -> Result<GpuLifecyclePermit> {
+    pub(crate) fn try_begin_gpu_resource(&self) -> Result<GpuLifecyclePermit> {
         let mut state = self.inner.state.load(Ordering::Acquire);
         loop {
             if state & CLOSING_BIT != 0 {
@@ -196,33 +188,28 @@ impl BackendLifecycle {
     /// and concurrent calls are safe and return `false` after the first close.
     /// The signal itself is non-blocking, including while the wait mutex is
     /// contended.
-    #[doc(hidden)]
-    pub fn close(&self) -> bool {
+    pub(crate) fn close(&self) -> bool {
         let previous = self.inner.state.fetch_or(CLOSING_BIT, Ordering::AcqRel);
         self.inner.changed.notify_all();
         previous & CLOSING_BIT == 0
     }
 
     /// Returns whether this lifecycle has entered closing state.
-    #[doc(hidden)]
-    pub fn is_closing(&self) -> bool {
+    pub(crate) fn is_closing(&self) -> bool {
         self.inner.state.load(Ordering::Acquire) & CLOSING_BIT != 0
     }
 
     /// Returns the currently counted observation permits.
-    #[doc(hidden)]
-    pub fn active_observation_permits(&self) -> usize {
+    pub(crate) fn active_observation_permits(&self) -> usize {
         self.inner.state.load(Ordering::Acquire) & OBSERVATION_COUNT_MASK
     }
 
-    #[doc(hidden)]
-    pub fn active_gpu_permits(&self) -> usize {
+    pub(crate) fn active_gpu_permits(&self) -> usize {
         (self.inner.state.load(Ordering::Acquire) & GPU_COUNT_MASK) >> GPU_COUNT_SHIFT
     }
 
     /// Takes a point-in-time observation state snapshot.
-    #[doc(hidden)]
-    pub fn snapshot(&self) -> BackendLifecycleSnapshot {
+    pub(crate) fn snapshot(&self) -> BackendLifecycleSnapshot {
         let state = self.inner.state.load(Ordering::Acquire);
         BackendLifecycleSnapshot {
             closing: state & CLOSING_BIT != 0,
@@ -239,16 +226,14 @@ impl BackendLifecycle {
     /// still complete immediately at an already-expired deadline; no waiting
     /// has then occurred.  The same deadline covers wait-mutex contention and
     /// condition-variable waiting.
-    #[doc(hidden)]
-    pub fn wait_for_observation_quiescence_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn wait_for_observation_quiescence_until(&self, deadline: Instant) -> Result<()> {
         self.close();
 
         self.wait_for_count_until(deadline, CountKind::Observation)
     }
 
     /// Closes the lifecycle and waits for every GPU-resource permit.
-    #[doc(hidden)]
-    pub fn wait_for_gpu_quiescence_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn wait_for_gpu_quiescence_until(&self, deadline: Instant) -> Result<()> {
         self.close();
 
         self.wait_for_count_until(deadline, CountKind::Gpu)
@@ -412,8 +397,7 @@ fn wait_poisoned_error(kind: CountKind) -> QueryError {
 /// lease atomically transitions the tracker to a fired state before taking and
 /// invoking the callback, preventing resurrection and guaranteeing one
 /// callback even when drops race on different threads.
-#[doc(hidden)]
-pub struct PublicHandleTracker {
+pub(crate) struct PublicHandleTracker {
     state: AtomicUsize,
     on_last_handle: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
 }
@@ -433,8 +417,7 @@ impl fmt::Debug for PublicHandleTracker {
 /// Cloning this lease increments the tracker's explicit counter.  Dropping
 /// the last lease invokes the tracker's callback exactly once; this operation
 /// never consults `Arc::strong_count`.
-#[doc(hidden)]
-pub struct PublicHandleLease {
+pub(crate) struct PublicHandleLease {
     tracker: Arc<PublicHandleTracker>,
 }
 
@@ -447,15 +430,13 @@ impl fmt::Debug for PublicHandleLease {
 impl PublicHandleTracker {
     /// Creates an empty tracker.  Call [`Self::acquire`] to mint the first
     /// public-handle lease.
-    #[doc(hidden)]
-    pub fn new(on_last_handle: impl FnOnce() + Send + 'static) -> Arc<Self> {
+    pub(crate) fn new(on_last_handle: impl FnOnce() + Send + 'static) -> Arc<Self> {
         Arc::new(Self { state: AtomicUsize::new(0), on_last_handle: Mutex::new(Some(Box::new(on_last_handle))) })
     }
 
     /// Mints one lease, or returns `None` after the last lease already fired
     /// the callback.
-    #[doc(hidden)]
-    pub fn acquire(self: &Arc<Self>) -> Option<PublicHandleLease> {
+    pub(crate) fn acquire(self: &Arc<Self>) -> Option<PublicHandleLease> {
         let mut state = self.state.load(Ordering::Acquire);
         loop {
             if state & PUBLIC_HANDLES_FIRED_BIT != 0 {
@@ -476,14 +457,12 @@ impl PublicHandleTracker {
     }
 
     /// Returns the number of currently minted public-handle leases.
-    #[doc(hidden)]
-    pub fn active_handles(&self) -> usize {
+    pub(crate) fn active_handles(&self) -> usize {
         self.state.load(Ordering::Acquire) & PUBLIC_HANDLES_COUNT_MASK
     }
 
     /// Returns whether the last-handle callback has fired.
-    #[doc(hidden)]
-    pub fn callback_fired(&self) -> bool {
+    pub(crate) fn callback_fired(&self) -> bool {
         self.state.load(Ordering::Acquire) & PUBLIC_HANDLES_FIRED_BIT != 0
     }
 

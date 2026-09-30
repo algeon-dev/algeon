@@ -21,10 +21,9 @@ use super::{
     DeviceId,
     device_guard::{SuspendedDeviceEntry, current_entered_device},
 };
-use crate::{
-    core::error::{Error, ErrorCode, Result, check_status_in_without_device_report},
-    testing::device_safety::injected_health_registry,
-};
+use crate::core::error::{Error, ErrorCode, Result, check_status_in_without_device_report};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::testing::device_safety::injected_health_registry;
 
 /// Process-lifetime usability of one CUDA device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -179,17 +178,12 @@ impl DeviceHealthState {
 #[derive(Default)]
 pub(crate) struct DeviceHealthRegistry {
     states: Mutex<HashMap<i32, Arc<DeviceHealthState>>>,
-    unknown_device_quarantined_count: AtomicU64,
 }
 
 impl DeviceHealthRegistry {
     pub(crate) fn state(&self, device: DeviceId) -> Arc<DeviceHealthState> {
         let mut states = self.states.lock().expect("device health registry mutex poisoned");
         Arc::clone(states.entry(device.ordinal_raw()).or_insert_with(|| Arc::new(DeviceHealthState::new())))
-    }
-
-    pub(crate) fn unknown_device_quarantined_count(&self) -> u64 {
-        self.unknown_device_quarantined_count.load(Ordering::Relaxed)
     }
 }
 
@@ -199,6 +193,7 @@ fn global_registry() -> &'static DeviceHealthRegistry {
 }
 
 fn with_registry<R>(f: impl FnOnce(&DeviceHealthRegistry) -> R) -> R {
+    #[cfg(any(test, feature = "test-hooks"))]
     if let Some(registry) = injected_health_registry() {
         return f(&registry);
     }
@@ -386,22 +381,6 @@ pub fn quarantine_device_resource(device: DeviceId, operation: &'static str, rea
     });
 }
 
-/// Consume an owner-unknown device pointer without crossing native teardown.
-///
-/// No device can be safely selected or poisoned when provenance is absent, so
-/// this path records a process-lifetime quarantine and intentionally leaks the
-/// now-unreachable allocation rather than guessing an owner device.
-pub(crate) fn quarantine_unknown_device_resource(operation: &'static str, reason: &dyn fmt::Display) {
-    with_registry(|registry| {
-        let count = saturating_increment(&registry.unknown_device_quarantined_count);
-        if should_log(count) {
-            write_diagnostic(format_args!(
-                "[cudf] unknown_device_teardown_quarantined operation={operation} quarantined_count={count} reason={reason}"
-            ));
-        }
-    });
-}
-
 pub(crate) fn record_teardown_failure(device: DeviceId, operation: &'static str, reason: &dyn fmt::Display) {
     with_registry(|registry| {
         let state = registry.state(device);
@@ -415,6 +394,7 @@ pub(crate) fn record_teardown_failure(device: DeviceId, operation: &'static str,
     });
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn new_test_registry() -> Arc<DeviceHealthRegistry> {
     Arc::new(DeviceHealthRegistry::default())
 }

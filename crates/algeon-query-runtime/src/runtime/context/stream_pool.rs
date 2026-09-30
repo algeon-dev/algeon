@@ -28,10 +28,6 @@ impl QueryServiceStreamPool {
         self.pool.device()
     }
 
-    pub fn pool_size(&self) -> usize {
-        self.pool.pool_size()
-    }
-
     pub fn acquire(&self) -> Result<StreamLease> {
         let operation = "query_engine.runtime.context.service_stream_pool.acquire";
         let resource_epoch = self.acquire_resource_epoch(operation)?;
